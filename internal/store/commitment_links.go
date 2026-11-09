@@ -217,6 +217,15 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, open
 // component), a deleted root is locked like a live one, and liveness is still
 // read from the items, so a deleted end is never live in the component.
 func (s *Store) pinCommitmentOpt(tx *sql.Tx, workspaceID, openFilter string, openArgs []any, overCap, withDeleted bool, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
+	return s.pinCommitmentRoot(tx, workspaceID, openFilter, openArgs, overCap, withDeleted, false, rootItemID, extraItemIDs...)
+}
+
+// pinCommitmentRoot is the one implementation of the pin. With rootMayLackSchedule
+// the root ITEM is pinned (item, then workspace) whether or not it has a
+// schedule, and the component is read from the extra seeds alone: a commitment
+// gate's gated item need not hold a commitment. Everything else, the lock order
+// and the re-validation under the locks, is the same.
+func (s *Store) pinCommitmentRoot(tx *sql.Tx, workspaceID, openFilter string, openArgs []any, overCap, withDeleted, rootMayLackSchedule bool, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
 	liveItem := ` AND deleted_at IS NULL`
 	liveJoin := ` AND i.deleted_at IS NULL`
 	if withDeleted {
@@ -241,17 +250,24 @@ func (s *Store) pinCommitmentOpt(tx *sql.Tx, workspaceID, openFilter string, ope
 		return nil, fmt.Errorf("pin commitment workspace: %w", err)
 	}
 	seeds := map[string]bool{}
-	var seedOrder []string // the root's schedule first, then each extra's
+	var seedOrder []string // the root's schedule first (when it has one), then each extra's
+	rootSchedule := ""     // the root's schedule id; "" when the root has none
 	for i, item := range append([]string{rootItemID}, extraItemIDs...) {
 		var id string
 		err := tx.QueryRow(s.q(`SELECT sc.id FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.item_id=? AND sc.workspace_id=?`+liveJoin), item, workspaceID).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
+			if i == 0 && rootMayLackSchedule {
+				continue
+			}
 			if i == 0 {
 				return nil, ErrScheduleNotFound
 			}
 			return nil, ErrScheduleLinkNotFound
 		} else if err != nil {
 			return nil, fmt.Errorf("pin commitment schedule: %w", err)
+		}
+		if i == 0 {
+			rootSchedule = id
 		}
 		seeds[id] = true
 		seedOrder = append(seedOrder, id)
@@ -310,7 +326,7 @@ func (s *Store) pinCommitmentOpt(tx *sql.Tx, workspaceID, openFilter string, ope
 		args[i] = id
 	}
 	// Schedule rows ascending by id, then the managed reminder rows ascending by schedule id.
-	if pg {
+	if pg && len(ids) > 0 {
 		for _, q := range []string{
 			`SELECT id FROM item_schedules WHERE id IN (` + ph + `) ORDER BY id FOR NO KEY UPDATE`,
 			`SELECT id FROM item_reminders WHERE schedule_id IN (` + ph + `) ORDER BY schedule_id FOR NO KEY UPDATE`,
@@ -338,25 +354,27 @@ func (s *Store) pinCommitmentOpt(tx *sql.Tx, workspaceID, openFilter string, ope
 	if openFilter != "" {
 		openExpr, liveArgs = openFilter, append(append([]any{}, openArgs...), args...)
 	}
-	rows, err := tx.Query(s.q(`SELECT sc.id, `+openExpr+` FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.id IN (`+ph+`) AND i.deleted_at IS NULL`), liveArgs...)
-	if err != nil {
-		return nil, fmt.Errorf("read link liveness: %w", err)
-	}
-	for rows.Next() {
-		var id string
-		var open bool
-		if err := rows.Scan(&id, &open); err != nil {
+	if len(ids) > 0 {
+		rows, err := tx.Query(s.q(`SELECT sc.id, `+openExpr+` FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.id IN (`+ph+`) AND i.deleted_at IS NULL`), liveArgs...)
+		if err != nil {
+			return nil, fmt.Errorf("read link liveness: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			var open bool
+			if err := rows.Scan(&id, &open); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			c.live[id] = true
+			c.terminal[id] = !open
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		c.live[id] = true
-		c.terminal[id] = !open
-	}
-	if err := rows.Err(); err != nil {
 		rows.Close()
-		return nil, err
 	}
-	rows.Close()
 	// Everything above up to the schedule locks was read without them. On
 	// Postgres a transaction that held a schedule lock (a cross-workspace move
 	// takes no workspace row) may have committed while this one waited: it can
@@ -364,11 +382,12 @@ func (s *Store) pinCommitmentOpt(tx *sql.Tx, workspaceID, openFilter string, ope
 	// after the locks saw that, so check the seeds and the links against them. No
 	// new lock is taken. Nothing can have ADDED a link to the component: every
 	// link writer holds the workspace row this transaction holds.
-	for i, id := range seedOrder {
+	for _, id := range seedOrder {
+		isRoot := id == rootSchedule
 		switch {
-		case c.scheds[id] == nil && i == 0:
+		case c.scheds[id] == nil && isRoot:
 			return nil, ErrScheduleNotFound
-		case !withDeleted && !c.live[id] && i == 0:
+		case !withDeleted && !c.live[id] && isRoot:
 			return nil, ErrScheduleItemGone
 		case c.scheds[id] == nil || (!withDeleted && !c.live[id]):
 			return nil, ErrScheduleLinkNotFound

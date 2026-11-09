@@ -349,3 +349,125 @@ func TestAParentMoveLeavesANoLongerNeededChildWhereItIs(t *testing.T) {
 	}
 	_ = sql.ErrNoRows
 }
+
+// ---- miss first, then mark, and disarm ----
+
+func (f *linkFix) reminderCounts(t *testing.T, i int) (total, fired int) {
+	t.Helper()
+	total = f.count(t, `SELECT COUNT(*) FROM item_reminders WHERE schedule_id=?`, f.scheds[i].ID)
+	fired = f.count(t, `SELECT COUNT(*) FROM item_reminders WHERE schedule_id=? AND fired_at IS NOT NULL`, f.scheds[i].ID)
+	return
+}
+
+// skipAt skips item i's outstanding occurrence as of nowT.
+func (f *linkFix) skipAt(t *testing.T, i int, nowT string) {
+	t.Helper()
+	sc := f.reload(t, f.items[i].ID)
+	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true}, rt(nowT)); err != nil {
+		t.Fatalf("skip: %v", err)
+	}
+}
+
+// A child whose deadline passed before the parent was skipped, and before any
+// tick, has a miss that already happened: marking the occurrence records it
+// first, once, as a skip does, and then marks it.
+func TestMarkingRecordsAnUnrecordedDueMissFirstExactlyOnce(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 2)
+	f.cancelLink(t, 0, 1, models.LinkCancelChildOccurrence)
+	f.deadline(t, 1, "stays_owed") // the child's deadline is 2030-03-05 09:00
+	f.skipAt(t, 0, "2030-03-06T00:00:00Z")
+	if !f.noLongerNeeded(t, 1) {
+		t.Fatal("the child occurrence is not marked")
+	}
+	if n := f.misses(t, 1); n != 1 {
+		t.Fatalf("%d misses recorded before the mark, want exactly 1", n)
+	}
+	if n := f.deadlineNotices(t); n != 1 {
+		t.Fatalf("%d deadline notices, want 1", n)
+	}
+	f.eval(t, farFuture, 0)
+	if n := f.misses(t, 1); n != 1 {
+		t.Fatalf("%d misses after a tick, want still 1", n)
+	}
+	if n := f.deadlineNotices(t); n != 1 {
+		t.Fatalf("%d deadline notices after a tick, want still 1", n)
+	}
+}
+
+// A miss the evaluator already recorded is not recorded again.
+func TestMarkingDoesNotRecordAMissTheEvaluatorAlreadyRecorded(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 2)
+	f.cancelLink(t, 0, 1, models.LinkCancelChildOccurrence)
+	f.deadline(t, 1, "stays_owed")
+	f.eval(t, "2030-03-05T12:00:00Z", 0)
+	if n := f.misses(t, 1); n != 1 {
+		t.Fatalf("setup: %d misses", n)
+	}
+	f.skipAt(t, 0, "2030-03-06T00:00:00Z")
+	if !f.noLongerNeeded(t, 1) {
+		t.Fatal("the child occurrence is not marked")
+	}
+	if n := f.misses(t, 1); n != 1 {
+		t.Fatalf("%d misses after the mark, want the one already on record", n)
+	}
+}
+
+// Only an open child records a miss: a finished one is left alone entirely.
+func TestMarkingRecordsNoMissForAFinishedChild(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 2)
+	f.cancelLink(t, 0, 1, models.LinkCancelChildOccurrence)
+	f.deadline(t, 1, "stays_owed")
+	f.exec(t, `UPDATE items SET fields=? WHERE id=?`, `{"status":"done"}`, f.items[1].ID)
+	f.skipAt(t, 0, "2030-03-06T00:00:00Z")
+	if f.noLongerNeeded(t, 1) {
+		t.Fatal("a finished child was marked")
+	}
+	if n := f.misses(t, 1); n != 0 {
+		t.Fatalf("%d misses recorded for a finished child", n)
+	}
+}
+
+// The mark disarms the child's managed reminder, in the same transaction; a
+// reminder that already fired is left alone, and so is everything under the
+// default policy.
+func TestMarkingDisarmsTheChildsArmedReminder(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 3)
+	f.cancelLink(t, 0, 1, models.LinkCancelChildOccurrence)
+	f.cancelLink(t, 0, 2, "") // the default policy
+	for _, i := range []int{1, 2} {
+		if total, _ := f.reminderCounts(t, i); total != 1 {
+			t.Fatalf("setup: child %d has %d reminders", i, total)
+		}
+	}
+	f.skipAs(t, 0, "user")
+	if total, _ := f.reminderCounts(t, 1); total != 0 {
+		t.Fatalf("the marked child still has %d reminders", total)
+	}
+	if total, _ := f.reminderCounts(t, 2); total != 1 {
+		t.Fatalf("the waiting child has %d reminders, want 1", total)
+	}
+	if n := f.misses(t, 2); n != 0 {
+		t.Fatalf("the waiting child recorded %d misses", n)
+	}
+	if f.noLongerNeeded(t, 2) {
+		t.Fatal("the waiting child was marked")
+	}
+}
+
+func TestMarkingLeavesAReminderThatAlreadyFired(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 2)
+	f.cancelLink(t, 0, 1, models.LinkCancelChildOccurrence)
+	f.exec(t, `UPDATE item_reminders SET fired_at=? WHERE schedule_id=?`, nowNano(), f.scheds[1].ID)
+	f.skipAs(t, 0, "user")
+	if !f.noLongerNeeded(t, 1) {
+		t.Fatal("the child occurrence is not marked")
+	}
+	if total, fired := f.reminderCounts(t, 1); total != 1 || fired != 1 {
+		t.Fatalf("reminders=%d fired=%d, want the fired row left alone", total, fired)
+	}
+}

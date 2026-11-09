@@ -85,3 +85,22 @@ func (f *linkPG) exec(q string, args ...any) {
 		panic(err)
 	}
 }
+
+// The mark also disarms the child's managed reminder and may record the child's
+// miss. A tick that fires the same reminders queues on the same workspace, and
+// finds the row gone or already fired, never a deadlock.
+func TestParentSkipDisarmingAChildAgainstATickDoesNotDeadlock(t *testing.T) {
+	f := newLinkPG(t, 2)
+	f.cancelLink(t, 0, 1)
+	errs := f.run(t,
+		func() error { return f.skip(0) },
+		func() error {
+			_, err := f.s.FireDueReminders("2031-01-01T00:00:00Z", 0)
+			return err
+		})
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("errs=%v", errs)
+		}
+	}
+}

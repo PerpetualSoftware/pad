@@ -550,7 +550,7 @@ var nulExcluded = map[string]string{
 	"schedule_link_overrides.updated_at":          "RFC3339 timestamp: the server clock on a live write, parsed by time.Parse on a bundle import before it is stored, so a NUL cannot reach it (TASK-4353, migration 172)",
 	"schedule_gates.id":                           "server UUID (TASK-4353, migration 172)",
 	"schedule_gates.workspace_id":                 "workspace UUID foreign key (TASK-4353, migration 172)",
-	"schedule_gates.blocked_schedule_id":          "schedule UUID foreign key (TASK-4353, migration 172)",
+	"schedule_gates.blocked_item_id":              "item UUID foreign key (TASK-4353, migration 174)",
 	"schedule_gates.blocker_item_id":              "item UUID foreign key (TASK-4353, migration 172)",
 	"schedule_gates.blocker_schedule_id":          "schedule UUID foreign key (TASK-4353, migration 172)",
 	"schedule_gates.blocker_occurrence_key":       "derived server-side from the stored schedule walls, never request text (TASK-4353, migration 172)",

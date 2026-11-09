@@ -398,7 +398,7 @@ func TestASoftDeletedBlockerLeavesTheChildBlockedForADecision(t *testing.T) {
 
 // ---- who sees what ----
 
-func TestAGateWithAnUnreadableBlockerIsAbsentFromWhatTheReaderSees(t *testing.T) {
+func TestAGateWithAnUnreadableSucceededBlockerShowsNothingAndStillOpens(t *testing.T) {
 	t.Parallel()
 	f := newLinkFix(t, 3)
 	hidden := f.buildItem(t, "open")
@@ -410,7 +410,7 @@ func TestAGateWithAnUnreadableBlockerIsAbsentFromWhatTheReaderSees(t *testing.T)
 	got := f.gates(t, 0, reader)
 	noGate := f.gates(t, 2, reader) // an item with no gate at all
 	if !reflect.DeepEqual(got, noGate) {
-		t.Fatalf("a gate with a hidden blocker shows: %+v, want what an ungated item shows: %+v", got, noGate)
+		t.Fatalf("a released gate with a hidden blocker shows: %+v, want what an ungated item shows: %+v", got, noGate)
 	}
 	b, _ := json.Marshal(got)
 	for _, id := range []string{hidden.ID, g.ID} {
@@ -418,9 +418,9 @@ func TestAGateWithAnUnreadableBlockerIsAbsentFromWhatTheReaderSees(t *testing.T)
 			t.Fatalf("the view names %s: %s", id, b)
 		}
 	}
-	// Nothing was evaluated on the hidden reader's behalf.
-	if f.openedAt(t, g.ID).Valid {
-		t.Fatal("a read that cannot see the blocker opened the gate")
+	// Opening does not depend on who reads: the blocker succeeded.
+	if !f.openedAt(t, g.ID).Valid {
+		t.Fatal("a read that cannot see the blocker did not open the gate the blocker released")
 	}
 	// A reader who sees both ends gets the state and the detail.
 	f.expect(t, "reader of both ends", 0, all, models.GateStateReleased, models.GateOutcomeSucceeded)
@@ -429,7 +429,9 @@ func TestAGateWithAnUnreadableBlockerIsAbsentFromWhatTheReaderSees(t *testing.T)
 	}
 }
 
-func TestAGateStateCountsOnlyTheGatesTheReaderCanSee(t *testing.T) {
+// The state covers every gate, the detail only the gates whose blocker the reader
+// can read: a hidden pending blocker holds the child for everyone.
+func TestAGateStateCoversEveryGateAndTheDetailOnlyTheReadableOnes(t *testing.T) {
 	t.Parallel()
 	f := newLinkFix(t, 3)
 	hidden := f.another(t, "hidden blocker")
@@ -439,7 +441,7 @@ func TestAGateStateCountsOnlyTheGatesTheReaderCanSee(t *testing.T) {
 	f.resolve(t, 1, "done")
 	reader := f.allEdit()
 	v := f.gates(t, 0, reader)
-	if v.State != models.GateStateReleased || len(v.Gates) != 1 || len(v.Unresolved) != 0 {
+	if v.State != models.GateStateWaiting || len(v.Gates) != 1 || len(v.Unresolved) != 0 {
 		t.Fatalf("reader without the hidden blocker: %+v", v)
 	}
 	full := f.gates(t, 0, all)
@@ -521,4 +523,75 @@ func TestAPlainBlocksLinkIsUnchangedByGates(t *testing.T) {
 	if n := f.count(t, `SELECT COUNT(*) FROM item_links WHERE link_type='blocks'`); n != 1 {
 		t.Fatalf("%d blocks links after the gate was deleted, want 1", n)
 	}
+}
+
+// ---- an abandoned blocker item ----
+
+// buildWithCommitment is a build item (shipped delivers, discarded abandons) with
+// a commitment of its own.
+func (f *linkFix) buildWithCommitment(t *testing.T) *models.Item {
+	t.Helper()
+	build := f.buildItem(t, "open")
+	f.native(t, build, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	return build
+}
+
+// An abandoned blocker item can no longer deliver: it leaves the child blocked
+// for a decision even though its commitment's fixed occurrence is still pending.
+// A terminal status that is not abandoned does not release the gate by itself:
+// the occurrence decides.
+func TestAnAbandonedBlockerItemLeavesTheChildBlockedWhileItsOccurrenceIsPending(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 1)
+	build := f.buildWithCommitment(t)
+	acc := f.gateAccess(build)
+	g := f.gate(t, f.items[0].ID, build.ID, acc)
+	f.expect(t, "open build", 0, acc, models.GateStateWaiting, models.GateOutcomePending)
+	f.setBlockerStatus(t, build, "shipped")
+	f.expect(t, "shipped, occurrence still pending", 0, acc, models.GateStateWaiting, models.GateOutcomePending)
+	f.setBlockerStatus(t, build, "discarded")
+	f.expect(t, "discarded, occurrence still pending", 0, acc, models.GateStateBlockedNeedsDecision, models.GateOutcomeCancelled)
+	if f.openedAt(t, g.ID).Valid {
+		t.Fatal("an abandoned blocker opened the gate")
+	}
+}
+
+// A recorded `done` occurrence is a stored fact with its own actual time, and a
+// gate opens once: abandoning the item afterwards (or before the gate was read)
+// does not undo it.
+func TestADoneOccurrenceStillWinsOverAnAbandonedBlockerItem(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 2)
+	build := f.buildWithCommitment(t)
+	acc := f.gateAccess(build)
+	opened := f.gate(t, f.items[0].ID, build.ID, acc)
+	f.resolve2(t, build, f.reload(t, build.ID), "done")
+	f.setBlockerStatus(t, build, "discarded")
+	f.expect(t, "done, then abandoned, gate never read", 0, acc, models.GateStateReleased, models.GateOutcomeSucceeded)
+	if !f.openedAt(t, opened.ID).Valid {
+		t.Fatal("the gate did not open")
+	}
+	// And a gate that was already open stays open.
+	other := f.buildWithCommitment(t)
+	acc = f.gateAccess(build, other)
+	g := f.gate(t, f.items[1].ID, other.ID, acc)
+	f.resolve2(t, other, f.reload(t, other.ID), "done")
+	f.expect(t, "done", 1, acc, models.GateStateReleased, models.GateOutcomeSucceeded)
+	f.setBlockerStatus(t, other, "discarded")
+	f.expect(t, "abandoned after the gate opened", 1, acc, models.GateStateReleased, models.GateOutcomeSucceeded)
+	if !f.openedAt(t, g.ID).Valid {
+		t.Fatal("the gate did not stay open")
+	}
+}
+
+// A skipped occurrence is already blocked; abandoning does not change what it reads.
+func TestAnAbandonedBlockerItemWithASkippedOccurrenceStaysSkipped(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 1)
+	build := f.buildWithCommitment(t)
+	acc := f.gateAccess(build)
+	f.gate(t, f.items[0].ID, build.ID, acc)
+	f.resolve2(t, build, f.reload(t, build.ID), "skip")
+	f.setBlockerStatus(t, build, "discarded")
+	f.expect(t, "skipped and abandoned", 0, acc, models.GateStateBlockedNeedsDecision, models.GateOutcomeSkipped)
 }

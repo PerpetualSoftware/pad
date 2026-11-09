@@ -224,8 +224,8 @@ func TestGateLimitsAreCheckedAtWriteAndShowNoCount(t *testing.T) {
 		f := newLinkFix(t, 34)
 		for i := 0; i < 34; i++ {
 			for j := i + 1; j < 34; j++ {
-				f.exec(t, `INSERT INTO schedule_gates (id,workspace_id,blocked_schedule_id,blocker_item_id,blocker_schedule_id,blocker_occurrence_key,created_at) VALUES (?,?,?,?,?,'',?)`,
-					newID(), f.ws.ID, f.scheds[j].ID, f.items[i].ID, f.scheds[i].ID, nowNano())
+				f.exec(t, `INSERT INTO schedule_gates (id,workspace_id,blocked_item_id,blocker_item_id,blocker_schedule_id,blocker_occurrence_key,created_at) VALUES (?,?,?,?,?,'',?)`,
+					newID(), f.ws.ID, f.items[j].ID, f.items[i].ID, f.scheds[i].ID, nowNano())
 			}
 		}
 		extra := f.another(t, "blocker")
@@ -239,19 +239,6 @@ func TestGateLimitsAreCheckedAtWriteAndShowNoCount(t *testing.T) {
 		g.gate(t, g.items[1].ID, g.items[0].ID, g.allEdit())
 		g.gate(t, g.items[2].ID, g.items[1].ID, g.allEdit())
 	})
-}
-
-// The blocked item needs a commitment (the gate row names its schedule); the
-// blocker may have none.
-func TestGateNeedsACommitmentOnTheBlockedItemOnly(t *testing.T) {
-	t.Parallel()
-	f := newLinkFix(t, 1)
-	bare := f.another(t, "no date yet")
-	if _, err := f.s.CreateScheduleGate(f.ws.ID, bare.ID, f.items[0].ID, f.gateAccess(bare)); !errors.Is(err, ErrScheduleNotFound) {
-		t.Fatalf("a blocked item with no commitment: %v, want ErrScheduleNotFound", err)
-	}
-	plain := f.another(t, "build")
-	f.gate(t, f.items[0].ID, plain.ID, f.gateAccess(plain))
 }
 
 // The blocker's outstanding occurrence is fixed at creation and stored as its key.

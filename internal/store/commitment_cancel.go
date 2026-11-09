@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -16,8 +17,13 @@ import (
 // occurrence No longer needed. The mark is a no_longer_needed_at on the link's
 // per-occurrence override row, keyed by the child's occurrence key, so:
 //
-//   - it records no miss: the deadline evaluator treats the occurrence as never
-//     due (deadlineJournalState.noLongerNeeded);
+//   - it records no miss from then on: the deadline evaluator treats the
+//     occurrence as never due (deadlineJournalState.noLongerNeeded). A miss that
+//     had already happened is not erased: a deadline that passed before the
+//     parent was cancelled, and was not recorded yet, is recorded first, once,
+//     exactly as a skip records it, and only for an open item;
+//   - it disarms the child managed reminder (only while it is armed: one that
+//     already fired has gone out and stays);
 //   - it never cancels the series: the child's schedule, reminder and later
 //     occurrences are untouched, and the next occurrence has another key;
 //   - it never touches finished work: a child that is done or abandoned, whose
@@ -33,16 +39,19 @@ import (
 // (item, workspace, schedule), after the skip is written, so the skip and every
 // mark commit together or not at all.
 //
-// LOCKS: it takes none of its own. The links and the child rows are plain reads:
-// every link writer and every writer of a child schedule holds the workspace
-// row this transaction holds. The writes are one override row and one journal
-// row per child; neither locks a child item or schedule row, so a resolve of the
-// child (which holds the child item and waits for the workspace) and a cascade
-// (which holds the workspace) never wait on anything this holds.
+// LOCKS: it takes none of its own on an item or a schedule. The links and the
+// child rows are plain reads: every link writer and every writer of a child
+// schedule holds the workspace row this transaction holds. The writes are the
+// miss (a journal row and an outbox row), one override row, one journal row and
+// the delete of the child armed reminder row. A resolve of the child (which holds
+// the child item and waits for the workspace) and a cascade (which holds the
+// workspace) never wait on anything this holds; the one row another writer can
+// hold is the reminder, and it takes that only after the workspace this
+// transaction already has.
 //
 // openFilter and openArgs are nonTerminalFilter's, loaded before Begin: the pool
 // can be one connection.
-func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSchedule, actor, openFilter string, openArgs []any) error {
+func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSchedule, actor string, nowT time.Time, openFilter string, openArgs []any) error {
 	rows, err := tx.Query(s.q(`SELECT id, child_schedule_id FROM schedule_links WHERE parent_schedule_id=? AND workspace_id=? AND cancel_policy=? ORDER BY id`),
 		parent.ID, parent.WorkspaceID, models.LinkCancelChildOccurrence)
 	if err != nil {
@@ -94,6 +103,15 @@ func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSche
 		} else if gone {
 			continue
 		}
+		// A miss that already happened is not erased by the mark: record it first,
+		// through the evaluator own candidate, so it is recorded once.
+		if miss, err := s.deadlineMissCandidateTx(tx, child.ID, nowT); err != nil {
+			return err
+		} else if miss != nil {
+			if err := s.recordDeadlineMissTx(tx, *miss); err != nil {
+				return err
+			}
+		}
 		if err := s.upsertLinkOverrideTx(tx, p.link, key, nil, nowNano()); err != nil {
 			return err
 		}
@@ -101,6 +119,11 @@ func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSche
 		// child's journal is read by people who may not be able to read it.
 		if err := s.journalScheduleChangeRowTx(tx, newID(), child.ID, "update", key, "", "", `{"no_longer_needed":true}`, actor,
 			"No longer needed", "system", "", ""); err != nil {
+			return err
+		}
+		// Nothing is due for work that is no longer needed. A reminder that
+		// already fired has gone out and stays.
+		if err := s.cancelArmedReminderTx(tx, child.ID); err != nil {
 			return err
 		}
 	}
