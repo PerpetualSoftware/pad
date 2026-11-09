@@ -22,6 +22,8 @@ import (
 const (
 	itemSchedulePathTemplate = "/api/v1/workspaces/{workspace}/items/{ref}/commitment"
 	itemScheduleResolvePath  = itemSchedulePathTemplate + "/resolve"
+
+	itemScheduleRenegotiatePath = itemSchedulePathTemplate + "/renegotiate"
 )
 
 // itemRemindOneShot is the one-shot reminder route, unchanged since IDEA-2641.
@@ -143,12 +145,60 @@ func mapScheduleResolve(state string) RouteMapper {
 		if u, _ := input["until"].(string); u != "" {
 			body.Until = u
 		}
+		if a, _ := input["actual_done_at"].(string); a != "" && state == "done" {
+			body.ActualDoneAt = a
+		}
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return "", "", nil, err
 		}
 		return http.MethodPost, path, raw, nil
 	}
+}
+
+// mapScheduleRenegotiate is `item remind renegotiate`: a preview unless apply
+// is set. The input is what actionItemScheduleRenegotiate left; the scope
+// defaults as the CLI's does, and which members belong with which scope is left
+// to the server.
+func mapScheduleRenegotiate(input map[string]any) (string, string, []byte, error) {
+	str := func(k string) string { s, _ := input[k].(string); return strings.TrimSpace(s) }
+	reason := str("reason")
+	if reason == "" {
+		return "", "", nil, fmt.Errorf("reason is required: a deadline is renegotiated with a reason on record")
+	}
+	scope := str("scope")
+	if scope == "" {
+		scope = "occurrence"
+	}
+	apply := false
+	if p, ok := input["preview"].(bool); ok {
+		apply = !p
+	}
+	body := map[string]any{"reason": reason, "scope": scope, "preview": !apply}
+	if d := str("deadline"); d != "" {
+		body["deadline"] = d
+	}
+	off := map[string]any{}
+	for in, member := range map[string]string{"deadline_days": "deadline_days", "deadline_secs": "deadline_secs"} {
+		if n, ok, err := intParam(input, in); err != nil {
+			return "", "", nil, err
+		} else if ok {
+			off[member] = n
+		}
+	}
+	if len(off) > 0 {
+		body["deadline_offset"] = off
+	}
+	if b := str("deadline_behavior"); b != "" {
+		body["deadline_behavior"] = b
+	}
+	if rm, _ := input["remove_deadline"].(bool); rm {
+		body["remove_deadline"] = true
+	}
+	if r := str("revision"); r != "" {
+		body["revision"] = r
+	}
+	return marshalScheduleRequest(http.MethodPost, itemScheduleRenegotiatePath, input, body)
 }
 
 func commitmentFlags(p scheduleParams) schedule.CommitmentFlags {
