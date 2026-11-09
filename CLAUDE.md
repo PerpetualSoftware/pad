@@ -77,7 +77,7 @@ skills/pad/SKILL.md    agent skill
 
 - New endpoint: handler in `internal/server/handlers_*.go`; route in `server.go` setupRouter(); store method; CLI client method in `internal/cli/client.go`; TS type in `web/src/lib/types/index.ts`; API method in `web/src/lib/api/client.ts`; `make install`.
 - New CLI command: constructor in the matching `cmd/pad/cmd_<resource>.go` (create one if none fits); wire in `cmd/pad/groups.go`; `make install`.
-- Schedules (recurring and deadline reminders) ride `pad item remind`: `--start`/`--every` create one, and `show`, `done`, `skip`, `snooze`, `move`, `agenda`, `edit`, `rm` are its subcommands. There is no `pad cal` and no top-level `pad remind`.
+- Schedules (recurring and deadline reminders) ride `pad remind`, also reachable as `pad item remind`: `--start`/`--every` create one, and `show`, `done`, `skip`, `snooze`, `move`, `renegotiate`, `agenda`, `edit`, `rm` are its subcommands. There is no `pad cal`.
 - Schema change: add a file under `internal/store/migrations/`, update `internal/models/` and store methods; migrations run on server start.
 
 ## Real-time collaboration (Yjs / Tiptap)
