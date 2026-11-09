@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -59,6 +60,9 @@ func (b *linkBudget) check() error {
 // commit checks the budget, then commits with no deadline context: a deadline
 // that fired during COMMIT would leave the outcome unknown.
 func (b *linkBudget) commit(tx *sql.Tx) error {
+	if b.s.beforeLinkCommit != nil {
+		b.s.beforeLinkCommit()
+	}
 	if err := b.check(); err != nil {
 		return err
 	}
@@ -134,7 +138,10 @@ func (s *Store) linkNodeTx(tx *sql.Tx, sc *models.ItemSchedule) (*linkNode, erro
 // effectiveLinkOffset is the link's offset for the child's outstanding
 // occurrence: its override when one exists. skip is true when the child
 // occurrence was marked no longer needed, so the cascade leaves it alone.
-func (s *Store) effectiveLinkOffset(tx *sql.Tx, l linkRow, childKey string) (off models.ScheduleLinkOffset, skip bool, err error) {
+// ignoreOffset drops a stored offset override (an explicit offset write replaces
+// it); a no-longer-needed mark still skips, so an offset update leaves such an
+// occurrence alone on purpose and says so nowhere else.
+func (s *Store) effectiveLinkOffset(tx *sql.Tx, l linkRow, childKey string, ignoreOffset bool) (off models.ScheduleLinkOffset, skip bool, err error) {
 	var mode, gone sql.NullString
 	var allDay int
 	o := models.ScheduleLinkOffset{}
@@ -149,7 +156,7 @@ func (s *Store) effectiveLinkOffset(tx *sql.Tx, l linkRow, childKey string) (off
 	if gone.Valid {
 		return l.Offset, true, nil
 	}
-	if !mode.Valid {
+	if !mode.Valid || ignoreOffset {
 		return l.Offset, false, nil
 	}
 	o.Mode, o.AllDay = mode.String, allDay != 0
@@ -191,7 +198,13 @@ type linkedPlan struct {
 	root     string // root schedule id
 	to       time.Time
 	incoming *linkRow // set only for a direct move of a date a link supplies
-	revision string
+	// incomingOffset is that link's effective offset for the occurrence (its
+	// override when one exists), the mode a drag is measured in.
+	incomingOffset models.ScheduleLinkOffset
+	// leftInPlace are the changes a finished dependent would have had; they are
+	// not in impact.
+	leftInPlace []schedule.Change
+	revision    string
 }
 
 // linkedOptions is the caller's side of a linked change, a move or a link write.
@@ -237,7 +250,7 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return nil, err
 	}
-	c, err := s.pinCommitmentTx(tx, workspaceID, in.ItemID)
+	c, err := s.pinCommitmentTx(tx, workspaceID, openFilter, openArgs, false, in.ItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -249,7 +262,7 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	if err != nil || !apply {
 		return res, err
 	}
-	if err := s.applyLinkedPlanTx(tx, p, actor, reason, "Moved with a linked date", s.linkNow().UTC().Truncate(time.Second), openFilter, openArgs, budget); err != nil {
+	if err := s.applyLinkedPlanTx(tx, p, actor, reason, "Moved with a linked date", s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
 		return nil, err
 	}
 	if err := budget.commit(tx); err != nil {
@@ -275,9 +288,14 @@ func (s *Store) settleLinkedPlan(p *linkedPlan, budget *linkBudget, o linkedOpti
 		}
 	}
 	renegotiates := len(p.impact.HardDeadlines) > 0
+	// Only a bound the caller can read gates the apply. A dependent they cannot
+	// read moves as planned and its crossed bound changes no answer: it neither
+	// asks for a revision or an acknowledgement nor refuses, so the response is
+	// byte-identical with and without it. (Its own deadline is never touched by
+	// the cascade; a deadline the cascade does change is the refusal above.)
 	var violations []schedule.Violation
 	for _, v := range p.impact.Violations {
-		if v.Node.Schedule != p.root {
+		if v.Node.Schedule != p.root && o.access.Readable[p.c.itemOf(v.Node.Schedule)] {
 			violations = append(violations, v)
 		}
 	}
@@ -339,10 +357,18 @@ func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, it
 		if parent == nil || child == nil {
 			continue
 		}
-		off, skip, err := s.effectiveLinkOffset(tx, l, child.key)
+		// A finished dependent is history: nothing moves it, and nothing below it
+		// follows, so a link out of a finished non-root node is not an edge.
+		if c.terminal[l.ParentSchedule] && l.ParentSchedule != p.root {
+			continue
+		}
+		off, skip, err := s.effectiveLinkOffset(tx, l, child.key, l.ID != "" && l.ID == c.explicitLink)
 		if err != nil {
 			return nil, err
 		}
+		// A no-longer-needed mark skips the occurrence even when the link's offset
+		// is written explicitly: the mark is the user's, and only the offset
+		// override is replaced by an explicit write.
 		if skip {
 			continue
 		}
@@ -353,7 +379,7 @@ func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, it
 		}
 		edges = append(edges, e)
 		if direct && l.ChildSchedule == p.root && l.ChildRole == linkRoleName(role) {
-			p.incoming = &c.links[i]
+			p.incoming, p.incomingOffset = &c.links[i], off
 		}
 	}
 	g, err := schedule.NewGraph(edges)
@@ -381,6 +407,7 @@ func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, it
 	if err != nil {
 		return nil, redactLinkError(err)
 	}
+	p.dropFinished()
 	// Store backstop for the range rule: a derived wall read in the child's own
 	// zone must be a supported year (1970..2200), whatever zone the offset used.
 	for _, ch := range p.impact.Changes {
@@ -392,6 +419,35 @@ func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, it
 	return p, err
 }
 
+// dropFinished takes the finished non-root nodes out of the impact. The edges
+// out of such a node were never in the graph, so what it would have changed is
+// only itself: those changes are kept aside for the preview, and its violations
+// and hard deadlines go with it (a closed promise is not renegotiated).
+func (p *linkedPlan) dropFinished() {
+	finished := func(sched string) bool { return p.c.terminal[sched] && sched != p.root }
+	var changes, hard []schedule.Change
+	for _, ch := range p.impact.Changes {
+		if finished(ch.Node.Schedule) {
+			p.leftInPlace = append(p.leftInPlace, ch)
+		} else {
+			changes = append(changes, ch)
+		}
+	}
+	for _, ch := range p.impact.HardDeadlines {
+		if !finished(ch.Node.Schedule) {
+			hard = append(hard, ch)
+		}
+	}
+	var viol []schedule.Violation
+	for _, v := range p.impact.Violations {
+		if !finished(v.Node.Schedule) {
+			viol = append(viol, v)
+		}
+	}
+	p.impact.Changes, p.impact.HardDeadlines, p.impact.Violations = changes, hard, viol
+	p.impact.RenegotiationRequired = len(hard) > 0
+}
+
 // linkedRevision is an opaque fixed-length token over everything the plan
 // depends on: the move, the component's links, each schedule's outstanding
 // state and dates, and the computed changes. Hidden parts go in the hash, so a
@@ -399,6 +455,7 @@ func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, it
 func (s *Store) linkedRevision(workspaceID, itemID string, role schedule.Role, to time.Time, p *linkedPlan) (string, error) {
 	type nodeState struct {
 		ID, Updated, NextAt, NextWall, Override, Key string
+		Terminal                                     bool
 		Dates                                        map[string]string
 	}
 	var nodes []nodeState
@@ -408,19 +465,27 @@ func (s *Store) linkedRevision(workspaceID, itemID string, role schedule.Role, t
 		for r, at := range n.dates {
 			dates[string(r)] = at.UTC().Format(time.RFC3339Nano)
 		}
-		nodes = append(nodes, nodeState{id, n.sc.UpdatedAt, derefStr(n.sc.NextAt), derefStr(n.sc.NextWall), derefStr(n.sc.NextOverrideAt), n.key, dates})
+		nodes = append(nodes, nodeState{id, n.sc.UpdatedAt, derefStr(n.sc.NextAt), derefStr(n.sc.NextWall), derefStr(n.sc.NextOverrideAt), n.key, p.c.terminal[id], dates})
 	}
 	b, err := json.Marshal(struct {
 		Workspace, Item, Role, To string
 		Links                     []linkRow
 		Nodes                     []nodeState
 		Changes                   []schedule.Change
-	}{workspaceID, itemID, string(role), to.Format(time.RFC3339Nano), p.c.links, nodes, p.impact.Changes})
+	}{workspaceID, itemID, string(role), to.Format(time.RFC3339Nano), sortedLinks(p.c.links), nodes, p.impact.Changes})
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256(b)
 	return base64.RawURLEncoding.EncodeToString(sum[:]), nil
+}
+
+// sortedLinks is a copy in id order (a link being written has no id yet and
+// sorts first, in preview and in apply alike).
+func sortedLinks(ls []linkRow) []linkRow {
+	out := append([]linkRow(nil), ls...)
+	sort.SliceStable(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
 }
 
 func keysOfNodes(m map[string]*linkNode) []string {
@@ -453,6 +518,12 @@ func (s *Store) linkedResult(p *linkedPlan, acc models.CommitmentAccess, renegot
 			res.Violations = append(res.Violations, models.LinkedDateChange{ItemID: item, Role: linkRoleName(v.Role), To: format(v.Value)})
 		}
 	}
+	// A finished dependent the caller can read is named; the rest are not counted.
+	for _, ch := range p.leftInPlace {
+		if item := p.c.itemOf(ch.Node.Schedule); acc.Readable[item] {
+			res.LeftInPlace = append(res.LeftInPlace, models.LinkedDateChange{ItemID: item, Role: linkRoleName(ch.Role), From: format(ch.From), To: format(ch.To)})
+		}
+	}
 	return res
 }
 
@@ -460,7 +531,7 @@ func (s *Store) linkedResult(p *linkedPlan, acc models.CommitmentAccess, renegot
 // each with its journal row, and checks the budget between writes. The first
 // row is the root of the lineage the rest name. why is the journal reason of a
 // dependent date that moved with another.
-func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why string, nowT time.Time, openFilter string, openArgs []any, budget *linkBudget) error {
+func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why string, nowT time.Time, budget *linkBudget) error {
 	ts := nowT.Format(time.RFC3339)
 	rootChange := newID()
 	if p.incoming != nil && len(p.impact.Changes) > 0 {
@@ -487,11 +558,8 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why 
 			}
 		}
 		if ch.Role == schedule.RoleDeadline {
-			var open bool
-			if err := tx.QueryRow(s.q(`SELECT `+openFilter+` FROM items i WHERE i.id=?`), append(append([]any{}, openArgs...), n.sc.ItemID)...).Scan(&open); err != nil {
-				return err
-			}
-			if open {
+			// The pin's read decides, not a second one.
+			if !p.c.terminal[n.sc.ID] {
 				// Nothing erases a miss that already happened.
 				if miss, err := s.deadlineMissCandidateTx(tx, n.sc.ID, nowT); err != nil {
 					return err
@@ -582,7 +650,7 @@ func (s *Store) keepLinkAtNewOffsetTx(tx *sql.Tx, p *linkedPlan) error {
 	l := p.incoming
 	parent := p.nodes[l.ParentSchedule]
 	to := p.to
-	cur, err := l.edgeOffset()
+	cur, err := offsetOf(p.incomingOffset)
 	if err != nil {
 		return err
 	}
@@ -592,4 +660,42 @@ func (s *Store) keepLinkAtNewOffsetTx(tx *sql.Tx, p *linkedPlan) error {
 	}
 	stored := storedOffset(off)
 	return s.upsertLinkOverrideTx(tx, l.ID, p.nodes[l.ChildSchedule].key, &stored, "")
+}
+
+// replaceLinkOverrideTx drops the per-occurrence offset a drag left on the
+// child's outstanding occurrence when the link's offset is written explicitly:
+// the new offset is the offset for that occurrence now. The reset is journalled
+// on the child (an update row naming the offset it replaced). A
+// no-longer-needed mark stays; its occurrence was skipped by the plan.
+func (s *Store) replaceLinkOverrideTx(tx *sql.Tx, p *linkedPlan, linkID string, now models.ScheduleLinkOffset) error {
+	var childSched string
+	for _, l := range p.c.links {
+		if l.ID == linkID {
+			childSched = l.ChildSchedule
+		}
+	}
+	n := p.nodes[childSched]
+	if n == nil {
+		return nil
+	}
+	var mode sql.NullString
+	var o models.ScheduleLinkOffset
+	var allDay int
+	err := tx.QueryRow(s.q(`SELECT offset_mode,offset_elapsed,offset_days,offset_clock,offset_all_day,offset_zone FROM schedule_link_overrides WHERE link_id=? AND occurrence_key=?`), linkID, n.key).
+		Scan(&mode, &o.ElapsedSecs, &o.Days, &o.ClockSecs, &allDay, &o.Zone)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !mode.Valid) {
+		return nil
+	} else if err != nil {
+		return fmt.Errorf("read link override: %w", err)
+	}
+	o.Mode, o.AllDay = mode.String, allDay != 0
+	if _, err := tx.Exec(s.q(`UPDATE schedule_link_overrides SET offset_mode=NULL,offset_elapsed=0,offset_days=0,offset_clock=0,offset_all_day=0,offset_zone='',updated_at=? WHERE link_id=? AND occurrence_key=?`), nowNano(), linkID, n.key); err != nil {
+		return fmt.Errorf("clear link override: %w", err)
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM schedule_link_overrides WHERE link_id=? AND occurrence_key=? AND offset_mode IS NULL AND no_longer_needed_at IS NULL`), linkID, n.key); err != nil {
+		return fmt.Errorf("clear link override: %w", err)
+	}
+	before, _ := json.Marshal(o)
+	after, _ := json.Marshal(now)
+	return s.journalScheduleChangeRowTx(tx, newID(), n.sc.ID, "update", n.key, "", string(before), string(after), "user", "Link offset replaced a dragged offset", "system", "", "")
 }

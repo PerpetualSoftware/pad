@@ -171,6 +171,13 @@ type commitmentComponent struct {
 	links  []linkRow
 	scheds map[string]*models.ItemSchedule
 	live   map[string]bool // schedule id -> its item is live
+	// terminal marks the schedules whose live item is done or abandoned. It comes
+	// from the same statement as live, so the plan, the preview and the writes
+	// all use one answer.
+	terminal map[string]bool
+	// explicitLink is the link whose offset the caller is writing: its
+	// per-occurrence offset override must not stand in for the new offset.
+	explicitLink string
 }
 
 func (c *commitmentComponent) itemOf(scheduleID string) string {
@@ -183,7 +190,12 @@ func (c *commitmentComponent) itemOf(scheduleID string) string {
 // pinCommitmentTx takes the locks in the order the file comment names and
 // returns the component of the root schedule plus the schedules of any extra
 // items. A root item with no schedule is ErrScheduleNotFound.
-func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
+//
+// openFilter and openArgs are nonTerminalFilter's, loaded before Begin; empty
+// means terminal state is not read. overCap lets a delete or an update read a
+// component that already holds more than maxLinkComponent links, so it can be
+// repaired.
+func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, openArgs []any, overCap bool, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
 	pg := s.dialect.Driver() == DriverPostgres
 	lock := ""
 	if pg {
@@ -216,7 +228,7 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, rootItemID string, extr
 		}
 		seeds[id] = true
 	}
-	c := &commitmentComponent{scheds: map[string]*models.ItemSchedule{}, live: map[string]bool{}}
+	c := &commitmentComponent{scheds: map[string]*models.ItemSchedule{}, live: map[string]bool{}, terminal: map[string]bool{}}
 	known := map[string]bool{}
 	for frontier := keysOf(seeds); len(frontier) > 0; {
 		for _, id := range frontier {
@@ -230,7 +242,7 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, rootItemID string, extr
 			}
 		}
 		ph := placeholders(len(frontier))
-		rows, err := tx.Query(s.q(`SELECT `+linkColumns+` FROM schedule_links WHERE workspace_id=? AND (parent_schedule_id IN (`+ph+`) OR child_schedule_id IN (`+ph+`))`), args...)
+		rows, err := tx.Query(s.q(`SELECT `+linkColumns+` FROM schedule_links WHERE workspace_id=? AND (parent_schedule_id IN (`+ph+`) OR child_schedule_id IN (`+ph+`)) ORDER BY id`), args...)
 		if err != nil {
 			return nil, fmt.Errorf("read link component: %w", err)
 		}
@@ -256,10 +268,12 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, rootItemID string, extr
 			return nil, err
 		}
 		rows.Close()
-		if len(c.links) > maxLinkComponent {
+		if len(c.links) > maxLinkComponent && !overCap {
 			return nil, &LinkRefusedError{Code: "link_limit"}
 		}
 	}
+	// Read order must not reach the revision: links are held in id order.
+	sort.Slice(c.links, func(i, j int) bool { return c.links[i].ID < c.links[j].ID })
 	ids := keysOf(known)
 	sort.Strings(ids)
 	ph := placeholders(len(ids))
@@ -287,18 +301,25 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, rootItemID string, extr
 			c.scheds[id] = sc
 		}
 	}
-	// Liveness is a plain read: the cascade never locks a child item.
-	rows, err := tx.Query(s.q(`SELECT sc.id FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.id IN (`+ph+`) AND i.deleted_at IS NULL`), args...)
+	// Liveness and terminal state are one plain read, after the schedule and
+	// reminder locks: the cascade never locks a child item. Nothing re-reads it.
+	openExpr, liveArgs := "1", args
+	if openFilter != "" {
+		openExpr, liveArgs = openFilter, append(append([]any{}, openArgs...), args...)
+	}
+	rows, err := tx.Query(s.q(`SELECT sc.id, `+openExpr+` FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.id IN (`+ph+`) AND i.deleted_at IS NULL`), liveArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("read link liveness: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var open bool
+		if err := rows.Scan(&id, &open); err != nil {
 			return nil, err
 		}
 		c.live[id] = true
+		c.terminal[id] = !open
 	}
 	return c, rows.Err()
 }
@@ -416,7 +437,7 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return nil, err
 	}
-	c, err := s.pinCommitmentTx(tx, workspaceID, in.ParentItemID, in.ChildItemID)
+	c, err := s.pinCommitmentTx(tx, workspaceID, openFilter, openArgs, false, in.ParentItemID, in.ChildItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -431,6 +452,9 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 	}
 	if parent == nil || child == nil {
 		return nil, ErrScheduleLinkNotFound
+	}
+	if len(c.links)+1 > maxLinkComponent {
+		return nil, &LinkRefusedError{Code: "link_limit"}
 	}
 	for _, end := range []struct {
 		sc   *models.ItemSchedule
@@ -473,7 +497,7 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 		return nil, err
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), openFilter, openArgs, budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
 			return nil, err
 		}
 	}
@@ -575,7 +599,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return nil, err
 	}
-	c, err := s.pinCommitmentTx(tx, workspaceID, parentItem, childItem)
+	c, err := s.pinCommitmentTx(tx, workspaceID, openFilter, openArgs, true, parentItem, childItem)
 	if err != nil {
 		return nil, err
 	}
@@ -617,12 +641,22 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if parentSc == nil {
 		return nil, ErrScheduleLinkNotFound
 	}
-	moved, p, apply, err := s.linkWritePlanTx(tx, workspaceID, c, next, parentSc, budget, upd.Move, access)
-	if err != nil {
-		return nil, err
+	// Only an offset change moves a date; a cancel policy alone plans, asks and
+	// moves nothing.
+	moved, p, apply := &models.LinkedMoveResult{Changes: []models.LinkedDateChange{}}, (*linkedPlan)(nil), false
+	if upd.Offset != nil {
+		c.explicitLink = linkID
+		if moved, p, apply, err = s.linkWritePlanTx(tx, workspaceID, c, next, parentSc, budget, upd.Move, access); err != nil {
+			return nil, err
+		}
 	}
 	if upd.Move.Preview {
 		return &models.ScheduleLinkResult{Moved: *moved}, nil
+	}
+	if upd.Offset != nil && p != nil {
+		if err := s.replaceLinkOverrideTx(tx, p, linkID, next.Offset); err != nil {
+			return nil, err
+		}
 	}
 	allDay := 0
 	if next.Offset.AllDay {
@@ -634,7 +668,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		return nil, fmt.Errorf("update schedule link: %w", err)
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), openFilter, openArgs, budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
 			return nil, err
 		}
 	}
@@ -665,7 +699,7 @@ func (s *Store) DeleteScheduleLink(workspaceID, linkID string, access models.Com
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return err
 	}
-	if _, err := s.pinCommitmentTx(tx, workspaceID, parentItem, childItem); err != nil {
+	if _, err := s.pinCommitmentTx(tx, workspaceID, "", nil, true, parentItem, childItem); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE id=? AND workspace_id=?`), linkID, workspaceID); err != nil {

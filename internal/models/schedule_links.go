@@ -112,6 +112,10 @@ type LinkedMoveResult struct {
 	Changes  []LinkedDateChange `json:"changes"`
 	// Violations names dates outside their own bounds, readable items only.
 	Violations []LinkedDateChange `json:"violations,omitempty"`
+	// LeftInPlace names finished (done or abandoned) dependents the link would
+	// have moved and the cascade left where they are: To is the date the link
+	// would have given. Readable items only, no count of the rest.
+	LeftInPlace []LinkedDateChange `json:"left_in_place,omitempty"`
 	// RenegotiatesDeadline is whether the move changes a hard deadline the
 	// caller can see; it needs a reason and the revision.
 	RenegotiatesDeadline bool `json:"renegotiates_deadline,omitempty"`
