@@ -98,8 +98,8 @@ func TestExportBundle_RoundTrip(t *testing.T) {
 	if err := json.Unmarshal(files["pad-export.json"], &export); err != nil {
 		t.Fatalf("pad-export.json decode: %v body=%s", err, files["pad-export.json"])
 	}
-	if export.Version != 2 {
-		t.Errorf("export version=%d, want 2", export.Version)
+	if export.Version != 3 {
+		t.Errorf("export version=%d, want 3", export.Version)
 	}
 	if export.Workspace.Slug != slug {
 		t.Errorf("export workspace slug=%q, want %q", export.Workspace.Slug, slug)

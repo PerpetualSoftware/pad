@@ -54,5 +54,12 @@ func MigratedTables() map[string]bool {
 		"schedule_occurrences":          true,
 		"schedule_occurrence_overrides": true,
 		"schedule_changes":              true,
+		// Time links joined the export in TASK-4353 (bundle version 3), with
+		// their overrides nested inside each link. Every column is machine
+		// written (ids, enums, a validated zone, server timestamps), so the
+		// preflight is not expected to find anything here; they are listed for
+		// COVERAGE, as item_reminders is. schedule_gates is not carried yet.
+		"schedule_links":          true,
+		"schedule_link_overrides": true,
 	}
 }

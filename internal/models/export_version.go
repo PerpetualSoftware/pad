@@ -13,12 +13,14 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 	*x = WorkspaceExport(decoded)
 	var raw struct {
 		Changes   json.RawMessage              `json:"schedule_changes"`
+		Links     json.RawMessage              `json:"schedule_links"`
 		Schedules []map[string]json.RawMessage `json:"schedules"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
 		return err
 	}
 	x.hasV2Members = raw.Changes != nil
+	x.hasV3Members = raw.Links != nil
 	for _, sc := range raw.Schedules {
 		for _, key := range []string{"id", "roles", "overrides", "forecast", "forecast_events", "children", "completion_evidence"} {
 			if _, ok := sc[key]; ok {
@@ -57,4 +59,11 @@ func (x *WorkspaceExport) HasV2ScheduleMembers() bool {
 		}
 	}
 	return false
+}
+
+// HasV3ScheduleMembers reports whether the bundle carries time links, a member
+// of version 3. Like the version 2 check it sees an explicit null or empty
+// value, and bundles built directly by Go callers.
+func (x *WorkspaceExport) HasV3ScheduleMembers() bool {
+	return x.hasV3Members || x.ScheduleLinks != nil
 }

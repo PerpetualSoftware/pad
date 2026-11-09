@@ -99,14 +99,6 @@ func stripV2(b *models.WorkspaceExport) {
 	_ = json.Unmarshal(raw, b)
 }
 
-func TestExportVersionIsTwo(t *testing.T) {
-	f := newSchedFixture(t)
-	f.create(t, dailyUTC)
-	if got := f.exportBundle(t).Version; got != 2 {
-		t.Fatalf("export version=%d, want 2", got)
-	}
-}
-
 func TestBundleV2_RoundTripNativeCommitment(t *testing.T) {
 	f := newSchedFixture(t)
 	sc := f.create(t, dailyUTC)
@@ -456,7 +448,7 @@ func TestBundleV1_WithV2MembersRefused(t *testing.T) {
 }
 
 func TestImportRefusesUnsupportedVersions(t *testing.T) {
-	for _, v := range []int{0, 3, -1, 99} {
+	for _, v := range []int{0, 4, -1, 99} {
 		t.Run(fmt.Sprint(v), func(t *testing.T) {
 			f := newSchedFixture(t)
 			b := f.exportBundle(t)
