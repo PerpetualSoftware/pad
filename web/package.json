@@ -64,7 +64,7 @@
 		"@tiptap/pm": "3.32.2",
 		"@tiptap/starter-kit": "^3.32.2",
 		"@tiptap/suggestion": "^3.32.2",
-		"@tiptap/y-tiptap": "3.0.12",
+		"@tiptap/y-tiptap": "3.0.9",
 		"3d-force-graph": "1.80.1",
 		"d3-scale": "4.0.2",
 		"diff": "^9.0.0",
