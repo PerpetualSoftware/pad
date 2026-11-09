@@ -108,6 +108,21 @@ func (s *Server) hydrateRelationTargets(r *http.Request, workspaceID string, ite
 // function, so a list page of 50 items sharing one parent asks once. A lookup
 // that fails, or finds nothing, is NOT visible: fail closed.
 func (s *Server) itemVisibleFor(r *http.Request, workspaceID string) func(id string) bool {
+	return s.itemVisibleForQ(r, workspaceID, false)
+}
+
+// itemVisibleForIncludingTrashed is itemVisibleFor with one difference: a
+// soft-deleted item is judged by the same workspace and collection/grant rule
+// as a live one instead of being invisible. Used where a trashed item the
+// reader could have read must stay a normal row (milestone children). A
+// hard-deleted or unknown id is still not visible, and the rule never
+// consults deleted_at, so it cannot reveal an item the reader could not see
+// live.
+func (s *Server) itemVisibleForIncludingTrashed(r *http.Request, workspaceID string) func(id string) bool {
+	return s.itemVisibleForQ(r, workspaceID, true)
+}
+
+func (s *Server) itemVisibleForQ(r *http.Request, workspaceID string, includeTrashed bool) func(id string) bool {
 	// workspaceRole(r) is the right role here, unlike in the cross-workspace
 	// copy: every item being enriched belongs to the workspace in the URL,
 	// which is the workspace that role was stashed for.
@@ -117,7 +132,13 @@ func (s *Server) itemVisibleFor(r *http.Request, workspaceID string) func(id str
 		if seen, done := allowed[id]; done {
 			return seen
 		}
-		item, err := s.store.GetItem(id)
+		var item *models.Item
+		var err error
+		if includeTrashed {
+			item, err = s.store.GetItemIncludeDeleted(id)
+		} else {
+			item, err = s.store.GetItem(id)
+		}
 		if err != nil || item == nil || item.WorkspaceID != workspaceID {
 			allowed[id] = false
 			return false

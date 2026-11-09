@@ -386,6 +386,14 @@ func (s *Store) loadMilestoneRows(q Queryer, workspaceID, scheduleID string, can
 			return nil, err
 		}
 		if !id.Valid {
+			// A child that no longer exists cannot be shown to have been
+			// readable to this reader, so a filtered read treats it as
+			// unverifiable (a hidden child's hard delete must not move the
+			// answer). An unfiltered read keeps the row.
+			if canRead != nil {
+				out.Hidden = true
+				continue
+			}
 			e.Gone = true
 		} else if !readable(e.ChildID) {
 			out.Hidden = true
@@ -767,11 +775,13 @@ func (s *Store) importMilestoneTx(tx *sql.Tx, workspaceID, scheduleID, itemID st
 	eventsOK := true
 	for _, e := range sx.ForecastEvents {
 		at, okAt := importStamp(e.RecordedAt)
-		bad := !okAt || !oneOf(e.Action, []string{"set", "clear"}) || !oneOf(e.SetByKind, []string{"user", "agent"}) || hasNUL(e.SetBy, e.PrevValue) || canonForecastSource(e.Source) != nil
+		bad := !okAt || !oneOf(e.Action, []string{"set", "clear"}) || !oneOf(e.SetByKind, []string{"user", "agent"}) || hasNUL(e.SetBy, e.PrevValue, e.Value, e.Source) || canonForecastSource(e.Source) != nil
 		if !bad && e.Action == "set" {
 			var err error
 			e.Value, err = canonForecastValue(e.Value)
 			bad = err != nil
+		} else if !bad && e.Value != "" {
+			bad = true // a clear event carries no value
 		}
 		if !bad && e.PrevValue != "" {
 			var err error

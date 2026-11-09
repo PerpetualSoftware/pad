@@ -293,3 +293,39 @@ func TestMilestoneBundleJSONShapeIsAdditive(t *testing.T) {
 		t.Fatal("a schedule with no forecast or selection must export none of the new members")
 	}
 }
+
+// RED if a clear event's value, or a NUL in value/source, is not validated.
+func TestMilestoneImportRejectsClearEventValueAndNUL(t *testing.T) {
+	t.Parallel()
+	for name, mut := range map[string]func(e *models.ForecastEvent){
+		"clear with value": func(e *models.ForecastEvent) { e.Action, e.Value = "clear", "2026-12-01" },
+		"clear with NUL":   func(e *models.ForecastEvent) { e.Action, e.Value = "clear", "x\x00y" },
+		"set with NUL src": func(e *models.ForecastEvent) { e.Source = "a\x00b" },
+	} {
+		mut := mut
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m := newMsFix(t)
+			m.seedFull(t)
+			data := m.exportBundle(t)
+			for i := range data.Schedules {
+				if data.Schedules[i].ItemID == m.ms.ID {
+					mut(&data.Schedules[i].ForecastEvents[0])
+				}
+			}
+			ws, rep := m.importBundle(t, data, "Bad events")
+			found := false
+			for _, d := range rep.DroppedSchedules {
+				found = found || d.Reason == "forecast_events:invalid"
+			}
+			if !found {
+				t.Fatalf("no forecast_events:invalid: %+v", rep.DroppedSchedules)
+			}
+			dst := m.itemByTitle(t, ws.ID, m.ms.Title)
+			c, _ := m.s.GetCommitment(ws.ID, dst.ID)
+			if c.Forecast != nil && len(c.Forecast.History) != 0 {
+				t.Fatalf("events kept: %+v", c.Forecast.History)
+			}
+		})
+	}
+}

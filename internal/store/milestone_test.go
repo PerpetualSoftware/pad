@@ -501,3 +501,59 @@ func TestMilestoneRemoveKeepsHistory(t *testing.T) {
 }
 
 func jsonBytes(v any) ([]byte, error) { return json.Marshal(v) }
+
+// RED if a hard-deleted evidence child skips the reader's visibility check:
+// the reader's answer would move from unknown/null to a result.
+func TestMilestoneGoneEvidenceRowIsUnverifiableForReader(t *testing.T) {
+	t.Parallel()
+	m := newMsFix(t)
+	seen, hidden := m.child(t, m.declared, "seen"), m.child(t, m.declared, "hidden")
+	m.sel(t, seen)
+	m.sel(t, hidden)
+	m.setStatus(t, seen, "shipped")
+	m.setStatus(t, hidden, "shipped")
+	m.resolveDone(t)
+	canRead := func(id string) bool { return id != hidden.ID }
+	c := m.read(t, canRead)
+	if result(c) != "unknown" || c.Milestone.EvidenceChanged != nil {
+		t.Fatalf("before: %s %+v", result(c), c.Milestone)
+	}
+	// Remove the active row so only the evidence row names the child, then
+	// hard delete the item.
+	if _, err := m.s.db.Exec(m.s.q(`DELETE FROM milestone_children WHERE child_item_id = ?`), hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := m.s.db.Exec(m.s.q(`DELETE FROM items WHERE id = ?`), hidden.ID); err != nil {
+		t.Fatal(err)
+	}
+	c = m.read(t, canRead)
+	if result(c) != "unknown" || c.Milestone.EvidenceChanged != nil {
+		t.Fatalf("after hard delete: %s %+v", result(c), c.Milestone)
+	}
+	// An unfiltered read (export, internal) keeps the old behaviour.
+	c = m.read(t, nil)
+	if c.Milestone.EvidenceChanged == nil || !*c.Milestone.EvidenceChanged {
+		t.Fatalf("unfiltered read: %+v", c.Milestone)
+	}
+}
+
+// A trashed child read by a reader who could read it is a normal visible
+// child that is missing, does not count, and can still be removed.
+func TestMilestoneTrashedChildIsVisibleMissingAndRemovable(t *testing.T) {
+	t.Parallel()
+	m := newMsFix(t)
+	kid := m.child(t, m.declared, "kid")
+	m.sel(t, kid)
+	m.setStatus(t, kid, "shipped")
+	m.resolveDone(t)
+	if err := m.s.DeleteItem(kid.ID); err != nil {
+		t.Fatal(err)
+	}
+	c := m.read(t, func(string) bool { return true })
+	if result(c) != "pending" || c.Milestone.Total != 1 || c.Milestone.Counted != 0 || c.Milestone.EvidenceChanged == nil || !*c.Milestone.EvidenceChanged {
+		t.Fatalf("trashed: %s %+v", result(c), c.Milestone)
+	}
+	if err := m.s.RemoveMilestoneChild(m.ws.ID, m.ms.ID, kid.ID, "u1"); err != nil {
+		t.Fatal(err)
+	}
+}

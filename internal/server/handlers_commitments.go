@@ -51,7 +51,7 @@ type commitmentView struct {
 }
 
 func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *models.Item, sc *models.ItemSchedule, note string) (*commitmentView, error) {
-	c, err := s.store.GetCommitmentFor(workspaceID, item.ID, s.itemVisibleFor(r, workspaceID))
+	c, err := s.store.GetCommitmentFor(workspaceID, item.ID, s.itemVisibleForIncludingTrashed(r, workspaceID))
 	if err != nil {
 		return nil, err
 	}

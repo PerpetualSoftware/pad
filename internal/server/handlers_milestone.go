@@ -108,13 +108,25 @@ func (s *Server) handleDeleteCommitmentForecast(w http.ResponseWriter, r *http.R
 // read it. An unknown item, one in another workspace, an archived one and one
 // the caller cannot read all answer the same bytes, and this runs before any
 // check that would reveal the child's existence (duplicate, cap).
-func (s *Server) resolveMilestoneChild(w http.ResponseWriter, r *http.Request, workspaceID string) *models.Item {
-	child, err := s.store.ResolveItem(workspaceID, chi.URLParam(r, "childRef"))
+//
+// forRemoval resolves a soft-deleted child too (judged by the same
+// readability rule), so a selection whose child was trashed can be removed;
+// selecting (PUT) never accepts a trashed child.
+func (s *Server) resolveMilestoneChild(w http.ResponseWriter, r *http.Request, workspaceID string, forRemoval bool) *models.Item {
+	var child *models.Item
+	var err error
+	visible := s.itemVisibleFor(r, workspaceID)
+	if forRemoval {
+		child, err = s.store.ResolveItemIncludeDeleted(workspaceID, chi.URLParam(r, "childRef"))
+		visible = s.itemVisibleForIncludingTrashed(r, workspaceID)
+	} else {
+		child, err = s.store.ResolveItem(workspaceID, chi.URLParam(r, "childRef"))
+	}
 	if err != nil {
 		writeInternalError(w, err)
 		return nil
 	}
-	if child == nil || !s.itemVisibleFor(r, workspaceID)(child.ID) {
+	if child == nil || !visible(child.ID) {
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return nil
 	}
@@ -131,7 +143,7 @@ func (s *Server) handlePutMilestoneChild(w http.ResponseWriter, r *http.Request)
 		writeScheduleBodyError(w)
 		return
 	}
-	child := s.resolveMilestoneChild(w, r, workspaceID)
+	child := s.resolveMilestoneChild(w, r, workspaceID, false)
 	if child == nil {
 		return
 	}
@@ -151,7 +163,7 @@ func (s *Server) handleDeleteMilestoneChild(w http.ResponseWriter, r *http.Reque
 	if sc == nil {
 		return
 	}
-	child := s.resolveMilestoneChild(w, r, workspaceID)
+	child := s.resolveMilestoneChild(w, r, workspaceID, true)
 	if child == nil {
 		return
 	}
@@ -167,7 +179,7 @@ func (s *Server) readableChildren(r *http.Request, workspaceID, itemID string) (
 	if err != nil {
 		return nil, err
 	}
-	visible := s.itemVisibleFor(r, workspaceID)
+	visible := s.itemVisibleForIncludingTrashed(r, workspaceID)
 	ok := make(map[string]bool, len(ids))
 	for _, id := range ids {
 		ok[id] = visible(id)

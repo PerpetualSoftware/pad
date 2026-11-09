@@ -234,3 +234,43 @@ func TestMilestoneHTTPChildCap(t *testing.T) {
 }
 
 func msStr(s string) *string { return &s }
+
+// A trashed selected child stays a visible, missing, removable child; PUT
+// still refuses it, and an unreadable trashed ref answers the same 404.
+func TestMilestoneTrashedChildStaysVisibleAndRemovable(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t).milestone()
+	guest := mustUser(t, f.srv, "ms-trash@example.com", "mstrash", "")
+	if _, err := f.srv.store.CreateItemGrant(f.ws.ID, f.item.ID, guest.ID, "edit", f.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	kid := f.kid("Trashed kid")
+	f.owned("PUT", f.ms("/children/"+kid.Slug), map[string]any{"kind": "child"})
+	if err := f.srv.store.DeleteItem(kid.ID); err != nil {
+		t.Fatal(err)
+	}
+	c := commitmentOf(t, f.owned("GET", f.ms(""), nil))
+	if c.Milestone.Result == nil || *c.Milestone.Result != "pending" || c.Milestone.Total != 1 || c.Milestone.EvidenceChanged == nil {
+		t.Fatalf("owner read of trashed child: %+v", c.Milestone)
+	}
+	// An unreadable trashed child answers the unknown-ref bytes.
+	gt := f.token(guest, "")
+	unknown := f.as(gt, "DELETE", f.ms("/children/nope-999"), nil)
+	rr := f.as(gt, "DELETE", f.ms("/children/"+kid.Slug), nil)
+	if rr.Code != 404 || rr.Body.String() != unknown.Body.String() {
+		t.Fatalf("guest DELETE trashed: %d %s vs %s", rr.Code, rr.Body.String(), unknown.Body.String())
+	}
+	// PUT of a trashed child is still the 404.
+	rr = f.owned("PUT", f.ms("/children/"+kid.Slug), map[string]any{"kind": "child"})
+	if rr.Code != 404 || rr.Body.String() != unknown.Body.String() {
+		t.Fatalf("PUT trashed: %d %s", rr.Code, rr.Body.String())
+	}
+	rr = f.owned("DELETE", f.ms("/children/"+kid.Slug), nil)
+	if rr.Code >= 300 {
+		t.Fatalf("owner DELETE trashed: %d %s", rr.Code, rr.Body.String())
+	}
+	c = commitmentOf(t, f.owned("GET", f.ms(""), nil))
+	if c.Milestone.Total != 0 {
+		t.Fatalf("after removal: %+v", c.Milestone)
+	}
+}
