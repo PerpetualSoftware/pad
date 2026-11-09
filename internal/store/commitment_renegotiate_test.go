@@ -82,6 +82,12 @@ func assertRenegotiationJournal(t *testing.T, f *schedFixture, id, typ string, b
 	rows := f.journal(t, id)
 	n := 0
 	for _, r := range rows[beforeN:] {
+		if r.Actor == "system" && r.ChangeType == "skip" {
+			// The evaluator closing a lapsing occurrence is not part of the
+			// renegotiation, and its snapshots carry the roles marker like any
+			// other resolution's.
+			continue
+		}
 		for _, raw := range []*string{r.BeforeJSON, r.AfterJSON} {
 			if raw != nil && (strings.Contains(*raw, "roles_origin") || strings.Contains(*raw, "legacy_backfill")) {
 				t.Fatalf("journal marker: %+v", r)
@@ -254,6 +260,16 @@ func TestRenegotiateMissFirstAndTickDedupe(t *testing.T) {
 			rows := f.journal(t, sc.ID)
 			if rows[n].ChangeType != "missed_recorded" || rows[n+1].ReasonSource != "user" {
 				t.Fatal("miss was not first")
+			}
+			// Switching an overdue, still-owed occurrence to lapses closes it on
+			// the next tick, once, without a second miss row. Every other case
+			// leaves the occurrence outstanding.
+			wantLapsed := 0
+			if scope == "series behavior" {
+				wantLapsed = 1
+			}
+			if got := f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND state='lapsed'`, sc.ID); got != wantLapsed {
+				t.Fatalf("%s: lapsed occurrences = %d, want %d", scope, got, wantLapsed)
 			}
 			typ := "update"
 			if scope == "occurrence" {
