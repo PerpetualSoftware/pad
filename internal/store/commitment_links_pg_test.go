@@ -297,3 +297,94 @@ func TestLinkDeleteWithASoftDeletedRootAgainstACascadeDoesNotDeadlock(t *testing
 		t.Fatalf("links=%d %v", n, err)
 	}
 }
+
+// beginMoveOf is a cross-workspace move of item i that has not committed: it
+// holds the item's schedule row lock and has archived the item, ended the
+// schedule and deleted its links. The move does not take the workspace row, so
+// a link write that has passed its own pin queues behind it on the schedule lock
+// and resumes after the commit, with everything it read before the lock stale.
+func (f *linkPG) beginMoveOf(t *testing.T, i int) (commit func()) {
+	t.Helper()
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var id string
+	if err := tx.QueryRow(`SELECT id FROM item_schedules WHERE id=$1 FOR NO KEY UPDATE`, f.scs[i].ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	for _, st := range []struct {
+		q    string
+		args []any
+	}{
+		{`DELETE FROM schedule_links WHERE parent_schedule_id=$1 OR child_schedule_id=$1`, []any{f.scs[i].ID}},
+		{`UPDATE item_schedules SET ended_at=$1, next_at=NULL, next_wall=NULL WHERE id=$2`, []any{nowNano(), f.scs[i].ID}},
+		{`UPDATE items SET deleted_at=$1 WHERE id=$2`, []any{nowNano(), f.items[i].ID}},
+	} {
+		if _, err := tx.Exec(st.q, st.args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return func() {
+		if err := tx.Commit(); err != nil {
+			t.Error(err)
+		}
+	}
+}
+
+// queueBehindMove runs fn once it is waiting on the move's lock, then commits the move.
+func (f *linkPG) queueBehindMove(t *testing.T, commit func(), fn func() error) error {
+	t.Helper()
+	res := make(chan error, 1)
+	go func() { res <- fn() }()
+	f.waitForWaiters(t, 1)
+	commit()
+	select {
+	case err := <-res:
+		return err
+	case <-time.After(60 * time.Second):
+		t.Fatal("the write never resumed")
+		return nil
+	}
+}
+
+func TestLinkCreateQueuedBehindAMoveOfItsChildWritesNothing(t *testing.T) {
+	f := newLinkPG(t, 2)
+	commit := f.beginMoveOf(t, 1)
+	err := f.queueBehindMove(t, commit, func() error {
+		_, err := f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[0].ID, ParentRole: "target", ChildItemID: f.items[1].ID, ChildRole: "target", Offset: oneDay}, f.access())
+		return err
+	})
+	if err != ErrScheduleLinkNotFound {
+		t.Fatalf("err=%v, want the ErrScheduleLinkNotFound value", err)
+	}
+	var n int
+	if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM schedule_links`).Scan(&n); err != nil || n != 0 {
+		t.Fatalf("links=%d %v", n, err)
+	}
+}
+
+func TestLinkUpdateAndDeleteQueuedBehindAMoveOfTheChildAreNotFound(t *testing.T) {
+	for _, op := range []string{"update", "delete"} {
+		op := op
+		t.Run(op, func(t *testing.T) {
+			f := newLinkPG(t, 2)
+			f.link(t, 0, 1)
+			var id string
+			if err := f.s.db.QueryRow(`SELECT id FROM schedule_links`).Scan(&id); err != nil {
+				t.Fatal(err)
+			}
+			commit := f.beginMoveOf(t, 1)
+			err := f.queueBehindMove(t, commit, func() error {
+				if op == "delete" {
+					return f.s.DeleteScheduleLink(f.ws.ID, id, f.access())
+				}
+				_, err := f.s.UpdateScheduleLink(f.ws.ID, id, models.ScheduleLinkUpdate{CancelPolicy: sp(models.LinkCancelChildOccurrence)}, f.access())
+				return err
+			})
+			if err != ErrScheduleLinkNotFound {
+				t.Fatalf("%s: err=%v, want the ErrScheduleLinkNotFound value", op, err)
+			}
+		})
+	}
+}

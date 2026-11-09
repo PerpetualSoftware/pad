@@ -671,11 +671,22 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	if err != nil {
 		return nil, err
 	}
+	// An edge reads this schedule's dates: a timing edit, or a change to a role an
+	// edge uses, would leave the other end where the link no longer puts it. The
+	// link refusal comes before the hard-deadline one, which is about who may
+	// change a deadline, not about whether the dates may move at all.
+	linked, err := s.linkedRolesTx(tx, cur.ID)
+	if err != nil {
+		return nil, err
+	}
 	// Merge only after pinScheduleTx and the transaction's storedRoles read.
 	var roles *scheduleRoles
 	if partial != nil {
 		merged, err := mergeRolesPatch(storedRoles, *partial)
 		if err != nil {
+			return nil, err
+		}
+		if err := guardLinkedRoles(linked, storedRoles, merged); err != nil {
 			return nil, err
 		}
 		if storedRoles.Origin == "native" && storedRoles.DeadlineDays != nil && !sameDeadline(storedRoles, merged) {
@@ -823,26 +834,12 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 		spec.Rule != deref(cur.Rrule) || anchor != cur.Anchor ||
 		!equalStringSlices(wallStrings(spec.RDates), cur.RDates) || !equalStringSlices(wallStrings(spec.ExDates), cur.ExDates)
 	timingEdit := timingNamed && (timingChanged || cur.ErrorCode != nil)
+	if len(linked) > 0 && timingEdit {
+		return nil, ErrScheduleLinked
+	}
 	if storedRoles.Origin == "native" && storedRoles.DeadlineDays != nil &&
 		(timingEdit || (timingNamed && cur.EndedAt != nil)) {
 		return nil, ErrHardDeadlineRenegotiate
-	}
-
-	// An edge reads this schedule's dates: a timing edit, or a change to a role an
-	// edge uses, would leave the other end where the link no longer puts it.
-	linked, err := s.linkedRolesTx(tx, cur.ID)
-	if err != nil {
-		return nil, err
-	}
-	if len(linked) > 0 {
-		if timingEdit || (timingNamed && cur.EndedAt != nil) {
-			return nil, ErrScheduleLinked
-		}
-		if roles != nil {
-			if err := guardLinkedRoles(linked, storedRoles, *roles); err != nil {
-				return nil, err
-			}
-		}
 	}
 
 	if !timingEdit && roles == nil && kind == cur.Kind && anchor == cur.Anchor && audience == cur.Audience && lead == cur.LeadMinutes && dtend == deref(cur.Dtend) {

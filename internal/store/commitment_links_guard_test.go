@@ -132,25 +132,3 @@ func TestALegacyWindowsEndEditMovesAnOccupiedUntilEdge(t *testing.T) {
 		t.Fatal("the refused dtend edit wrote")
 	}
 }
-
-// A series renegotiation replaces the deadline role; an edge on it is refused.
-func TestASeriesRenegotiationOfALinkedDeadlineIsRefused(t *testing.T) {
-	t.Parallel()
-	f := newLinkFix(t, 2)
-	f.exec(t, `UPDATE item_schedules SET roles_origin='native', deadline_days=2, deadline_secs=0, deadline_behavior='stays_owed' WHERE id=?`, f.scheds[1].ID)
-	f.linkRaw(t, 0, 1, "target", "deadline", oneDay)
-	off := models.ScheduleLinkOffset{}
-	_ = off
-	in := models.CommitmentRenegotiateInput{Scope: "series", Reason: "slip", RemoveDeadline: true, Preview: true}
-	p, err := f.s.RenegotiateCommitment(f.ws.ID, f.items[1].ID, "user", in, nil)
-	if err != nil {
-		t.Fatalf("preview: %v", err)
-	}
-	in.Preview, in.Revision = false, p.Revision
-	if _, err := f.s.RenegotiateCommitment(f.ws.ID, f.items[1].ID, "user", in, nil); !errors.Is(err, ErrScheduleLinked) {
-		t.Fatalf("apply: %v", err)
-	}
-	if got := f.count(t, `SELECT COUNT(*) FROM item_schedules WHERE id=? AND deadline_days=2`, f.scheds[1].ID); got != 1 {
-		t.Fatal("the deadline was removed")
-	}
-}

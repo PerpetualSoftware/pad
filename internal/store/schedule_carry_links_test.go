@@ -125,3 +125,40 @@ func TestDeletingAScheduleLeavesNoLinkRows(t *testing.T) {
 		t.Fatal("the other ends lost their schedules")
 	}
 }
+
+// LinksDropped counts only links whose other end the mover can read, as
+// ChildrenDropped does; a link to a hidden end is still deleted with the moved
+// schedule and shows in neither the preview nor the report.
+func TestLinksDroppedCountsOnlyLinksToItemsTheMoverCanRead(t *testing.T) {
+	t.Parallel()
+	for _, move := range []bool{true, false} {
+		move := move
+		name := "copy"
+		if move {
+			name = "move"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := newSchedCopy(t)
+			_, others := c.linkedSource(t)
+			canRead := func(id string) bool { return id != others[1].ID }
+			preview, err := c.s.PreviewScheduleCarryFor(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, move, copyNow, canRead)
+			if err != nil || preview.LinksDropped != 1 {
+				t.Fatalf("preview %+v %v", preview, err)
+			}
+			req := c.req()
+			req.SourceItemID, req.ArchiveSource, req.scheduleNow, req.SourceChildReadable = c.src.ID, move, copyNow, canRead
+			res := c.copy(t, req)
+			if res.Schedule.LinksDropped != 1 {
+				t.Fatalf("report %+v, want the hidden end uncounted", res.Schedule)
+			}
+			want := 2
+			if move {
+				want = 0
+			}
+			if n := c.count(t, `SELECT COUNT(*) FROM schedule_links`); n != want {
+				t.Fatalf("%d links left, want %d", n, want)
+			}
+		})
+	}
+}

@@ -46,6 +46,13 @@ type Store struct {
 	// before renegotiation and checked deletion acquire their transaction locks.
 	// Set it only while no other request is in flight against this Store.
 	beforeCommitmentPin func()
+	// afterCommitmentLocks is a TEST-ONLY hook, nil in production. It runs inside
+	// the link pin right after the schedule and reminder rows are locked, ahead of
+	// the reads that follow the locks. A test uses it to do, on the pin's own
+	// transaction, what another transaction that committed while this one waited
+	// on those locks would have done (SQLite serialises writers, so it cannot
+	// happen there for real).
+	afterCommitmentLocks func(tx *sql.Tx)
 	// beforeLinkCommit is a TEST-ONLY hook, nil in production. It runs at the top
 	// of a linked change's commit, ahead of the final budget check.
 	beforeLinkCommit func()
