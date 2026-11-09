@@ -1,12 +1,12 @@
 ---
-description: Connect this session to Pad's push/watch stream — consent to receive pushes, and run the workspace's on-session-start ritual on first connect
+description: Connect this session to Pad's push/watch stream — consent to receive pushes, and offer the workspace's on-session-start playbook on first connect
 allowed-tools: ["Bash"]
 ---
 
 `/pad:connect` opts THIS session into Pad's live stream: it declares consent to
 receive `pad push` notifications (the security gate — no consent, no stream), wakes
-the session's push monitor, and on the FIRST connect of a session runs the workspace's
-boot ritual. The stream starts in this session as soon as step 1's `pad session arm` returns, with no
+the session's push monitor, and on the FIRST connect of a session offers the workspace's
+session-start playbook. It never runs one unasked. The stream starts in this session as soon as step 1's `pad session arm` returns, with no
 restart; run this once per session you want connected.
 
 If the `pad` CLI is missing (command not found), say so and point at
@@ -21,15 +21,25 @@ Do these in order:
    Re-running `pad session arm` ends chat direction; the user re-runs `pad chat arm --accept-instructions` if they want direction again.
    After the monitor first resolves chat identity, it ensures your owner↔agent DM in the background once per monitor process (existing DMs are uncharged). Reconnects do not repeat it; a final failure prints one stderr line without stopping delivery.
 
-2. **First-connect check + boot ritual.** Run `pad session first-connect --format json`.
+2. **First-connect check + session-start offer.** Run `pad session first-connect --format json`.
    - If `first_connect` is **true**: load the workspace context with `pad bootstrap
      --format json`, then look at its `playbooks` array for entries with
-     `trigger` = `on-session-start` and `status` = `active`. For each, load the body
-     with `pad playbook show <invocation_slug> --format markdown` and follow it. This is
-     the workspace's own operating ritual firing for whoever connects. (Many workspaces
-     have none — that's fine; just skip.)
-   - If `first_connect` is **false**: this is a reconnect. Do NOT re-run the boot ritual;
-     just re-affirm the connection.
+     `trigger` = `on-session-start` and `status` = `active`. Many workspaces have
+     none — then say nothing about it and skip. For each one found, do NOT load its body
+     or run any step yet:
+     - If the message that invoked `/pad:connect` already asked for it — it names the
+       playbook by title or invocation slug, or says to run it (for example "connect and
+       run my day") — run it straight away: load the body with `pad playbook show
+       <invocation_slug or ref> --format markdown` and follow it. No offer.
+     - Otherwise offer it. After step 3's report, as the last line of your reply, name each
+       playbook by title (and its invocation slug, if it has one) in one line and ask
+       whether to run it, for example: "This workspace has a session-start playbook, 'day'
+       (/pad day). Run it now?" Load the body and run it only if the user says yes.
+       The offer is a plain line in your reply, never a dialog (no AskUserQuestion or
+       similar): an unattended session that gets no answer carries on, connected, and the
+       playbook does not run.
+   - If `first_connect` is **false**: this is a reconnect. Make no offer and do NOT re-run
+     the playbook; just re-affirm the connection.
 
 3. **Report the state.** Run `pad session status --format json`. Report it honestly:
    `announced_armed` true means this session is *set* to accept pushes (consent is on),

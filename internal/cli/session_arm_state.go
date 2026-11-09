@@ -85,13 +85,13 @@ type ArmState struct {
 	// owner still identifies the session, the Disarmed flag decides the
 	// meaning. See SessionArmState.
 	Disarmed bool `json:"disarmed,omitempty"`
-	// Booted records that this session has already had its first-connect
-	// boot ritual fired (PLAN-2613 D8): /pad:connect injects the
-	// workspace's on-session-start playbooks on the FIRST connect only, and
-	// re-arms/reconnects must not re-fire it. It is per-session state that
-	// dies with the session (the whole file is reaped when the owner dies),
-	// and it is carried forward across arm/disarm rewrites so toggling
-	// consent doesn't reset the boot flag. See MarkFirstConnect.
+	// Booted records that this session has already had its first connect
+	// (PLAN-2613): /pad:connect offers the workspace's on-session-start
+	// playbooks on the FIRST connect only, and re-arms/reconnects must not
+	// offer them again. It is per-session state that dies with the session
+	// (the whole file is reaped when the owner dies), and it is carried
+	// forward across arm/disarm rewrites so toggling consent doesn't reset
+	// the flag. See MarkFirstConnect.
 	Booted bool `json:"booted,omitempty"`
 	// PID: for a socket-keyed session, the process that wrote the file,
 	// informational only (the socket is the liveness signal). For the
@@ -221,10 +221,10 @@ func writeArmStateFile(disarmed bool) (path string, err error) {
 	if err != nil {
 		return "", err
 	}
-	// Carry the boot flag forward across arm/disarm rewrites so toggling
-	// consent within a session doesn't re-fire the first-connect ritual
-	// (D8). Only a LIVE prior file counts — a dead-owner one is a stale
-	// session and its boot state is irrelevant.
+	// Carry the first-connect flag forward across arm/disarm rewrites so
+	// toggling consent within a session doesn't offer the session-start
+	// playbook again. Only a LIVE prior file counts — a dead-owner one is a
+	// stale session and its first-connect state is irrelevant.
 	booted := false
 	if prev, _, rerr := readArmState(); rerr == nil && prev != nil && armStateOwnerAlive(prev) {
 		booted = prev.Booted
@@ -577,16 +577,17 @@ func ResolveAnnouncedArmed() bool {
 	}
 }
 
-// MarkFirstConnect reports whether THIS session's first-connect boot ritual
-// should run now, and marks it done so a later call (a reconnect) returns
-// false (PLAN-2613 D8). Idempotent per session: the first live call returns
-// true, every later one false; the flag dies with the session.
+// MarkFirstConnect reports whether this is THIS session's first connect,
+// where /pad:connect offers the workspace's session-start playbook, and marks
+// it done so a later call (a reconnect) returns false (PLAN-2613).
+// Idempotent per session: the first live call returns true, every later one
+// false; the flag dies with the session.
 //
 // It operates on the arm-state file, which /pad:connect writes before it
-// boots (connect arms first). If no live arm-state file exists — an
-// unexpected call order — it returns true WITHOUT persisting: skipping a
-// boot ritual silently is worse than running it twice (the playbooks are
-// meant to be re-runnable), so this fails toward running it.
+// checks (connect arms first). If no live arm-state file exists — an
+// unexpected call order — it returns true WITHOUT persisting: skipping the
+// offer silently is worse than making it twice (the user can decline), so
+// this fails toward offering.
 func MarkFirstConnect() (first bool, err error) {
 	st, path, rerr := readArmState()
 	if rerr != nil || st == nil || !armStateOwnerAlive(st) {

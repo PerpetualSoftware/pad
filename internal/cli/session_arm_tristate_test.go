@@ -149,9 +149,9 @@ func TestArmState_SemanticallyCorruptFailsClosed(t *testing.T) {
 	}
 }
 
-// TestMarkFirstConnect_OncePerSessionAcrossToggles: the boot ritual fires
-// on the first connect only (D8), and the flag survives arm/disarm toggles
-// so a reconnect or a consent flip never re-fires it.
+// TestMarkFirstConnect_OncePerSessionAcrossToggles: the first-connect flag
+// is true on the first connect only, and survives arm/disarm toggles so a
+// reconnect or a consent flip never reports a first connect again.
 func TestMarkFirstConnect_OncePerSessionAcrossToggles(t *testing.T) {
 	triStateEnv(t)
 	if _, err := WriteArmState(); err != nil {
@@ -163,7 +163,7 @@ func TestMarkFirstConnect_OncePerSessionAcrossToggles(t *testing.T) {
 		t.Fatalf("first MarkFirstConnect must be true (err=%v)", err)
 	}
 	if again, _ := MarkFirstConnect(); again {
-		t.Fatal("second MarkFirstConnect must be false — boot fires once")
+		t.Fatal("second MarkFirstConnect must be false — only the first connect is a first connect")
 	}
 
 	// A disarm then re-arm within the session must NOT reset the flag.
