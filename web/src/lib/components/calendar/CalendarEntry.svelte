@@ -4,7 +4,7 @@
  import { canonicalValueColor, formatFieldLabel } from '$lib/utils/fieldColors';
  import Chip from '../common/Chip.svelte';
  let {row, zone, basePath, onopen, preview = false, keyboard = true}: {row:CalendarRow;zone:string;basePath:string;onopen:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
- const states: Record<string,[string,string]> = {done:['Done','green'],skipped:['Skipped','gray'],moved:['Moved','purple'],missed:['Missed','amber'],outstanding:['Outstanding','amber'],scheduled:['Scheduled','blue'],unrecorded:['No recorded state','gray']};
+ const states: Record<string,[string,string]> = {done:['Done','green'],skipped:['Skipped','gray'],moved:['Moved','purple'],missed:['Missed','amber'],lapsed:['Lapsed','gray'],outstanding:['Outstanding','amber'],scheduled:['Scheduled','blue'],unrecorded:['No recorded state','gray']};
  let state = $derived(row.state ? states[row.state] : undefined);
  let done = $derived((!!row.terminal && !row.abandoned) || row.state === 'done');
  let closed = $derived(done || !!row.abandoned);

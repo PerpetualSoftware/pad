@@ -303,7 +303,7 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordedStates are the states a schedule_occurrences row can hold.
-var recordedStates = map[string]bool{"done": true, "skipped": true, "moved": true, "missed": true}
+var recordedStates = map[string]bool{"done": true, "skipped": true, "moved": true, "missed": true, "lapsed": true}
 
 // isRecordedEntry is whether e came from a history row. A row always carries
 // its resolved_at; a derived entry (outstanding, scheduled, projected, or a

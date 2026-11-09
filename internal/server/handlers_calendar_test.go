@@ -1241,3 +1241,16 @@ func TestCalendarDayOverCapKeepsEarliestByValue(t *testing.T) {
 		})
 	}
 }
+
+func TestCalendarLapsedHistorySurvivesTerminalFilter(t *testing.T) {
+	t.Parallel()
+	entries := []agendaEntry{
+		{ScheduleID: "lapsed", State: "lapsed", ResolvedAt: "2026-10-26T12:00:00Z"},
+		{ScheduleID: "lapsed", State: "outstanding"},
+	}
+	schedules := []store.AgendaSchedule{{Schedule: &models.ItemSchedule{ID: "lapsed"}, Terminal: true}}
+	got := keepRecordedOnTerminal(entries, schedules)
+	if len(got) != 1 || got[0].State != "lapsed" {
+		t.Fatalf("recorded lapsed history lost: %+v", got)
+	}
+}

@@ -126,7 +126,7 @@ export function entryChips(entry: AgendaEntry): { text: string; color: string }[
 	const states = {
 		outstanding: chip('Outstanding', '--accent-amber'), scheduled: chip('Scheduled', '--status-blue'),
 		done: chip('Done', '--accent-green'), skipped: chip('Skipped'), moved: chip('Moved', '--accent-purple'),
-		missed: chip('Missed', '--accent-amber'), unrecorded: chip('No recorded state')
+		missed: chip('Missed', '--accent-amber'), lapsed: chip('Lapsed'), unrecorded: chip('No recorded state')
 	};
 	const chips = entry.state ? [states[entry.state]] : [];
 	if (entry.state === 'outstanding') {
