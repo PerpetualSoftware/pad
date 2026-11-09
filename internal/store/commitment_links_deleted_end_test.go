@@ -239,3 +239,30 @@ func TestLinkWritesWithASoftDeletedEndFinishOnOneConnection(t *testing.T) {
 		t.Fatal("a link write hung on a single connection")
 	}
 }
+
+// Writing a link to an item that is soft-deleted answers as it does for an end
+// the caller cannot read: the one ErrScheduleLinkNotFound value, whichever end.
+func TestCreatingALinkToASoftDeletedEndIsNotFoundLikeAnUnreadableEnd(t *testing.T) {
+	t.Parallel()
+	for name, dead := range map[string][]int{"parent": {0}, "child": {1}, "both": {0, 1}} {
+		dead := dead
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newLinkFix(t, 2)
+			in := models.ScheduleLinkCreate{ParentItemID: f.items[0].ID, ParentRole: "target", ChildItemID: f.items[1].ID, ChildRole: "target", Offset: oneDay}
+			unreadable := f.allEdit()
+			unreadable.Readable[f.items[dead[0]].ID] = false
+			_, want := f.s.CreateScheduleLink(f.ws.ID, in, unreadable)
+			for _, i := range dead {
+				f.softDelete(t, i)
+			}
+			_, got := f.s.CreateScheduleLink(f.ws.ID, in, f.allEdit())
+			if got != ErrScheduleLinkNotFound || got != want {
+				t.Fatalf("soft-deleted end: %v, unreadable end: %v", got, want)
+			}
+			if n := f.count(t, `SELECT COUNT(*) FROM schedule_links`); n != 0 {
+				t.Fatalf("a refused create wrote %d links", n)
+			}
+		})
+	}
+}

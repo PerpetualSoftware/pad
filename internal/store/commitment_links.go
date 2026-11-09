@@ -457,6 +457,11 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 		return nil, err
 	}
 	c, err := s.pinCommitmentTx(tx, workspaceID, openFilter, openArgs, false, in.ParentItemID, in.ChildItemID)
+	if errors.Is(err, ErrScheduleItemGone) {
+		// A soft-deleted parent is the root the pin cannot find: answer as for an
+		// unreadable end, which is what a soft-deleted child already gets.
+		return nil, ErrScheduleLinkNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
