@@ -30,12 +30,23 @@ func printImportDrops(w io.Writer, drops []models.ImportUniqueDrop) {
 // D2); the item itself imported.
 func printImportScheduleDrops(w io.Writer, drops []models.ImportScheduleDrop) {
 	for _, d := range drops {
+		if d.Count > 1 {
+			// An aggregate stands for many records and has no item.
+			fmt.Fprintf(w, "  dropped schedule records: %d (%s)\n", d.Count, d.Reason)
+			continue
+		}
 		item := d.Item
 		if item == "" {
 			item = "(item not imported)"
 		}
 		fmt.Fprintf(w, "  dropped schedule: %s (%s)\n", item, d.Reason)
 	}
+}
+
+// dropRecords is how many records a drop stands for: one, unless it is an
+// aggregate entry carrying a count.
+func dropRecords(d models.ImportScheduleDrop) int {
+	return max(d.Count, 1)
 }
 
 type importSummary struct {

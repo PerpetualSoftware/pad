@@ -756,11 +756,87 @@ func TestBundleLinks_ImportSurfacesAFailureToReadTheParentsDates(t *testing.T) {
 	t.Run("a failed read fails the import", func(t *testing.T) {
 		n := f.count(t, `SELECT COUNT(*) FROM workspaces`)
 		_, _, err := try(nil)
-		if err == nil || !strings.Contains(err.Error(), "schedule_occurrence_overrides") {
-			t.Fatalf("err=%v, want the failed read of the parent's overrides", err)
+		if err == nil || !strings.Contains(err.Error(), "import schedule links: ") || !strings.Contains(err.Error(), "schedule_occurrence_overrides") {
+			t.Fatalf("err=%v, want the failed read of the parent's overrides, raised by the link stage", err)
 		}
 		if f.count(t, `SELECT COUNT(*) FROM workspaces`) != n {
 			t.Fatal("husk workspace")
+		}
+	})
+}
+
+// A date that cannot be read from a schedule's stored role data is a fact about
+// that schedule, not a fault of the database: an all-day schedule whose earliest
+// role is 100,000 days before it is a legal offset (32-bit), but the date it gives
+// is the year 1756, which has no wall. A link on such a schedule is dropped and
+// reported, and the import goes on. A database fault, by contrast, still stops
+// it (the test above).
+func TestBundleLinks_ImportDropsALinkOnAScheduleWhoseDatesCannotBeRead(t *testing.T) {
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	exotic := func(m map[string]any, ids map[string]string) {
+		for _, v := range m["schedules"].([]any) {
+			if x := v.(map[string]any); x["id"] == ids["P"] {
+				x["dtstart"], x["next_wall"], x["next_at"] = "2030-03-04", "2030-03-04", "2030-03-04T00:00:00Z"
+				x["roles"] = map[string]any{"target_days": 0, "target_secs": 0, "earliest_days": -100000, "earliest_secs": 0, "roles_origin": "native"}
+			}
+		}
+	}
+	onP := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60))
+	onP["overrides"] = []any{goodOverride()}
+	elsewhere := linkObject(ids["C1"], ids["C2"], "target", "target", elapsedOffset(60))
+	ws, rep := importWithLinks(t, f, exotic, onP, elsewhere)
+	if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "links:dates" || rep.DroppedSchedules[0].Item == "" {
+		t.Fatalf("report=%+v, want only the link on the exotic schedule dropped as links:dates", rep.DroppedSchedules)
+	}
+	if f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 1 ||
+		f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides o JOIN schedule_links l ON l.id=o.link_id WHERE l.workspace_id=?`, ws.ID) != 0 {
+		t.Fatal("want the other link kept, and the dropped link's override with it")
+	}
+}
+
+// The cascade drops an edge whose child has no outstanding occurrence
+// (planLinkedTx), so a link to an ended child is checked against no derived date.
+// A parent at the last second the package supports plus a minute is out of range
+// for a live child and means nothing for an ended one.
+func TestBundleLinks_ImportDoesNotRangeCheckALinkToAnEndedChild(t *testing.T) {
+	f := newLinkBundleFix(t)
+	ids := bundleScheduleIDs(t, f.exportBundle(t))
+	edge := func(endChild bool) func(map[string]any, map[string]string) {
+		return func(m map[string]any, ids map[string]string) {
+			for _, v := range m["schedules"].([]any) {
+				switch x := v.(map[string]any); x["id"] {
+				case ids["P"]:
+					x["dtstart"], x["next_wall"], x["next_at"] = "2200-12-31T23:59:59", "2200-12-31T23:59:59", "2200-12-31T23:59:59Z"
+				case ids["C1"]:
+					if endChild {
+						x["ended_at"] = "2030-03-05T00:00:00Z"
+						delete(x, "next_at")
+						delete(x, "next_wall")
+						delete(x, "reminder")
+					}
+				}
+			}
+		}
+	}
+	link := func() map[string]any {
+		l := linkObject(ids["P"], ids["C1"], "target", "target", elapsedOffset(60))
+		o := goodOverride()
+		o["offset"] = elapsedOffset(120)
+		l["overrides"] = []any{o}
+		return l
+	}
+	t.Run("ended child: imported, override and all", func(t *testing.T) {
+		ws, rep := importWithLinks(t, f, edge(true), link())
+		if len(rep.DroppedSchedules) != 0 || f.count(t, `SELECT COUNT(*) FROM schedule_links WHERE workspace_id=?`, ws.ID) != 1 ||
+			f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides o JOIN schedule_links l ON l.id=o.link_id WHERE l.workspace_id=?`, ws.ID) != 1 {
+			t.Fatalf("report=%+v", rep.DroppedSchedules)
+		}
+	})
+	t.Run("live child: dropped", func(t *testing.T) {
+		_, rep := importWithLinks(t, f, edge(false), link())
+		if len(rep.DroppedSchedules) != 1 || rep.DroppedSchedules[0].Reason != "links:offset" {
+			t.Fatalf("report=%+v", rep.DroppedSchedules)
 		}
 	})
 }

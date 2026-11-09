@@ -79,7 +79,7 @@ func TestBundleLinks_ImportEnforcesTheComponentCap(t *testing.T) {
 	f := newSchedFixture(t)
 	rep := f.importSynthetic(t, m)
 	if len(rep.DroppedSchedules) != 38 {
-		t.Fatalf("%d drops, want the 38 links past the 500th: %+v", len(rep.DroppedSchedules), rep.DroppedSchedules[:1])
+		t.Fatalf("%d drops, want the 38 links past the 500th: %+v", len(rep.DroppedSchedules), rep.DroppedSchedules)
 	}
 	for _, d := range rep.DroppedSchedules {
 		if d.Reason != "links:limit" {
@@ -117,6 +117,11 @@ func TestBundleLinks_ImportBoundsTheWorkOfAHostileBundle(t *testing.T) {
 		got[d.Reason]++
 	}
 	// 600 links are examined: the 489 that fit, then 111 rejects of the two kinds.
+	for _, d := range rep.DroppedSchedules {
+		if d.Reason == reasonBundleLimit && (d.Count != len(links)-maxImportedLinks || d.Item != "") {
+			t.Fatalf("the aggregate is %+v, want the %d links left out counted and no item", d, len(links)-maxImportedLinks)
+		}
+	}
 	if got["links:bundle_limit"] != 1 || got["links:duplicate_incoming"]+got["links:cycle"] != maxImportedLinks-accepted || len(got) != 3 {
 		t.Fatalf("drops by reason %v (want one links:bundle_limit and %d rejects of the two kinds, %v)", got, maxImportedLinks-accepted, want)
 	}
@@ -149,6 +154,11 @@ func TestBundleLinks_ImportBoundsTheComponentWorkOfAHostileBundle(t *testing.T) 
 		got[d.Reason]++
 	}
 	examined := got["links:duplicate_incoming"]
+	for _, d := range rep.DroppedSchedules {
+		if d.Reason == reasonBundleLimit && d.Count != 800-examined {
+			t.Fatalf("the aggregate is %+v, want the %d links left out counted", d, 800-examined)
+		}
+	}
 	if got["links:bundle_limit"] != 1 || examined == 0 || examined >= 800 || len(got) != 2 {
 		t.Fatalf("drops by reason %v: want one links:bundle_limit after some, not all, of the 800 rejects", got)
 	}
@@ -169,5 +179,71 @@ func TestBundleLinks_ImportBoundsTheComponentWorkOfAHostileBundle(t *testing.T) 
 	g := newSchedFixture(t)
 	if rep := g.importSynthetic(t, small); len(rep.DroppedSchedules) != 0 || g.count(t, `SELECT COUNT(*) FROM schedule_links`) != n {
 		t.Fatalf("%d small links: dropped %+v", n, rep.DroppedSchedules)
+	}
+}
+
+// distinctOverrides is n valid override rows on distinct keys and offsets, from
+// the i-th minute of a fixed day on.
+func distinctOverrides(n, from int, mode string) []any {
+	base := time.Date(2031, 1, 1, 9, 0, 0, 0, time.UTC)
+	var rows []any
+	for i := from; i < from+n; i++ {
+		at := base.Add(time.Duration(i) * time.Minute)
+		o := goodOverride()
+		o["occurrence_key"] = at.Format("2006-01-02T15:04:05Z") + "|" + at.Format("2006-01-02T15:04:05")
+		o["offset"] = elapsedOffset(int64(i + 1))
+		if mode == "bad" {
+			o["occurrence_key"] = fmt.Sprintf("not an occurrence key %d", i)
+		}
+		rows = append(rows, o)
+	}
+	return rows
+}
+
+// A link with a great many override rows costs the import work per row, a drop
+// entry and a log line per refused row, and (for a distinct civil offset) several
+// time zone reads. Three ceilings bound it, each left out and reported in
+// aggregate with the count: rows per link, rows per import, and the individual
+// drop entries (and log lines) for refused rows.
+func TestBundleLinks_ImportBoundsOverrideWork(t *testing.T) {
+	oldLink, oldImport, oldEntries := maxImportedOverridesPerLink, maxImportedOverrides, maxOverrideDropEntries
+	maxImportedOverridesPerLink, maxImportedOverrides, maxOverrideDropEntries = 50, 120, 5
+	t.Cleanup(func() {
+		maxImportedOverridesPerLink, maxImportedOverrides, maxOverrideDropEntries = oldLink, oldImport, oldEntries
+	})
+	m, ids := syntheticLinkBundle(t, 4)
+	// 200 good rows, of which 50 are examined (per-link ceiling); 40 refused rows, 5 of them
+	// reported one by one and 35 in aggregate; 100 good rows, of which 30 are examined
+	// (what is left of the 120 for the whole import).
+	first := linkObject(ids[0], ids[1], "target", "target", elapsedOffset(60))
+	first["overrides"] = distinctOverrides(200, 0, "good")
+	second := linkObject(ids[1], ids[2], "target", "target", elapsedOffset(60))
+	second["overrides"] = distinctOverrides(40, 1000, "bad")
+	third := linkObject(ids[0], ids[3], "target", "target", elapsedOffset(60))
+	third["overrides"] = distinctOverrides(100, 2000, "good")
+	m["schedule_links"] = []any{first, second, third}
+	f := newSchedFixture(t)
+	rep := f.importSynthetic(t, m)
+	var individual, invalidFolded, leftOut int
+	var entries []string
+	for _, d := range rep.DroppedSchedules {
+		entries = append(entries, fmt.Sprintf("%s x%d", d.Reason, max(d.Count, 1)))
+		switch {
+		case d.Reason == "link_overrides:invalid" && d.Count == 0:
+			individual++
+		case d.Reason == "link_overrides:invalid":
+			invalidFolded += d.Count
+		case d.Reason == "link_overrides:bundle_limit":
+			leftOut += d.Count
+		}
+	}
+	if individual != 5 || invalidFolded != 35 || leftOut != 150+70 || len(rep.DroppedSchedules) != 5+1+1 {
+		t.Fatalf("want 5 individual drops, one aggregate of 35, one bundle_limit of 220 and nothing else; got %v", entries)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides`); n != 50+30 {
+		t.Fatalf("%d override rows stored, want 80", n)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_links`); n != 3 {
+		t.Fatalf("%d links stored: a ceiling on override rows must not cost a link", n)
 	}
 }

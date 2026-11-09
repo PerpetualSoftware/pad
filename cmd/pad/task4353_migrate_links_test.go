@@ -173,3 +173,32 @@ func TestTASK4353_MigrateCarriesLinks(t *testing.T) {
 		}
 	})
 }
+
+// An aggregate drop stands for many records (links or override rows left out past
+// an import ceiling). The migration output and its closing summary must show the
+// number, not "1" and "(item not imported)", because the source is abandoned
+// after the migration and the operator decides from these lines what to read back.
+func TestTASK4353_MigrateReportCountsAggregateDrops(t *testing.T) {
+	drops := []models.ImportScheduleDrop{
+		{Item: "TASK-4", Reason: "links:cycle"},
+		{Reason: "links:bundle_limit", Count: 7000},
+		{Reason: "link_overrides:bundle_limit", Count: 120},
+	}
+	var lines bytes.Buffer
+	printImportScheduleDrops(&lines, drops)
+	for _, want := range []string{"dropped schedule: TASK-4 (links:cycle)", "7000", "links:bundle_limit", "120", "link_overrides:bundle_limit"} {
+		if !strings.Contains(lines.String(), want) {
+			t.Errorf("per-drop output lacks %q: %q", want, lines.String())
+		}
+	}
+	if strings.Contains(lines.String(), "item not imported") {
+		t.Errorf("an aggregate is not an item that failed to import: %q", lines.String())
+	}
+	var sum bytes.Buffer
+	printMigrateDropSummary(&sum, []migrateDropped{{Workspace: "Big", Drops: drops}}, "/data/pad.db")
+	for _, want := range []string{"7121 schedule record(s)", "  Big: 7121"} {
+		if !strings.Contains(sum.String(), want) {
+			t.Errorf("summary lacks %q: %q", want, sum.String())
+		}
+	}
+}

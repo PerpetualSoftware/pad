@@ -1048,7 +1048,9 @@ func migrateImportWorkspaceReporting(dst *store.Store, data *models.WorkspaceExp
 func printMigrateDropSummary(w io.Writer, dropped []migrateDropped, fromPath string) {
 	total := 0
 	for _, d := range dropped {
-		total += len(d.Drops)
+		for _, drop := range d.Drops {
+			total += dropRecords(drop)
+		}
 	}
 	if total == 0 {
 		return
@@ -1057,7 +1059,11 @@ func printMigrateDropSummary(w io.Writer, dropped []migrateDropped, fromPath str
 	fmt.Fprintf(w, "as migrated, so pad will not open it: read them with sqlite3 %s (tables item_schedules,\n", shellQuote(fromPath))
 	fmt.Fprintln(w, "schedule_occurrences, schedule_occurrence_overrides, schedule_changes, schedule_links and schedule_link_overrides), or from a `pad db backup` copy taken before the migration. Per workspace:")
 	for _, d := range dropped {
-		fmt.Fprintf(w, "  %s: %d\n", d.Workspace, len(d.Drops))
+		n := 0
+		for _, drop := range d.Drops {
+			n += dropRecords(drop)
+		}
+		fmt.Fprintf(w, "  %s: %d\n", d.Workspace, n)
 	}
 }
 

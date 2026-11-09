@@ -224,10 +224,14 @@ type ScheduleOccurrenceExport struct {
 // ImportScheduleDrop is one bundled schedule an import did not store: its rule
 // or state failed the checks every other schedule writer applies. The item
 // imported; Item is its ref in the NEW workspace ("" when the item itself did
-// not import). Reason is a stable code, never bundle text.
+// not import). Reason is a stable code, never bundle text. Count is set only on
+// an aggregate entry (links:bundle_limit, link_overrides:bundle_limit, and
+// link_overrides:invalid or :duplicate past the individually listed rows): the
+// number of records it stands for, which have no Item. 0 means one record.
 type ImportScheduleDrop struct {
 	Item   string `json:"item"`
 	Reason string `json:"reason"`
+	Count  int    `json:"count,omitempty"`
 }
 
 // VerificationExport is one acceptance-criterion verdict in a workspace
