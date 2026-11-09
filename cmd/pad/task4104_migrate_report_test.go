@@ -68,7 +68,7 @@ func TestTASK4104_MigrateReportsDroppedSchedules(t *testing.T) {
 	// The source is marked migrated (pad refuses to open it), so the summary
 	// must say how the rows can still be read (TASK-4104).
 	for _, want := range []string{"Migrate Drop", "2 schedule", "NOT carried", "/data/pad.db",
-		"marked\nas migrated, so pad will not open it", "sqlite3 '/data/pad.db'", "item_schedules", "schedule_occurrences", "schedule_occurrence_overrides", "schedule_changes", "pad db backup"} {
+		"marked\nas migrated, so pad will not open it", "sqlite3 '/data/pad.db'", "item_schedules", "schedule_occurrences", "schedule_occurrence_overrides", "schedule_changes", "schedule_links", "schedule_link_overrides", "pad db backup"} {
 		if !strings.Contains(sum.String(), want) {
 			t.Errorf("summary lacks %q: %q", want, sum.String())
 		}

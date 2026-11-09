@@ -1,9 +1,17 @@
 package models
 
-// Supported workspace bundle versions.
+// Supported workspace bundle versions. WorkspaceExportVersion is the version an
+// export writes and the newest an import accepts.
+//
+// Version 3 (TASK-4353) added time links (schedule_links). It is a bump rather
+// than an additive member on version 2 because a reader that predates links
+// ignores an unknown key: a v2 reader would restore the schedules and quietly
+// lose every link, whereas a version it does not know is refused outright
+// ("unsupported export version").
 const (
 	WorkspaceExportVersion1 = 1
-	WorkspaceExportVersion  = 2
+	WorkspaceExportVersion2 = 2
+	WorkspaceExportVersion  = 3
 )
 
 // WorkspaceExport is the complete portable representation of a workspace.
@@ -33,7 +41,16 @@ type WorkspaceExport struct {
 	// Schedules include commitment roles, overrides and occurrence actuals.
 	Schedules       []ScheduleExport       `json:"schedules,omitempty"`
 	ScheduleChanges []ScheduleChangeExport `json:"schedule_changes,omitempty"`
-	hasV2Members    bool
+	// ScheduleLinks are the time links between the schedules above, each with
+	// its per-occurrence overrides (version 3). Both ends of a link name a
+	// ScheduleExport.ID of this bundle, remapped on import.
+	ScheduleLinks []ScheduleLinkExport `json:"schedule_links,omitempty"`
+	// OmittedScheduleLinks counts the links an export left out because an end
+	// is not in the bundle (its item is deleted). It names nothing about them,
+	// is not part of the bundle's wire form, and is 0 on a decoded bundle.
+	OmittedScheduleLinks int `json:"-"`
+	hasV2Members         bool
+	hasV3Members         bool
 }
 
 // ScheduleExport is one item schedule in a workspace bundle. ID is a source
@@ -139,6 +156,34 @@ type ScheduleOverrideExport struct {
 	UpdatedAt     string `json:"updated_at"`
 }
 
+// ScheduleLinkExport is one time link in a workspace bundle (version 3): the
+// child's ChildRole date follows the parent's ParentRole date plus Offset. The
+// ends are source schedule ids (ScheduleExport.ID), remapped on import; the
+// link's own id is not carried and is minted at the destination. The import
+// re-checks the link as a live write does and never moves a date.
+type ScheduleLinkExport struct {
+	ParentScheduleID string                       `json:"parent_schedule_id"`
+	ParentRole       string                       `json:"parent_role"`
+	ChildScheduleID  string                       `json:"child_schedule_id"`
+	ChildRole        string                       `json:"child_role"`
+	Offset           ScheduleLinkOffset           `json:"offset"`
+	CancelPolicy     string                       `json:"cancel_policy"`
+	CreatedAt        string                       `json:"created_at"`
+	UpdatedAt        string                       `json:"updated_at"`
+	Overrides        []ScheduleLinkOverrideExport `json:"overrides,omitempty"`
+}
+
+// ScheduleLinkOverrideExport is a link's exception for one occurrence of its
+// child: its own offset, a "no longer needed" mark, or both. OccurrenceKey is
+// the child's key, canonicalised on import by the child's floating policy.
+type ScheduleLinkOverrideExport struct {
+	OccurrenceKey    string              `json:"occurrence_key"`
+	Offset           *ScheduleLinkOffset `json:"offset,omitempty"`
+	NoLongerNeededAt string              `json:"no_longer_needed_at,omitempty"`
+	CreatedAt        string              `json:"created_at"`
+	UpdatedAt        string              `json:"updated_at"`
+}
+
 // ScheduleChangeExport retains journal rows independently of live schedules.
 type ScheduleChangeExport struct {
 	ID             string  `json:"id"`
@@ -179,10 +224,14 @@ type ScheduleOccurrenceExport struct {
 // ImportScheduleDrop is one bundled schedule an import did not store: its rule
 // or state failed the checks every other schedule writer applies. The item
 // imported; Item is its ref in the NEW workspace ("" when the item itself did
-// not import). Reason is a stable code, never bundle text.
+// not import). Reason is a stable code, never bundle text. Count is set only on
+// an aggregate entry (links:bundle_limit, link_overrides:bundle_limit, and
+// link_overrides:invalid or :duplicate past the individually listed rows): the
+// number of records it stands for, which have no Item. 0 means one record.
 type ImportScheduleDrop struct {
 	Item   string `json:"item"`
 	Reason string `json:"reason"`
+	Count  int    `json:"count,omitempty"`
 }
 
 // VerificationExport is one acceptance-criterion verdict in a workspace
