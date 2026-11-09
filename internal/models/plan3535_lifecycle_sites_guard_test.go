@@ -55,6 +55,9 @@ var lifecycleSites = map[string]string{
 	"internal/store/schedule_bootstrap.go::BootstrapAgenda::nonTerminalFilter":            "keep: lists the time triggers someone attached to an item, not open work; a schedule on a reference item is deliberate (TASK-4237)",
 
 	"internal/store/commitment_renegotiate.go::renegotiateCommitmentAt::nonTerminalFilter": "keep: uses the evaluator terminal rule for miss-first; a deadline on a reference item is deliberate, like its schedule",
+	"internal/store/commitment_cascade.go::MoveLinkedDate::nonTerminalFilter":              "keep: uses the evaluator terminal rule for miss-first before a deadline changes; a deadline on a reference item is deliberate (TASK-4353)",
+	"internal/store/commitment_links.go::CreateScheduleLink::nonTerminalFilter":            "keep: uses the evaluator terminal rule for miss-first when a link write moves a deadline; a deadline on a reference item is deliberate (TASK-4353)",
+	"internal/store/commitment_links.go::UpdateScheduleLink::nonTerminalFilter":            "keep: uses the evaluator terminal rule for miss-first when a link write moves a deadline; a deadline on a reference item is deliberate (TASK-4353)",
 	"internal/store/schedule_resolve.go::resolveOccurrenceAt::nonTerminalFilter":           "keep: uses the evaluator terminal rule for skip-records-the-miss-first; a deadline on a reference item is deliberate, like its schedule (TASK-4353)",
 
 	// Progress.

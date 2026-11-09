@@ -49,7 +49,10 @@ type ItemSchedule struct {
 	// compiles clears it.
 	ErrorCode *string `json:"error_code,omitempty"`
 
-	// ReminderID is the managed item_reminders row, nil once the schedule ended.
+	// ReminderID is the id of the managed item_reminders row, nil while the
+	// schedule has none: it ended, or the outstanding occurrence was moved into
+	// the past (a linked cascade cancels the armed row and arms nothing). It does
+	// not say whether the schedule is live; EndedAt and NextAt do.
 	ReminderID *string `json:"reminder_id,omitempty"`
 	// ReminderFired is whether that row is fired (read, never stored on the
 	// schedule). It decides how the outstanding instant is read.
