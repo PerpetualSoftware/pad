@@ -422,6 +422,7 @@ Actions:
     Optional: expected_seq.
     Each old must occur EXACTLY ONCE; quote more context or use line_hint to choose
     among exact matches. Edits apply in order, all or nothing.
+    Read the diff: anchors fix position, not meaning; a rewritten anchor still lands.
     A moved expected_seq does not refuse: the patch applies and returns rebased=true
     with intervening writes (complete=false when some left no record).
     Refusals write nothing: patch_anchor_missing / patch_anchor_ambiguous (re-read,
@@ -452,8 +453,8 @@ Actions:
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
     snooze and move also need until. Optional: comment, actual_done_at (done only).
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
-    series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews and answers a
-    revision; preview=false with that revision applies. A hard deadline: assignee or owner only.
+    series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a
+    revision; preview=false with it applies. Hard deadline: assignee or owner only.
   schedule-delete — Delete the schedule. Required: ref. Removes the schedule and its rule,
     its history of resolved occurrences, and its managed reminder, so the pending occurrence
     stops firing. Keeps the item, comments and one-shot reminders. Irreversible.
