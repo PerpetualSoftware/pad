@@ -114,7 +114,10 @@ func (s *Store) ResolveOccurrence(workspaceID, itemID string, in ResolveInput) (
 func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput, nowT time.Time) (*ResolveResult, error) {
 	// Every stamp and walk of a resolve is a whole second: the engine's walls
 	// are, and an elapsed grid must read back exactly from its start.
-	nowT = nowT.UTC().Truncate(time.Second)
+	// The past-target checks read the clock as it is: a fraction of a second
+	// matters to "has this instant gone by".
+	clock := nowT.UTC()
+	nowT = clock.Truncate(time.Second)
 	actual, actualSource := nowT, "recorded_now"
 	if in.ActualDoneAt != nil {
 		if in.State != "done" {
@@ -138,7 +141,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if in.Until == nil {
 			return nil, fieldErr("until", "required", "snooze and move need until")
 		}
-		if in.State == "snooze" && !in.Until.After(nowT) {
+		if in.State == "snooze" && !in.Until.After(clock) {
 			return nil, fieldErr("until", "range", "until must be after now and within 366 days")
 		}
 		if in.Until.After(nowT.Add(maxResolveUntil)) {
@@ -156,6 +159,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
 	}
 	moveChecksDeadline := false
+	if s.beforeCommitmentPin != nil && in.State == "skip" {
+		s.beforeCommitmentPin() // test seam: the item changes between the handler's read and the lock
+	}
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -183,25 +189,13 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be before schedule creation; the earliest allowed is "+created.UTC().Truncate(time.Second).Format(time.RFC3339))
 		}
 	}
+	var moveRoles *scheduleRoles
 	if in.State == "move" {
 		roles, err := s.scheduleRolesOf(tx, sc)
 		if err != nil {
 			return nil, err
 		}
-		if roles.DeadlineDays != nil {
-			if roles.Origin != "native" {
-				// The evaluator does not run on a legacy row, so its target is the
-				// only date anything enforces, and renegotiation refuses it too.
-				return nil, fieldErr("state", "combination", "a legacy hard deadline cannot be moved; PATCH .../commitment naming a role converts the row to native roles, after which the target can be moved")
-			}
-			// A native deadline is its own role: a move changes the target only.
-			// A move into the past would arm the next occurrence and drop this
-			// occurrence's deadline unrecorded, so it is refused as snooze is.
-			if !in.Until.After(nowT) {
-				return nil, fieldErr("until", "range", "until must be after now on a schedule with a hard deadline")
-			}
-			moveChecksDeadline = true
-		}
+		moveRoles = &roles
 	}
 
 	if sc.EndedAt != nil || sc.NextAt == nil || sc.NextWall == nil {
@@ -238,6 +232,21 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 	if sc.ErrorCode != nil {
 		return nil, &ErrScheduleBroken{Code: *sc.ErrorCode}
+	}
+	if moveRoles != nil && moveRoles.DeadlineDays != nil {
+		// Move policy speaks only for an occurrence the caller really named.
+		if moveRoles.Origin != "native" {
+			// The evaluator does not run on a legacy row, so its target is the
+			// only date anything enforces, and renegotiation refuses it too.
+			return nil, fieldErr("state", "combination", "a legacy hard deadline cannot be moved; PATCH .../commitment naming a role converts the row to native roles, after which the target can be moved")
+		}
+		// A native deadline is its own role: a move changes the target only.
+		// A move into the past would arm the next occurrence and drop this
+		// occurrence's deadline unrecorded, so it is refused as snooze is.
+		if !in.Until.After(clock) {
+			return nil, fieldErr("until", "range", "until must be after now on a schedule with a hard deadline")
+		}
+		moveChecksDeadline = true
 	}
 
 	if in.State == "skip" {

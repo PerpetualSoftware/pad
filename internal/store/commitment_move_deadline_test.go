@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -163,8 +164,12 @@ func TestSkipAfterTheDeadlineRecordsTheMissFirst(t *testing.T) {
 			if got := f.reload(t, sc.ItemID); *got.NextAt == weeklyMon {
 				t.Fatal("skip did not advance")
 			}
+			// The schedule has advanced, so a tick now looks at the next
+			// occurrence. Put the skipped one back in front of the evaluator: it
+			// must find the miss already recorded by the skip, not record it again.
+			f.exec(t, `UPDATE item_schedules SET next_at=?, next_wall=? WHERE id=?`, weeklyMon, "2026-10-26T09:00:00", sc.ID)
 			if got := f.eval(t, "2026-10-29T10:01:00Z", 0); got.Missed != 0 || len(f.missEvidence(t)) != 1 {
-				t.Fatalf("tick re-recorded: %+v", got)
+				t.Fatalf("tick re-recorded: %+v evidence=%v", got, f.missEvidence(t))
 			}
 			var miss, skip = -1, -1
 			for i, e := range moveEntries(t, f, sc.ID) {
@@ -299,12 +304,109 @@ func TestSkipOfAClosedItemRecordsNoMissAndLegacyIsUnchanged(t *testing.T) {
 			t.Fatalf("closed item recorded %d misses", n)
 		}
 	})
+	t.Run("closed item, deadline ahead, no authority is refused", func(t *testing.T) {
+		// A reopened item is evaluated again, so the gate sits before the open check.
+		f := newSchedFixture(t)
+		f.s.db.SetMaxOpenConns(1)
+		sc := f.weeklyDeadline(t, "stays_owed")
+		f.exec(t, `UPDATE items SET fields = ? WHERE id = ?`, `{"status":"done"}`, f.item.ID)
+		before := commitmentOldRows(t, f.s)
+		if _, err := f.resolve(t, f.item, skipInput(sc, false), tueNoon); !errors.Is(err, ErrSkipDeadlineAuthority) {
+			t.Fatalf("err=%v, want ErrSkipDeadlineAuthority", err)
+		}
+		if !reflect.DeepEqual(before, commitmentOldRows(t, f.s)) {
+			t.Fatal("refused skip wrote")
+		}
+		f.mustResolve(t, f.item, skipInput(sc, true), tueNoon)
+		if n := len(f.missEvidence(t)); n != 0 {
+			t.Fatalf("closed item recorded %d misses", n)
+		}
+	})
 	t.Run("legacy row", func(t *testing.T) {
 		f := newSchedFixture(t)
 		sc := moveSchedule(t, f, "deadline_hard", 0, "FREQ=DAILY")
 		f.mustResolve(t, f.item, skipInput(sc, false), moveNow)
 		if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE change_type='missed_recorded' AND role='deadline'`); n != 0 {
 			t.Fatalf("legacy skip recorded %d deadline misses", n)
+		}
+	})
+}
+
+// A stale occurrence is stale before any move policy speaks (as a skip is):
+// the caller must re-read, not be told about a date it never asked about.
+func TestStaleOccurrenceOutranksTheMovePolicy(t *testing.T) {
+	t.Parallel()
+	t.Run("native deadline row, past until", func(t *testing.T) {
+		f := newSchedFixture(t)
+		sc := f.weeklyDeadline(t, "stays_owed")
+		in := moveInput(sc, "2026-10-27T09:00:00Z") // in the past at tueNoon
+		in.OccurrenceAt = rt("2026-11-02T09:00:00Z")
+		if _, err := f.resolve(t, f.item, in, tueNoon); isStale(err) == nil {
+			t.Fatalf("err=%v, want stale", err)
+		}
+	})
+	t.Run("ended legacy hard deadline", func(t *testing.T) {
+		f := newSchedFixture(t)
+		sc := moveSchedule(t, f, "deadline_hard", 0, "")
+		f.exec(t, `UPDATE item_schedules SET ended_at = ?, next_at = NULL, next_wall = NULL WHERE id = ?`, "2026-10-30T09:00:00Z", sc.ID)
+		if _, err := f.resolve(t, f.item, moveInput(sc, "2026-10-31T10:00:00Z"), moveNow); isStale(err) == nil {
+			t.Fatalf("err=%v, want stale", err)
+		}
+	})
+	t.Run("legacy hard deadline, stale occurrence", func(t *testing.T) {
+		f := newSchedFixture(t)
+		sc := moveSchedule(t, f, "deadline_hard", 0, "")
+		in := moveInput(sc, "2026-10-31T10:00:00Z")
+		in.OccurrenceAt = rt("2026-11-02T09:00:00Z")
+		if _, err := f.resolve(t, f.item, in, moveNow); isStale(err) == nil {
+			t.Fatalf("err=%v, want stale", err)
+		}
+	})
+}
+
+// The past-target check reads the clock as it is: a request at 12:00:00.800
+// naming 12:00:00.500 names an instant that has gone by, whatever whole second
+// the walls are stamped to.
+func TestMovePastCheckKeepsTheClocksFraction(t *testing.T) {
+	t.Parallel()
+	now := rt("2026-10-27T12:00:00Z").Add(800 * time.Millisecond)
+	cases := []struct {
+		name  string
+		until time.Time
+		ok    bool
+	}{
+		{"fraction behind the clock", rt("2026-10-27T12:00:00Z").Add(500 * time.Millisecond), false},
+		{"exactly now", now, false},
+		{"fraction ahead of the clock", rt("2026-10-27T12:00:00Z").Add(900 * time.Millisecond), true},
+		{"a second ahead", rt("2026-10-27T12:00:01Z"), true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newSchedFixture(t)
+			sc := f.weeklyDeadline(t, "stays_owed")
+			in := moveInput(sc, tueNoon)
+			in.Until = &c.until
+			_, err := f.s.resolveOccurrenceAt(f.ws.ID, f.item.ID, in, now)
+			var fe *ScheduleFieldError
+			if c.ok {
+				if err != nil {
+					t.Fatalf("err=%v, want accepted", err)
+				}
+				return
+			}
+			if !errors.As(err, &fe) || fe.Field != "until" || fe.Code != "range" {
+				t.Fatalf("err=%v, want until range", err)
+			}
+		})
+	}
+	t.Run("snooze reads the same clock", func(t *testing.T) {
+		f := newSchedFixture(t)
+		sc := f.weeklyDeadline(t, "stays_owed")
+		in := ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "snooze", Actor: "user", Until: ptr(rt("2026-10-27T12:00:00Z").Add(500 * time.Millisecond))}
+		_, err := f.s.resolveOccurrenceAt(f.ws.ID, f.item.ID, in, now)
+		var fe *ScheduleFieldError
+		if !errors.As(err, &fe) || fe.Field != "until" || fe.Code != "range" {
+			t.Fatalf("snooze err=%v, want until range", err)
 		}
 	})
 }

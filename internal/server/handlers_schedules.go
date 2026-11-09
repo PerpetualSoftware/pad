@@ -511,7 +511,7 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if errors.Is(err, store.ErrCommitmentChanged) {
-		writeCommitmentChanged(w)
+		writeSkipCommitmentChanged(w)
 		return
 	}
 	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeResolveError(w, r, err) {

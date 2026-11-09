@@ -294,6 +294,15 @@ func writeDeadlineOwnerRequired(w http.ResponseWriter) {
 // skipDeadlineOwnerMessage is the 403 text of a skip before a hard deadline.
 const skipDeadlineOwnerMessage = "Only the assignee or a workspace owner can skip this occurrence before its hard deadline."
 
+// skipCommitmentChangedMessage is the 409 text of a skip whose assignee snapshot
+// went stale: there is no preview to redo, the caller re-reads and tries again.
+const skipCommitmentChangedMessage = "The item's assignee changed while the skip was being checked; reload the occurrence and skip again"
+
+func writeSkipCommitmentChanged(w http.ResponseWriter) {
+	writeError2(w, http.StatusConflict, "commitment_changed", skipCommitmentChangedMessage,
+		map[string]interface{}{"field": "revision", "code": "stale"})
+}
+
 func writeSkipDeadlineOwnerRequired(w http.ResponseWriter) {
 	writeError2(w, http.StatusForbidden, "deadline_owner_required", skipDeadlineOwnerMessage,
 		map[string]interface{}{"field": "deadline", "code": "authority"})

@@ -789,3 +789,92 @@ func TestMoveTargetAfterTheDeadlineCarriesAWarning(t *testing.T) {
 		t.Fatalf("resolution=%v", res)
 	}
 }
+
+func skipJournalled(f *schedHTTP) int {
+	return f.count(`SELECT COUNT(*) FROM schedule_changes WHERE change_type='skip'`)
+}
+
+// The workspace owner may skip before a deadline whoever is assigned, and the
+// skip is journalled; on an unassigned item any editor may.
+func TestSkipBeforeAHardDeadlineOwnerAndUnassigned(t *testing.T) {
+	t.Parallel()
+	body := map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip"}
+	t.Run("owner, item assigned to someone else", func(t *testing.T) {
+		f := newSchedHTTP(t)
+		readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+		editor := f.member("skip-owner-editor@example.com", "editor")
+		if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &editor.ID}); err != nil {
+			t.Fatal(err)
+		}
+		if rr := f.as(f.token(f.owner, ""), "POST", commitmentPath(f)+"/resolve", body); rr.Code != 200 {
+			t.Fatalf("owner: %d %s", rr.Code, rr.Body.String())
+		}
+		if n := skipJournalled(f); n != 1 {
+			t.Fatalf("skip journal rows=%d, want 1", n)
+		}
+	})
+	t.Run("unassigned item, any editor", func(t *testing.T) {
+		f := newSchedHTTP(t)
+		readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+		other := f.member("skip-unassigned@example.com", "editor")
+		if rr := f.as(f.token(other, ""), "POST", commitmentPath(f)+"/resolve", body); rr.Code != 200 {
+			t.Fatalf("editor: %d %s", rr.Code, rr.Body.String())
+		}
+		if n := skipJournalled(f); n != 1 {
+			t.Fatalf("skip journal rows=%d, want 1", n)
+		}
+	})
+}
+
+// A closed item can be reopened and is then evaluated again, so a skip of a
+// promise still ahead keeps the authority check even when the item is closed.
+func TestSkipOfAClosedItemBeforeTheDeadlineKeepsTheAuthorityGate(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+	editor := f.member("skip-closed-editor@example.com", "editor")
+	other := f.member("skip-closed-other@example.com", "editor")
+	if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &editor.ID}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE items SET fields = ? WHERE id = ?`, `{"status":"done"}`, f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip"}
+	p := commitmentPath(f) + "/resolve"
+	snap := commitmentSnapshot(t, f)
+	f.expectErr(f.as(f.token(other, ""), "POST", p, body), 403, "deadline_owner_required", "authority")
+	if commitmentSnapshot(t, f) != snap {
+		t.Fatal("refused skip wrote")
+	}
+	if rr := f.as(f.token(editor, ""), "POST", p, body); rr.Code != 200 {
+		t.Fatalf("assignee: %d %s", rr.Code, rr.Body.String())
+	}
+	if n := f.count(`SELECT COUNT(*) FROM schedule_changes WHERE change_type='missed_recorded'`); n != 0 {
+		t.Fatalf("closed item recorded %d misses", n)
+	}
+}
+
+// A skip whose assignee snapshot went stale answers the shared code with text
+// that fits a skip: there is no preview to redo.
+func TestSkipCommitmentChangedHasItsOwnText(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+	editor := f.member("skip-changed-editor@example.com", "editor")
+	other := f.member("skip-changed-other@example.com", "editor")
+	if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &editor.ID}); err != nil {
+		t.Fatal(err)
+	}
+	restore := f.srv.store.SetBeforeCommitmentPinHookForTesting(func() {
+		if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &other.ID}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	defer restore()
+	rr := f.as(f.token(editor, ""), "POST", commitmentPath(f)+"/resolve", map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip"})
+	f.expectErr(rr, 409, "commitment_changed", "stale")
+	if strings.Contains(rr.Body.String(), "re-preview") || !strings.Contains(rr.Body.String(), skipCommitmentChangedMessage) {
+		t.Fatalf("message: %s", rr.Body.String())
+	}
+}

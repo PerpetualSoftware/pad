@@ -264,7 +264,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	case "snooze":
 		long += "\n\n--until is an RFC3339 instant, a wall time read in your zone (2026-11-10T09:00), or a duration from now (2h, 1d). A bare date is refused. The occurrence stays outstanding and re-fires once at --until."
 	case "move":
-		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A hard deadline changes through POST .../commitment/renegotiate with a reason."
+		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A move changes the target only; a hard deadline on a native schedule keeps its own date and changes through renegotiate with a reason (pad remind renegotiate). A legacy hard deadline cannot be moved: PATCH .../commitment naming a role converts it to native roles first."
 	}
 	c := &cobra.Command{
 		Use:     use,
