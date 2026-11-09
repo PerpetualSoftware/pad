@@ -256,19 +256,15 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 
 	if in.State == "skip" {
-		lapse, err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs)
-		if err != nil {
+		if err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs); err != nil {
 			return nil, err
-		}
-		if lapse != nil {
-			return s.commitResolve(tx, workspaceID, itemID, lapse)
 		}
 	}
 	res := &ResolveResult{}
 	if moveChecksDeadline {
 		// The deadline is read through the evaluator's own candidate, so a
 		// per-occurrence override counts. A move does not change it.
-		d, _, err := s.deadlineStateTx(tx, sc.ID, nowT)
+		d, _, err := s.deadlineStateTx(tx, sc.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -443,6 +439,34 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	xAt, xWall := x.Format(time.RFC3339), *sc.NextWall
 	ts := nowT.Format(time.RFC3339)
 	res := &ResolveResult{}
+	completion := nowT
+	if in.State == "done" {
+		completion = actual
+	}
+	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT, completion)
+	if err != nil && in.State == "lapsed" {
+		// Expansion failed before any closure writes; keep the miss and leave
+		// the occurrence outstanding until the schedule can be repaired.
+		return nil, nil
+	}
+	var capErr *schedule.CapError
+	if in.ActualDoneAt != nil && sc.Anchor == "completion" && errors.As(err, &capErr) {
+		return nil, fieldErr("actual_done_at", "range", "actual completion exceeds schedule expansion limits")
+	}
+	if errors.Is(err, errNoExactStart) {
+		// Unreachable for a real zone (see exactElapsedStart): the schedule goes
+		// to its error state, like a stored rule that no longer compiles, not a 500.
+		tx.Rollback()
+		code := string(schedule.CodeUnsupported)
+		// Guarded by the snapshot read: a timing edit landing after the rollback is not marked broken.
+		if _, uerr := s.db.Exec(s.q(`UPDATE item_schedules SET error_code = ?, updated_at = ? WHERE id = ? AND updated_at = ?`), code, ts, sc.ID, sc.UpdatedAt); uerr != nil {
+			return nil, fmt.Errorf("record schedule error_code: %w", uerr)
+		}
+		return nil, &ErrScheduleBroken{Code: code}
+	}
+	if err != nil {
+		return nil, err
+	}
 	// Record passed-over instances separately from the occurrence being closed.
 	missed, _, err := missedOccurrences(sc, rec, nowT)
 	if err != nil {
@@ -465,7 +489,6 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		return nil, err
 	}
 
-	completion := nowT
 	if in.State == "done" {
 		column, identity := "occurrence_at", xAt
 		if len(xWall) == 10 {
@@ -474,7 +497,6 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		if _, err := tx.Exec(s.q(`UPDATE schedule_occurrences SET actual_done_at=?,actual_source=? WHERE schedule_id=? AND `+column+`=?`), NormalizeInstant(actual), actualSource, sc.ID, identity); err != nil {
 			return nil, err
 		}
-		completion = actual
 		if err := s.snapshotMilestoneEvidenceTx(tx, sc.WorkspaceID, sc.ID, OccurrenceKey(sc, xAt, xWall)); err != nil {
 			return nil, err
 		}
@@ -483,25 +505,6 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 				return nil, err
 			}
 		}
-	}
-	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT, completion)
-	var capErr *schedule.CapError
-	if in.ActualDoneAt != nil && sc.Anchor == "completion" && errors.As(err, &capErr) {
-		return nil, fieldErr("actual_done_at", "range", "actual completion exceeds schedule expansion limits")
-	}
-	if errors.Is(err, errNoExactStart) {
-		// Unreachable for a real zone (see exactElapsedStart): the schedule goes
-		// to its error state, like a stored rule that no longer compiles, not a 500.
-		tx.Rollback()
-		code := string(schedule.CodeUnsupported)
-		// Guarded by the snapshot read: a timing edit landing after the rollback is not marked broken (r4-1).
-		if _, uerr := s.db.Exec(s.q(`UPDATE item_schedules SET error_code = ?, updated_at = ? WHERE id = ? AND updated_at = ?`), code, ts, sc.ID, sc.UpdatedAt); uerr != nil {
-			return nil, fmt.Errorf("record schedule error_code: %w", uerr)
-		}
-		return nil, &ErrScheduleBroken{Code: code}
-	}
-	if err != nil {
-		return nil, err
 	}
 	var nextAt, nextWall, endedAt any
 	var remindAt string
@@ -550,36 +553,33 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 //   - passed and already recorded, or before a legacy conversion: nothing.
 //
 // A legacy row has no evaluated deadline and is unchanged.
-func (s *Store) skipDeadlineGuardTx(tx *sql.Tx, itemID string, sc *models.ItemSchedule, in ResolveInput, nowT time.Time, openFilter string, openArgs []any) (*ResolveResult, error) {
-	d, eligible, err := s.deadlineStateTx(tx, sc.ID, nowT)
+func (s *Store) skipDeadlineGuardTx(tx *sql.Tx, itemID string, sc *models.ItemSchedule, in ResolveInput, nowT time.Time, openFilter string, openArgs []any) error {
+	d, state, err := s.deadlineStateTx(tx, sc.ID)
 	if err != nil || d == nil {
-		return nil, err
+		return err
 	}
 	if !d.due(nowT) {
 		if matches, err := s.commitmentAssigneeMatchesTx(tx, itemID, in.ExpectedAssignee); err != nil {
-			return nil, err
+			return err
 		} else if !matches {
-			return nil, ErrCommitmentChanged
+			return ErrCommitmentChanged
 		}
 		if !in.MaySkipBeforeDeadline {
-			return nil, ErrSkipDeadlineAuthority
+			return ErrSkipDeadlineAuthority
 		}
-		return nil, nil
+		return nil
 	}
-	if !eligible {
-		return nil, nil
+	if !d.eligible(nowT, state) {
+		return nil
 	}
 	var open bool
 	if err := tx.QueryRow(s.q(`SELECT `+openFilter+` FROM items i WHERE i.id=?`), append(append([]any{}, openArgs...), itemID)...).Scan(&open); err != nil {
-		return nil, err
+		return err
 	}
 	if !open {
-		return nil, nil
+		return nil
 	}
-	if err := s.recordDeadlineMissTx(tx, *d); err != nil {
-		return nil, err
-	}
-	return s.lapseOccurrenceTx(tx, *d, nowT)
+	return s.recordDeadlineMissTx(tx, *d)
 }
 
 // armAfterPastMoveTx leaves the moved target in history, records the instances

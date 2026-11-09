@@ -183,14 +183,16 @@ func TestLapseOtherResolutionsStale(t *testing.T) {
 	}
 }
 
-func TestLapseSkipReturnsLapse(t *testing.T) {
+func TestLapseSkipRemainsUserResolution(t *testing.T) {
 	f := newSchedFixture(t)
 	sc := lapseSchedule(t, f, true)
 	res, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "skip", Actor: "user"}, rt(lapseNow))
 	if err != nil {
 		t.Fatal(err)
 	}
-	assertLapsed(t, f, sc)
+	if f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 || f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND state='skipped' AND actor='user'`, sc.ID) != 1 {
+		t.Fatal("skip lost its user resolution or miss evidence")
+	}
 	if res.Schedule.NextAt == nil || *res.Schedule.NextAt != "2026-10-27T09:00:00Z" {
 		t.Fatalf("skip advanced twice: %+v", res.Schedule)
 	}
@@ -440,5 +442,99 @@ func TestLapseLateDoneFloatingView(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestLapsePreviouslyRecordedMiss(t *testing.T) {
+	for _, behavior := range []string{"lapses", "stays_owed"} {
+		t.Run(behavior, func(t *testing.T) {
+			f := newSchedFixture(t)
+			sc := lapseSchedule(t, f, true)
+			f.exec(t, `UPDATE item_schedules SET deadline_behavior=? WHERE id=?`, behavior, sc.ID)
+			id := newID()
+			f.exec(t, `INSERT INTO schedule_changes(id,workspace_id,item_id,schedule_id,change_type,occurrence_key,role,after_json,actor,root_change_id,recorded_at) VALUES(?,?,?,?,'missed_recorded',?,'deadline',?,'system',?,?)`, id, f.ws.ID, sc.ItemID, sc.ID, deadlineOccAt+"|2026-10-26T09:00:00", `{"deadline":"2026-10-26T10:00:00Z"}`, id, "2026-10-26T11:00:00Z")
+			before := f.reload(t, sc.ItemID)
+			reminder := f.managed(t, before)
+			got := f.eval(t, lapseNow, 1)
+			if got.Missed != 0 || got.Evaluated != 0 || got.CapHit || f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 0 {
+				t.Fatalf("recorded miss counted again: %+v", got)
+			}
+			after := f.reload(t, sc.ItemID)
+			if behavior == "lapses" {
+				if after.NextAt == nil || *after.NextAt != "2026-10-27T09:00:00Z" || f.occRows(t, sc.ID, "lapsed") != 1 {
+					t.Fatalf("recorded miss did not lapse: %+v", after)
+				}
+			} else if !reflect.DeepEqual(before, after) || !reflect.DeepEqual(reminder, f.managed(t, after)) || f.occTotal(t, sc.ID) != 0 {
+				t.Fatal("recorded stays_owed changed")
+			}
+		})
+	}
+}
+
+func TestLapsePreConversionDeadlineIgnored(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := lapseSchedule(t, f, true)
+	id := newID()
+	f.exec(t, `INSERT INTO schedule_changes(id,workspace_id,item_id,schedule_id,change_type,before_json,after_json,actor,root_change_id,recorded_at) VALUES(?,?,?,?,'update',?,?,'system',?,?)`, id, f.ws.ID, sc.ItemID, sc.ID, `{"roles":{"roles_origin":"legacy_backfill"}}`, `{"roles":{"roles_origin":"native"}}`, id, "2026-10-26T11:00:00Z")
+	before := f.reload(t, sc.ItemID)
+	got := f.eval(t, lapseNow, 0)
+	if got.Missed != 0 || f.deadlineEvidence(t) != 0 || f.deadlineNotices(t) != 0 || f.occTotal(t, sc.ID) != 0 || !reflect.DeepEqual(before, f.reload(t, sc.ItemID)) {
+		t.Fatalf("pre-conversion deadline changed: %+v", got)
+	}
+}
+
+func TestLapseBrokenScheduleKeepsMiss(t *testing.T) {
+	for _, broken := range []string{"error_code", "rule"} {
+		t.Run(broken, func(t *testing.T) {
+			f := newSchedFixture(t)
+			sc := lapseSchedule(t, f, true)
+			if broken == "error_code" {
+				f.exec(t, `UPDATE item_schedules SET error_code='unsupported' WHERE id=?`, sc.ID)
+			} else {
+				f.exec(t, `UPDATE item_schedules SET rrule='FREQ=BOGUS' WHERE id=?`, sc.ID)
+			}
+			before := f.reload(t, sc.ItemID)
+			reminder := f.managed(t, before)
+			for i := 0; i < 2; i++ {
+				got := f.eval(t, lapseNow, 0)
+				want := 0
+				if i == 0 {
+					want = 1
+				}
+				if got.Missed != want || f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 {
+					t.Fatalf("broken schedule miss: %+v", got)
+				}
+				if f.occTotal(t, sc.ID) != 0 || !reflect.DeepEqual(before, f.reload(t, sc.ItemID)) || !reflect.DeepEqual(reminder, f.managed(t, before)) {
+					t.Fatal("broken schedule closed or advanced")
+				}
+			}
+		})
+	}
+}
+
+func TestLapseSkipPreservesComment(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := lapseSchedule(t, f, true)
+	u := f.user(t, "lapse-skip@example.com", "UTC")
+	item, err := f.s.GetItem(sc.ItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "skip", Actor: "user", Comment: f.comment(item, u.ID, "Skipping this one")}, rt(lapseNow))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Comment == nil || res.Comment.Body != "Skipping this one" {
+		t.Fatalf("skip comment: %+v", res.Comment)
+	}
+	if f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 || f.occTotal(t, sc.ID) != 1 || f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND state='skipped' AND actor='user' AND comment_id=?`, sc.ID, res.Comment.ID) != 1 {
+		t.Fatal("skip lost actor, comment or miss")
+	}
+	if res.Schedule.NextAt == nil || *res.Schedule.NextAt != "2026-10-27T09:00:00Z" {
+		t.Fatalf("skip advanced incorrectly: %+v", res.Schedule)
+	}
+	f.eval(t, lapseNow, 0)
+	if f.deadlineEvidence(t) != 1 || f.occTotal(t, sc.ID) != 1 {
+		t.Fatal("skip recorded twice")
 	}
 }

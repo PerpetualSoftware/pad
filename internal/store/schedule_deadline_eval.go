@@ -31,6 +31,7 @@ type deadlineCandidate struct {
 	zone, override *string
 	approximate    float64
 	key, after     string
+	behavior       string
 	at             time.Time
 	dateOnly       bool
 }
@@ -118,12 +119,12 @@ const deadlineFromSQL = ` FROM item_schedules sc
  AND sc.next_at IS NOT NULL AND sc.next_wall IS NOT NULL AND i.deleted_at IS NULL AND w.deleted_at IS NULL`
 
 const deadlineColumnsSQL = `sc.id,sc.workspace_id,sc.item_id,sc.tz,sc.floating,sc.next_at,sc.next_wall,sc.next_override_at,
- CASE WHEN r.fired_at IS NOT NULL THEN 1 ELSE 0 END,sc.deadline_days,sc.deadline_secs,u.timezone,o.value_at`
+ CASE WHEN r.fired_at IS NOT NULL THEN 1 ELSE 0 END,sc.deadline_days,sc.deadline_secs,u.timezone,o.value_at,COALESCE(sc.deadline_behavior,'')`
 
 func scanDeadline(row interface{ Scan(...any) error }, approximate bool) (deadlineCandidate, error) {
 	var d deadlineCandidate
 	var fired int
-	args := []any{&d.sc.ID, &d.sc.WorkspaceID, &d.sc.ItemID, &d.sc.Tz, &d.sc.Floating, &d.sc.NextAt, &d.sc.NextWall, &d.sc.NextOverrideAt, &fired, &d.days, &d.secs, &d.zone, &d.override}
+	args := []any{&d.sc.ID, &d.sc.WorkspaceID, &d.sc.ItemID, &d.sc.Tz, &d.sc.Floating, &d.sc.NextAt, &d.sc.NextWall, &d.sc.NextOverrideAt, &fired, &d.days, &d.secs, &d.zone, &d.override, &d.behavior}
 	if approximate {
 		args = append(args, &d.approximate)
 	}
@@ -191,7 +192,8 @@ func (s *Store) deadlinePage(now time.Time, cursor *deadlineCandidate) ([]deadli
 // options are read through the pool, and a read that waits for a second
 // connection while the transaction holds the first can hang a small pool. An
 // item that turns terminal between the page and the pin is the one case it can
-// miss, and recording a miss for it then is harmless.
+// miss. Recording its miss and, for a lapsing deadline, closing and advancing
+// its occurrence in that window is accepted: the window is one scan page to one pin.
 func (s *Store) openDeadlineCandidates(q Queryer, candidates []deadlineCandidate) ([]deadlineCandidate, error) {
 	byWorkspace := map[string][]string{}
 	for _, d := range candidates {
@@ -282,7 +284,11 @@ func (s *Store) deadlineJournal(q Queryer, candidates []deadlineCandidate) (map[
 }
 
 func (d deadlineCandidate) eligible(now time.Time, state deadlineJournalState) bool {
-	return d.due(now) && !state.recorded && (state.converted.IsZero() || d.at.After(state.converted))
+	return !state.recorded && d.dueAfterConversion(now, state)
+}
+
+func (d deadlineCandidate) dueAfterConversion(now time.Time, state deadlineJournalState) bool {
+	return d.due(now) && (state.converted.IsZero() || d.at.After(state.converted))
 }
 
 // EvaluateDeadlines scans without locks, then pins and rechecks each due row.
@@ -332,7 +338,7 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 				errs = append(errs, state.err)
 				continue
 			}
-			if !d.eligible(nowT, state) {
+			if !d.dueAfterConversion(nowT, state) || (state.recorded && d.behavior != "lapses") {
 				continue
 			}
 			missed, err := s.evaluateDeadline(d, nowT)
@@ -369,12 +375,17 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 		}
 		return false, err
 	}
-	d, err := s.deadlineMissCandidateTx(tx, candidate.sc.ID, nowT)
+	d, state, err := s.deadlineStateTx(tx, candidate.sc.ID)
 	if err != nil || d == nil {
 		return false, err
 	}
-	if err := s.recordDeadlineMissTx(tx, *d); err != nil {
-		return false, err
+	if !d.dueAfterConversion(nowT, state) || (state.recorded && d.behavior != "lapses") {
+		return false, nil
+	}
+	if !state.recorded {
+		if err := s.recordDeadlineMissTx(tx, *d); err != nil {
+			return false, err
+		}
 	}
 	if _, err := s.lapseOccurrenceTx(tx, *d, nowT); err != nil {
 		return false, err
@@ -382,7 +393,8 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
-	return true, nil
+	// A lapse of an already-recorded miss does not consume a cap slot.
+	return !state.recorded, nil
 }
 
 // deadlineMissCandidateTx rechecks the current deadline and the evaluator's
@@ -390,8 +402,8 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 // renegotiation preview uses the same decision as the evaluator and apply.
 // The caller has already checked the item's terminal status.
 func (s *Store) deadlineMissCandidateTx(tx *sql.Tx, scheduleID string, nowT time.Time) (*deadlineCandidate, error) {
-	d, eligible, err := s.deadlineStateTx(tx, scheduleID, nowT)
-	if err != nil || d == nil || !eligible {
+	d, state, err := s.deadlineStateTx(tx, scheduleID)
+	if err != nil || d == nil || !d.eligible(nowT, state) {
 		return nil, err
 	}
 	return d, nil
@@ -399,30 +411,29 @@ func (s *Store) deadlineMissCandidateTx(tx *sql.Tx, scheduleID string, nowT time
 
 // deadlineStateTx is the decision under deadlineMissCandidateTx with its two
 // "nil" answers told apart. d is nil when the schedule has no native deadline
-// to judge. Otherwise d.due(nowT) says whether the deadline has passed, and
-// eligible says whether the evaluator would record its miss now: false for a
-// deadline that is not due, one already recorded, or one that predates a legacy
-// conversion.
-func (s *Store) deadlineStateTx(tx *sql.Tx, scheduleID string, nowT time.Time) (d *deadlineCandidate, eligible bool, err error) {
+// to judge. Otherwise the journal state separates miss deduplication from the
+// legacy-conversion guard: an already-recorded miss can still close a lapsing
+// occurrence, but a deadline predating conversion must do neither.
+func (s *Store) deadlineStateTx(tx *sql.Tx, scheduleID string) (d *deadlineCandidate, state deadlineJournalState, err error) {
 	cand, err := scanDeadline(tx.QueryRow(s.q(`SELECT `+deadlineColumnsSQL+deadlineFromSQL+` AND sc.id=?`), scheduleID), false)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, nil
+		return nil, state, nil
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, state, err
 	}
 	if err = cand.resolve(); err != nil {
-		return nil, false, err
+		return nil, state, err
 	}
 	states, err := s.deadlineJournal(tx, []deadlineCandidate{cand})
 	if err != nil {
-		return nil, false, err
+		return nil, state, err
 	}
-	state := states[cand.sc.ID]
+	state = states[cand.sc.ID]
 	if state.err != nil {
-		return nil, false, state.err
+		return nil, state, state.err
 	}
-	return &cand, cand.eligible(nowT, state), nil
+	return &cand, state, nil
 }
 
 // recordDeadlineMissTx is the evaluator's writer, also used before applying a
@@ -456,6 +467,9 @@ func (s *Store) lapseOccurrenceTx(tx *sql.Tx, d deadlineCandidate, nowT time.Tim
 	sc, err := s.getScheduleQ(tx, d.sc.WorkspaceID, d.sc.ItemID, false)
 	if err != nil {
 		return nil, err
+	}
+	if sc.ErrorCode != nil {
+		return nil, nil
 	}
 	var rec *time.Location
 	if sc.Floating {
