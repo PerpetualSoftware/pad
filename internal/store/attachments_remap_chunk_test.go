@@ -253,7 +253,6 @@ func (w *remapWorld) itemKeys(it remapWorldItem) []string {
 // byte-for-byte as it was, references dangling exactly as before; and (3) a
 // rerun must complete the rest, and a further run must change nothing.
 func TestRemap_StopAfterFirstChunk(t *testing.T) {
-	t.Parallel()
 	s := remapStore(t)
 	w := buildRemapWorld(t, s, 20)
 

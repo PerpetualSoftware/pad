@@ -175,7 +175,6 @@ func TestBUG3678_ReplacementTokenRotates(t *testing.T) {
 }
 
 func TestBUG3678_ConcurrentRefreshesYieldOnePair_Postgres(t *testing.T) {
-	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("Postgres-only: concurrent writers")
 	}
@@ -202,7 +201,6 @@ func TestBUG3678_ConcurrentRefreshesYieldOnePair_Postgres(t *testing.T) {
 }
 
 func TestBUG3678_RevokeRacingRefreshLeavesNothingActive_Postgres(t *testing.T) {
-	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("Postgres-only: concurrent writers")
 	}
