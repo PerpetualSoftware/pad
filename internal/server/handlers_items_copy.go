@@ -325,10 +325,14 @@ type ItemCopyResultWarnings struct {
 // and the preflight alike. Inside it nothing is omitted but Skipped, so a client
 // can tell "carried" from "skipped" from "an older server" (no object).
 type ItemCopySchedule struct {
-	Carried        bool                     `json:"carried"`
-	HistoryDropped int                      `json:"history_dropped"`
-	ChangesDropped int                      `json:"changes_dropped"`
-	Skipped        *ItemCopyScheduleSkipped `json:"skipped,omitempty"`
+	Carried        bool `json:"carried"`
+	HistoryDropped int  `json:"history_dropped"`
+	ChangesDropped int  `json:"changes_dropped"`
+	// ForecastDropped and ChildrenDropped: a copy and a cross-workspace move
+	// leave the forecast, the selected children and their evidence behind.
+	ForecastDropped int                      `json:"forecast_dropped"`
+	ChildrenDropped int                      `json:"children_dropped"`
+	Skipped         *ItemCopyScheduleSkipped `json:"skipped,omitempty"`
 }
 
 // ItemCopyScheduleSkipped says why a schedule was not carried: "ended",
@@ -344,7 +348,8 @@ func itemCopyScheduleView(r store.ScheduleCarryReport) *ItemCopySchedule {
 	if !r.HasSchedule {
 		return nil
 	}
-	v := &ItemCopySchedule{Carried: r.Carried, HistoryDropped: r.HistoryDropped, ChangesDropped: r.ChangesDropped}
+	v := &ItemCopySchedule{Carried: r.Carried, HistoryDropped: r.HistoryDropped, ChangesDropped: r.ChangesDropped,
+		ForecastDropped: r.ForecastDropped, ChildrenDropped: r.ChildrenDropped}
 	if r.Skipped != "" {
 		v.Skipped = &ItemCopyScheduleSkipped{Reason: r.Skipped}
 	}
@@ -452,6 +457,11 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 	}
 	canon := input
 	canon.OpKey = ""
+	readableChildren, err := s.readableChildren(r, sourceWorkspaceID, item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	hold, ok := s.claimKey(w, r, sourceWorkspaceID, idempotencyRouteCopy, item.ID, canon, key, func(status int, stored string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -470,11 +480,12 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 
 	// ---- The copy. ONE call, no automatic server-side retry (DR-13). -----
 	res, err := s.copyItemAcrossWorkspaces(store.CrossWorkspaceCopyRequest{
-		AfterWriteTx:       afterWrite,
-		SourceItemID:       item.ID,
-		TargetWorkspaceID:  dst.WorkspaceID(),
-		TargetCollectionID: targetColl.ID,
-		FieldOverrides:     input.FieldOverrides,
+		SourceChildReadable: readableChildren,
+		AfterWriteTx:        afterWrite,
+		SourceItemID:        item.ID,
+		TargetWorkspaceID:   dst.WorkspaceID(),
+		TargetCollectionID:  targetColl.ID,
+		FieldOverrides:      input.FieldOverrides,
 		// The visibility rule, bound to THIS request and to the caller's role
 		// in the DESTINATION — dst.Role, never workspaceRole(r), which is the
 		// source's. The copy runs it on its own transaction so a late-resolved

@@ -111,7 +111,7 @@ func TestCopyEndpoint_ScheduleObjectKeepsItsZeroValues(t *testing.T) {
 		"preflight": f.call(f.owner, reqOpts{}, f.resolvableBody()).Body.String(),
 		"copy":      f.callCopy(f.owner, reqOpts{}, f.resolvableBody()).Body.String(),
 	} {
-		if !strings.Contains(raw, `"schedule":{"carried":false,"history_dropped":0,"changes_dropped":1,"skipped":{"reason":"ended"}}`) {
+		if !strings.Contains(raw, `"schedule":{"carried":false,"history_dropped":0,"changes_dropped":1,"forecast_dropped":0,"children_dropped":0,"skipped":{"reason":"ended"}}`) {
 			t.Errorf("%s body lacks the whole schedule object: %s", name, raw)
 		}
 	}
