@@ -65,6 +65,7 @@ func wantMentions(t *testing.T, s *Store, commentID, label string, want ...*mode
 }
 
 func TestCommentMentions_IndexLifecycle(t *testing.T) {
+	t.Parallel()
 	f := task3408Fixture(t, "inst-mention")
 	s := f.s
 	alice := mentionUser(t, s, "alice")
@@ -374,6 +375,7 @@ func callsReindex(src, name string) bool {
 // inside its body (the decl after it has no doc); nextDoc's span holds only the
 // following decl's doc comment naming the helper; real is the control.
 func TestCommentMentions_GuardIgnoresCommentLines(t *testing.T) {
+	t.Parallel()
 	src := "package store\n\n" +
 		"func (s *Store) innerComment() {\n\t// reindexCommentMentionsTx( is mentioned in prose\n}\n\n" +
 		"func (s *Store) sep() {\n}\n\n" +
@@ -393,6 +395,7 @@ func TestCommentMentions_GuardIgnoresCommentLines(t *testing.T) {
 }
 
 func TestCommentMentions_InsertSiteGuard(t *testing.T) {
+	t.Parallel()
 	files := readNonTestGo(t)
 	got := commentWriteCensus(t, files)
 	var keys []string
@@ -431,6 +434,7 @@ func TestCommentMentions_InsertSiteGuard(t *testing.T) {
 // The guard itself: its regex and census see spaced, newline-split and
 // lower-case statements, in a scratch file standing in for a store file.
 func TestCommentMentions_GuardSeesVariants(t *testing.T) {
+	t.Parallel()
 	src := "package store\n\nfunc (s *Store) sneaky() {\n\ttx.Exec(`insert  into\n comments (id) VALUES (1)`)\n\ttx.Exec(`REPLACE INTO comments (id) VALUES (1)`)\n\ttx.Exec(`update only comments SET x = 1`)\n\ttx.Exec(`delete\nfrom comments`)\n}\n"
 	got := commentWriteCensus(t, map[string]string{"internal/store/scratch.go": src})
 	if got["internal/store/scratch.go:sneaky"] != 4 {
@@ -439,6 +443,7 @@ func TestCommentMentions_GuardSeesVariants(t *testing.T) {
 }
 
 func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	alice := mentionUser(t, s, "alice")
 	ws := createTestWorkspace(t, s, "MentionSrc")
@@ -539,6 +544,7 @@ func TestCommentMentions_CopyAndImportNotIndexed(t *testing.T) {
 // Unresolvable names that sort early must not evict a real user: the cap
 // applies to RESOLVED mentions (TASK-3917).
 func TestCommentMentions_CapAfterResolution(t *testing.T) {
+	t.Parallel()
 	f := task3408Fixture(t, "inst-capres")
 	s := f.s
 	author := mentionUser(t, s, "author")
@@ -558,6 +564,7 @@ func TestCommentMentions_CapAfterResolution(t *testing.T) {
 }
 
 func TestCommentMentions_CapPerComment(t *testing.T) {
+	t.Parallel()
 	f := task3408Fixture(t, "inst-cap")
 	s := f.s
 	author := mentionUser(t, s, "author")

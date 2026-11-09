@@ -17,6 +17,7 @@ import (
 // PAD_TEST_POSTGRES_URL is set, which is the dialect whose LIKE treats `\`
 // as an escape.
 func TestDocumentRenameFollowsEscapedLinks(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		legacy string
 		// links are every encoding of a link to legacy: each must be rewritten.
@@ -97,6 +98,7 @@ func TestDocumentRenameFollowsEscapedLinks(t *testing.T) {
 // is the ESCAPED title: a projection from raw lengths is wrong by one byte per
 // escaped character per link, in whichever direction the titles differ.
 func TestCascadeRetainedBytesProjectsTheEscapedRewrite(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ old, new string }{
 		{`A|B`, "Fresh"}, {`A\B`, "Fresh"}, {`A]B`, "x"}, {"Plain", "Longer title"}, {"Fresh", `A|B|C`},
 	} {

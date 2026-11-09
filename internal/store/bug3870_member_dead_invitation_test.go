@@ -49,6 +49,7 @@ func bug3870Fixture(t *testing.T, s *Store, tag string) (ws *models.Workspace, i
 // accepted, role unchanged, nothing emitted), not inviter_scope_changed. A
 // non-member accepting the same dead invitation is still refused.
 func TestBUG3870_AMemberAcceptingADeadInvitationIsAlreadyIn(t *testing.T) {
+	t.Parallel()
 	losses := []struct {
 		name string
 		lose func(s *Store, ws, u string) error

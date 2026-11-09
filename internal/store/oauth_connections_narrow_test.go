@@ -37,6 +37,7 @@ func narrowFixtureConnection(t *testing.T, s *Store, requestID, userID string, a
 }
 
 func TestNarrowCurrentOnlyWildcardConnections(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, err := s.CreateUser(models.UserCreate{Email: "narrow3338@example.test", Name: "N", Password: "pw-3338-abcdefgh"})
 	if err != nil {

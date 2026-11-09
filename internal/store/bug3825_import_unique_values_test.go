@@ -34,6 +34,7 @@ func bug3825Export(key string) *models.WorkspaceExport {
 }
 
 func TestBUG3825_ImportStoresNoDuplicateUniqueValue(t *testing.T) {
+	t.Parallel()
 	// "code" has no index behind it, so the duplicate used to be stored;
 	// "invocation_slug" has one (migration 054), so the same archive used to
 	// fail the whole import on the raw constraint.
@@ -86,6 +87,7 @@ func TestBUG3825_ImportStoresNoDuplicateUniqueValue(t *testing.T) {
 // normalisation that changes nothing leaves it; values in OTHER collections and
 // non-unique fields never collide.
 func TestBUG3825_ImportLeavesDistinctValuesAlone(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	export := bug3825Export("code")
 	export.Items[1].Fields = `{ "code": "k2",  "invocation_slug": "k1" }`
@@ -114,6 +116,7 @@ func TestBUG3825_ImportLeavesDistinctValuesAlone(t *testing.T) {
 // would fail the import on one dialect's index, so on both the second item
 // drops its value.
 func TestBUG3825_InvocationSlugSpellingsCollideOnEitherDialect(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, first, second string }{
 		{"true-and-1", `true`, `1`},
 		{"1-and-1.0", `1`, `1.0`},
@@ -144,6 +147,7 @@ func TestBUG3825_InvocationSlugSpellingsCollideOnEitherDialect(t *testing.T) {
 // A schema declaring one unique key twice must not make an item collide with
 // its own claim.
 func TestBUG3825_RepeatedUniqueDeclarationIsCheckedOnce(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	export := bug3825Export("code")
 	export.Collections[0].Schema = `{"fields":[` +
@@ -163,6 +167,7 @@ func TestBUG3825_RepeatedUniqueDeclarationIsCheckedOnce(t *testing.T) {
 // 2^53 and 2^53+1 are distinct integers to SQLite and distinct text to
 // Postgres, and so are the number 1.5 and the string "1.50".
 func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ name, first, second string }{
 		{"beyond-2^53", `9007199254740992`, `9007199254740993`},
 		{"number-and-other-scale-string", `1.5`, `"1.50"`},
@@ -191,6 +196,7 @@ func TestBUG3825_InvocationSlugValuesNeitherIndexEquatesAreKept(t *testing.T) {
 // Equal but not colliding is the import failing on the index; colliding but
 // not equal is a value dropped that the index would have kept.
 func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	prefix := "sqlite:"
 	extract := `json_extract(?, '$.v')`
@@ -282,6 +288,7 @@ func TestBUG3825_SlotsMatchTheDatabase(t *testing.T) {
 // Neither slot grows with the exponent: an archive is untrusted, and 1e999999
 // is ten bytes.
 func TestBUG3825_NumberSlotsDoNotExpand(t *testing.T) {
+	t.Parallel()
 	for _, lit := range []string{"1e999999", "1e-999999", "1e999999999999999999999"} {
 		pg, sqlite := importNumberSlots(lit)
 		if len(pg) > 64 || len(sqlite) > 64 {

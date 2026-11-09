@@ -31,6 +31,7 @@ import (
 //     failure, not a pass. A guard that silently finds nothing to check is the
 //     failure mode this whole class has.
 func TestCascadeExhaustionStaysSerial(t *testing.T) {
+	t.Parallel()
 	const file = "documents_cascade_lost_update_test.go"
 	const fn = "TestUpdateDocument_CascadeExhaustionRollsBackTheWholeRename"
 
@@ -89,6 +90,7 @@ func TestCascadeExhaustionStaysSerial(t *testing.T) {
 // functions, because every test
 // in it touches one of those two globals and a new one added there would too.
 func TestMigrationGuardTestsStaySerial(t *testing.T) {
+	t.Parallel()
 	const file = "migration_guard_test.go"
 
 	src, err := os.ReadFile(file)

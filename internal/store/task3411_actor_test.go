@@ -16,6 +16,7 @@ import (
 // own PATCH reaches it as item.updated with via_app = itself, and a
 // person's edit to the same item does not.
 func TestTask3411_FencedWritesNameTheirInstall(t *testing.T) {
+	t.Parallel()
 	f := task3408Fixture(t, "inst-actor")
 	var epoch int64
 	if err := f.s.db.QueryRow(f.s.q(`SELECT auth_epoch FROM app_installs WHERE id = ?`), f.installID).Scan(&epoch); err != nil {
@@ -146,6 +147,7 @@ func TestTask3411_FencedWritesNameTheirInstall(t *testing.T) {
 
 // A v1 block (written before v2, still pending) keeps the created-only rule.
 func TestTask3411_V1BlocksKeepTheCreateOnlyRule(t *testing.T) {
+	t.Parallel()
 	v1 := func(event string) string {
 		payload := `{"id":"i1","title":"T","content":"C","app_projection":{"v":1,"collection_id":"c1","creator":{"via_app":"inst-1"},"fields":{}}}`
 		b, _, err := BuildAppEventDTO(event, "e", "t", "ws-test", []byte(payload))

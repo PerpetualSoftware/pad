@@ -109,6 +109,7 @@ func TestBUG3816_ConcurrentUnlinksKeepASignInMethod(t *testing.T) {
 
 // The sequential cases, on both drivers.
 func TestBUG3816_UnlinkRefusesOnlyTheLastSignInMethod(t *testing.T) {
+	t.Parallel()
 	t.Run("last provider, no password", func(t *testing.T) {
 		s := testStore(t)
 		id := bug3816OAuthOnlyUser(t, s)

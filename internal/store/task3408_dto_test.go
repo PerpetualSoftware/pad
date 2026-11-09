@@ -9,6 +9,7 @@ import (
 // TASK-3408 (U10b): app DTOs come from the block and the table's snapshot
 // keys only.
 func TestTask3408_AppEventDTOs(t *testing.T) {
+	t.Parallel()
 	block := `"app_projection":{"v":1,"collection_id":"c1","creator":{"user_id":"u1","display":"Ann","kind":"user","via_app":"inst-1"},"fields":{"status":"open"}}`
 	item := `{"id":"i1","workspace_id":"w1","slug":"s","title":"T","content":"C","created_at":"a","updated_at":"b",` + block + `}`
 	decode := func(t *testing.T, b []byte) map[string]any {

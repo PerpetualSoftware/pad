@@ -55,6 +55,7 @@ func task3399Req(clientID, subject, requestID, access string, epoch int) models.
 // The whole code flow persists for a person: code, PKCE, access and refresh,
 // under one binding carrying the delegated kind and the consented access.
 func TestTask3399_ADelegatedGrantPersistsThroughTheBarrier(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-d1", "write")
 	for _, persist := range []func(models.OAuthRequest) error{
 		f.s.CreateAuthorizationCode, f.s.CreatePKCERequest, f.s.CreateAccessToken, f.s.CreateRefreshToken,
@@ -79,6 +80,7 @@ func TestTask3399_ADelegatedGrantPersistsThroughTheBarrier(t *testing.T) {
 // authorize and any later step refuses that step (the required race,
 // at the store; the end-to-end race is in the server tests).
 func TestTask3399_EveryPersistenceRechecksTheEpoch(t *testing.T) {
+	t.Parallel()
 	steps := map[string]func(*Store, models.OAuthRequest) error{
 		"code":    func(s *Store, r models.OAuthRequest) error { return s.CreateAuthorizationCode(r) },
 		"pkce":    func(s *Store, r models.OAuthRequest) error { return s.CreatePKCERequest(r) },
@@ -131,6 +133,7 @@ func TestTask3399_EveryPersistenceRechecksTheEpoch(t *testing.T) {
 }
 
 func TestTask3399_TheSubjectIsALiveHumanMember(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-subj", "write")
 	outsider := createTestUser(t, f.s, "outsider@test.com", "Outsider", "password123")
 	disabled := createTestUser(t, f.s, "gone@test.com", "Gone", "password123")
@@ -156,6 +159,7 @@ func TestTask3399_TheSubjectIsALiveHumanMember(t *testing.T) {
 }
 
 func TestTask3399_TheAccessIsWithinTheManifest(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		offered, access string
 		ok              bool
@@ -183,6 +187,7 @@ func TestTask3399_TheAccessIsWithinTheManifest(t *testing.T) {
 // A later step cannot change what the grant is: its kind and access are
 // fixed by the binding its first persistence wrote.
 func TestTask3399_TheBindingFixesKindAndAccess(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-fix", "write")
 	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-fix", "read", 1)); err != nil {
 		t.Fatal(err)
@@ -218,6 +223,7 @@ func task3399Delegated(t *testing.T, f task3399Fix, requestID string) {
 // reader that lists or counts chains as connections leaves them out; the
 // app grant is listed on its own.
 func TestTask3399_AppChainsAreNotMCPConnections(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-readers", "write")
 	mcpClient := seedClient(t, f.s, "Desktop")
 	task3399MCPChain(t, f.s, mcpClient, f.person.ID, "req-mcp")
@@ -254,6 +260,7 @@ func TestTask3399_AppChainsAreNotMCPConnections(t *testing.T) {
 }
 
 func TestTask3399_RevokingAnAppGrantEndsItThroughTheBinding(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-revoke", "write")
 	task3399Delegated(t, f, "req-rv")
 	other := createTestUser(t, f.s, "other-rv@test.com", "Other", "password123")
@@ -285,6 +292,7 @@ func TestTask3399_RevokingAnAppGrantEndsItThroughTheBinding(t *testing.T) {
 // The expiry sweep removes bindings whose grant has no row
 // left, for service and delegated grants alike; a live binding stays.
 func TestTask3399_TheSweepRemovesOrphanBindings(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-sweep", "write")
 	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-gone")); err != nil {
 		t.Fatal(err)
@@ -318,6 +326,7 @@ func TestTask3399_TheSweepRemovesOrphanBindings(t *testing.T) {
 // delegated codes through their bindings, so a re-enable cannot exchange
 // one; erasing the account cascades the bindings away.
 func TestTask3399_RevokingAPersonReachesTheirDelegatedCodes(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-person", "write")
 	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-pending", "read", 1)); err != nil {
 		t.Fatal(err)
@@ -341,6 +350,7 @@ func TestTask3399_RevokingAPersonReachesTheirDelegatedCodes(t *testing.T) {
 // A grant's later persistence cannot change whom it acts for: the binding
 // fixes the person its first persistence named.
 func TestTask3399_TheBindingFixesThePerson(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-person-fix", "write")
 	other := createTestUser(t, f.s, "other-fix@test.com", "Other", "password123")
 	if err := f.s.AddWorkspaceMember(f.ws.ID, other.ID, "editor"); err != nil {
@@ -357,6 +367,7 @@ func TestTask3399_TheBindingFixesThePerson(t *testing.T) {
 // A revoke, a disable and re-enable, or a removal and re-add
 // between two persistences of one grant ends it; none is forgotten.
 func TestTask3399_AChangeBetweenPersistencesIsRemembered(t *testing.T) {
+	t.Parallel()
 	cases := map[string]func(t *testing.T, f task3399Fix){
 		"the person revoked it": func(t *testing.T, f task3399Fix) {
 			if _, err := f.s.RevokeUserAppGrant(f.person.ID, "req-mem"); err != nil {
@@ -443,6 +454,7 @@ func TestTask3399_ADisableIsOrderedAgainstIssuance(t *testing.T) {
 // not revived by a persistence already past its checks: only a grant's code
 // writes its binding, so a token persisting against none is refused.
 func TestTask3399_ASweptTombstoneRevivesNothing(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-swept", "write")
 	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-sw", "read", 1)); err != nil {
 		t.Fatal(err)
@@ -469,6 +481,7 @@ func TestTask3399_ASweptTombstoneRevivesNothing(t *testing.T) {
 // Removing a member ends their delegated grants in that
 // workspace, so a re-add in the same second revives nothing.
 func TestTask3399_RemovingAMemberEndsTheirGrants(t *testing.T) {
+	t.Parallel()
 	for _, remove := range []string{"RemoveWorkspaceMember", "RemoveWorkspaceMemberAndRevokeGrants"} {
 		t.Run(remove, func(t *testing.T) {
 			f := task3399Fixture(t, "inst-rm-"+remove, "write")
@@ -498,6 +511,7 @@ func TestTask3399_RemovingAMemberEndsTheirGrants(t *testing.T) {
 // A grant the install's epoch has moved past (an upgrade, a
 // rotate) is already unusable, and the console does not list it.
 func TestTask3399_AGrantPastTheInstallEpochIsNotListed(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-epoch-list", "write")
 	task3399Delegated(t, f, "req-el")
 	if grants, _ := f.s.ListUserAppGrants(f.person.ID); len(grants) != 1 {
@@ -515,6 +529,7 @@ func TestTask3399_AGrantPastTheInstallEpochIsNotListed(t *testing.T) {
 // session resolved them cannot mint a code after those credentials changed
 // (a disable destroyed that session, then a re-enable).
 func TestTask3399_AConsentFromAStaleSessionMintsNothing(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-stale", "write")
 	if err := f.s.DisableUserAndRevokeAccess(f.person.ID); err != nil {
 		t.Fatal(err)
@@ -534,6 +549,7 @@ func TestTask3399_AConsentFromAStaleSessionMintsNothing(t *testing.T) {
 // A grant consented to but not yet exchanged is listed,
 // so its person can revoke its code.
 func TestTask3399_AnUnexchangedGrantIsListedAndRevocable(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-unexch", "write")
 	if err := f.s.CreateAuthorizationCode(task3399Req(f.clientID, f.person.ID, "req-ux", "read", 1)); err != nil {
 		t.Fatal(err)
@@ -557,6 +573,7 @@ func TestTask3399_AnUnexchangedGrantIsListedAndRevocable(t *testing.T) {
 // and re-add before its code persists (no grant yet for the removal to
 // revoke) refuses the code.
 func TestTask3399_AConsentAcrossARemovalAndReAddMintsNothing(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-readd", "write")
 	if _, err := f.s.db.Exec(f.s.q(`DELETE FROM workspace_members WHERE user_id = ? AND workspace_id = ?`), f.person.ID, f.ws.ID); err != nil {
 		t.Fatal(err)
@@ -573,6 +590,7 @@ func TestTask3399_AConsentAcrossARemovalAndReAddMintsNothing(t *testing.T) {
 // A consent approved after the workspace was soft-deleted
 // persists nothing.
 func TestTask3399_ADeletedWorkspaceTakesNoGrant(t *testing.T) {
+	t.Parallel()
 	f := task3399Fixture(t, "inst-wsdel", "write")
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE workspaces SET deleted_at = ? WHERE id = ?`), now(), f.ws.ID); err != nil {
 		t.Fatal(err)

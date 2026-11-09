@@ -34,6 +34,7 @@ func blankRelFixture(t *testing.T, s *store.Store) (*models.Workspace, *models.C
 }
 
 func TestEmptyRelationFilterMatchesEverySpelling(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -66,6 +67,7 @@ func TestEmptyRelationFilterMatchesEverySpelling(t *testing.T) {
 }
 
 func TestFieldsPatchNormalisesCarriedBlankUnderTheLock(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

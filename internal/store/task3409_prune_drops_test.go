@@ -11,6 +11,7 @@ import (
 // owed it is counted on its hook's dropped_count; a decided endpoint is not,
 // and an event under a live claim is neither deleted nor counted.
 func TestTask3409_GivingUpOnAnEventCountsTheEndpointsStillOwed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Drops")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")
@@ -109,6 +110,7 @@ func TestTask3409_GivingUpOnAnEventCountsTheEndpointsStillOwed(t *testing.T) {
 // settled there, as dropped and counted; a failure that does not deactivate
 // settles nothing.
 func TestTask3409_AutoDeactivationSettlesTheEndpointsOwedRows(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Deactivate")
 	coll := createTestCollection(t, s, ws.ID, "Tasks")

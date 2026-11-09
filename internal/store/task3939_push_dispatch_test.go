@@ -843,6 +843,7 @@ func TestClaimNotifications_LimitIsClamped(t *testing.T) {
 // A pin, not a behaviour test: the claim cap must stay the gateway's batch
 // size, so one claim always fits one Send.
 func TestMaxNotificationClaimIsGatewayBatch(t *testing.T) {
+	t.Parallel()
 	if maxNotificationClaim != notify.MaxBatch {
 		t.Fatalf("maxNotificationClaim = %d, notify.MaxBatch = %d", maxNotificationClaim, notify.MaxBatch)
 	}
@@ -854,6 +855,7 @@ func TestMaxNotificationClaimIsGatewayBatch(t *testing.T) {
 // equivalent mutant only while this holds; raising MaxBatch past the chunk
 // makes it a live one, which needs a tick-path test.
 func TestNotificationIDChunkHoldsAGatewayBatch(t *testing.T) {
+	t.Parallel()
 	if notify.MaxBatch > notificationIDChunk {
 		t.Fatalf("notify.MaxBatch = %d exceeds notificationIDChunk = %d", notify.MaxBatch, notificationIDChunk)
 	}

@@ -10,6 +10,7 @@ import (
 // TASK-3365: account deletion reports the workspaces of the grants it
 // deleted, from the deleted rows themselves.
 func TestDeleteAccountAtomicReport_IssuedGrantWorkspaces(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	issuer := createTestUser(t, s, "issuer@test.com", "Issuer", "password123")
 	other := createTestUser(t, s, "other@test.com", "Other", "password123")

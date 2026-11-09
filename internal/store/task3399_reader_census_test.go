@@ -71,6 +71,7 @@ const (
 )
 
 func TestTask3399_EveryConnectionReaderIsClassified(t *testing.T) {
+	t.Parallel()
 	needles := []string{"oauth_connections", "oauth_connection_workspaces", "FROM oauth_access_tokens", "FROM oauth_refresh_tokens"}
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")

@@ -5,6 +5,7 @@ import "testing"
 // IsItemSlugConflict recognises exactly the items (workspace_id, slug)
 // violation, on both dialects, and not another unique index on items.
 func TestTASK3390_IsItemSlugConflict(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Slugs")
 	col := createTestCollection(t, s, ws.ID, "Tickets")

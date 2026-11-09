@@ -167,6 +167,7 @@ func TestDeferredAppendSeesTriggerInstalledByTheTransactionItWaitedOn(t *testing
 // body that does nothing — but all of them are rendered by one function, and
 // the behavioural leg proves what that function renders actually aborts.
 func TestMigratedDatabaseRefusesEveryWriteAndEveryOpen(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "marked.db")
 	s, err := New(path)
 	if err != nil {
@@ -304,6 +305,7 @@ func TestMigratedDatabaseRefusesEveryWriteAndEveryOpen(t *testing.T) {
 // arm returns before the mark, with `committed` set on exactly one line
 // immediately after Commit and a deferred Rollback otherwise.
 func TestRollbackLeavesTheSourceUntouched(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "rolledback.db")
 	s, err := New(path)
 	if err != nil {
@@ -372,6 +374,7 @@ func TestRollbackLeavesTheSourceUntouched(t *testing.T) {
 // latter carries `*_new` rebuild temporaries that are not tables in the end
 // state.
 func TestMigratedRefusalTablesAllExist(t *testing.T) {
+	t.Parallel()
 	s := testStoreSQLite(t)
 	for _, table := range MigratedRefusalTables() {
 		var n int
@@ -477,6 +480,7 @@ func TestHeldSnapshotBlocksOtherWritersRatherThanLettingThemThrough(t *testing.T
 // migratedRemedyIfMarked that no other test reaches, and that both fail in the
 // same direction: reporting "not migrated" for a database that is.
 func TestMigratedMarkerCannotBeDisarmedOrSwallowed(t *testing.T) {
+	t.Parallel()
 	t.Run("an emptied marker table still refuses", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "emptied.db")
 		s, err := New(path)
@@ -551,6 +555,7 @@ func TestMigratedMarkerCannotBeDisarmedOrSwallowed(t *testing.T) {
 // three-way branch on top of it is not driven by a test, because inducing a
 // failing SQLite COMMIT from Go is not something this suite can do honestly.
 func TestMigratedRemedyReadsTheMarkerIndependently(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "accessor.db")
 	s, err := New(path)
 	if err != nil {
@@ -608,6 +613,7 @@ func TestMigratedRemedyReadsTheMarkerIndependently(t *testing.T) {
 // dropped from the list drops out of what they check too; this leg does not
 // read the list, so dropping the entry turns it red.
 func TestMigratedDatabaseRefusesNeedsSnoozeWrites(t *testing.T) {
+	t.Parallel()
 	path := filepath.Join(t.TempDir(), "marked.db")
 	s, err := New(path)
 	if err != nil {

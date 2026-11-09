@@ -15,6 +15,7 @@ func chainMeta(prev, seq string) string {
 // PLAN-3578: a debounced merge keeps the chain only when its runs are
 // contiguous; otherwise the merged entry is marked broken.
 func TestPLAN3578_MergeKeepsTheChainOnlyWhenContiguous(t *testing.T) {
+	t.Parallel()
 	read := func(m string) map[string]interface{} {
 		var out map[string]interface{}
 		_ = json.Unmarshal([]byte(m), &out)
@@ -39,6 +40,7 @@ func TestPLAN3578_MergeKeepsTheChainOnlyWhenContiguous(t *testing.T) {
 }
 
 func TestPLAN3578_ItemSeqChainWalk(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Chain")
 	col := createTestCollection(t, s, ws.ID, "Tasks")

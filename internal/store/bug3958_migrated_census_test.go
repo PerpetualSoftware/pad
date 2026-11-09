@@ -12,6 +12,7 @@ import (
 // is either refused, or excluded with a group, or an FTS shadow table. A new
 // table fails here until someone decides which.
 func TestMigratedEveryLiveTableIsClassified(t *testing.T) {
+	t.Parallel()
 	s := testStoreSQLite(t)
 	rows, err := s.db.Query(`SELECT name FROM sqlite_master WHERE type='table'`)
 	if err != nil {
@@ -55,6 +56,7 @@ func TestMigratedEveryLiveTableIsClassified(t *testing.T) {
 // The two lists must not overlap: a table both refused and excluded means
 // someone classified it twice and one of the reasons is wrong.
 func TestMigratedRefusedAndExcludedAreDisjoint(t *testing.T) {
+	t.Parallel()
 	for _, n := range MigratedRefusalTables() {
 		if g := migratedExcludedTables[n]; g != "" {
 			t.Errorf("%q is in migratedRefusalTables and excluded as %q", n, g)
@@ -69,6 +71,7 @@ func TestMigratedRefusedAndExcludedAreDisjoint(t *testing.T) {
 // The marker table is created by the migration, not by store.New, so it is the
 // one exclusion absent from a fresh store.
 func TestMigratedExcludedTablesAllExist(t *testing.T) {
+	t.Parallel()
 	s := testStoreSQLite(t)
 	for n := range migratedExcludedTables {
 		if n == migratedMarkerTable {
@@ -85,6 +88,7 @@ func TestMigratedExcludedTablesAllExist(t *testing.T) {
 }
 
 func TestIsFTSShadowTable(t *testing.T) {
+	t.Parallel()
 	for n, want := range map[string]bool{
 		"items_fts": true, "items_fts_data": true, "comments_fts_idx": true, "documents_fts_docsize": true,
 		"items_fts_config": true, "items": false, "fts_items": false, "items_ftsx": false, "_fts": false,

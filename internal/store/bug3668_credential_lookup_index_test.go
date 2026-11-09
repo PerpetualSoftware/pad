@@ -18,6 +18,7 @@ import (
 // plan is read with enable_seqscan off: an index scan is then chosen iff one
 // exists.
 func TestBUG3668_CredentialLookupsAreIndexed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	census := []struct{ lookup, table, query string }{
 		{"API token (REST and MCP auth)", "api_tokens", `SELECT id FROM api_tokens WHERE token_hash = ?`},

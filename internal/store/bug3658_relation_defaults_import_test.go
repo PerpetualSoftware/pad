@@ -13,6 +13,7 @@ import (
 // import a default names the imported item; an id the import has no item for
 // is dropped and reported; a value that is not an id is kept.
 func TestBUG3658_ImportRemapsRelationDefaults(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	const (
 		oldRed    = "11111111-1111-4111-8111-111111111111"

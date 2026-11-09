@@ -48,6 +48,7 @@ func storeImportBanned(path, file string) bool {
 }
 
 func TestStoreHasNoNonDatabaseNetworkIO(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -82,6 +83,7 @@ var storeAttachmentsAllowed = map[string]bool{
 }
 
 func TestStoreUsesOnlyPureAttachmentsHelpers(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -185,6 +187,7 @@ var storeAttachmentsExports = func() map[string]bool {
 
 // The scan must follow an aliased and a dot import; a blank one uses nothing.
 func TestAttachmentsScanFollowsAliasAndDotImports(t *testing.T) {
+	t.Parallel()
 	const imp = `"github.com/PerpetualSoftware/pad/internal/attachments"`
 	if !storeAttachmentsExports["NewFSStore"] {
 		t.Fatal("NewFSStore is not an export of internal/attachments; the fixture is stale")
