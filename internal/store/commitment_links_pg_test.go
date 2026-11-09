@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -217,5 +218,54 @@ func TestCascadeAgainstAResolveOfOneOfItsChildrenDoesNotDeadlock(t *testing.T) {
 	}
 	if deadlocked(errs) != 0 {
 		t.Fatal("deadlock")
+	}
+}
+
+// A link write takes the same pin as a cascade, so two writes that point at each
+// other cannot deadlock: one stores its link, the other is refused as a cycle.
+func TestTwoCrossingLinkWritesDoNotDeadlock(t *testing.T) {
+	f := newLinkPG(t, 2)
+	write := func(parent, child int) func() error {
+		return func() error {
+			_, err := f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[parent].ID, ParentRole: "target", ChildItemID: f.items[child].ID, ChildRole: "target", Offset: oneDay}, f.access())
+			return err
+		}
+	}
+	errs := f.run(t, write(0, 1), write(1, 0))
+	if deadlocked(errs) != 0 {
+		t.Fatalf("errs=%v", errs)
+	}
+	refused := 0
+	for _, err := range errs {
+		var lr *LinkRefusedError
+		if errors.As(err, &lr) && lr.Code == "link_cycle" {
+			refused++
+		} else if err != nil {
+			t.Fatalf("errs=%v", errs)
+		}
+	}
+	if refused != 1 {
+		t.Fatalf("errs=%v, want one link stored and one refused as a cycle", errs)
+	}
+}
+
+// A link write moves its child while a resolve of that child waits for the
+// workspace: the write never asks for the child's item row.
+func TestLinkWriteAgainstAResolveOfItsChildDoesNotDeadlock(t *testing.T) {
+	f := newLinkPG(t, 2)
+	sc := f.scs[1]
+	errs := f.run(t,
+		func() error {
+			_, err := f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[0].ID, ParentRole: "target", ChildItemID: f.items[1].ID, ChildRole: "target", Offset: oneDay}, f.access())
+			return err
+		},
+		func() error {
+			_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"})
+			return err
+		})
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("errs=%v", errs)
+		}
 	}
 }
