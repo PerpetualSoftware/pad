@@ -220,7 +220,6 @@ func bodyOf(t *testing.T, c recordedCall) map[string]any {
 }
 
 func TestRemindRenegotiate(t *testing.T) {
-	const path = schedPath + "/renegotiate"
 	base := []string{"remind", "renegotiate", "TASK-5", "--reason", "slipped", "--deadline", "2099-01-01T09:00:00+02:00"}
 	t.Run("default is a preview", func(t *testing.T) {
 		out, _, err, calls := runSched(t, renegReply, "", base...)
