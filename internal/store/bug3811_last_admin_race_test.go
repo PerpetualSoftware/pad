@@ -132,6 +132,7 @@ func TestBUG3811_ConcurrentRemovalsKeepAnActiveAdmin(t *testing.T) {
 // The sequential cases, on both drivers: each door refuses the last active
 // admin outright.
 func TestBUG3811_EachDoorRefusesTheLastActiveAdmin(t *testing.T) {
+	t.Parallel()
 	doors := map[string]func(s *Store, id string) error{
 		"demote":      func(s *Store, id string) error { return s.SetUserRole(id, "member") },
 		"disable":     func(s *Store, id string) error { return s.DisableUserAndRevokeAccess(id) },
@@ -162,6 +163,7 @@ func TestBUG3811_EachDoorRefusesTheLastActiveAdmin(t *testing.T) {
 // while a disabled admin exists. Before BUG-3811 the demote guard counted
 // disabled admins.
 func TestBUG3811_ADisabledAdminDoesNotCount(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	a, b := bug3811Admins(t, s)
 	if err := s.DisableUserAndRevokeAccess(b); err != nil {

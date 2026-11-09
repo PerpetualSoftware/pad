@@ -12,6 +12,7 @@ import (
 // already left: A->C instead of B->C. A client that cached the item in B,
 // and cannot see A or C, then never got the moved-out tombstone.
 func TestBUG3665_MoveRecordsTheOriginUnderTheLock(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Forced move")
 	schema := `{"fields":[{"key":"status","type":"select","options":["open","done"],"default":"open"}]}`

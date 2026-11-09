@@ -115,6 +115,7 @@ func TestCreateAttachmentForLiveItem_ForeignWorkspaceParentRefuses(t *testing.T)
 
 // An orphan row has no parent to pin and takes the plain insert path.
 func TestCreateAttachmentForLiveItem_OrphanInserts(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, _, row := liveItemAttachmentFixture(t, s)
 	row.ItemID = nil

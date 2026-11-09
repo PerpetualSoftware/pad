@@ -54,6 +54,7 @@ func task3401Sorted(ids []string) string {
 // A bot with "all" access (as a member) still sees only its companions and
 // the system collections: the ceiling does not rely on its membership.
 func TestTask3401_ABotsVisibilityIsItsInstallCeiling(t *testing.T) {
+	t.Parallel()
 	f := task3401Fixture(t, "all")
 	got, err := f.s.VisibleCollectionIDsQ(f.s.db, f.ws.ID, f.bot.ID)
 	if err != nil {
@@ -84,6 +85,7 @@ func TestTask3401_ABotsVisibilityIsItsInstallCeiling(t *testing.T) {
 
 // A bot with no install sees nothing; a person's visibility is untouched.
 func TestTask3401_OrphanBotSeesNothingAndPeopleAreUnchanged(t *testing.T) {
+	t.Parallel()
 	f := task3401Fixture(t, "all")
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET bot_user_id = NULL WHERE id = ?`), f.installID); err != nil {
 		t.Fatal(err)

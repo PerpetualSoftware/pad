@@ -80,6 +80,7 @@ func task3394Count(t *testing.T, s *Store, q string, args ...any) int {
 }
 
 func TestTask3394_CreateInstallClientShape(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-shape")
 	c, err := f.s.GetOAuthClient(f.clientID)
 	if err != nil {
@@ -112,6 +113,7 @@ func TestTask3394_CreateInstallClientShape(t *testing.T) {
 }
 
 func TestTask3394_CreateInstallClientRefusals(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Refusals")
 	task3392Install(t, s, ws.ID, "inst-gone", "uninstalled")
@@ -133,6 +135,7 @@ func TestTask3394_CreateInstallClientRefusals(t *testing.T) {
 // The barrier persists a service token for the install's own bot, with a
 // binding that carries the install's epoch and workspace.
 func TestTask3394_BarrierIssuesTheBotsServiceToken(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-svc")
 	if _, err := f.s.db.Exec(f.s.q(`UPDATE app_installs SET auth_epoch = 7 WHERE id = ?`), f.installID); err != nil {
 		t.Fatal(err)
@@ -160,6 +163,7 @@ func TestTask3394_BarrierIssuesTheBotsServiceToken(t *testing.T) {
 // other subject on an install client, and a bot asked for by any other
 // client, is refused, and nothing is persisted.
 func TestTask3394_ABotCredentialHasOneDoor(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-one")
 	other := task3394FixtureIn(t, f.s, f.ws, "inst-two")
 	human := createTestUser(t, f.s, "person@test.com", "Person", "password123")
@@ -194,6 +198,7 @@ func TestTask3394_ABotCredentialHasOneDoor(t *testing.T) {
 }
 
 func TestTask3394_BarrierRefusesAnInactiveInstallOrDisabledClient(t *testing.T) {
+	t.Parallel()
 	for _, state := range []string{"disabling", "inactive", "uninstalling", "uninstalled"} {
 		t.Run(state, func(t *testing.T) {
 			f := task3394Fixture(t, "inst-"+state)
@@ -225,6 +230,7 @@ func TestTask3394_BarrierRefusesAnInactiveInstallOrDisabledClient(t *testing.T) 
 // A grant that carries no delegated kind is a service grant, and a service
 // grant has no code flow (TASK-3399 kept this refusal for it).
 func TestTask3394_AServiceGrantTakesNoCodeFlow(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-deleg")
 	human := createTestUser(t, f.s, "deleg@test.com", "Deleg", "password123")
 	if err := f.s.CreateAuthorizationCode(task3394Req(f.clientID, human.ID, "req-code")); !errors.Is(err, ErrInstallDelegatedUnsupported) {
@@ -237,6 +243,7 @@ func TestTask3394_AServiceGrantTakesNoCodeFlow(t *testing.T) {
 
 // A family bound under one epoch cannot persist again after the epoch moved.
 func TestTask3394_ALaterPersistenceUnderAMovedEpochIsRefused(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-epoch")
 	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-fam")); err != nil {
 		t.Fatal(err)
@@ -250,6 +257,7 @@ func TestTask3394_ALaterPersistenceUnderAMovedEpochIsRefused(t *testing.T) {
 }
 
 func TestTask3394_LifecyclePrimitives(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-life")
 	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-life")); err != nil {
 		t.Fatal(err)
@@ -314,6 +322,7 @@ func TestTask3394_LifecyclePrimitives(t *testing.T) {
 // The primitives write only through the caller's transaction: rolled back,
 // nothing persists.
 func TestTask3394_PrimitivesWriteOnlyThroughTheCallersTx(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-tx")
 	if err := f.s.CreateAccessToken(task3394Req(f.clientID, f.bot.ID, "req-tx")); err != nil {
 		t.Fatal(err)
@@ -352,6 +361,7 @@ func TestTask3394_PrimitivesWriteOnlyThroughTheCallersTx(t *testing.T) {
 // gates. Its callers are exactly the ordinary path (requireActiveUserTx) and
 // the issuance barrier.
 func TestTask3394_TheExemptInsertHasExactlyTwoGatedCallers(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -495,6 +505,7 @@ func TestTask3394_IssuanceRacesTheLifecycle_Postgres(t *testing.T) {
 // A request that authenticated with a secret a rotate then replaced reaches
 // the barrier after the rotate committed, carrying the old epoch.
 func TestTask3394_BarrierRefusesAGrantCarryingAnOldEpoch(t *testing.T) {
+	t.Parallel()
 	f := task3394Fixture(t, "inst-carry")
 	carried := func(epoch any) models.OAuthRequest {
 		r := task3394Req(f.clientID, f.bot.ID, "req-carry-"+newID())

@@ -11,6 +11,7 @@ import (
 // database is put back in 001's shape (its CHECK, a phase-plan row) and 004's
 // own SQL is applied through the runner.
 func TestBUG3752_PGMigration004MigratesAPhasePlanDocument(t *testing.T) {
+	t.Parallel()
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if pgURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")

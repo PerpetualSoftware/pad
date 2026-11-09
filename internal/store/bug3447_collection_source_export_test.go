@@ -11,6 +11,7 @@ import (
 // this same export piped into import. It must survive the bundle; a bundle
 // value the server would never write imports as ” (unknown, never agent).
 func TestCollectionSourceSurvivesExportImport(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	src := createTestWorkspace(t, s, "Source Src")
 	if _, err := s.CreateCollection(src.ID, models.CollectionCreate{Name: "Agent Made", Source: "cli"}); err != nil {

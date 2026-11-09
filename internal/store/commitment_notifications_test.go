@@ -31,6 +31,7 @@ func noticeFixture(t *testing.T, native bool) (notifyFixture, *models.User, *mod
 }
 
 func TestCommitmentNotices_ProvenanceKeysAndNoSubscriptions(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"unassigned", "renegotiation_refused"} {
 		for _, writer := range []string{"human", "agent", "system"} {
 			t.Run(kind+"/"+writer, func(t *testing.T) {
@@ -87,6 +88,7 @@ func TestCommitmentNotices_ProvenanceKeysAndNoSubscriptions(t *testing.T) {
 }
 
 func TestCommitmentNotices_RecipientGates(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"unassigned", "renegotiation_refused"} {
 		for _, gate := range []string{"self", "guest_without_grant", "removed_member", "removed_admin", "restricted", "no_device", "collection_access", "item_grant"} {
 			t.Run(kind+"/"+gate, func(t *testing.T) {
@@ -144,6 +146,7 @@ func TestCommitmentNotices_RecipientGates(t *testing.T) {
 }
 
 func TestCommitmentNotices_UnassignedWithoutScheduleAndEachChange(t *testing.T) {
+	t.Parallel()
 	f, recipient, actor := noticeFixture(t, false)
 	addDevice(t, f.s, recipient.ID)
 	// The unchanged-assignee path must not enqueue. There is no statement-count hook.
@@ -173,6 +176,7 @@ func TestCommitmentNotices_UnassignedWithoutScheduleAndEachChange(t *testing.T) 
 }
 
 func TestCommitmentNotices_RefusalReadsCurrentAssignee(t *testing.T) {
+	t.Parallel()
 	f, previous, actor := noticeFixture(t, true)
 	addDevice(t, f.s, previous.ID)
 	addDevice(t, f.s, actor.ID)
@@ -190,6 +194,7 @@ func TestCommitmentNotices_RefusalReadsCurrentAssignee(t *testing.T) {
 // A refusal on an item with no native deadline attempted nothing a deadline
 // owner guards, so it notifies nobody.
 func TestCommitmentNotices_RefusalNeedsNativeDeadline(t *testing.T) {
+	t.Parallel()
 	for _, native := range []bool{false, true} {
 		f, recipient, actor := noticeFixture(t, native)
 		addDevice(t, f.s, recipient.ID)
@@ -206,6 +211,7 @@ func TestCommitmentNotices_RefusalNeedsNativeDeadline(t *testing.T) {
 
 // An ended schedule has no live deadline to change, so a refusal notifies nobody.
 func TestCommitmentNotices_RefusalIgnoresEndedSchedule(t *testing.T) {
+	t.Parallel()
 	f, recipient, actor := noticeFixture(t, true)
 	addDevice(t, f.s, recipient.ID)
 	f.s.mustExec(t, `UPDATE item_schedules SET ended_at=?, next_at=NULL, next_wall=NULL WHERE item_id=?`, "2026-01-01T00:00:00Z", f.item.ID)

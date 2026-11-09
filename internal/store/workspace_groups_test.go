@@ -10,6 +10,7 @@ import (
 )
 
 func TestWorkspaceGroupsCRUDAndOwnerScope(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	a := tabsUser(t, s, "Groupa")
 	b := tabsUser(t, s, "Groupb")
@@ -61,6 +62,7 @@ func TestWorkspaceGroupsCRUDAndOwnerScope(t *testing.T) {
 }
 
 func TestWorkspaceGroupsCascades(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := tabsUser(t, s, "Cascadeowner")
 	u := tabsUser(t, s, "Cascadegroup")
@@ -99,6 +101,7 @@ func TestWorkspaceGroupsCascades(t *testing.T) {
 }
 
 func TestWorkspaceGroupsUniqueNames(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	a := tabsUser(t, s, "Namea")
 	b := tabsUser(t, s, "Nameb")
@@ -135,6 +138,7 @@ func TestWorkspaceGroupsUniqueNames(t *testing.T) {
 }
 
 func TestWorkspaceGroupsConcurrentUserCap(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	a := tabsUser(t, s, "Capa")
 	b := tabsUser(t, s, "Capb")
@@ -178,6 +182,7 @@ func TestWorkspaceGroupsConcurrentUserCap(t *testing.T) {
 // workspaces the caller can see, so a concurrent edit cannot be undone by a
 // stale snapshot taken before it.
 func TestWorkspaceGroupsUpdateKeepsMembersOutsideVisible(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := tabsUser(t, s, "Keepvisible")
 	w1 := tabsWorkspace(t, s, u, "Keep one")
@@ -207,6 +212,7 @@ func TestWorkspaceGroupsUpdateKeepsMembersOutsideVisible(t *testing.T) {
 // a group with one hidden member refuses a 100-id edit at 99, and the refusal
 // tells the caller a hidden member exists (TASK-4244).
 func TestWorkspaceGroupsCapCountsOnlySentIDs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := tabsUser(t, s, "Capcount")
 	var all []string

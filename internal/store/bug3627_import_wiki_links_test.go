@@ -7,6 +7,7 @@ import "testing"
 // server-start backfill filled item_wiki_links, so backlinks and the graph
 // stayed empty until the next restart (days, on Cloud).
 func TestBUG3627_ImportIndexesWikiLinks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Linked Source")
 	coll := createTestCollection(t, s, ws.ID, "Notes")

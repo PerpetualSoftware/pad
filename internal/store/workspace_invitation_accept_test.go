@@ -47,6 +47,7 @@ func acceptedAt(t *testing.T, s *Store, invID string) string {
 }
 
 func TestAcceptWorkspaceInvitation_NewAndExistingMember(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	wsID, userID, invID := acceptFixture(t, s)
 

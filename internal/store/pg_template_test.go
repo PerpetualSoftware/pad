@@ -28,6 +28,7 @@ import (
 // The discriminator is a marker stamped on the template after migrating, which
 // a file-level clone carries and a fresh migration cannot produce.
 func TestTestStorePostgres_DatabasesAreClonedNotMigrated(t *testing.T) {
+	t.Parallel()
 	baseURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if baseURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set; this test is about the Postgres fixture")
@@ -57,6 +58,7 @@ func TestTestStorePostgres_DatabasesAreClonedNotMigrated(t *testing.T) {
 // deliberately noted, because the counter reads 1 whether or not anything was
 // cloned from the template, which is exactly the trap the mutation exposed.
 func TestTestStorePostgres_TemplateBuildsOnce(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
 	}
@@ -72,6 +74,7 @@ func TestTestStorePostgres_TemplateBuildsOnce(t *testing.T) {
 // writable database rather than a shared one — the failure a template
 // optimisation invites is handing out the template itself.
 func TestTestStorePostgres_ClonesAreIsolated(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")
 	}

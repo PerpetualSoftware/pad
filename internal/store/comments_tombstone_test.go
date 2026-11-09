@@ -23,6 +23,7 @@ func TestCommentTombstones(t *testing.T) {
 }
 
 func TestCommentTombstones_Postgres(t *testing.T) {
+	t.Parallel()
 	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if pgURL == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")

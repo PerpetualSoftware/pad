@@ -38,6 +38,7 @@ var seqMovingSites = map[string]string{
 }
 
 func TestPLAN3578_EverySeqMovingSiteIsClassified(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)

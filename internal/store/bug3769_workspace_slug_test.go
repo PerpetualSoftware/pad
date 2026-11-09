@@ -10,6 +10,7 @@ import (
 // import name override, an import bundle's own slug and a create body's slug
 // all used to land verbatim; a name slugify keeps nothing of produced "".
 func TestBUG3769_EveryDoorSlugifiesTheWorkspaceSlug(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "bug3769@example.com", "Owner", "pw-test-12345")
 	src, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Source 3769", OwnerID: owner.ID})

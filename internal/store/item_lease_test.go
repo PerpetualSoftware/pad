@@ -23,6 +23,7 @@ func leaseFixture(t *testing.T) (*Store, string) {
 
 // A first claim on an unclaimed item succeeds and returns the lease.
 func TestClaimItemLease_UnclaimedSucceeds(t *testing.T) {
+	t.Parallel()
 	s, itemID := leaseFixture(t)
 
 	lease, err := s.ClaimItemLease(itemID, "sweep-runner", "", "", 15*time.Minute)
@@ -41,6 +42,7 @@ func TestClaimItemLease_UnclaimedSucceeds(t *testing.T) {
 // a typed LeaseHeldError naming the holder and expiry — never a silent
 // second winner.
 func TestClaimItemLease_ContendedReturnsLeaseHeld(t *testing.T) {
+	t.Parallel()
 	s, itemID := leaseFixture(t)
 
 	if _, err := s.ClaimItemLease(itemID, "winner", "", "", 15*time.Minute); err != nil {
@@ -62,6 +64,7 @@ func TestClaimItemLease_ContendedReturnsLeaseHeld(t *testing.T) {
 // N concurrent claimers produce exactly one winner; every loser gets
 // LeaseHeldError. The predicate on the UPDATE is the arbiter.
 func TestClaimItemLease_ConcurrentSingleWinner(t *testing.T) {
+	t.Parallel()
 	s, itemID := leaseFixture(t)
 
 	const n = 8
@@ -159,6 +162,7 @@ func TestGetItemLease_ExpiredReadsAsAbsent(t *testing.T) {
 
 // Release by the holder clears the lease; the item is claimable again.
 func TestReleaseItemLease_HolderReleases(t *testing.T) {
+	t.Parallel()
 	s, itemID := leaseFixture(t)
 
 	if _, err := s.ClaimItemLease(itemID, "holder", "", "", 15*time.Minute); err != nil {
@@ -199,6 +203,7 @@ func TestReleaseItemLease_AbsentOrExpiredIsNoop(t *testing.T) {
 // Releasing another holder's LIVE lease is refused with LeaseHeldError —
 // refuse-on-ambiguity, not last-writer-wins.
 func TestReleaseItemLease_ForeignLiveRefused(t *testing.T) {
+	t.Parallel()
 	s, itemID := leaseFixture(t)
 
 	if _, err := s.ClaimItemLease(itemID, "holder", "", "", 15*time.Minute); err != nil {
@@ -252,6 +257,7 @@ func TestListItemLeases_LiveOnly(t *testing.T) {
 // user before any SQL runs, on every lease path, and a worker-bound lease is
 // matched on worker id + user regardless of its label.
 func TestTASK3613_StoreWorkerIDRules(t *testing.T) {
+	t.Parallel()
 	s, itemID := leaseFixture(t)
 	const w = "wk_0123456789abcdef0123456789abcdef"
 

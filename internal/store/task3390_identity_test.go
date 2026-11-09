@@ -11,6 +11,7 @@ import (
 // never fold into one activity or one version.
 
 func TestTASK3390_DebounceKeepsInstallsApart(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Identity")
 	col := createTestCollection(t, s, ws.ID, "Tickets")
@@ -45,6 +46,7 @@ func TestTASK3390_DebounceKeepsInstallsApart(t *testing.T) {
 }
 
 func TestTASK3390_VersionThrottleKeepsInstallsApart(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Versions")
 	col := createTestCollection(t, s, ws.ID, "Tickets")

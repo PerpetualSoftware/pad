@@ -14,6 +14,7 @@ import (
 // (UpdateCollection with migrations). testStore is Postgres-backed under
 // PAD_TEST_POSTGRES_URL, so `make test-pg` is this test's Postgres leg.
 func TestRenameMultiSelectOptionMigratesArrays(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "MultiRename")
 	schema := func(opts string) string {
@@ -106,6 +107,7 @@ func TestRenameMultiSelectOptionMigratesArrays(t *testing.T) {
 // The rename's one bulk event carries an array-only rename: before BUG-3224
 // no row matched, so the event named no item and no rename.
 func TestRenameMultiSelectOptionEmitsBulkEvent(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "MultiRenameEvent")
 	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Things", Schema: `{"fields":[{"key":"tags","label":"Tags","type":"multi_select","options":["a","b"]}]}`})
@@ -168,6 +170,7 @@ func TestRenameMultiSelectOptionEmitsBulkEvent(t *testing.T) {
 // call every stored value is mapped once, scalars and arrays alike, however
 // Go orders the map. A swap is the sharpest case.
 func TestRenameOptionsApplySimultaneously(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "RenameChain")
 	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Things", Schema: `{"fields":[{"key":"tags","label":"Tags","type":"multi_select","options":["a","b","c"]},{"key":"st","label":"St","type":"select","options":["a","b","c"]}]}`})

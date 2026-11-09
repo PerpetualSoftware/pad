@@ -9,6 +9,7 @@ import (
 // cannot remove). Attempt 1 does all its writes and fails as a deadlock just
 // before its commit; attempt 2 commits the whole effect.
 func TestBug3395_DeadlockedAttemptIsRunAgain(t *testing.T) {
+	t.Parallel()
 	for _, site := range []string{"delete_account", "purge_workspace"} {
 		t.Run(site, func(t *testing.T) {
 			s := testStore(t)

@@ -31,6 +31,7 @@ func newAttachment(ws *models.Workspace, source string) *models.Attachment {
 }
 
 func TestAttachmentFilenameSourceColumn(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -88,6 +89,7 @@ func TestAttachmentFilenameSourceColumn(t *testing.T) {
 }
 
 func TestMCPAuditToolNameSourceColumn(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

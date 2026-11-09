@@ -42,10 +42,10 @@ func sessionCmd() *cobra.Command {
 	return cmd
 }
 
-// sessionFirstConnectCmd is `pad session first-connect` (PLAN-2613 S3,
-// D8): reports whether this session's first-connect boot ritual should run
-// now and marks it done, so /pad:connect fires the workspace's
-// on-session-start playbooks exactly once per session. Prints
+// sessionFirstConnectCmd is `pad session first-connect` (PLAN-2613 S3):
+// reports whether this is the session's first connect and marks it done, so
+// /pad:connect offers the workspace's on-session-start playbooks (it never
+// runs one unasked) on the first connect only, once per session. Prints
 // {"first_connect": bool}. Not hidden from JSON callers but off the main
 // help — it is a plumbing verb the connect skill calls, paired with arm.
 func sessionFirstConnectCmd() *cobra.Command {

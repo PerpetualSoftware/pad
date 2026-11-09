@@ -13,6 +13,7 @@ import (
 // whose item became IDEA-2 resolved, through GetItemByRef's workspace-number
 // fallback, to TASK-1.
 func TestBUG3750_RenumberingKeepsStoredReferencesOnTheirItems(t *testing.T) {
+	t.Parallel()
 	path := bug3664Path(t)
 	db := openRaw(t, path)
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
@@ -102,6 +103,7 @@ func TestBUG3750_RenumberingKeepsStoredReferencesOnTheirItems(t *testing.T) {
 // from backfillItemNumbers before the conversion runs, so its items are
 // reached by the same two rules.
 func TestBUG3750_StalePrefixReferenceKeepsItsFallbackTarget(t *testing.T) {
+	t.Parallel()
 	path := bug3664Path(t)
 	db := openRaw(t, path)
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {

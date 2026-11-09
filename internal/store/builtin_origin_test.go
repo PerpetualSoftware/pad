@@ -12,6 +12,7 @@ import (
 // seed text is the text its hash names; anything else imports the item
 // without an origin.
 func TestValidImportedBuiltinOrigin(t *testing.T) {
+	t.Parallel()
 	e, ok := collections.LookupBuiltin("playbook/ship")
 	if !ok {
 		t.Fatal("playbook/ship not registered")
