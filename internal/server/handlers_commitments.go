@@ -291,6 +291,14 @@ func writeDeadlineOwnerRequired(w http.ResponseWriter) {
 		map[string]interface{}{"field": "deadline", "code": "authority"})
 }
 
+// skipDeadlineOwnerMessage is the 403 text of a skip before a hard deadline.
+const skipDeadlineOwnerMessage = "Only the assignee or a workspace owner can skip this occurrence before its hard deadline."
+
+func writeSkipDeadlineOwnerRequired(w http.ResponseWriter) {
+	writeError2(w, http.StatusForbidden, "deadline_owner_required", skipDeadlineOwnerMessage,
+		map[string]interface{}{"field": "deadline", "code": "authority"})
+}
+
 func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {

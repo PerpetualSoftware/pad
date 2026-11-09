@@ -742,3 +742,50 @@ func TestDeleteCommitmentItemGoneBeforeLockIsArchived(t *testing.T) {
 		}
 	}
 }
+
+// A skip before a hard deadline is the renegotiate/DELETE authority (TASK-4353).
+func TestSkipBeforeAHardDeadlineNeedsAuthority(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)
+	editor := f.member("skip-editor@example.com", "editor")
+	other := f.member("skip-other@example.com", "editor")
+	if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &editor.ID}); err != nil {
+		t.Fatal(err)
+	}
+	body := map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip"}
+	p := commitmentPath(f) + "/resolve"
+	before := f.count(`SELECT COUNT(*) FROM schedule_changes`)
+	rr := f.as(f.token(other, ""), "POST", p, body)
+	f.expectErr(rr, 403, "deadline_owner_required", "authority")
+	if !strings.Contains(rr.Body.String(), "Only the assignee or a workspace owner can skip this occurrence before its hard deadline.") {
+		t.Fatalf("message: %s", rr.Body.String())
+	}
+	if before != f.count(`SELECT COUNT(*) FROM schedule_changes`) {
+		t.Fatal("refused skip wrote")
+	}
+	if rr := f.as(f.token(editor, ""), "POST", p, body); rr.Code != 200 {
+		t.Fatalf("assignee: %d %s", rr.Code, rr.Body.String())
+	}
+}
+
+// A move on a deadline row saves, and the response says the target is past the deadline.
+func TestMoveTargetAfterTheDeadlineCarriesAWarning(t *testing.T) {
+	t.Parallel()
+	f := newSchedHTTP(t)
+	start := time.Now().UTC().Add(24 * time.Hour).Truncate(time.Minute)
+	b := commitmentBody()
+	b["dtstart"] = start.Format("2006-01-02T15:04")
+	b["tz"] = "UTC"
+	readCommitment(t, commitmentCall(f, "POST", b), 201)
+	p := commitmentPath(f) + "/resolve"
+	rr := f.as(f.token(f.owner, ""), "POST", p, map[string]any{
+		"occurrence_at": start.Format(time.RFC3339), "state": "move", "until": start.Add(4 * 24 * time.Hour).Format(time.RFC3339)})
+	if rr.Code != 200 {
+		t.Fatalf("move: %d %s", rr.Code, rr.Body.String())
+	}
+	res, _ := schedMap(t, rr)["resolution"].(map[string]any)
+	if res["warning"] != "target_after_deadline" {
+		t.Fatalf("resolution=%v", res)
+	}
+}
