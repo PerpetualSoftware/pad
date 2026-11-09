@@ -372,10 +372,10 @@ func prepareCarriedOccurrences(in []carriedOccurrence) ([]carriedOccurrence, err
 	out := make([]carriedOccurrence, 0, len(in))
 	seenAt, seenWall := map[string]bool{}, map[string]bool{}
 	for _, o := range in {
-		if !oneOf(o.State, []string{"done", "skipped", "moved", "missed"}) {
+		if !oneOf(o.State, []string{"done", "skipped", "moved", "missed", "lapsed"}) {
 			return nil, dropf("occurrence_state", "enum")
 		}
-		if !oneOf(o.Actor, []string{"", "user", "agent"}) {
+		if !oneOf(o.Actor, []string{"", "user", "agent", "system"}) {
 			return nil, dropf("occurrence_actor", "enum")
 		}
 		if o.ActualSource == "" {

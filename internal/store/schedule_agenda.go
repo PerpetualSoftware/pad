@@ -146,7 +146,7 @@ func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneAr
 type AgendaEntry struct {
 	At          time.Time
 	Wall        schedule.Wall
-	State       string // outstanding | scheduled | done | skipped | moved | missed | unrecorded
+	State       string // outstanding | scheduled | done | skipped | moved | missed | lapsed | unrecorded
 	Fired       bool
 	Overdue     bool
 	EffectiveAt *time.Time

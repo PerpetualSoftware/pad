@@ -52,7 +52,7 @@ describe('agenda timezone presentation', () => {
   ['outstanding', 'Outstanding', '--accent-amber'], ['scheduled', 'Scheduled', '--status-blue'],
   ['done', 'Done', '--accent-green'], ['skipped', 'Skipped', '--accent-gray'],
   ['moved', 'Moved', '--accent-purple'], ['missed', 'Missed', '--accent-amber'],
-  ['unrecorded', 'No recorded state', '--accent-gray']
+  ['lapsed', 'Lapsed', '--accent-gray'], ['unrecorded', 'No recorded state', '--accent-gray']
  ])('maps %s without inferring overdue', (state, text, color) => {
   expect(entryChips(row({ state: state as AgendaEntry['state'] }))).toEqual([{ text, color: `var(${color})` }]);
  });

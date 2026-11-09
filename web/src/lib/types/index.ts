@@ -3769,7 +3769,7 @@ export interface AgendaEntry {
 	wall?: string;
 	all_day?: boolean;
 	floating?: boolean;
-	state?: 'outstanding' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'unrecorded';
+	state?: 'outstanding' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'lapsed' | 'unrecorded';
 	kind?: string;
 	audience?: 'human' | 'agent' | 'both';
 	schedule_id?: string;
