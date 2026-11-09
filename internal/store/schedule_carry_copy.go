@@ -66,6 +66,12 @@ type ScheduleCarryReport struct {
 	// the actor can read, so it never reveals one they cannot.
 	ForecastDropped int
 	ChildrenDropped int
+	// LinksDropped is how many time links touch the source schedule whose other
+	// end the mover can read. None is carried (links stay within one workspace):
+	// a copy starts with none and the source keeps hers; a move deletes all the
+	// source's, the ones to hidden items too, which are not counted. A count
+	// only, so it names no item.
+	LinksDropped int
 	// Skipped is the reason a source schedule was not carried: "ended", a
 	// timing code (timing:syntax, timing:cap_scan, ...), "exhausted" (the rule
 	// has no occurrence after now) or another carry reason. "" when carried.
@@ -184,6 +190,29 @@ func liveOverride(sc *models.ItemSchedule, nowT time.Time) string {
 	return *sc.NextOverrideAt
 }
 
+// carryLinkCount is how many links touch scheduleID whose other end's item
+// canRead accepts (nil accepts every end).
+func (s *Store) carryLinkCount(q Queryer, scheduleID string, canRead func(string) bool) (int, error) {
+	rows, err := q.Query(s.q(`SELECT CASE WHEN l.parent_schedule_id = ? THEN c.item_id ELSE p.item_id END
+ FROM schedule_links l JOIN item_schedules p ON p.id = l.parent_schedule_id JOIN item_schedules c ON c.id = l.child_schedule_id
+ WHERE l.parent_schedule_id = ? OR l.child_schedule_id = ?`), scheduleID, scheduleID, scheduleID)
+	if err != nil {
+		return 0, fmt.Errorf("count schedule links: %w", err)
+	}
+	defer rows.Close()
+	n := 0
+	for rows.Next() {
+		var other string
+		if err := rows.Scan(&other); err != nil {
+			return 0, err
+		}
+		if canRead == nil || canRead(other) {
+			n++
+		}
+	}
+	return n, rows.Err()
+}
+
 // planScheduleCarry reads the source schedule on q (FOR UPDATE when lock, on
 // Postgres) and decides what the copy does with it, validating the destination
 // schedule without writing. It returns nil when the item has no schedule.
@@ -214,6 +243,13 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 		return nil, fmt.Errorf("count schedule history: %w", err)
 	}
 	if p.report.ForecastDropped, p.report.ChildrenDropped, err = s.carryDropCounts(q, workspaceID, sc.ID, canRead); err != nil {
+		return nil, err
+	}
+	// Links stay within one workspace, so none is carried. Only a count is
+	// reported, and only of the links whose other end the mover can read, as
+	// ChildrenDropped counts only readable children: a link to a hidden item is
+	// deleted with a moved schedule all the same but shows in no report.
+	if p.report.LinksDropped, err = s.carryLinkCount(q, sc.ID, canRead); err != nil {
 		return nil, err
 	}
 	var view *time.Location
@@ -334,6 +370,15 @@ func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemI
 			if err := s.journalScheduleAfterTx(tx, id, "carry", "", "", "", "system"); err != nil {
 				return ScheduleCarryReport{}, err
 			}
+		}
+	}
+	if move {
+		// The item leaves the workspace and the destination schedule has no
+		// links, so the source's go with it, whether or not the schedule was
+		// carried or had already ended. The schedule row is locked by the plan
+		// above, as every link writer locks it before it touches a link.
+		if _, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE parent_schedule_id = ? OR child_schedule_id = ?`), p.src.ID, p.src.ID); err != nil {
+			return ScheduleCarryReport{}, fmt.Errorf("copy item across workspaces: delete source links: %w", err)
 		}
 	}
 	if move && p.src.EndedAt == nil {

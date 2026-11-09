@@ -19,7 +19,6 @@ type renegotiationPlan struct {
 	result                models.CommitmentRenegotiation
 	roles                 scheduleRoles
 	until                 time.Time
-	miss                  *deadlineCandidate
 	before, after, change string
 }
 
@@ -106,15 +105,53 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	if err != nil {
 		return nil, err
 	}
+	if in.Scope == "series" {
+		// A series change replaces the deadline role. Refuse it for a role a link
+		// uses in the preview as well, so a preview never promises an apply that
+		// is then refused, and before anything is written.
+		linked, err := s.linkedRolesTx(tx, sc.ID)
+		if err != nil {
+			return nil, err
+		}
+		if len(linked) > 0 {
+			stored, err := s.scheduleRolesOf(tx, sc)
+			if err != nil {
+				return nil, err
+			}
+			if err := guardLinkedRoles(linked, stored, plan.roles); err != nil {
+				return nil, err
+			}
+		}
+	}
 	if in.Preview {
 		return &plan.result, nil
 	}
 	if actor == "" {
 		actor = "user"
 	}
-	if plan.miss != nil {
-		if err := s.recordDeadlineMissTx(tx, *plan.miss); err != nil {
+	if open {
+		d, state, err := s.deadlineStateTx(tx, sc.ID)
+		if err != nil {
 			return nil, err
+		}
+		if d != nil && d.dueAfterConversion(nowT, state) {
+			if !state.recorded {
+				if err := s.recordDeadlineMissTx(tx, *d); err != nil {
+					return nil, err
+				}
+			}
+			lapse, err := s.lapseOccurrenceTx(tx, *d, nowT)
+			if err != nil {
+				return nil, err
+			}
+			if lapse != nil {
+				// The preview named an occurrence that just closed. Commit its
+				// lapse even when its miss was recorded before this request.
+				if err := tx.Commit(); err != nil {
+					return nil, fmt.Errorf("lapse before renegotiation: %w", err)
+				}
+				return nil, ErrCommitmentChanged
+			}
 		}
 	}
 	if in.Scope == "occurrence" {
@@ -212,7 +249,7 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 	if err != nil {
 		return nil, err
 	}
-	p := &renegotiationPlan{roles: cur, miss: miss}
+	p := &renegotiationPlan{roles: cur}
 	p.result.Revision = revision
 	view := &p.result.Preview
 	*view = models.CommitmentRenegotiationPreview{Scope: in.Scope, OccurrenceKey: key, AppliesFrom: key, CurrentDeadline: ptr(prior.value), CurrentDeadlineBehavior: cur.DeadlineBehavior, NewDeadlineBehavior: cur.DeadlineBehavior,
