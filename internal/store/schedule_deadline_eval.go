@@ -24,6 +24,14 @@ const (
 type DeadlineEvalResult struct {
 	Evaluated, Missed int
 	CapHit            bool
+	// Lapsed has one entry per schedule that closed at least one occurrence and
+	// committed in this pass, for the caller to announce.
+	Lapsed []DeadlineLapse
+}
+
+// DeadlineLapse names a schedule whose occurrence the evaluator closed.
+type DeadlineLapse struct {
+	WorkspaceID, ItemID, Kind string
 }
 
 type deadlineCandidate struct {
@@ -381,15 +389,20 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 				continue
 			}
 			evaluated[d.sc.ID] = true
-			missed, err := s.evaluateDeadline(d, nowT)
+			missed, lapsed, err := s.evaluateDeadline(d, nowT)
 			if err != nil {
 				var busy interface{ Code() int }
 				if !(s.dialect.Driver() == DriverSQLite && errors.As(err, &busy) && busy.Code()&255 == 5) {
 					errs = append(errs, fmt.Errorf("deadline %s: %w", d.sc.ID, err))
 				}
-			} else if missed {
-				result.Missed++
-				result.Evaluated++
+			} else {
+				if missed {
+					result.Missed++
+					result.Evaluated++
+				}
+				if lapsed != nil {
+					result.Lapsed = append(result.Lapsed, *lapsed)
+				}
 			}
 			if result.Evaluated == limit {
 				result.CapHit = true
@@ -403,64 +416,69 @@ func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, 
 	return result, errors.Join(errs...)
 }
 
-func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (bool, error) {
+// evaluateDeadline reports whether it recorded a new miss, and the lapse to
+// announce when it closed an occurrence. The lapse is returned only after the
+// commit, so a rolled-back close announces nothing.
+func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (bool, *DeadlineLapse, error) {
 	// This reads terminal options through the pool, before the transaction
 	// holds a connection. The item itself is checked after taking the pin.
 	filter, args := s.nonTerminalFilter(candidate.sc.WorkspaceID, "i")
 	tx, err := s.db.Begin()
 	if err != nil {
-		return false, err
+		return false, nil, err
 	}
 	defer tx.Rollback()
 	if err := s.pinScheduleTx(tx, candidate.sc.WorkspaceID, candidate.sc.ItemID); err != nil {
 		if errors.Is(err, ErrScheduleItemGone) || errors.Is(err, ErrScheduleNotFound) {
-			return false, nil
+			return false, nil, nil
 		}
-		return false, err
+		return false, nil, err
 	}
 	var open bool
 	if err := tx.QueryRow(s.q(`SELECT `+filter+` FROM items i WHERE i.id=?`), append(args, candidate.sc.ItemID)...).Scan(&open); err != nil {
-		return false, err
+		return false, nil, err
 	}
 	if !open {
-		return false, nil
+		return false, nil, nil
 	}
 	d, state, err := s.deadlineStateTx(tx, candidate.sc.ID)
 	if err != nil || d == nil {
-		return false, err
+		return false, nil, err
 	}
 	if !d.dueAfterConversion(nowT, state) || (state.recorded && d.behavior != "lapses") {
-		return false, nil
+		return false, nil, nil
 	}
 	missed := false
+	var lapsed *DeadlineLapse
 	for i := 0; i < deadlineLapseLimit; i++ {
 		if !state.recorded {
 			if err := s.recordDeadlineMissTx(tx, *d); err != nil {
-				return false, err
+				return false, nil, err
 			}
 			missed = true
 		}
 		lapse, err := s.lapseOccurrenceTx(tx, *d, nowT)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		if lapse == nil {
 			// Stays owed, or expansion failed: keep the miss without closing.
 			break
 		}
+		lapsed = &DeadlineLapse{WorkspaceID: candidate.sc.WorkspaceID, ItemID: candidate.sc.ItemID, Kind: lapse.Schedule.Kind}
 		d, state, err = s.deadlineStateTx(tx, candidate.sc.ID)
 		if err != nil {
-			return false, err
+			return false, nil, err
 		}
 		if d == nil || d.behavior != "lapses" || state.recorded || !d.dueAfterConversion(nowT, state) {
 			break
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return false, err
+		return false, nil, err
 	}
 	// A transaction with only already-recorded misses consumes no cap slot.
-	return missed, nil
+	return missed, lapsed, nil
 }
 
 // deadlineMissCandidateTx rechecks the current deadline and the evaluator's
@@ -553,5 +571,12 @@ func (s *Store) lapseOccurrenceTx(tx *sql.Tx, d deadlineCandidate, nowT time.Tim
 		return nil, err
 	}
 	nowT = nowT.UTC().Truncate(time.Second)
-	return s.closeOccurrenceTx(tx, sc, ResolveInput{State: "lapsed", Actor: "system"}, rec, x, nowT, nowT, "", "", before)
+	res, err := s.closeOccurrenceTx(tx, sc, ResolveInput{State: "lapsed", Actor: "system"}, rec, x, nowT, nowT, "", "", before)
+	if err != nil || res == nil {
+		return nil, err
+	}
+	// closeOccurrenceTx leaves Schedule to its caller. This is the row as read
+	// under the pin, before the close advanced it.
+	res.Schedule = sc
+	return res, nil
 }
