@@ -392,3 +392,53 @@ func TestLapseExportImportKeepsClosedHistory(t *testing.T) {
 		t.Fatal("import lost lapsed history")
 	}
 }
+
+func TestLapseLateDoneFloatingView(t *testing.T) {
+	for _, allDay := range []bool{false, true} {
+		for _, recurring := range []bool{false, true} {
+			t.Run(strconv.FormatBool(allDay)+"/"+strconv.FormatBool(recurring), func(t *testing.T) {
+				f := newSchedFixture(t)
+				u := f.user(t, "lapse-floating@example.com", "America/Los_Angeles")
+				f.assign(t, f.item.ID, u.ID)
+				start, storedAt, wall := "2026-10-26T09:00", "2026-10-26T16:00:00Z", "2026-10-26T09:00:00"
+				viewerAt, now := "2026-10-26T00:00:00Z", "2026-10-26T20:00:00Z"
+				if allDay {
+					start, storedAt, wall = "2026-10-26", "2026-10-26T07:00:00Z", "2026-10-26"
+					viewerAt, now = "2026-10-25T15:00:00Z", "2026-10-27T08:00:00Z"
+				}
+				rule := ""
+				if recurring {
+					rule = "FREQ=DAILY"
+				}
+				sc, err := f.s.createScheduleAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: start, Floating: true, Rrule: rule}, rt("2026-10-01T00:00:00Z"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				f.exec(t, `UPDATE item_schedules SET roles_origin='native',deadline_days=0,deadline_secs=0,deadline_behavior='lapses' WHERE id=?`, sc.ID)
+				f.eval(t, now, 0)
+				before := f.reload(t, sc.ItemID)
+				view, err := time.LoadLocation("Asia/Tokyo")
+				if err != nil {
+					t.Fatal(err)
+				}
+				in := ResolveInput{State: "done", Actor: "user", View: view, OccurrenceAt: rt(viewerAt).Add(5 * 24 * time.Hour)}
+				_, err = f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, in, rt(now))
+				var stale *ErrStaleOccurrence
+				if !errors.As(err, &stale) {
+					t.Fatalf("unrelated instant: %v, want stale", err)
+				}
+				in.OccurrenceAt = rt(viewerAt)
+				res, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, in, rt(now))
+				if err != nil {
+					t.Fatalf("late floating Done: %v", err)
+				}
+				if !reflect.DeepEqual(before, res.Schedule) {
+					t.Fatal("late Done advanced schedule")
+				}
+				if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND occurrence_wall=? AND state='done' AND actor='user'`, sc.ID, storedAt, wall) != 1 {
+					t.Fatal("late Done did not preserve recipient history identity")
+				}
+			})
+		}
+	}
+}

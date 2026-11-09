@@ -384,6 +384,15 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveInput, want, nowT, actual time.Time, actualSource string) (*ResolveResult, error) {
 	var at, wall string
 	err := tx.QueryRow(s.q(`SELECT occurrence_at,occurrence_wall FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`), sc.ID, NormalizeInstant(want)).Scan(&at, &wall)
+	if errors.Is(err, sql.ErrNoRows) && sc.Floating && in.View != nil {
+		start, parseErr := schedule.ParseWall(sc.Dtstart)
+		if parseErr != nil {
+			return nil, parseErr
+		}
+		w := wallOf(want.In(in.View))
+		w.AllDay = start.AllDay
+		err = tx.QueryRow(s.q(`SELECT occurrence_at,occurrence_wall FROM schedule_occurrences WHERE schedule_id=? AND occurrence_wall=? AND state='lapsed'`), sc.ID, w.String()).Scan(&at, &wall)
+	}
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &ErrStaleOccurrence{Schedule: sc}
 	}
