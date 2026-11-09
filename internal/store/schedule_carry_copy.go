@@ -66,6 +66,11 @@ type ScheduleCarryReport struct {
 	// the actor can read, so it never reveals one they cannot.
 	ForecastDropped int
 	ChildrenDropped int
+	// LinksDropped is how many time links touch the source schedule. None is
+	// carried (links stay within one workspace): a copy starts with none and the
+	// source keeps hers; a move deletes the source's. A count only, so it names
+	// no item the mover may not read.
+	LinksDropped int
 	// Skipped is the reason a source schedule was not carried: "ended", a
 	// timing code (timing:syntax, timing:cap_scan, ...), "exhausted" (the rule
 	// has no occurrence after now) or another carry reason. "" when carried.
@@ -216,6 +221,11 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 	if p.report.ForecastDropped, p.report.ChildrenDropped, err = s.carryDropCounts(q, workspaceID, sc.ID, canRead); err != nil {
 		return nil, err
 	}
+	// Links stay within one workspace, so none is carried. Only the count is
+	// reported: the mover may not read the item at the other end.
+	if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_links WHERE parent_schedule_id = ? OR child_schedule_id = ?`), sc.ID, sc.ID).Scan(&p.report.LinksDropped); err != nil {
+		return nil, fmt.Errorf("count schedule links: %w", err)
+	}
 	var view *time.Location
 	if sc.Floating {
 		if view, err = s.scheduleZoneOf(q, who.assignee, who.creator); err != nil {
@@ -334,6 +344,15 @@ func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemI
 			if err := s.journalScheduleAfterTx(tx, id, "carry", "", "", "", "system"); err != nil {
 				return ScheduleCarryReport{}, err
 			}
+		}
+	}
+	if move {
+		// The item leaves the workspace and the destination schedule has no
+		// links, so the source's go with it, whether or not the schedule was
+		// carried or had already ended. The schedule row is locked by the plan
+		// above, as every link writer locks it before it touches a link.
+		if _, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE parent_schedule_id = ? OR child_schedule_id = ?`), p.src.ID, p.src.ID); err != nil {
+			return ScheduleCarryReport{}, fmt.Errorf("copy item across workspaces: delete source links: %w", err)
 		}
 	}
 	if move && p.src.EndedAt == nil {
