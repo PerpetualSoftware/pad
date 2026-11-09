@@ -38,8 +38,10 @@ Do these in order:
        The offer is a plain line in your reply, never a dialog (no AskUserQuestion or
        similar): an unattended session that gets no answer carries on, connected, and the
        playbook does not run.
-   - If `first_connect` is **false**: this is a reconnect. Make no offer and do NOT re-run
-     the playbook; just re-affirm the connection.
+   - If `first_connect` is **false**: this is a reconnect. Make no offer and do NOT run the
+     playbook on your own; just re-affirm the connection. The one exception is a message
+     that itself asked for it (it names the playbook, or says to run it): that request
+     stands, so run it as described above.
 
 3. **Report the state.** Run `pad session status --format json`. Report it honestly:
    `announced_armed` true means this session is *set* to accept pushes (consent is on),
