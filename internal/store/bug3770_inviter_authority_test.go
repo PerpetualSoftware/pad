@@ -14,6 +14,7 @@ import (
 // (there is no self-leave door, so leaving is a removal) or demoted from
 // owner no longer does.
 func TestBUG3770_InvitationDiesWithItsInvitersAuthority(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		// lose takes the inviter's authority away; nil leaves it.

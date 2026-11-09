@@ -12,6 +12,7 @@ import (
 // as 1000, or a blob whose keys were only reordered, emitted item.updated for
 // nothing. Both directions, for every masking branch.
 func TestItemUpdatedSliceComparesFieldsByValue(t *testing.T) {
+	t.Parallel()
 	for _, key := range []string{"", "status", "stage"} {
 		check := func(name, before, after string, want bool) {
 			t.Helper()

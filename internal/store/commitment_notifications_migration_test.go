@@ -6,6 +6,7 @@ import (
 )
 
 func TestCommitmentNotices_MigrationSQLite(t *testing.T) {
+	t.Parallel()
 	db, _ := preMigrationDB(t, "169")
 	s := &Store{db: db, dialect: &sqliteDialect{}}
 	checkNoticeMigration(t, s, false)
@@ -25,6 +26,7 @@ func TestCommitmentNotices_MigrationSQLite(t *testing.T) {
 }
 
 func TestCommitmentNotices_MigrationPostgres(t *testing.T) {
+	t.Parallel()
 	url := os.Getenv("PAD_TEST_POSTGRES_URL")
 	if url == "" {
 		t.Skip("PAD_TEST_POSTGRES_URL not set")

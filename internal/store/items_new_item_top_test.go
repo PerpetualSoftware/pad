@@ -49,6 +49,7 @@ func setSortOrder(t *testing.T, s *Store, id string, v int) {
 }
 
 func TestNewItemTop_NeverDraggedLane(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Lane")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -75,6 +76,7 @@ func titles(items []models.Item) []string {
 }
 
 func TestNewItemTop_DraggedLane(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Dragged")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -146,6 +148,7 @@ func tiedChildren(t *testing.T, s *Store, wsID, colID string, names ...string) (
 // A new child JOINS THE END of its siblings: ship and decompose rely on it,
 // including for children created in the same second.
 func TestNewItemTop_ChildJoinsTheEnd(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Children")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -173,6 +176,7 @@ func TestNewItemTop_ChildJoinsTheEnd(t *testing.T) {
 // The ship playbook expands a plan into its children "ordered by sort_order"
 // and works them in that order; decompose creates them in sequence.
 func TestNewItemTop_ShipOrderAfterDecompose(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Ship Order")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -208,6 +212,7 @@ func TestNewItemTop_ShipOrderAfterDecompose(t *testing.T) {
 // The MIN covers PARENTLESS live items only: children with very negative
 // sort_order do not push a parentless create further down.
 func TestNewItemTop_ParentlessMinIgnoresChildren(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Mixed")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -222,6 +227,7 @@ func TestNewItemTop_ParentlessMinIgnoresChildren(t *testing.T) {
 }
 
 func TestNewItemTop_CrossWorkspaceCopy(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	for _, n := range []string{"x", "y"} {
 		it := createTestItem(t, f.s, f.wsB.ID, f.colB.ID, n, "")
@@ -241,6 +247,7 @@ func TestNewItemTop_CrossWorkspaceCopy(t *testing.T) {
 }
 
 func TestNewItemTop_ConcurrentCreates(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Concurrent")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -277,6 +284,7 @@ func TestNewItemTop_ConcurrentCreates(t *testing.T) {
 }
 
 func TestNewItemTop_FencedCreate(t *testing.T) {
+	t.Parallel()
 	f := newFenceFixture(t)
 	u := createTestUser(t, f.s, "fence@example.com", "Fence", "pw-123456789")
 	old := createTestItem(t, f.s, f.ws.ID, f.companion.ID, "old", "")
@@ -304,6 +312,7 @@ func TestNewItemTop_FencedCreate(t *testing.T) {
 
 // The reorder API accepts the INTEGER floor; MIN - 1 would overflow Postgres.
 func TestNewItemTop_ClampsAtTheIntegerFloor(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Top Floor")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
@@ -320,6 +329,7 @@ func TestNewItemTop_ClampsAtTheIntegerFloor(t *testing.T) {
 
 // The fenced create path clamps at the INTEGER floor too.
 func TestNewItemTop_FencedCreateClampsAtTheIntegerFloor(t *testing.T) {
+	t.Parallel()
 	f := newFenceFixture(t)
 	u := createTestUser(t, f.s, "fencefloor@example.com", "Fence Floor", "pw-123456789")
 	old := createTestItem(t, f.s, f.ws.ID, f.companion.ID, "floor", "")
@@ -349,6 +359,7 @@ func TestNewItemTop_FencedCreateClampsAtTheIntegerFloor(t *testing.T) {
 // template defines: first seeded, first listed (BUG-4005 r7-H1). Seeds are
 // created in sequence, so that order is item_number order.
 func TestNewItemTop_TemplateSeedsKeepTheirOrder(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Seed Order")
 	if err := s.SeedCollectionsFromTemplate(ws.ID, "startup"); err != nil {
@@ -372,6 +383,7 @@ func TestNewItemTop_TemplateSeedsKeepTheirOrder(t *testing.T) {
 
 // An app's artifacts append, so they list in manifest order (BUG-4005 r7-H1).
 func TestNewItemTop_ProvisionedArtifactsKeepManifestOrder(t *testing.T) {
+	t.Parallel()
 	f := task3397Fixture(t)
 	d := f.derived("n1")
 	want := []string{"First", "Second", "Third"}

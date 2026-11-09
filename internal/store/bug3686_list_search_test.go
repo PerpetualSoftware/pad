@@ -46,6 +46,7 @@ func sameSet(a, b []string) bool {
 }
 
 func TestBUG3686_SearchHonoursIncludeArchived(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3686 archived")
 	col := createTestCollection(t, s, ws.ID, "Notes")
@@ -75,6 +76,7 @@ func TestBUG3686_SearchHonoursIncludeArchived(t *testing.T) {
 }
 
 func TestBUG3686_SearchHonoursSort(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3686 sort")
 	col := createTestCollection(t, s, ws.ID, "Notes")
@@ -101,6 +103,7 @@ func TestBUG3686_SearchHonoursSort(t *testing.T) {
 }
 
 func TestBUG3706_TagFilterIsExact(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-3706 tags")
 	col := createTestCollection(t, s, ws.ID, "Notes")

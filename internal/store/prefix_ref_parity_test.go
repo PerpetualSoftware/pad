@@ -19,6 +19,7 @@ import (
 // Asserted against the resolver itself rather than against a restatement of
 // its rule, so the two cannot drift apart silently.
 func TestDerivePrefix_OutputIsAcceptedByTheRefParser(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{
 		"TEMP Rook A 2870", "2026 Goals", "Sprint 42", "Tasks",
 		"Customer Feedback", "Ünsicherheit", "v2 Roadmap",

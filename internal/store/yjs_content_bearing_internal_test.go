@@ -11,6 +11,7 @@ import (
 // op-log) and by `pad item edit`'s refusal. So each non-content case has a
 // near-miss twin that must stay content-bearing.
 func TestYjsFrameEnvelopeClassifier(t *testing.T) {
+	t.Parallel()
 	mustHex := func(s string) []byte {
 		b, err := hex.DecodeString(s)
 		if err != nil {

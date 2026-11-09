@@ -11,6 +11,7 @@ import (
 // (CreatePasswordReset).
 
 func TestBUG3679_PasswordChangeKillsOutstandingResetLink(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		fenced bool
@@ -56,6 +57,7 @@ func TestBUG3679_PasswordChangeKillsOutstandingResetLink(t *testing.T) {
 
 // A write that changes no password leaves the link alone.
 func TestBUG3679_NonPasswordUpdateKeepsResetLink(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "bug3679-name@example.com")
 	link, err := s.CreatePasswordReset(u.ID)
@@ -74,6 +76,7 @@ func TestBUG3679_NonPasswordUpdateKeepsResetLink(t *testing.T) {
 // A fenced write that loses its fence changes nothing, so it must not spend
 // the link either.
 func TestBUG3679_RefusedPasswordWriteKeepsResetLink(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "bug3679-refused@example.com")
 	link, err := s.CreatePasswordReset(u.ID)

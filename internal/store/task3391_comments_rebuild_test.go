@@ -69,6 +69,7 @@ func (f commentFixture) ftsHits(t *testing.T, word string) []string {
 }
 
 func TestTASK3391_CommentsSurviveTheSourceMigration(t *testing.T) {
+	t.Parallel()
 	f := newCommentFixture(t)
 
 	// The CHECK: 'app' is accepted, anything outside the list is still refused.
@@ -175,6 +176,7 @@ func commentsSchema(t *testing.T, s *Store) string {
 // whatever comments holds, so re-applying it through the real runner is a
 // faithful rebuild of a populated table.
 func TestTASK3391_RebuildPreservesRowsAndSchema(t *testing.T) {
+	t.Parallel()
 	f := newCommentFixture(t)
 	skipUnlessSQLite(t, f.s)
 

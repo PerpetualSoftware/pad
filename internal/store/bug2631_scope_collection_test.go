@@ -66,6 +66,7 @@ func wantIDs(items ...*models.Item) string {
 }
 
 func TestScopeCollectionIDIsAScopeNotAPermission(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -120,6 +121,7 @@ func TestScopeCollectionIDIsAScopeNotAPermission(t *testing.T) {
 // collection takes that slug. The scoped query still answers for the
 // collection that was resolved; a slug filter answers for the newcomer.
 func TestScopeCollectionIDSurvivesSlugReuse(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

@@ -29,6 +29,7 @@ func collBySlug(t *testing.T, s *store.Store, wsID, slug string) *models.Collect
 }
 
 func TestPLAN3535_TemplateSeedsMarkReferenceCollections(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -53,6 +54,7 @@ func TestPLAN3535_TemplateSeedsMarkReferenceCollections(t *testing.T) {
 }
 
 func TestPLAN3535_CreateDefaultsAndExplicitValues(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -87,6 +89,7 @@ func TestPLAN3535_CreateDefaultsAndExplicitValues(t *testing.T) {
 }
 
 func TestPLAN3535_UpdateKeepsAndSetsTheFlag(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -133,6 +136,7 @@ func TestPLAN3535_UpdateKeepsAndSetsTheFlag(t *testing.T) {
 // system collection whose settings lack the key gets false; a non-system one
 // is left alone (absent = work); a system one that already says is left alone.
 func TestPLAN3535_MigrationMarksExistingSystemCollections(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

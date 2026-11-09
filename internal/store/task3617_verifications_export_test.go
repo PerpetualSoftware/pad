@@ -106,6 +106,7 @@ func assertVerificationsArrived(t *testing.T, dst *store.Store, dstWS *models.Wo
 }
 
 func TestTASK3617_VerificationsRoundTripThroughExport(t *testing.T) {
+	t.Parallel()
 	s := storetest.NewSQLite(t)
 	slug, want := seedVerifiedSpec(t, s)
 	exp, err := s.ExportWorkspace(slug)
@@ -126,6 +127,7 @@ func TestTASK3617_VerificationsRoundTripThroughExport(t *testing.T) {
 // store's ImportWorkspace with the slug preserved (cmd_db.go
 // migrateImportWorkspace). Skips unless PAD_TEST_POSTGRES_URL is set.
 func TestTASK3617_VerificationsSurviveMigrateToPostgres(t *testing.T) {
+	t.Parallel()
 	pg := storetest.NewPostgres(t)
 	src := storetest.NewSQLite(t)
 	slug, want := seedVerifiedSpec(t, src)
@@ -145,6 +147,7 @@ func TestTASK3617_VerificationsSurviveMigrateToPostgres(t *testing.T) {
 // backends; a refused statement on Postgres would have taken the whole
 // import with it.
 func TestTASK3617_ImportDropsMalformedVerifications(t *testing.T) {
+	t.Parallel()
 	for _, b := range task3617Backends() {
 		t.Run(b.name, func(t *testing.T) {
 			src := storetest.NewSQLite(t)

@@ -10,6 +10,7 @@ import (
 // which hides a missing tie-break from any end-to-end paging walk; this pins
 // the clause itself.
 func TestBUG3704_EveryItemSortEndsOnTheID(t *testing.T) {
+	t.Parallel()
 	d := &sqliteDialect{}
 	for sort, want := range map[string]string{
 		"":                    " ORDER BY i.pinned DESC, i.updated_at DESC, i.id",

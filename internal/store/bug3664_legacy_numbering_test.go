@@ -72,6 +72,7 @@ func assertWorkspaceNumbering(t *testing.T, s *Store) {
 // A database from before workspace numbering, stopped before 056, holding the
 // legacy index and per-collection numbers, upgrades in one go.
 func TestBUG3664_LegacyDatabaseUpgradesThrough056(t *testing.T) {
+	t.Parallel()
 	path := bug3664Path(t)
 	db := openRaw(t, path)
 	if _, err := db.Exec(`CREATE TABLE IF NOT EXISTS schema_migrations (version TEXT PRIMARY KEY, applied_at TEXT NOT NULL)`); err != nil {
@@ -112,6 +113,7 @@ func TestBUG3664_LegacyDatabaseUpgradesThrough056(t *testing.T) {
 // legacy index, no workspace index, per-collection numbers. It recovers on
 // the next startup.
 func TestBUG3664_StuckDatabaseRecoversOnStartup(t *testing.T) {
+	t.Parallel()
 	path := bug3664Path(t)
 	s, err := New(path)
 	if err != nil {
@@ -136,6 +138,7 @@ func TestBUG3664_StuckDatabaseRecoversOnStartup(t *testing.T) {
 // A current database whose numbers are already unique per workspace is left
 // exactly as it is: the fallback marker is repetition, not a missing index.
 func TestBUG3664_CurrentNumberingIsNotRenumbered(t *testing.T) {
+	t.Parallel()
 	path := bug3664Path(t)
 	s, err := New(path)
 	if err != nil {

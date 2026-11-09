@@ -13,6 +13,7 @@ import (
 // This walk has done that since the initial release. All text here is valid
 // UTF-8; the older row reads as patch_failed instead.
 func TestBUG3839_HistoryPastABrokenRowDoesNotPanic(t *testing.T) {
+	t.Parallel()
 	recorded, older, current := "a\né+abb😀", "%a+a😀ab", "é😀ab😀+%"
 	for _, backend := range contentBackends() {
 		t.Run(backend.name, func(t *testing.T) {

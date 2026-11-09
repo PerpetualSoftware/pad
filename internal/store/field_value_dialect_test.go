@@ -116,6 +116,7 @@ func equalStrings(a, b []string) bool {
 // (A) equality: list filters, the any-of filter, the search filter, the
 // uniqueness probe and the option-rename migration.
 func TestFieldValueEqualityIsTypeAware(t *testing.T) {
+	t.Parallel()
 	f := newFieldValueFixture(t)
 	s, ws := f.s, f.ws
 
@@ -219,6 +220,7 @@ func containsString(xs []string, x string) bool {
 // canonical text is a terminal option. Done: "done", "5", 5, true, 1e3,
 // 1000.0. Open: 1, 0, the array, null, missing.
 func TestFieldValueTerminalCountsAgree(t *testing.T) {
+	t.Parallel()
 	f := newFieldValueFixture(t)
 	s, ws := f.s, f.ws
 	const total, done = 11, 6
@@ -253,6 +255,7 @@ func TestFieldValueTerminalCountsAgree(t *testing.T) {
 // (C) values: the link status projection, the search status facet and the
 // report distribution render the same canonical text on both dialects.
 func TestFieldValueRenderedTextAgrees(t *testing.T) {
+	t.Parallel()
 	f := newFieldValueFixture(t)
 	s, ws := f.s, f.ws
 
@@ -316,6 +319,7 @@ func equalCounts(a, b map[string]int) bool {
 // (C) sort, and BUG-3218's lexical number sort: numbers numerically, then
 // strings, booleans, other shapes, and NULLs last in both directions.
 func TestFieldValueSortAgrees(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "FieldSort")
 	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Nums", Schema: `{"fields":[{"key":"n","label":"N","type":"number"}]}`})
@@ -359,6 +363,7 @@ func TestFieldValueSortAgrees(t *testing.T) {
 // agrees even where the rendering does not. If this test starts failing
 // because the renderings converged, update the doc comment with it.
 func TestFieldValueDialectResidual(t *testing.T) {
+	t.Parallel()
 	f := newFieldValueFixture(t)
 	s, ws := f.s, f.ws
 	id := f.byLbl[`0`]
@@ -390,6 +395,7 @@ func TestFieldValueDialectResidual(t *testing.T) {
 // in dialect_fieldvalue.go, one case per member: SQLite rounds to int64 or
 // float64 and so equates neighbours; Postgres stays exact.
 func TestFieldValueNumberExtremes(t *testing.T) {
+	t.Parallel()
 	f := newFieldValueFixture(t)
 	s, ws := f.s, f.ws
 	id := f.byLbl[`0`]
@@ -430,6 +436,7 @@ func TestFieldValueNumberExtremes(t *testing.T) {
 // inside the transaction: the assertion is that the index is USABLE, which is
 // the property a change to the query text could take away.
 func TestUniqueHolderQueryUsesTheIndex(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "UniqIdx")
 	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "PB", Schema: `{"fields":[{"key":"invocation_slug","label":"Slug","type":"text"}]}`})

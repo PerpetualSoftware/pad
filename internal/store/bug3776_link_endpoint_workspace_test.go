@@ -21,6 +21,7 @@ import (
 // in the same reader that must be present, so a reader that returned nothing
 // at all could not pass.
 func TestBUG3776ForeignEndpointLinkRowsAreIgnored(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []struct {
 		name string
 		open func(t *testing.T) *store.Store

@@ -9,6 +9,7 @@ import (
 // PLAN-3578 step 3: a stored patch is read only within its workspace, and
 // goes with its item.
 func TestPLAN3578_ItemPatchScopedAndCascaded(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Patches")
 	other := createTestWorkspace(t, s, "Other")

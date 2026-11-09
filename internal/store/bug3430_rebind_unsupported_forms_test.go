@@ -39,6 +39,7 @@ func unsupportedRebindForm(lit string) string {
 }
 
 func TestStoreSQLAvoidsFormsRebindDoesNotLex(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -81,6 +82,7 @@ func TestStoreSQLAvoidsFormsRebindDoesNotLex(t *testing.T) {
 
 // The detector itself, so the guard cannot pass by matching nothing.
 func TestUnsupportedRebindFormDetector(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   string
 		want bool

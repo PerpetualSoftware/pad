@@ -11,6 +11,7 @@ import (
 // Every resolution path, and an id that no longer resolves left out (the
 // page then shows the id).
 func TestMCPAuditNames_EveryPath(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 
 	named, err := s.CreateUser(models.UserCreate{Email: "named@example.com", Name: "Named Person", Password: "pw-test-12345"})

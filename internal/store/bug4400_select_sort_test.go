@@ -47,6 +47,7 @@ func selectSortItem(t *testing.T, s *Store, wsID, colID, title, field, value str
 }
 
 func TestBUG4400_PrioritySortFollowsRank(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name    string
 		options []string
@@ -89,6 +90,7 @@ func TestBUG4400_PrioritySortFollowsRank(t *testing.T) {
 }
 
 func TestBUG4400_ConventionPrioritySortFollowsRank(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-4400 conventions")
 	col := selectSortCollection(t, s, ws.ID, "Rules", "priority", []string{"nice-to-have", "should", "must"})
@@ -105,6 +107,7 @@ func TestBUG4400_ConventionPrioritySortFollowsRank(t *testing.T) {
 }
 
 func TestBUG4400_MixedCollectionsShareOneOrder(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-4400 mixed")
 	a := selectSortCollection(t, s, ws.ID, "Alpha", "priority", []string{"low", "medium", "high", "critical"})
@@ -120,6 +123,7 @@ func TestBUG4400_MixedCollectionsShareOneOrder(t *testing.T) {
 }
 
 func TestBUG4400_OtherSelectFollowsDeclaredOrder(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-4400 declared")
 	col := selectSortCollection(t, s, ws.ID, "Stages", "stage", []string{"zeta", "alpha", "mid"})
@@ -136,6 +140,7 @@ func TestBUG4400_OtherSelectFollowsDeclaredOrder(t *testing.T) {
 }
 
 func TestBUG4400_SearchPathSortsTheSame(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-4400 search")
 	col := selectSortCollection(t, s, ws.ID, "Things", "priority", []string{"low", "medium", "high"})
@@ -153,6 +158,7 @@ func TestBUG4400_SearchPathSortsTheSame(t *testing.T) {
 // A collection that holds the key as a NUMBER (not a select) keeps its numeric
 // order inside the "no rank" group of a workspace-wide list (hunter r1, finding 1).
 func TestBUG4400_NonSelectCollectionKeepsNumericOrder(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-4400 mixed types")
 	sel := selectSortCollection(t, s, ws.ID, "Sel", "priority", []string{"low", "high"})
@@ -177,6 +183,7 @@ func TestBUG4400_NonSelectCollectionKeepsNumericOrder(t *testing.T) {
 // A field sort reads the collection schemas through the pool, so ListItemsQ
 // refuses it on a snapshot executor instead of mixing the two (Luna r2h).
 func TestBUG4400_ListItemsQRefusesFieldSortOnSnapshot(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-4400 snapshot")
 	tx, err := s.db.Begin()
@@ -198,6 +205,7 @@ func TestBUG4400_ListItemsQRefusesFieldSortOnSnapshot(t *testing.T) {
 // A list with CollectionIDs AND ItemIDs holds items of a collection reached
 // only by an individual grant; that collection ranks too (Luna r3).
 func TestBUG4400_GrantedItemOutsideCollectionIDsRanks(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "BUG-4400 grants")
 	a := selectSortCollection(t, s, ws.ID, "Alpha", "priority", []string{"low", "medium", "high"})

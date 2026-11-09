@@ -84,6 +84,7 @@ func TestBUG3634_AcceptWaitsOnAConcurrentInviterRestriction_Postgres(t *testing.
 // row lock the write takes: widened since the caller's check, the target's
 // role is not changed.
 func TestBUG3634_RoleChangeWithinRechecksTheTargetsScope(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner, err := s.CreateUser(models.UserCreate{Email: "o-3634r@example.com", Name: "O", Password: "pw-test-12345"})
 	if err != nil {

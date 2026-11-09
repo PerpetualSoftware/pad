@@ -21,6 +21,7 @@ import (
 // here is SQL with a non-default table alias, which is precisely where the two
 // dialects can diverge.
 func TestBacklinkSnippetsCarryTheMarkerBothWays(t *testing.T) {
+	t.Parallel()
 	for _, backend := range []struct {
 		name string
 		open func(t *testing.T) *store.Store

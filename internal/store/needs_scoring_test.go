@@ -16,6 +16,7 @@ import (
 // testStore.
 
 func TestNeedsScoringItems(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	short := createTestItem(t, s, ws.ID, col.ID, "Short", "héllo")
 	long := createTestItem(t, s, ws.ID, col.ID, "Long", strings.Repeat("é", 700))
@@ -49,6 +50,7 @@ func TestNeedsScoringItems(t *testing.T) {
 }
 
 func TestLatestDecisionsForItems(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	a := createTestItem(t, s, ws.ID, col.ID, "A", "")
 	b := createTestItem(t, s, ws.ID, col.ID, "B", "")
@@ -98,6 +100,7 @@ func TestLatestDecisionsForItems(t *testing.T) {
 }
 
 func TestOwedDecisionJobs(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
 	owed := createTestItem(t, s, ws.ID, col.ID, "Owed", "")
@@ -143,6 +146,7 @@ func TestOwedDecisionJobs(t *testing.T) {
 // More ids than one IN list takes: results from every chunk are merged, and
 // every id answers.
 func TestNeedsScoringReads_ChunkOverTheInLimit(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
 	n := needsChunk + 25
@@ -182,6 +186,7 @@ func TestNeedsScoringReads_ChunkOverTheInLimit(t *testing.T) {
 
 // An id given twice, with the copies a chunk apart, answers once.
 func TestLatestDecisionsForItems_DuplicateIDsAcrossChunks(t *testing.T) {
+	t.Parallel()
 	s, ws, col := decisionFixture(t)
 	s.SetDecisionSetResolver(func(string) []string { return nil })
 	a := createTestItem(t, s, ws.ID, col.ID, "A", "")
@@ -213,6 +218,7 @@ func TestLatestDecisionsForItems_DuplicateIDsAcrossChunks(t *testing.T) {
 }
 
 func TestGetBlocksEdges_CarriesTheTarget(t *testing.T) {
+	t.Parallel()
 	s, ws, srcCol := decisionFixture(t)
 	tgtCol := createTestCollection(t, s, ws.ID, "Bugs")
 	src := createTestItem(t, s, ws.ID, srcCol.ID, "Blocker", "")

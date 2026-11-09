@@ -16,6 +16,7 @@ import (
 // The frame is BUG-3134's real step2 answer (bug3136_step2_twin_test.go),
 // appended with no update twin, as the only row.
 func TestStep2OnlyCopyReachesRecovery(t *testing.T) {
+	t.Parallel()
 	for _, b := range contentBackends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

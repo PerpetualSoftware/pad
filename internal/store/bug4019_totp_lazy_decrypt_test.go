@@ -43,6 +43,7 @@ func undecryptableTOTPUser(t *testing.T, s *Store, username string) *models.User
 }
 
 func TestBUG4019_ReadsOfAnUndecryptableUserSucceed(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Lazy TOTP")
 	author := mentionUser(t, s, "author4019")
@@ -131,6 +132,7 @@ func bug4019HasEnabled(users []models.User, id string) bool {
 }
 
 func TestBUG4019_TOTPSecretForVerify(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := mentionUser(t, s, "verify4019")
 	if _, err := s.TOTPSecretForVerify(u.ID); !errors.Is(err, ErrNoTOTPSecret) {

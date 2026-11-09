@@ -63,6 +63,7 @@ func (f fenceFixture) spec() FenceSpec {
 // The fence admits only the install, epoch and workspace the request was
 // admitted under, while the install is active.
 func TestFencedTx_AdmitsOnlyTheCurrentEpochOfAnActiveInstall(t *testing.T) {
+	t.Parallel()
 	f := newFenceFixture(t)
 	ctx := context.Background()
 	ftx, err := f.s.BeginFenced(ctx, f.spec())
@@ -98,6 +99,7 @@ func TestFencedTx_AdmitsOnlyTheCurrentEpochOfAnActiveInstall(t *testing.T) {
 // Writes are fenced on companion collections, and a derived row on the
 // CURRENT collection of the live item it hangs off, in this workspace.
 func TestFencedTx_CompanionChecks(t *testing.T) {
+	t.Parallel()
 	f := newFenceFixture(t)
 	mine := createTestItem(t, f.s, f.ws.ID, f.companion.ID, "Ticket", "")
 	hidden := createTestItem(t, f.s, f.ws.ID, f.other.ID, "Private note", "")
@@ -132,6 +134,7 @@ func TestFencedTx_CompanionChecks(t *testing.T) {
 
 // The numbers a fenced write would allocate are the human create's own.
 func TestFencedTx_AllocatesWhatTheHumanPathWould(t *testing.T) {
+	t.Parallel()
 	f := newFenceFixture(t)
 	it := createTestItem(t, f.s, f.ws.ID, f.companion.ID, "First", "")
 	ftx, err := f.s.BeginFenced(context.Background(), f.spec())
@@ -150,6 +153,7 @@ func TestFencedTx_AllocatesWhatTheHumanPathWould(t *testing.T) {
 }
 
 func TestFencedTx_FinishedTransactionRefusesWork(t *testing.T) {
+	t.Parallel()
 	f := newFenceFixture(t)
 	ftx, err := f.s.BeginFenced(context.Background(), f.spec())
 	if err != nil {
@@ -248,6 +252,7 @@ func TestFencedTx_SeqLockBlocksAHumanCreate(t *testing.T) {
 // BeginFenced. The match is on the selector in the syntax tree, so a comment
 // or a string naming it does not count.
 func TestFencedTx_OnlyAppstoreOpensOne(t *testing.T) {
+	t.Parallel()
 	root, err := filepath.Abs("../..")
 	if err != nil {
 		t.Fatal(err)
@@ -295,6 +300,7 @@ func TestFencedTx_OnlyAppstoreOpensOne(t *testing.T) {
 // unexported (so a literal elsewhere does not compile), and a zero value, the
 // only thing new or reflect.New can make, refuses every method.
 func TestFencedTx_CannotBeMadeOutsideBeginFenced(t *testing.T) {
+	t.Parallel()
 	typ := reflect.TypeOf(FencedTx{})
 	for i := 0; i < typ.NumField(); i++ {
 		if f := typ.Field(i); f.IsExported() {

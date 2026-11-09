@@ -13,6 +13,7 @@ import (
 // via testStore (PAD_TEST_POSTGRES_URL selects Postgres).
 
 func TestGuestWorkspaceIDs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
 	guest := createTestUser(t, s, "guest@example.com", "Guest", "password123")
@@ -65,6 +66,7 @@ func TestGuestWorkspaceIDs(t *testing.T) {
 }
 
 func TestGetWorkspacesByIDs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := mentionUser(t, s, "wsowner")
 	a, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "A", OwnerID: owner.ID})
@@ -144,6 +146,7 @@ func (f mentionFixture) open(t *testing.T) []string {
 }
 
 func TestOpenMentions_ReplyClosesAndEditReopens(t *testing.T) {
+	t.Parallel()
 	f := newMentionFixture(t)
 	c := f.comment(t, f.author, "@alice @bobby please look")
 	f.setAt(t, "comments", c.ID, "2001-01-01T00:00:00Z")
@@ -190,6 +193,7 @@ func TestOpenMentions_ReplyClosesAndEditReopens(t *testing.T) {
 }
 
 func TestNeedsCandidateItems(t *testing.T) {
+	t.Parallel()
 	f := newMentionFixture(t)
 	// A second collection: awaits_human; a system one; a plain one.
 	ask, err := f.s.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Asks", Schema: `{"fields":[]}`})
@@ -256,6 +260,7 @@ func TestNeedsCandidateItems(t *testing.T) {
 }
 
 func TestNeedsSnoozesForItems_JoinsItemsWorkspace(t *testing.T) {
+	t.Parallel()
 	f := newMentionFixture(t)
 	other := createTestWorkspace(t, f.s, "Other")
 	if _, err := f.s.SnoozeNeedsItem(f.alice.ID, f.ws.ID, f.item.ID, models.NeedsSnoozeDefer, time.Now().Add(48*time.Hour), nil); err != nil {
@@ -291,6 +296,7 @@ func TestNeedsSnoozesForItems_JoinsItemsWorkspace(t *testing.T) {
 
 // The batch dismissal state must agree with GetNeedsSnooze item by item.
 func TestNeedsSnoozesForItems_DismissMatchesSingle(t *testing.T) {
+	t.Parallel()
 	f := newMentionFixture(t)
 	other := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Second", "")
 	f.comment(t, f.author, "first")
@@ -323,6 +329,7 @@ func TestNeedsSnoozesForItems_DismissMatchesSingle(t *testing.T) {
 }
 
 func TestLatestAssignmentTimes(t *testing.T) {
+	t.Parallel()
 	f := newMentionFixture(t)
 	// Two assignments to alice (Name = her email in this fixture) and one to bob.
 	add := func(at, changes string) {
@@ -349,6 +356,7 @@ func TestLatestAssignmentTimes(t *testing.T) {
 }
 
 func TestWorkspaceOwnerIDs(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "owner@example.com", "Owner", "password123")
 	ed := createTestUser(t, s, "ed@example.com", "Ed", "password123")
@@ -369,6 +377,7 @@ func TestWorkspaceOwnerIDs(t *testing.T) {
 }
 
 func TestNeedsMarkersForItems(t *testing.T) {
+	t.Parallel()
 	f := newMentionFixture(t)
 	c := f.comment(t, f.author, "hello")
 	got, err := f.s.NeedsMarkersForItems(f.alice.ID, []string{f.item.ID})
@@ -392,6 +401,7 @@ func TestNeedsMarkersForItems(t *testing.T) {
 // visible items and never the hidden one, even though the hidden item matches
 // every candidate source (it is flagged and it carries an open mention).
 func TestNeedsCandidateItems_RestrictedScopeHidesItem(t *testing.T) {
+	t.Parallel()
 	f := newMentionFixture(t)
 	ask, err := f.s.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Asks", Schema: `{"fields":[]}`})
 	if err != nil {

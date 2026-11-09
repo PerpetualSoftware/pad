@@ -59,6 +59,7 @@ func task3617Judge(t *testing.T, s *store.Store, wsID string, item *models.Item,
 // criterion_changed when its own criterion is reworded, criterion_removed
 // when the criterion is deleted, and superseded when a newer verdict exists.
 func TestTASK3617_VerificationStateFollowsTheCriterion(t *testing.T) {
+	t.Parallel()
 	for _, b := range task3617Backends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -162,6 +163,7 @@ func TestTASK3617_VerificationStateFollowsTheCriterion(t *testing.T) {
 
 // Two verdicts on an unchanged criterion: the older reads superseded.
 func TestTASK3617_OlderVerdictIsSuperseded(t *testing.T) {
+	t.Parallel()
 	for _, b := range task3617Backends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)
@@ -194,6 +196,7 @@ func TestTASK3617_OlderVerdictIsSuperseded(t *testing.T) {
 // were parsed from, when it is archived, and when via names an item of
 // another workspace. Nothing is stored in any of those cases.
 func TestTASK3617_InsertRefusals(t *testing.T) {
+	t.Parallel()
 	for _, b := range task3617Backends() {
 		t.Run(b.name, func(t *testing.T) {
 			s := b.open(t)

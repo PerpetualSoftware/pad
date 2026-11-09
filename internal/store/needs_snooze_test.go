@@ -92,6 +92,7 @@ func (f needsFixture) holds(t *testing.T, u *models.User, at time.Time) bool {
 var needsT0 = time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
 
 func TestNeedsSnooze_NewCommentResurfaces(t *testing.T) {
+	t.Parallel()
 	f := newNeedsFixture(t)
 	f.comment(t, f.other, "user", needsT0)
 	f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
@@ -149,6 +150,7 @@ func TestNeedsSnooze_NewCommentResurfaces(t *testing.T) {
 }
 
 func TestNeedsSnooze_SameSecondBoundary(t *testing.T) {
+	t.Parallel()
 	f := newNeedsFixture(t)
 	seen := f.comment(t, f.other, "user", needsT0)
 	sn := f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
@@ -168,6 +170,7 @@ func TestNeedsSnooze_SameSecondBoundary(t *testing.T) {
 }
 
 func TestNeedsSnooze_StatusRoundTripResurfaces(t *testing.T) {
+	t.Parallel()
 	f := newNeedsFixture(t)
 	f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
 	f.setStatus(t, "done")
@@ -227,6 +230,7 @@ func TestNeedsSnooze_DeferUntilAndChangeBeforeDate(t *testing.T) {
 }
 
 func TestNeedsSnooze_MarkerClamped(t *testing.T) {
+	t.Parallel()
 	f := newNeedsFixture(t)
 	old := f.comment(t, f.other, "user", needsT0)
 	f.setStatus(t, "done")
@@ -286,6 +290,7 @@ func TestNeedsSnooze_MarkerClamped(t *testing.T) {
 }
 
 func TestNeedsSnooze_PerUser(t *testing.T) {
+	t.Parallel()
 	f := newNeedsFixture(t)
 	f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
 	if sn, err := f.s.GetNeedsSnooze(f.other.ID, f.item.ID, time.Now()); err != nil || sn != nil {

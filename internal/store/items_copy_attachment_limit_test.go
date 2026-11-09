@@ -33,6 +33,7 @@ func copyLimitSnapshot(t *testing.T, s *Store) map[string]int {
 }
 
 func TestCopyAttachmentLimitExactly1000(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	var body strings.Builder
 	a := f.attachIn(t, f.wsA.ID, "file.png", 1)
@@ -66,6 +67,7 @@ func TestCopyAttachmentLimitExactly1000(t *testing.T) {
 }
 
 func TestCopyAttachmentLimitDistinctNotOccurrences(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	refs := make([]string, 3)
 	for i := range refs {
@@ -85,6 +87,7 @@ func TestCopyAttachmentLimitDistinctNotOccurrences(t *testing.T) {
 }
 
 func TestCopyAttachmentLimitRefusesBeforeTransaction(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Over the limit", copyLimitBody(1001)+"[[Other]]")
 	before := copyLimitSnapshot(t, f.s)
@@ -115,6 +118,7 @@ func TestCopyAttachmentLimitRefusesBeforeTransaction(t *testing.T) {
 }
 
 func TestCopyAttachmentLimitGrownBeforeLock(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Grows", copyLimitBody(1000))
 	grew := false
@@ -147,6 +151,7 @@ func TestCopyAttachmentLimitGrownBeforeLock(t *testing.T) {
 }
 
 func TestCountAttachmentRefsMatchesPlan(t *testing.T) {
+	t.Parallel()
 	f := newPlanFixture(t)
 	a := f.attach(t, f.wsA, "image.png", 1)
 	b := f.attach(t, f.wsA, "file.txt", 1)
@@ -167,6 +172,7 @@ func TestCountAttachmentRefsMatchesPlan(t *testing.T) {
 }
 
 func TestCopyAttachmentLimitUsesFinalFields(t *testing.T) {
+	t.Parallel()
 	for _, override := range []bool{false, true} {
 		t.Run(fmt.Sprintf("override=%t", override), func(t *testing.T) {
 			f := newCopyFixture(t)
@@ -205,6 +211,7 @@ func TestCopyAttachmentLimitUsesFinalFields(t *testing.T) {
 // migration (an override naming a key the destination does not declare) must
 // reach the transaction and get PreCheck's answer, as it did before the cap.
 func TestCopyAttachmentLimitAdvisoryErrorsDoNotPreemptPreCheck(t *testing.T) {
+	t.Parallel()
 	f := newCopyFixture(t)
 	src := createTestItem(t, f.s, f.wsA.ID, f.colA.ID, "Under the limit", "plain body")
 	denied := errors.New("pre-check denied")

@@ -58,6 +58,7 @@ func chatLastSeq(t *testing.T, s *Store, convID string) int64 {
 // BUG-4055: agent keys share the self-declared name's rune bound, not
 // op_key's independent byte bound. Malformed UTF-8 must be rejected first.
 func TestValidateConversationAgentKey(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name       string
 		key        string
@@ -89,6 +90,7 @@ func TestValidateConversationAgentKey(t *testing.T) {
 }
 
 func TestChatTimestampsAreFixedWidth(t *testing.T) {
+	t.Parallel()
 	t.Run("format", func(t *testing.T) {
 		instant := time.Date(2026, 10, 23, 5, 0, 5, 123456780, time.UTC)
 		next := instant.Add(time.Nanosecond)
@@ -147,6 +149,7 @@ func TestChatTimestampsAreFixedWidth(t *testing.T) {
 }
 
 func TestSendRejectsInvalidInput(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -184,6 +187,7 @@ func TestSendRejectsInvalidInput(t *testing.T) {
 }
 
 func TestSendContextWorkspace(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -251,6 +255,7 @@ func TestSendContextWorkspace(t *testing.T) {
 }
 
 func TestSendReplayAfterContextLoss(t *testing.T) {
+	t.Parallel()
 	for _, name := range []string{
 		"soft-deleted workspace", "removed member", "no prior send",
 		"another author's op_key", "non-member of conversation",
@@ -356,6 +361,7 @@ func TestSendReplayAfterContextLoss(t *testing.T) {
 }
 
 func TestActorValidation(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -427,6 +433,7 @@ func TestActorValidation(t *testing.T) {
 }
 
 func TestDeleteRejectsNonPositiveSeq(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -441,6 +448,7 @@ func TestDeleteRejectsNonPositiveSeq(t *testing.T) {
 }
 
 func TestQuoteExcerptLeadingWhitespace(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -470,6 +478,7 @@ func TestQuoteExcerptLeadingWhitespace(t *testing.T) {
 }
 
 func TestConversationSeqConcurrent(t *testing.T) {
+	t.Parallel()
 	run := func(t *testing.T, s *Store) {
 		u := chatUser(t, s, "alice")
 		c := chatDM(t, s, u, "claude")
@@ -525,6 +534,7 @@ func TestConversationSeqConcurrent(t *testing.T) {
 }
 
 func TestSendIdempotentOpKey(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -597,6 +607,7 @@ func TestSendIdempotentOpKey(t *testing.T) {
 }
 
 func TestSendReplyTo(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -679,6 +690,7 @@ func TestSendReplyTo(t *testing.T) {
 // BUG-4320: a send moves the sender's own read marker to the newest message at
 // the moment of the send. It never touches delivered_seq or another member.
 func TestSendAdvancesSenderReadMarker(t *testing.T) {
+	t.Parallel()
 	marks := func(t *testing.T, s *Store, convID string, actor models.ConversationActor) (int64, int64) {
 		t.Helper()
 		var rs, ds int64
@@ -827,6 +839,7 @@ func TestSendAdvancesSenderReadMarker(t *testing.T) {
 
 // TASK-4038 r6: explain the actual replay queries, including the context-loss fallback.
 func TestOpKeyLookupUsesPartialIndex(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	if s.dialect.Driver() == DriverPostgres {
 		t.Skip("SQLite query plan test")
@@ -866,6 +879,7 @@ func TestOpKeyLookupUsesPartialIndex(t *testing.T) {
 
 // TASK-4038 r6: malformed ids name no conversation, regardless of the SQL driver.
 func TestMalformedConversationIDIsNotFound(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	actor := models.ConversationActor{UserID: u.ID}
@@ -927,6 +941,7 @@ func TestMalformedConversationIDIsNotFound(t *testing.T) {
 
 // TASK-4038 r4: a malformed owner id is refused as input before any SQL runs.
 func TestEnsureAgentDMValidatesOwner(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	for name, owner := range map[string]string{
 		"empty":         "",
@@ -940,6 +955,7 @@ func TestEnsureAgentDMValidatesOwner(t *testing.T) {
 }
 
 func TestDmKeyUnique(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	a, b := chatUser(t, s, "alice"), chatUser(t, s, "bob")
 
@@ -989,6 +1005,7 @@ func TestDmKeyUnique(t *testing.T) {
 
 // TASK-4038: EnsureAgentDM is excluded because it takes no actor; its caller (TASK-4039) must pass the authenticated owner.
 func TestMembershipGatesEveryActorMethod(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	a, b := chatUser(t, s, "alice"), chatUser(t, s, "bob")
 	c := chatDM(t, s, a, "claude")
@@ -1045,6 +1062,7 @@ func TestMembershipGatesEveryActorMethod(t *testing.T) {
 }
 
 func TestListMessagesPaging(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -1106,6 +1124,7 @@ func TestListMessagesPaging(t *testing.T) {
 }
 
 func TestDeleteAlwaysTombstones(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -1145,6 +1164,7 @@ func TestDeleteAlwaysTombstones(t *testing.T) {
 }
 
 func TestSendReplayAfterTombstone(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -1160,6 +1180,7 @@ func TestSendReplayAfterTombstone(t *testing.T) {
 }
 
 func TestDeleteAuthorization(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, outsider := chatUser(t, s, "alice"), chatUser(t, s, "bob")
 	c := chatDM(t, s, u, "claude")
@@ -1200,6 +1221,7 @@ func TestDeleteAuthorization(t *testing.T) {
 }
 
 func TestReadSeqMonotonic(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	human := models.ConversationActor{UserID: u.ID}
@@ -1247,6 +1269,7 @@ func TestReadSeqMonotonic(t *testing.T) {
 }
 
 func TestUnreadExcludesOwnAndDeleted(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c, c2 := chatDM(t, s, u, "claude"), chatDM(t, s, u, "codex")
@@ -1302,6 +1325,7 @@ func TestUnreadExcludesOwnAndDeleted(t *testing.T) {
 }
 
 func TestListConversations(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, other := chatUser(t, s, "alice"), chatUser(t, s, "bob")
 	human := models.ConversationActor{UserID: u.ID}
@@ -1367,6 +1391,7 @@ func TestListConversations(t *testing.T) {
 }
 
 func TestDeleteAccountRemovesConversations(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u, bystander := chatUser(t, s, "alice"), chatUser(t, s, "bob")
 	c, kept := chatDM(t, s, u, "claude"), chatDM(t, s, bystander, "claude")
@@ -1383,6 +1408,7 @@ func TestDeleteAccountRemovesConversations(t *testing.T) {
 }
 
 func TestAccountClaimRemovesConversations(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := createUnverifiedUser(t, s, "claim@chat.test")
 	bystander := chatUser(t, s, "bob")
@@ -1425,6 +1451,7 @@ func assertChatRows(t *testing.T, s *Store, convID string, conversations, member
 }
 
 func TestPurgeWorkspaceLeavesChatMessages(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
@@ -1462,6 +1489,7 @@ func TestPurgeWorkspaceLeavesChatMessages(t *testing.T) {
 
 // TASK-4039 r1: replay reads only the current member's own author/key pair.
 func TestReplayConversationMessage(t *testing.T) {
+	t.Parallel()
 	s := testStore(t)
 	u := chatUser(t, s, "alice")
 	c := chatDM(t, s, u, "claude")
