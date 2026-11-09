@@ -221,7 +221,7 @@ pad item delete TASK-5
 pad item search "query"
 pad item comment TASK-5 "..." [--reply-to <comment-id>]   # or --stdin for a multi-line body; an empty one is refused
 pad remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # arm a one-shot reminder (RFC3339 INSTANT; a bare date is refused)
-pad reminders TASK-5                                  # armed / fired / acknowledged
+pad item reminders TASK-5                                  # armed / fired / acknowledged
 pad item ack <reminder-id>                                 # acknowledge a fired reminder
 pad item unremind <reminder-id>
 pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays   # schedule (daily weekdays weekly biweekly monthly monthly-last quarterly yearly, or an RRULE)

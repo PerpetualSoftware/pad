@@ -48,7 +48,8 @@ this way, and only by the item's assignee or a workspace owner.
 Without --apply this is a PREVIEW: nothing is written, and the answer carries a
 revision. --apply previews again and commits against that revision, so a change
 that happened meanwhile is refused (409 commitment_changed) and you re-preview.
-Give --revision with --apply to commit the revision you already read.
+Give --revision with --apply to commit against a revision you already read: it
+guards the schedule's state, not the flags, so repeat the previewed flags.
 
   --scope occurrence  (default) move the outstanding occurrence's deadline to
                       --deadline, an RFC3339 instant after now
@@ -131,7 +132,7 @@ Give --revision with --apply to commit the revision you already read.
 			if p.Preview.MissRecordedFirst {
 				fmt.Println("The outstanding occurrence is recorded as missed first.")
 			}
-			fmt.Printf("Revision: %s\nApply with: pad remind renegotiate %s ... --apply (add --revision %s to commit this exact preview)\n", p.Revision, ref, p.Revision)
+			fmt.Printf("Revision: %s\nApply with: pad remind renegotiate %s ... --apply (add --revision %s to apply only if the schedule is unchanged since this preview; repeat the same flags)\n", p.Revision, ref, p.Revision)
 			return nil
 		},
 	}
