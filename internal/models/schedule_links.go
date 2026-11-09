@@ -166,10 +166,10 @@ type ScheduleGate struct {
 	CreatedAt     string  `json:"created_at"`
 }
 
-// ScheduleGateView is a commitment's gate state for one reader. It covers only
-// the gates whose blocker the reader can read: a gate with a hidden blocker is
-// absent from State, Gates and Unresolved alike, so the item reads as it would
-// with no such gate.
+// ScheduleGateView is an item's gate state for one reader. State covers EVERY
+// gate of the item, so a child held by a blocker the reader cannot read is shown
+// held, never released. Gates and Unresolved name only the blockers the reader
+// can read, so a hidden blocker's item and gate are not disclosed.
 type ScheduleGateView struct {
 	State      string         `json:"state"` // released | waiting | blocked_needs_decision
 	Gates      []ScheduleGate `json:"gates"`
