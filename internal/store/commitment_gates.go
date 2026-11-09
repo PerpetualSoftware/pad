@@ -2,8 +2,10 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/schedule"
@@ -245,4 +247,233 @@ func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.Com
 		return ErrScheduleLinkNotFound
 	}
 	return budget.commit(tx)
+}
+
+// ---- evaluation ----
+
+// The outcome of a gate is the outcome of the blocker occurrence it was fixed to.
+//
+//   - A blocker with a commitment and a fixed occurrence key is judged by that
+//     occurrence's recorded state. `done` wins and is succeeded, even over a
+//     recorded miss: the work happened and the miss stays on record. `skipped`
+//     is skipped. `lapsed`, and a passed-over `missed`, are lapsed. A recorded
+//     deadline miss under deadline_behavior `lapses` is lapsed whether or not the
+//     occurrence was closed; under `stays_owed` the occurrence is still owed, so
+//     it stays pending and a later Done opens the gate. A `moved` occurrence, or
+//     one with no row, is pending.
+//   - A blocker with no commitment, or whose commitment had ended when the gate
+//     was written (an empty key: there is no occurrence to fix), is judged by the
+//     item's status in its collection: a terminal status that is not abandoned
+//     succeeded, an abandoned one is cancelled, anything else is pending.
+//   - A blocker removed from the workspace (soft-deleted) that has not succeeded
+//     is cancelled: it can no longer deliver, and the child stays blocked for a
+//     decision. A restore puts it back to what it was.
+//
+// Only succeeded opens a gate, once and for all. Every other outcome leaves the
+// child blocked for a decision (or waiting, while pending): a cancelled or
+// lapsed blocker never starts the child's work.
+
+// gateRow is a stored gate with what its outcome is read from.
+type gateRow struct {
+	models.ScheduleGate
+	blockerSchedule sql.NullString
+	key             string
+}
+
+// gateEvaluator judges gates of one workspace. The workspace's done filters are
+// read through the pool the first time a status decides a gate.
+type gateEvaluator struct {
+	s           *Store
+	workspaceID string
+	filters     []collectionDoneFilter
+	loaded      bool
+}
+
+func (e *gateEvaluator) outcome(g gateRow) (schedule.Outcome, error) {
+	if g.blockerSchedule.Valid && g.key != "" {
+		out, decided, err := e.s.occurrenceOutcome(g.blockerSchedule.String, g.key)
+		if err != nil || decided {
+			return out, err
+		}
+		gone, err := e.itemRemoved(g.BlockerItemID)
+		if err != nil || gone {
+			return schedule.OutcomeCancelled, err
+		}
+		return schedule.OutcomePending, nil
+	}
+	return e.statusOutcome(g.BlockerItemID)
+}
+
+// occurrenceOutcome reads the state of the occurrence a key names. decided is
+// false when the occurrence is still open: pending, unless a miss under
+// `lapses` was recorded.
+func (s *Store) occurrenceOutcome(scheduleID, key string) (out schedule.Outcome, decided bool, err error) {
+	col, val := "occurrence_wall", key
+	if i := strings.IndexByte(key, '|'); i >= 0 {
+		col, val = "occurrence_at", key[:i]
+	}
+	var state string
+	switch err := s.db.QueryRow(s.q(`SELECT state FROM schedule_occurrences WHERE schedule_id=? AND `+col+`=? ORDER BY resolved_at DESC LIMIT 1`), scheduleID, val).Scan(&state); {
+	case errors.Is(err, sql.ErrNoRows):
+	case err != nil:
+		return "", false, fmt.Errorf("read blocker occurrence: %w", err)
+	}
+	switch state {
+	case "done":
+		return schedule.OutcomeSucceeded, true, nil
+	case "skipped":
+		return schedule.OutcomeSkipped, true, nil
+	case "lapsed", "missed":
+		return schedule.OutcomeLapsed, true, nil
+	}
+	var misses int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_changes c JOIN item_schedules sc ON sc.id=c.schedule_id
+ WHERE c.schedule_id=? AND c.change_type='missed_recorded' AND c.role='deadline' AND c.occurrence_key=? AND sc.deadline_behavior='lapses'`), scheduleID, key).Scan(&misses); err != nil {
+		return "", false, fmt.Errorf("read blocker miss: %w", err)
+	}
+	if misses > 0 {
+		return schedule.OutcomeLapsed, true, nil
+	}
+	return schedule.OutcomePending, false, nil
+}
+
+// itemRemoved reports whether the blocker item is soft-deleted (or gone).
+func (e *gateEvaluator) itemRemoved(itemID string) (bool, error) {
+	var removed int
+	err := e.s.db.QueryRow(e.s.q(`SELECT CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM items WHERE id=? AND workspace_id=?`), itemID, e.workspaceID).Scan(&removed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return true, nil
+	}
+	return removed == 1, err
+}
+
+// statusOutcome judges an item by its done-field value, with the collection's
+// own terminal and abandoned options (the workspace defaults where it declares
+// none), as the rest of the product reads them.
+func (e *gateEvaluator) statusOutcome(itemID string) (schedule.Outcome, error) {
+	var collectionID, fields string
+	var removed int
+	err := e.s.db.QueryRow(e.s.q(`SELECT collection_id, fields, CASE WHEN deleted_at IS NULL THEN 0 ELSE 1 END FROM items WHERE id=? AND workspace_id=?`), itemID, e.workspaceID).Scan(&collectionID, &fields, &removed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return schedule.OutcomeCancelled, nil
+	} else if err != nil {
+		return "", fmt.Errorf("read gate blocker: %w", err)
+	}
+	if !e.loaded {
+		e.filters, e.loaded = e.s.doneFiltersForWorkspace(e.workspaceID), true
+	}
+	doneKey, terminals, abandoned := "status", models.DefaultTerminalStatuses, models.DefaultAbandonedStatuses()
+	if len(e.filters) > 0 {
+		known := false
+		for _, f := range e.filters {
+			if f.collectionID == collectionID {
+				doneKey, terminals, abandoned, known = f.doneKey, f.values, f.abandoned, true
+				break
+			}
+		}
+		if !known {
+			terminals, abandoned = nil, nil
+		}
+	}
+	var values map[string]any
+	_ = json.Unmarshal([]byte(fields), &values)
+	status, _ := values[doneKey].(string)
+	switch {
+	case containsFold(abandoned, status):
+		return schedule.OutcomeCancelled, nil
+	case containsFold(terminals, status):
+		return schedule.OutcomeSucceeded, nil
+	case removed == 1:
+		return schedule.OutcomeCancelled, nil
+	}
+	return schedule.OutcomePending, nil
+}
+
+// ScheduleGates evaluates the gates of an item's commitment on read and opens,
+// once and for good, each whose blocker succeeded. The caller sees only the
+// gates whose blocker it can read, and only if it can read the gated item: a
+// gate with a hidden blocker is left out of the state, the detail and the
+// unresolved list alike, so the item reads as it would with no such gate, and
+// nothing is evaluated on that reader's behalf.
+//
+// Opening is one statement on one gate row, outside any transaction and without
+// the workspace lock: it is monotone (NULL to a time, once), so a concurrent
+// reader or a gate delete can only make it a no-op.
+func (s *Store) ScheduleGates(workspaceID, itemID string, access models.CommitmentAccess) (*models.ScheduleGateView, error) {
+	if !access.Readable[itemID] {
+		return nil, ErrScheduleNotFound
+	}
+	rows, err := s.db.Query(s.q(`SELECT g.id,g.blocker_item_id,g.blocker_schedule_id,g.blocker_occurrence_key,g.opened_at,g.created_at FROM schedule_gates g
+ JOIN item_schedules sc ON sc.id=g.blocked_schedule_id WHERE sc.item_id=? AND g.workspace_id=? ORDER BY g.id`), itemID, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("read schedule gates: %w", err)
+	}
+	var gates []gateRow
+	for rows.Next() {
+		g := gateRow{}
+		var opened sql.NullString
+		g.BlockedItemID = itemID
+		if err := rows.Scan(&g.ID, &g.BlockerItemID, &g.blockerSchedule, &g.key, &opened, &g.CreatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if opened.Valid {
+			g.OpenedAt = &opened.String
+		}
+		gates = append(gates, g)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	view := &models.ScheduleGateView{State: models.GateStateReleased, Gates: []models.ScheduleGate{}}
+	eval := &gateEvaluator{s: s, workspaceID: workspaceID}
+	outcomes := map[schedule.Node]schedule.Outcome{}
+	for _, g := range gates {
+		if !access.Readable[g.BlockerItemID] {
+			continue
+		}
+		outcome := schedule.OutcomeSucceeded
+		if g.OpenedAt == nil {
+			if outcome, err = eval.outcome(g); err != nil {
+				return nil, err
+			}
+			if outcome == schedule.OutcomeSucceeded {
+				if g.OpenedAt, err = s.openGate(g.ID); err != nil {
+					return nil, err
+				}
+				if g.OpenedAt == nil {
+					continue // deleted while it was read
+				}
+			}
+		}
+		g.Outcome = string(outcome)
+		outcomes[schedule.Node{Schedule: g.BlockerItemID}] = outcome
+		view.Gates = append(view.Gates, g.ScheduleGate)
+	}
+	res := schedule.EvaluateGates(outcomes)
+	view.State = string(res.State)
+	for _, n := range res.Unresolved {
+		view.Unresolved = append(view.Unresolved, n.Schedule)
+	}
+	return view, nil
+}
+
+// openGate records that a gate opened, if nobody did first, and returns the
+// recorded time; nil when the gate no longer exists.
+func (s *Store) openGate(gateID string) (*string, error) {
+	if _, err := s.db.Exec(s.q(`UPDATE schedule_gates SET opened_at=? WHERE id=? AND opened_at IS NULL`), nowNano(), gateID); err != nil {
+		return nil, fmt.Errorf("open schedule gate: %w", err)
+	}
+	var at sql.NullString
+	if err := s.db.QueryRow(s.q(`SELECT opened_at FROM schedule_gates WHERE id=?`), gateID).Scan(&at); errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	} else if err != nil {
+		return nil, fmt.Errorf("read opened gate: %w", err)
+	}
+	if !at.Valid {
+		return nil, nil
+	}
+	return &at.String, nil
 }
