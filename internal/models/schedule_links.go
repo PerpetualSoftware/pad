@@ -1,6 +1,6 @@
 package models
 
-// Time links (TASK-4353, DOC-4348 unit 5). These are store
+// Time links and commitment gates (TASK-4353, DOC-4348 unit 5). These are store
 // DTOs: nothing here is a wire shape yet (the routes land in 5c), and none of
 // them may carry data the reader could not read on its own.
 
@@ -127,4 +127,51 @@ type ScheduleLinkUpdate struct {
 	Offset       *ScheduleLinkOffset
 	CancelPolicy *string
 	Move         LinkWriteOptions
+}
+
+// Gate outcomes, as ScheduleGate.Outcome names them: what became of the blocker
+// occurrence the gate is held against.
+const (
+	// GateOutcomePending: the blocker has not ended, or is still owed.
+	GateOutcomePending = "pending"
+	// GateOutcomeSucceeded: the blocker was done. It releases the gate for good.
+	GateOutcomeSucceeded = "succeeded"
+	// GateOutcomeCancelled: the blocker ended without delivering (an abandoned
+	// status, or an item removed). The child stays blocked for a decision.
+	GateOutcomeCancelled = "cancelled"
+	// GateOutcomeLapsed: the blocker's deadline passed and it lapsed. The child
+	// stays blocked for a decision.
+	GateOutcomeLapsed = "lapsed"
+	// GateOutcomeSkipped: the blocker occurrence was skipped. The child stays
+	// blocked for a decision.
+	GateOutcomeSkipped = "skipped"
+)
+
+// Gate states, as ScheduleGateView.State names them.
+const (
+	GateStateReleased             = "released"
+	GateStateWaiting              = "waiting"
+	GateStateBlockedNeedsDecision = "blocked_needs_decision"
+)
+
+// ScheduleGate is a commitment gate as one reader sees it: BlockedItemID cannot
+// start until the blocker occurrence fixed at creation succeeds. OpenedAt is set
+// once, when it did, and the gate never closes again.
+type ScheduleGate struct {
+	ID            string  `json:"id"`
+	BlockedItemID string  `json:"blocked_item_id"`
+	BlockerItemID string  `json:"blocker_item_id"`
+	Outcome       string  `json:"outcome"`
+	OpenedAt      *string `json:"opened_at,omitempty"`
+	CreatedAt     string  `json:"created_at"`
+}
+
+// ScheduleGateView is a commitment's gate state for one reader. It covers only
+// the gates whose blocker the reader can read: a gate with a hidden blocker is
+// absent from State, Gates and Unresolved alike, so the item reads as it would
+// with no such gate.
+type ScheduleGateView struct {
+	State      string         `json:"state"` // released | waiting | blocked_needs_decision
+	Gates      []ScheduleGate `json:"gates"`
+	Unresolved []string       `json:"unresolved,omitempty"` // blocker item ids, readable only
 }
