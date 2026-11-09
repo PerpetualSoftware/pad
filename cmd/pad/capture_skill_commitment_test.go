@@ -84,7 +84,7 @@ func TestCaptureSkillScenarios(t *testing.T) {
 		{"simple trash: one sentence, target only", "--every weekly", "pad remind",
 			map[string]string{"start": "2026-11-10T19:00", "every": "weekly"}},
 		{"deadline lapses vs stays owed", "--deadline hard", "pad remind",
-			map[string]string{"start": "2026-04-15", "deadline": "hard"}},
+			map[string]string{"start": "2027-04-15", "deadline": "hard"}},
 		{"lapses is a renegotiate step", "--behavior lapses", "pad remind renegotiate",
 			map[string]string{"scope": "series", "behavior": "lapses", "reason": "missed one is moot"}},
 		{"completed yesterday", "pad remind done", "pad remind done",
