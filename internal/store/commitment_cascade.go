@@ -500,33 +500,50 @@ func dateJSON(role string, at time.Time) string {
 }
 
 // writeLinkedDateTx stores one changed date as the outstanding occurrence's
-// role override. A target also follows the move rules of unit 3: the managed
+// role override. A target also follows the move rules of unit 3: the occurrence
+// reads at its new target (next_override_at, with next_at pinned to the instant
+// it was read at, so a floating row keeps its identity) and the managed
 // reminder is re-armed at the target (the target itself when the lead would put
-// the fire at or before now). A target that lands in the past arms nothing.
+// the fire at or before now).
+//
+// A target that lands in the past arms nothing and fires nothing: the
+// occurrence stays outstanding and reads at its new target as passed, its
+// deadline is untouched, and an armed reminder for the old target is cancelled.
+// A reminder that already fired is left alone.
 func (s *Store) writeLinkedDateTx(tx *sql.Tx, n *linkNode, ch schedule.Change, nowT time.Time, ts, actor string) error {
 	name := linkRoleName(ch.Role)
 	sc, to := n.sc, ch.To.UTC().Truncate(time.Second)
 	if ch.Role != schedule.RoleTarget {
 		return s.upsertScheduleOverrideTx(tx, sc.ID, n.key, name, to, nil)
 	}
-	if to.After(nowT) {
-		fire, err := reminderFireAt(sc, n.rec, n.x, *sc.NextWall, to, true, to, nowT)
-		if err != nil {
-			return err
-		}
-		if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at = ?, next_override_at = ?, updated_at = ? WHERE id = ?`),
-			n.x.Format(time.RFC3339), to.Format(time.RFC3339), ts, sc.ID); err != nil {
-			return fmt.Errorf("move linked target: %w", err)
-		}
-		if err := s.upsertOccurrenceTx(tx, sc.ID, n.x.Format(time.RFC3339), *sc.NextWall, "moved", "", actor, ts); err != nil {
-			return err
-		}
-		if err := s.upsertScheduleOverrideTx(tx, sc.ID, n.key, name, to, nil); err != nil {
-			return err
-		}
-		return s.armManagedReminderTx(tx, sc, NormalizeInstant(fire))
+	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at = ?, next_override_at = ?, updated_at = ? WHERE id = ?`),
+		n.x.Format(time.RFC3339), to.Format(time.RFC3339), ts, sc.ID); err != nil {
+		return fmt.Errorf("move linked target: %w", err)
 	}
-	return s.upsertScheduleOverrideTx(tx, sc.ID, n.key, name, to, nil)
+	if err := s.upsertOccurrenceTx(tx, sc.ID, n.x.Format(time.RFC3339), *sc.NextWall, "moved", "", actor, ts); err != nil {
+		return err
+	}
+	if err := s.upsertScheduleOverrideTx(tx, sc.ID, n.key, name, to, nil); err != nil {
+		return err
+	}
+	if !to.After(nowT) {
+		return s.cancelArmedReminderTx(tx, sc.ID)
+	}
+	fire, err := reminderFireAt(sc, n.rec, n.x, *sc.NextWall, to, true, to, nowT)
+	if err != nil {
+		return err
+	}
+	return s.armManagedReminderTx(tx, sc, NormalizeInstant(fire))
+}
+
+// cancelArmedReminderTx deletes the schedule's managed reminder only while it is
+// armed. A row that already fired has gone out and stays, so ReminderFired and
+// the instant a floating occurrence reads do not change under it.
+func (s *Store) cancelArmedReminderTx(tx *sql.Tx, scheduleID string) error {
+	if _, err := tx.Exec(s.q(`DELETE FROM item_reminders WHERE schedule_id = ? AND fired_at IS NULL`), scheduleID); err != nil {
+		return fmt.Errorf("cancel armed reminder: %w", err)
+	}
+	return nil
 }
 
 // keepLinkAtNewOffsetTx records the dragged child's new offset for its
