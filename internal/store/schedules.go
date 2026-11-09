@@ -954,6 +954,9 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 			return nil, err
 		}
 		clearedOverrides = n > 0
+		if err := s.rekeyPendingGatesTx(tx, cur, spec.Floating, nextAt, nextWall); err != nil {
+			return nil, err
+		}
 	}
 	if storedRoles.Origin == "legacy_backfill" && roles == nil {
 		if err := s.setLegacyRolesTx(tx, cur.ID, kind, spec.Start.String(), dtend); err != nil {
@@ -1140,6 +1143,30 @@ func equalStringSlices(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// rekeyPendingGatesTx runs on a timing, rule or floating edit, in the edit's own
+// transaction under its pin. A commitment gate is fixed on the occurrence that
+// was outstanding when it was written, by its key, and a timing edit changes that
+// key: the same promise, rescheduled. A gate that has not opened and was fixed on
+// the occurrence being edited follows it to the new outstanding occurrence, or to
+// no key at all when the edit leaves none (the blocker item status then decides).
+// An open gate stays open, and a gate fixed on any other occurrence is untouched.
+func (s *Store) rekeyPendingGatesTx(tx *sql.Tx, cur *models.ItemSchedule, newFloating bool, newAt, newWall *string) error {
+	if cur.NextAt == nil || cur.NextWall == nil {
+		return nil
+	}
+	oldKey, newKey := OccurrenceKey(cur, *cur.NextAt, *cur.NextWall), ""
+	if newAt != nil && newWall != nil {
+		newKey = OccurrenceKey(&models.ItemSchedule{Floating: newFloating}, *newAt, *newWall)
+	}
+	if newKey == oldKey {
+		return nil
+	}
+	if _, err := tx.Exec(s.q(`UPDATE schedule_gates SET blocker_occurrence_key=? WHERE blocker_schedule_id=? AND blocker_occurrence_key=? AND opened_at IS NULL`), newKey, cur.ID, oldKey); err != nil {
+		return fmt.Errorf("rekey schedule gates: %w", err)
+	}
+	return nil
 }
 
 // rekeyResolvedOverridesTx runs on a timing, rule or floating edit. An open

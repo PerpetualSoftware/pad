@@ -236,7 +236,11 @@ func (s *Store) openDeadlineCandidates(q Queryer, candidates []deadlineCandidate
 type deadlineJournalState struct {
 	recorded  bool
 	converted time.Time
-	err       error
+	// noLongerNeeded is set when a link under the cancel policy marked this
+	// occurrence No longer needed (its parent occurrence was cancelled). It is
+	// never due: no miss is recorded and a lapsing promise does not lapse.
+	noLongerNeeded bool
+	err            error
 }
 
 // One journal read per page matches the current canonical deadline value and
@@ -279,7 +283,38 @@ func (s *Store) deadlineJournal(q Queryer, candidates []deadlineCandidate) (map[
 		}
 		states[id] = state
 	}
-	return states, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return states, s.markNoLongerNeeded(q, states, byID)
+}
+
+// markNoLongerNeeded sets noLongerNeeded on the states of the candidates whose
+// current occurrence a link marked. One read per page. The mark is keyed by
+// occurrence, so it stops applying when the schedule moves on to the next one.
+func (s *Store) markNoLongerNeeded(q Queryer, states map[string]deadlineJournalState, byID map[string]deadlineCandidate) error {
+	ids := make([]any, 0, len(byID))
+	for id := range byID {
+		ids = append(ids, id)
+	}
+	rows, err := q.Query(s.q(`SELECT l.child_schedule_id, o.occurrence_key FROM schedule_link_overrides o JOIN schedule_links l ON l.id=o.link_id
+ WHERE o.no_longer_needed_at IS NOT NULL AND l.child_schedule_id IN (`+placeholders(len(ids))+`)`), ids...)
+	if err != nil {
+		return fmt.Errorf("read no longer needed: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, key string
+		if err := rows.Scan(&id, &key); err != nil {
+			return err
+		}
+		if d, ok := byID[id]; ok && d.key == key {
+			state := states[id]
+			state.noLongerNeeded = true
+			states[id] = state
+		}
+	}
+	return rows.Err()
 }
 
 func (d deadlineCandidate) eligible(now time.Time, state deadlineJournalState) bool {
@@ -287,7 +322,7 @@ func (d deadlineCandidate) eligible(now time.Time, state deadlineJournalState) b
 }
 
 func (d deadlineCandidate) dueAfterConversion(now time.Time, state deadlineJournalState) bool {
-	return d.due(now) && (state.converted.IsZero() || d.at.After(state.converted))
+	return d.due(now) && !state.noLongerNeeded && (state.converted.IsZero() || d.at.After(state.converted))
 }
 
 // EvaluateDeadlines scans without locks, then pins and rechecks each due row.

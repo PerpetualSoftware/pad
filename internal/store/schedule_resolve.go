@@ -358,6 +358,13 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, err
 	}
 	res.MissedRecorded += closed.MissedRecorded
+	if in.State == "skip" {
+		// A skip cancels the occurrence: a link under the cancel policy marks its
+		// paired child occurrence No longer needed, in this transaction.
+		if err := s.markChildrenNoLongerNeededTx(tx, sc, in.Actor, nowT, openFilter, openArgs); err != nil {
+			return nil, err
+		}
+	}
 	return s.commitResolve(tx, workspaceID, itemID, res)
 }
 

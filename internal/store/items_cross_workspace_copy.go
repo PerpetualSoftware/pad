@@ -426,6 +426,14 @@ type CrossWorkspaceCopyResult struct {
 
 	// Schedule says what happened to the source's schedule (TASK-4104 D3).
 	Schedule ScheduleCarryReport
+
+	// GatesDropped is how many commitment gates hold the source item whose
+	// blocker the mover can read. None is carried (gates stay within one
+	// workspace): a copy starts with none and the source keeps hers; a move
+	// deletes all the source's, the ones behind hidden blockers too, which are
+	// not counted. A count only, so it names no item. It is the item that is
+	// gated, so it counts for an item with no commitment as well.
+	GatesDropped int
 }
 
 // CopyItemAcrossWorkspaces copies one item from its workspace into another,
@@ -979,6 +987,12 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	if err := req.injectedStageFailure(copyStageSchedule); err != nil {
 		return nil, err
 	}
+	// Commitment gates hold the item, with or without a schedule, and stay in one
+	// workspace.
+	gatesDropped, err := s.carryGatesTx(tx, sourceWorkspaceID, req.SourceItemID, req.ArchiveSource, req.SourceChildReadable)
+	if err != nil {
+		return nil, err
+	}
 
 	// --- Provenance. Written last so it can carry the archive's seq, and in
 	// the same transaction so a rollback can never leave a pointer at an item
@@ -1016,6 +1030,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		DroppedAssignee:   droppedAssignee,
 		DroppedAgentRole:  droppedAgentRole,
 		Schedule:          scheduleReport,
+		GatesDropped:      gatesDropped,
 	}
 	if req.AfterWriteTx != nil {
 		if err := req.AfterWriteTx(tx, res); err != nil {
