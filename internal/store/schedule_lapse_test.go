@@ -334,11 +334,11 @@ func TestLapseCatchUpPreservesChildrenOverridesAndHistory(t *testing.T) {
 	if next.NextAt == nil || *next.NextAt != "2026-10-30T09:00:00Z" {
 		t.Fatalf("catch-up did not advance to future: %+v", next)
 	}
-	if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`, sc.ID, deadlineOccAt) != 1 || f.deadlineEvidence(t) != 1 {
+	if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`, sc.ID, deadlineOccAt) != 1 || f.deadlineEvidence(t) != 4 {
 		t.Fatal("catch-up lost lapse or miss evidence")
 	}
 	f.eval(t, "2026-10-29T12:01:00Z", 0)
-	if f.deadlineEvidence(t) != 1 || !reflect.DeepEqual(next, f.reload(t, sc.ItemID)) {
+	if f.deadlineEvidence(t) != 4 || !reflect.DeepEqual(next, f.reload(t, sc.ItemID)) {
 		t.Fatal("catch-up advanced twice")
 	}
 	after, err := f.s.scheduleOverridesQ(f.s.db, f.ws.ID, sc.ID)
@@ -513,34 +513,27 @@ func TestLapseBrokenScheduleKeepsMiss(t *testing.T) {
 	}
 }
 
-func TestLapseMissedExpansionCapKeepsMiss(t *testing.T) {
+func TestLapseDoesNotWalkMissedInstances(t *testing.T) {
 	f := newSchedFixture(t)
 	sc := lapseSchedule(t, f, true)
-	// The BY part requires a wall-clock walk from the old start. Resolve can
-	// re-anchor at the outstanding occurrence, but the missed walk cannot.
+	// The legacy missed walk would exceed its scan cap from this old start.
+	// Lapse expands only the next occurrence and judges each deadline in turn.
 	f.exec(t, `UPDATE item_schedules SET dtstart='2020-01-01T09:00:00',rrule='FREQ=MINUTELY;BYMINUTE=0',anchor_wall=NULL WHERE id=?`, sc.ID)
 	before := f.reload(t, sc.ItemID)
-	reminder := f.managed(t, before)
-	if _, found, _, _, err := f.s.nextAfterResolve(before, time.UTC, rt(deadlineOccAt), rt(lapseNow), rt(lapseNow)); err != nil || !found {
-		t.Fatalf("next expansion: found=%v err=%v", found, err)
-	}
 	_, _, err := missedOccurrences(before, time.UTC, rt(lapseNow))
 	var capErr *schedule.CapError
 	if !errors.As(err, &capErr) || capErr.Kind != schedule.CapScan {
 		t.Fatalf("missed expansion = %v, want CapScan", err)
 	}
-	for i := 0; i < 2; i++ {
-		got := f.eval(t, lapseNow, 0)
-		want := 0
-		if i == 0 {
-			want = 1
-		}
-		if got.Missed != want || f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 {
-			t.Fatalf("capped expansion miss: %+v", got)
-		}
-		if f.occTotal(t, sc.ID) != 0 || !reflect.DeepEqual(before, f.reload(t, sc.ItemID)) || !reflect.DeepEqual(reminder, f.managed(t, before)) {
-			t.Fatal("capped expansion closed or advanced the occurrence")
-		}
+	if got := f.eval(t, lapseNow, 0); got.Missed != 1 || f.deadlineEvidence(t) != 2 || f.deadlineNotices(t) != 2 {
+		t.Fatalf("lapse without missed expansion: %+v", got)
+	}
+	after := f.reload(t, sc.ItemID)
+	if after.NextAt == nil || *after.NextAt != "2026-10-26T11:00:00Z" || f.occRows(t, sc.ID, "lapsed") != 2 || f.occRows(t, sc.ID, "missed") != 0 {
+		t.Fatalf("lapse did not advance occurrence by occurrence: %+v", after)
+	}
+	if got := f.eval(t, lapseNow, 0); got.Missed != 0 || !reflect.DeepEqual(after, f.reload(t, sc.ItemID)) || f.deadlineEvidence(t) != 2 {
+		t.Fatalf("second lapse changed schedule: %+v", got)
 	}
 }
 
@@ -568,5 +561,184 @@ func TestLapseSkipPreservesComment(t *testing.T) {
 	f.eval(t, lapseNow, 0)
 	if f.deadlineEvidence(t) != 1 || f.occTotal(t, sc.ID) != 1 {
 		t.Fatal("skip recorded twice")
+	}
+}
+
+func TestLapseOverlappingDeadlineKeepsNextOccurrence(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := lapseSchedule(t, f, true)
+	f.exec(t, `UPDATE item_schedules SET deadline_days=1,deadline_secs=0 WHERE id=?`, sc.ID)
+	if got := f.eval(t, "2026-10-27T09:00:30Z", 0); got.Missed != 1 {
+		t.Fatalf("lapse: %+v", got)
+	}
+	assertLapsed(t, f, sc)
+	next := f.reload(t, sc.ItemID)
+	if next.NextAt == nil || *next.NextAt != "2026-10-27T09:00:00Z" {
+		t.Fatalf("next occurrence: %+v", next)
+	}
+	if f.occTotal(t, sc.ID) != 1 || f.managed(t, next).RemindAt != *next.NextAt {
+		t.Fatal("next occurrence was closed or not armed")
+	}
+	res, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{OccurrenceAt: rt(*next.NextAt), State: "done", Actor: "user"}, rt("2026-10-27T10:00:00Z"))
+	if err != nil {
+		t.Fatalf("Done before next deadline: %v", err)
+	}
+	if res.MissedRecorded != 0 || f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='done'`, sc.ID, *next.NextAt) != 1 || f.deadlineEvidence(t) != 1 {
+		t.Fatal("Done did not complete the next occurrence normally")
+	}
+}
+
+func TestLapseDowntimeClosesEachDueOccurrence(t *testing.T) {
+	for _, anchor := range []string{"calendar", "completion"} {
+		t.Run(anchor, func(t *testing.T) {
+			f := newSchedFixture(t)
+			sc := lapseSchedule(t, f, true)
+			f.exec(t, `UPDATE item_schedules SET deadline_days=1,deadline_secs=0,anchor=? WHERE id=?`, anchor, sc.ID)
+			now := "2026-10-31T09:00:30Z"
+			if got := f.eval(t, now, 0); got.Missed != 1 || got.Evaluated != 1 || got.CapHit {
+				t.Fatalf("catch-up: %+v", got)
+			}
+			want, nextAt := 5, "2026-10-31T09:00:00Z"
+			if anchor == "completion" {
+				want, nextAt = 1, "2026-11-01T09:00:00Z"
+			}
+			for i := 0; i < want; i++ {
+				at := rt(deadlineOccAt).AddDate(0, 0, i)
+				wall := at.Format("2006-01-02T15:04:05")
+				key := at.Format(time.RFC3339) + "|" + wall
+				after := `{"deadline":"` + at.AddDate(0, 0, 1).Format(time.RFC3339) + `"}`
+				if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='lapsed' AND actor='system'`, sc.ID, at.Format(time.RFC3339)) != 1 || f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND change_type='missed_recorded' AND role='deadline' AND occurrence_key=? AND after_json=? AND actor='system'`, sc.ID, key, after) != 1 {
+					t.Fatalf("missing lapse or canonical miss for %s", at)
+				}
+			}
+			if f.occTotal(t, sc.ID) != want || f.deadlineEvidence(t) != want || f.deadlineNotices(t) != want {
+				t.Fatalf("history/evidence/notices = %d/%d/%d, want %d each", f.occTotal(t, sc.ID), f.deadlineEvidence(t), f.deadlineNotices(t), want)
+			}
+			next := f.reload(t, sc.ItemID)
+			if next.NextAt == nil || *next.NextAt != nextAt || f.managed(t, next).RemindAt != nextAt {
+				t.Fatalf("first not-due occurrence not armed: %+v", next)
+			}
+			if got := f.eval(t, now, 0); got != (DeadlineEvalResult{}) || !reflect.DeepEqual(next, f.reload(t, sc.ItemID)) || f.deadlineEvidence(t) != want || f.deadlineNotices(t) != want {
+				t.Fatalf("second pass changed schedule: %+v", got)
+			}
+		})
+	}
+}
+
+func TestLapseCatchUpBoundedPerSchedule(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := lapseSchedule(t, f, true)
+	f.exec(t, `UPDATE item_schedules SET deadline_days=1,deadline_secs=0 WHERE id=?`, sc.ID)
+	now := rt(deadlineOccAt).AddDate(0, 0, 70).Add(30 * time.Second).Format(time.RFC3339)
+	for _, want := range []int{64, 70} {
+		if got := f.eval(t, now, 0); got.Missed != 1 || got.Evaluated != 1 || got.CapHit {
+			t.Fatalf("bounded pass: %+v", got)
+		}
+		if f.occTotal(t, sc.ID) != want || f.deadlineEvidence(t) != want || f.deadlineNotices(t) != want {
+			t.Fatalf("history/evidence/notices = %d/%d/%d, want %d", f.occTotal(t, sc.ID), f.deadlineEvidence(t), f.deadlineNotices(t), want)
+		}
+		next := f.reload(t, sc.ItemID)
+		if next.NextAt == nil || *next.NextAt != rt(deadlineOccAt).AddDate(0, 0, want).Format(time.RFC3339) {
+			t.Fatalf("bounded next: %+v", next)
+		}
+	}
+	if got := f.eval(t, now, 0); got != (DeadlineEvalResult{}) {
+		t.Fatalf("caught up: %+v", got)
+	}
+}
+
+func TestLapseRenegotiatePreviouslyRecordedMiss(t *testing.T) {
+	for _, behavior := range []string{"lapses", "stays_owed"} {
+		for _, scope := range []string{"occurrence", "series"} {
+			t.Run(behavior+"/"+scope, func(t *testing.T) {
+				f := newSchedFixture(t)
+				sc := lapseSchedule(t, f, true)
+				f.exec(t, `UPDATE item_schedules SET deadline_behavior=? WHERE id=?`, behavior, sc.ID)
+				tx, err := f.s.db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer tx.Rollback()
+				if err := f.s.pinScheduleTx(tx, f.ws.ID, sc.ItemID); err != nil {
+					t.Fatal(err)
+				}
+				d, _, err := f.s.deadlineStateTx(tx, sc.ID)
+				if err != nil || d == nil {
+					t.Fatalf("deadline state: %+v %v", d, err)
+				}
+				if err := f.s.recordDeadlineMissTx(tx, *d); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+				before := f.reload(t, sc.ItemID)
+				reminder := f.managed(t, before)
+				in := models.CommitmentRenegotiateInput{Scope: scope, Reason: "Plans changed", Preview: true}
+				if scope == "occurrence" {
+					in.Deadline = ptr("2026-10-28T10:00:00Z")
+				} else {
+					in.DeadlineBehavior = ptr("stays_owed")
+				}
+				p, err := f.s.renegotiateCommitmentAt(f.ws.ID, sc.ItemID, "user", in, rt(lapseNow), nil)
+				if err != nil || p.Preview.MissRecordedFirst {
+					t.Fatalf("preview: %+v %v", p, err)
+				}
+				if f.occTotal(t, sc.ID) != 0 || f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 || !reflect.DeepEqual(before, f.reload(t, sc.ItemID)) || !reflect.DeepEqual(reminder, f.managed(t, before)) {
+					t.Fatal("preview wrote changes")
+				}
+				in.Preview, in.Revision = false, p.Revision
+				_, err = f.s.renegotiateCommitmentAt(f.ws.ID, sc.ItemID, "user", in, rt(lapseNow), nil)
+				if behavior == "lapses" {
+					if !errors.Is(err, ErrCommitmentChanged) {
+						t.Fatalf("apply = %v, want commitment changed", err)
+					}
+					assertLapsed(t, f, sc)
+					if f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=?`, sc.ID) != 0 || f.count(t, `SELECT COUNT(*) FROM item_schedules WHERE id=? AND deadline_behavior='lapses'`, sc.ID) != 1 {
+						t.Fatal("refused edit applied")
+					}
+				} else {
+					if err != nil || f.occTotal(t, sc.ID) != 0 || f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 {
+						t.Fatalf("stays owed apply: %v", err)
+					}
+					if scope == "occurrence" && f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides WHERE schedule_id=? AND role='deadline' AND value_at=?`, sc.ID, *in.Deadline) != 1 {
+						t.Fatal("stays owed edit not applied")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestLapseTerminalAfterDeadlinePage(t *testing.T) {
+	for _, recurring := range []bool{false, true} {
+		t.Run(strconv.FormatBool(recurring), func(t *testing.T) {
+			f := newSchedFixture(t)
+			f.s.db.SetMaxOpenConns(1)
+			sc := lapseSchedule(t, f, recurring)
+			if recurring {
+				until := rt("2026-10-27T15:00:00Z")
+				if _, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "move", Until: &until, Actor: "user"}, rt("2026-10-26T09:30:00Z")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			page, err := f.s.deadlinePage(rt(lapseNow), nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			page, err = f.s.openDeadlineCandidates(f.s.db, page)
+			if err != nil || len(page) != 1 {
+				t.Fatalf("page: %v %v", page, err)
+			}
+			before := f.reload(t, sc.ItemID)
+			reminder, history := f.managed(t, before), f.occs(t, sc.ID)
+			f.exec(t, `UPDATE items SET fields=? WHERE id=?`, `{"status":"done"}`, sc.ItemID)
+			if missed, err := f.s.evaluateDeadline(page[0], rt(lapseNow)); err != nil || missed {
+				t.Fatalf("terminal evaluation: missed=%v err=%v", missed, err)
+			}
+			if f.deadlineEvidence(t) != 0 || f.deadlineNotices(t) != 0 || !reflect.DeepEqual(before, f.reload(t, sc.ItemID)) || !reflect.DeepEqual(reminder, f.managed(t, before)) || !reflect.DeepEqual(history, f.occs(t, sc.ID)) {
+				t.Fatal("terminal item changed after page")
+			}
+		})
 	}
 }

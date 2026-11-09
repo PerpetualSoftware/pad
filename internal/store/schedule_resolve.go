@@ -443,7 +443,13 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	if in.State == "done" {
 		completion = actual
 	}
-	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, nowT, completion)
+	advanceNow := nowT
+	if in.State == "lapsed" && sc.Anchor != "completion" {
+		// nextAfterResolve floors its search at both now-1s and the occurrence.
+		// A calendar lapse must take the next grid instance, even if it is past.
+		advanceNow = x
+	}
+	occ, found, anchorWall, c, err := s.nextAfterResolve(sc, rec, x, advanceNow, completion)
 	if err != nil && in.State == "lapsed" {
 		// Expansion failed before any closure writes; keep the miss and leave
 		// the occurrence outstanding until the schedule can be repaired.
@@ -467,21 +473,20 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	if err != nil {
 		return nil, err
 	}
-	// Record passed-over instances separately from the occurrence being closed.
-	missed, _, err := missedOccurrences(sc, rec, nowT)
-	if err != nil {
-		if in.State == "lapsed" {
-			// This expansion also precedes closure writes, so preserve the miss.
-			return nil, nil
-		}
-		return nil, err
-	}
-	for _, m := range missed {
-		n, err := s.insertMissedTx(tx, sc.ID, m, ts)
+	if in.State != "lapsed" {
+		// Done and skip record passed-over instances. Lapse judges each
+		// occurrence's own deadline instead, in the evaluator.
+		missed, _, err := missedOccurrences(sc, rec, nowT)
 		if err != nil {
 			return nil, err
 		}
-		res.MissedRecorded += n
+		for _, m := range missed {
+			n, err := s.insertMissedTx(tx, sc.ID, m, ts)
+			if err != nil {
+				return nil, err
+			}
+			res.MissedRecorded += n
+		}
 	}
 	state := "done"
 	if in.State == "skip" {
@@ -539,7 +544,7 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	}
 	change := in.State
 	if change == "lapsed" {
-		// The miss journal is the evidence; closure uses the existing skip advance.
+		// The miss journal is the evidence; reuse the skip journal change type.
 		change = "skip"
 	}
 	if err := s.journalScheduleAfterTx(tx, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, in.Actor); err != nil {
