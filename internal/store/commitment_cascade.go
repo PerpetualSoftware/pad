@@ -189,8 +189,16 @@ type linkedPlan struct {
 	nodes    map[string]*linkNode
 	impact   schedule.Impact
 	root     string // root schedule id
-	incoming *linkRow
+	to       time.Time
+	incoming *linkRow // set only for a direct move of a date a link supplies
 	revision string
+}
+
+// linkedOptions is the caller's side of a linked change, a move or a link write.
+type linkedOptions struct {
+	actor, reason, revision string
+	preview, acknowledge    bool
+	access                  models.CommitmentAccess
 }
 
 // MoveLinkedDate moves one date of an item's outstanding occurrence and the
@@ -229,18 +237,41 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return nil, err
 	}
-	p, err := s.planLinkedMoveTx(tx, workspaceID, in.ItemID, role, to.UTC().Truncate(time.Second))
+	c, err := s.pinCommitmentTx(tx, workspaceID, in.ItemID)
 	if err != nil {
 		return nil, err
 	}
-	if err := budget.check(); err != nil {
+	p, err := s.planLinkedTx(tx, c, workspaceID, in.ItemID, role, to.UTC().Truncate(time.Second), true)
+	if err != nil {
 		return nil, err
 	}
-	// Authority over each deadline the move changes. The same refusal for a
+	res, apply, err := s.settleLinkedPlan(p, budget, linkedOptions{actor: actor, reason: reason, revision: in.Revision, preview: in.Preview, acknowledge: in.AcknowledgeViolations, access: in.Access})
+	if err != nil || !apply {
+		return res, err
+	}
+	if err := s.applyLinkedPlanTx(tx, p, actor, reason, "Moved with a linked date", s.linkNow().UTC().Truncate(time.Second), openFilter, openArgs, budget); err != nil {
+		return nil, err
+	}
+	if err := budget.commit(tx); err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+// settleLinkedPlan applies the rules that stand between a plan and its writes:
+// the time budget, authority over each hard deadline, the one reason of a
+// renegotiation, the preview revision and the acknowledgement of a date outside
+// its own bounds. It returns the result the caller may read, and whether the
+// plan is to be applied (not a preview, and not empty).
+func (s *Store) settleLinkedPlan(p *linkedPlan, budget *linkBudget, o linkedOptions) (*models.LinkedMoveResult, bool, error) {
+	if err := budget.check(); err != nil {
+		return nil, false, err
+	}
+	// Authority over each deadline the change makes. The same refusal for a
 	// deadline the caller cannot read, cannot edit, or one among many.
 	for _, ch := range p.impact.HardDeadlines {
-		if !in.Access.Editable[p.c.itemOf(ch.Node.Schedule)] {
-			return nil, ErrDeadlineApprovalRequired
+		if !o.access.Editable[p.c.itemOf(ch.Node.Schedule)] {
+			return nil, false, ErrDeadlineApprovalRequired
 		}
 	}
 	renegotiates := len(p.impact.HardDeadlines) > 0
@@ -250,41 +281,34 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 			violations = append(violations, v)
 		}
 	}
-	if renegotiates && reason == "" {
-		return nil, fieldErr("reason", "required", "moving a hard deadline needs a reason")
+	if renegotiates && o.reason == "" {
+		return nil, false, fieldErr("reason", "required", "moving a hard deadline needs a reason")
 	}
-	res := s.linkedResult(p, in.Access, renegotiates)
-	if in.Preview {
-		return res, nil
+	res := s.linkedResult(p, o.access, renegotiates)
+	if o.preview {
+		return res, false, nil
 	}
-	if in.Revision != "" && in.Revision != p.revision {
-		return nil, ErrCommitmentChanged
+	if o.revision != "" && o.revision != p.revision {
+		return nil, false, ErrCommitmentChanged
 	}
-	if (renegotiates || len(violations) > 0) && in.Revision == "" {
-		return nil, fieldErr("revision", "required", "this change needs the preview revision")
+	if (renegotiates || len(violations) > 0) && o.revision == "" {
+		return nil, false, fieldErr("revision", "required", "this change needs the preview revision")
 	}
-	if len(violations) > 0 && !in.AcknowledgeViolations {
-		return nil, ErrLinkViolationAck
+	if len(violations) > 0 && !o.acknowledge {
+		return nil, false, ErrLinkViolationAck
 	}
-	if len(p.impact.Changes) == 0 {
-		return res, nil
-	}
-	nowT := s.linkNow().UTC().Truncate(time.Second)
-	if err := s.applyLinkedPlanTx(tx, p, in, actor, reason, nowT, openFilter, openArgs, budget); err != nil {
-		return nil, err
-	}
-	if err := budget.commit(tx); err != nil {
-		return nil, err
-	}
-	return res, nil
+	return res, len(p.impact.Changes) > 0, nil
 }
 
-// planLinkedMoveTx pins, reads the component and plans the cascade. It writes nothing.
-func (s *Store) planLinkedMoveTx(tx *sql.Tx, workspaceID, itemID string, role schedule.Role, to time.Time) (*linkedPlan, error) {
-	c, err := s.pinCommitmentTx(tx, workspaceID, itemID)
-	if err != nil {
-		return nil, err
-	}
+// planLinkedTx plans the cascade of a change to one date of itemID's
+// outstanding occurrence over the component c that pinCommitmentTx read (the
+// caller may have put a link of its own into c.links). It writes nothing.
+//
+// A direct move sets the date to `to`. With direct false nothing is moved by
+// hand: the date stays where it is and the plan brings every date linked below
+// it to where its link puts it. That plan is nil when itemID has no outstanding
+// occurrence, so there is nothing to bring.
+func (s *Store) planLinkedTx(tx *sql.Tx, c *commitmentComponent, workspaceID, itemID string, role schedule.Role, to time.Time, direct bool) (*linkedPlan, error) {
 	p := &linkedPlan{c: c, nodes: map[string]*linkNode{}}
 	for id, sc := range c.scheds {
 		if sc.ItemID == itemID {
@@ -303,6 +327,9 @@ func (s *Store) planLinkedMoveTx(tx *sql.Tx, workspaceID, itemID string, role sc
 	}
 	root := p.nodes[p.root]
 	if root == nil {
+		if !direct {
+			return nil, nil
+		}
 		return nil, fieldErr("schedule", "ended", "the commitment has no outstanding occurrence to move")
 	}
 	var edges []schedule.Edge
@@ -325,7 +352,7 @@ func (s *Store) planLinkedMoveTx(tx *sql.Tx, workspaceID, itemID string, role sc
 			return nil, err
 		}
 		edges = append(edges, e)
-		if l.ChildSchedule == p.root && l.ChildRole == linkRoleName(role) {
+		if direct && l.ChildSchedule == p.root && l.ChildRole == linkRoleName(role) {
 			p.incoming = &c.links[i]
 		}
 	}
@@ -337,10 +364,15 @@ func (s *Store) planLinkedMoveTx(tx *sql.Tx, workspaceID, itemID string, role sc
 	for id, n := range p.nodes {
 		st[schedule.Node{Schedule: id}] = schedule.NodeState{Dates: n.dates}
 	}
-	if _, ok := root.dates[role]; !ok {
+	cur, ok := root.dates[role]
+	if !ok {
 		return nil, fieldErr("role", "combination", "the commitment has no "+linkRoleName(role)+" date to move")
 	}
-	if role == schedule.RoleTarget && !to.After(s.linkNow()) {
+	if !direct {
+		to = cur
+	}
+	p.to = to
+	if direct && role == schedule.RoleTarget && !to.After(s.linkNow()) {
 		if _, hasDeadline := root.dates[schedule.RoleDeadline]; hasDeadline {
 			return nil, fieldErr("to", "range", "to must be after now on a schedule with a hard deadline")
 		}
@@ -424,26 +456,27 @@ func (s *Store) linkedResult(p *linkedPlan, acc models.CommitmentAccess, renegot
 	return res
 }
 
-// applyLinkedPlanTx writes every change in plan order (the root first), each
-// with its journal row, and checks the budget between writes.
-func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, in models.LinkedMoveInput, actor, reason string, nowT time.Time, openFilter string, openArgs []any, budget *linkBudget) error {
+// applyLinkedPlanTx writes every change in plan order (the moved date first),
+// each with its journal row, and checks the budget between writes. The first
+// row is the root of the lineage the rest name. why is the journal reason of a
+// dependent date that moved with another.
+func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why string, nowT time.Time, openFilter string, openArgs []any, budget *linkBudget) error {
 	ts := nowT.Format(time.RFC3339)
 	rootChange := newID()
-	wroteRoot := false
 	if p.incoming != nil && len(p.impact.Changes) > 0 {
 		// A child dragged away from its parent keeps the link at the new offset.
-		if err := s.keepLinkAtNewOffsetTx(tx, p, in); err != nil {
+		if err := s.keepLinkAtNewOffsetTx(tx, p); err != nil {
 			return err
 		}
 	}
-	for _, ch := range p.impact.Changes {
+	for i, ch := range p.impact.Changes {
 		if err := budget.check(); err != nil {
 			return err
 		}
 		n := p.nodes[ch.Node.Schedule]
 		name := linkRoleName(ch.Role)
 		before, after := dateJSON(name, ch.From), dateJSON(name, ch.To)
-		why, source := "Moved with a linked date", "system"
+		why, source := why, "system"
 		switch {
 		case ch.Role == schedule.RoleDeadline:
 			why, source = reason, "user"
@@ -472,14 +505,11 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, in models.LinkedMov
 		if err := s.writeLinkedDateTx(tx, n, ch, nowT, ts, actor); err != nil {
 			return err
 		}
-		id, parent, root := newID(), "", rootChange
-		if ch.Root {
-			id, wroteRoot = rootChange, true
-		} else if wroteRoot {
-			parent = rootChange
-		} else {
-			root = ""
+		id, parent := newID(), rootChange
+		if i == 0 {
+			id, parent = rootChange, ""
 		}
+		root := rootChange
 		if err := s.journalScheduleChangeRowTx(tx, id, n.sc.ID, "move", n.key, name, before, after, actor, why, source, parent, root); err != nil {
 			return err
 		}
@@ -548,10 +578,10 @@ func (s *Store) cancelArmedReminderTx(tx *sql.Tx, scheduleID string) error {
 
 // keepLinkAtNewOffsetTx records the dragged child's new offset for its
 // outstanding occurrence, against the parent date as it is now.
-func (s *Store) keepLinkAtNewOffsetTx(tx *sql.Tx, p *linkedPlan, in models.LinkedMoveInput) error {
+func (s *Store) keepLinkAtNewOffsetTx(tx *sql.Tx, p *linkedPlan) error {
 	l := p.incoming
 	parent := p.nodes[l.ParentSchedule]
-	to, _ := time.Parse(time.RFC3339, in.To)
+	to := p.to
 	cur, err := l.edgeOffset()
 	if err != nil {
 		return err

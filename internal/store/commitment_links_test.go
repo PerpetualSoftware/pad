@@ -63,11 +63,28 @@ var oneDay = models.ScheduleLinkOffset{Mode: "elapsed", ElapsedSecs: 86400}
 
 func (f *linkFix) link(t *testing.T, parent, child int, pr, cr string, off models.ScheduleLinkOffset) *models.ScheduleLink {
 	t.Helper()
-	l, err := f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[parent].ID, ParentRole: pr, ChildItemID: f.items[child].ID, ChildRole: cr, Offset: off}, f.allEdit())
+	res, err := f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[parent].ID, ParentRole: pr, ChildItemID: f.items[child].ID, ChildRole: cr, Offset: off}, f.allEdit())
 	if err != nil {
 		t.Fatalf("CreateScheduleLink: %v", err)
 	}
-	return l
+	return res.Link
+}
+
+// linkRaw stores a link without the move a link write makes, so a test can
+// start from dates a link does not produce.
+func (f *linkFix) linkRaw(t *testing.T, parent, child int, pr, cr string, off models.ScheduleLinkOffset) {
+	t.Helper()
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	l := linkRow{ID: newID(), ParentSchedule: f.scheds[parent].ID, ParentRole: pr, ChildSchedule: f.scheds[child].ID, ChildRole: cr, Offset: off, CancelPolicy: models.LinkWaitingOn, CreatedAt: nowNano(), UpdatedAt: nowNano()}
+	if err := f.s.insertLinkTx(tx, f.ws.ID, l); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func (f *linkFix) role(t *testing.T, i int, role string) string {
@@ -271,8 +288,8 @@ func TestLinkToAChildDeadlineIsARenegotiation(t *testing.T) {
 	t.Parallel()
 	f := newLinkFix(t, 3)
 	f.exec(t, `UPDATE item_schedules SET roles_origin='native', deadline_days=2, deadline_secs=0, deadline_behavior='stays_owed' WHERE id IN (?,?)`, f.scheds[1].ID, f.scheds[2].ID)
-	f.link(t, 0, 1, "target", "deadline", oneDay)
-	f.link(t, 0, 2, "target", "deadline", oneDay)
+	f.linkRaw(t, 0, 1, "target", "deadline", oneDay)
+	f.linkRaw(t, 0, 2, "target", "deadline", oneDay)
 	before := f.role(t, 1, "deadline")
 	const to = "2030-03-10T09:00:00Z"
 	// No authority over one dependent's deadline, then over both: the refusal is the same value.
@@ -419,10 +436,14 @@ func TestLinkedDateOutsideTheSupportedYearsInTheChildZoneIsRefused(t *testing.T)
 	f.exec(t, `UPDATE item_schedules SET tz='Asia/Tokyo' WHERE id=?`, f.scheds[1].ID)
 	// 2200-12-31T20:00Z is still 2200 in UTC but 2201-01-01 05:00 in Tokyo.
 	f.link(t, 0, 1, "target", "target", models.ScheduleLinkOffset{Mode: "elapsed", ElapsedSecs: 3600})
+	written := func() int {
+		return f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides`) + f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE change_type='move'`)
+	}
+	before := written()
 	if _, err := f.move(0, "target", "2200-12-31T19:30:00Z", nil); err == nil {
 		t.Fatal("a derived Tokyo date in 2201 was stored")
 	}
-	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides`) + f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE change_type='move'`); n != 0 {
+	if n := written() - before; n != 0 {
 		t.Fatalf("%d rows written", n)
 	}
 	if _, err := f.move(0, "target", "2200-12-30T09:00:00Z", nil); err != nil {

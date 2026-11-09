@@ -32,6 +32,27 @@ type ScheduleLinkCreate struct {
 	ChildItemID, ChildRole   string
 	Offset                   ScheduleLinkOffset
 	CancelPolicy             string // empty means waiting_on
+	Move                     LinkWriteOptions
+}
+
+// LinkWriteOptions governs the move a link write makes: writing a link, or
+// changing its offset, moves the child's outstanding occurrence to the parent
+// plus the offset through the same plan as a cascade, so the cascade's rules
+// apply to it: a preview, the one reason and revision of a deadline
+// renegotiation, and the acknowledgement of a date outside its own bounds.
+type LinkWriteOptions struct {
+	Actor                 string
+	Reason                string
+	Preview               bool // compute the move and write nothing, the link included
+	Revision              string
+	AcknowledgeViolations bool
+}
+
+// ScheduleLinkResult is the answer to a link write. Link is nil for a preview.
+// Moved holds only what the caller can read, as for a linked move.
+type ScheduleLinkResult struct {
+	Link  *ScheduleLink
+	Moved LinkedMoveResult
 }
 
 // ScheduleLink is a stored time link, addressed by item.
@@ -96,8 +117,10 @@ type LinkedMoveResult struct {
 	RenegotiatesDeadline bool `json:"renegotiates_deadline,omitempty"`
 }
 
-// ScheduleLinkUpdate changes a link's offset (for later moves) or cancel policy.
+// ScheduleLinkUpdate changes a link's offset or cancel policy. A new offset moves
+// the child like a new link does.
 type ScheduleLinkUpdate struct {
 	Offset       *ScheduleLinkOffset
 	CancelPolicy *string
+	Move         LinkWriteOptions
 }

@@ -372,8 +372,14 @@ func readableLinkEnds(acc models.CommitmentAccess, a, b string) bool {
 // CreateScheduleLink links two commitments. Both ends need edit (the caller's
 // decision in access); an end the caller cannot read is reported as not found.
 // The 50/16 limits and the cycle rule are checked here, at write time, against
-// the whole stored component. Creating a link moves nothing.
-func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCreate, access models.CommitmentAccess) (*models.ScheduleLink, error) {
+// the whole stored component.
+//
+// A link supplies the child's date, so writing one moves the child's
+// outstanding occurrence, and what hangs below it, to the parent plus the
+// offset, through the plan a cascade uses (see linkWritePlanTx). A date that
+// already matches moves nothing. With Move.Preview the move is computed and
+// nothing is written, the link included.
+func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCreate, access models.CommitmentAccess) (*models.ScheduleLinkResult, error) {
 	if !access.Readable[in.ParentItemID] || !access.Readable[in.ChildItemID] {
 		return nil, ErrScheduleLinkNotFound
 	}
@@ -400,6 +406,7 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 	if in.ParentItemID == in.ChildItemID {
 		return nil, &LinkRefusedError{Code: "link_self"}
 	}
+	openFilter, openArgs := s.nonTerminalFilter(workspaceID, "i")
 	budget := s.newLinkBudget()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -448,18 +455,71 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 	if err := schedule.CheckLink(g, edge, schedule.LinkLimits{}); err != nil {
 		return nil, redactLinkError(err)
 	}
-	l := linkRow{ID: newID(), ParentSchedule: parent.ID, ParentRole: in.ParentRole, ChildSchedule: child.ID, ChildRole: in.ChildRole,
-		Offset: storedOffset(off), CancelPolicy: policy, CreatedAt: nowNano(), UpdatedAt: nowNano()}
+	// The link as planned carries no id or stamp, so a preview and its apply hash alike.
+	l := linkRow{ParentSchedule: parent.ID, ParentRole: in.ParentRole, ChildSchedule: child.ID, ChildRole: in.ChildRole,
+		Offset: storedOffset(off), CancelPolicy: policy}
+	moved, p, apply, err := s.linkWritePlanTx(tx, workspaceID, c, l, parent, budget, in.Move, access)
+	if err != nil {
+		return nil, err
+	}
+	if in.Move.Preview {
+		return &models.ScheduleLinkResult{Moved: *moved}, nil
+	}
+	l.ID, l.CreatedAt, l.UpdatedAt = newID(), nowNano(), nowNano()
 	if err := s.insertLinkTx(tx, workspaceID, l); err != nil {
 		if isUniqueViolation(err) {
 			return nil, &LinkRefusedError{Code: "link_duplicate_incoming"}
 		}
 		return nil, err
 	}
+	if apply {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), openFilter, openArgs, budget); err != nil {
+			return nil, err
+		}
+	}
 	if err := budget.commit(tx); err != nil {
 		return nil, err
 	}
-	return linkDTO(l, in.ParentItemID, in.ChildItemID), nil
+	return &models.ScheduleLinkResult{Link: linkDTO(l, in.ParentItemID, in.ChildItemID), Moved: *moved}, nil
+}
+
+const linkWriteWhy = "Moved to follow its link"
+
+func linkActor(o models.LinkWriteOptions) string {
+	if o.Actor == "" {
+		return "user"
+	}
+	return o.Actor
+}
+
+// linkWritePlanTx plans the move a link write makes: with l in the component in
+// place of any stored version of itself, the child's date, and every date below
+// it, go to where their links put them, the parent's date staying where it is.
+// It settles the plan under the same rules as a linked move and returns the
+// result the caller may read, the plan, and whether it is to be applied. The
+// caller holds the pin on the parent item, and so the workspace.
+func (s *Store) linkWritePlanTx(tx *sql.Tx, workspaceID string, c *commitmentComponent, l linkRow, parent *models.ItemSchedule, budget *linkBudget, o models.LinkWriteOptions, access models.CommitmentAccess) (*models.LinkedMoveResult, *linkedPlan, bool, error) {
+	replaced := false
+	for i := range c.links {
+		if l.ID != "" && c.links[i].ID == l.ID {
+			c.links[i], replaced = l, true
+		}
+	}
+	if !replaced {
+		c.links = append(c.links, l)
+	}
+	p, err := s.planLinkedTx(tx, c, workspaceID, parent.ItemID, linkRole(l.ParentRole), time.Time{}, false)
+	if err != nil {
+		return &models.LinkedMoveResult{}, nil, false, err
+	}
+	if p == nil {
+		return &models.LinkedMoveResult{Changes: []models.LinkedDateChange{}}, nil, false, nil
+	}
+	res, apply, err := s.settleLinkedPlan(p, budget, linkedOptions{actor: linkActor(o), reason: strings.TrimSpace(o.Reason), revision: o.Revision, preview: o.Preview, acknowledge: o.AcknowledgeViolations, access: access})
+	if res == nil {
+		res = &models.LinkedMoveResult{}
+	}
+	return res, p, apply, err
 }
 
 func linkDTO(l linkRow, parentItem, childItem string) *models.ScheduleLink {
@@ -491,9 +551,10 @@ func (s *Store) linkEndsOf(workspaceID, linkID string) (parentItem, childItem st
 }
 
 // UpdateScheduleLink changes a link's offset or cancel policy. It needs edit on
-// both ends, rechecks the limits and cycle rule, and moves nothing: the new
-// offset applies from the next move of the parent.
-func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.ScheduleLinkUpdate, access models.CommitmentAccess) (*models.ScheduleLink, error) {
+// both ends, rechecks the limits and cycle rule, and, like a new link, moves the
+// child's outstanding occurrence to the parent plus the new offset when it is
+// not already there.
+func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.ScheduleLinkUpdate, access models.CommitmentAccess) (*models.ScheduleLinkResult, error) {
 	parentItem, childItem, err := s.linkEndsOf(workspaceID, linkID)
 	if err != nil {
 		return nil, err
@@ -504,6 +565,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if !access.Editable[parentItem] || !access.Editable[childItem] {
 		return nil, ErrLinkEditRequired
 	}
+	openFilter, openArgs := s.nonTerminalFilter(workspaceID, "i")
 	budget := s.newLinkBudget()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -551,6 +613,17 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if err := schedule.CheckLink(g, edge, schedule.LinkLimits{}); err != nil {
 		return nil, redactLinkError(err)
 	}
+	parentSc := c.scheds[next.ParentSchedule]
+	if parentSc == nil {
+		return nil, ErrScheduleLinkNotFound
+	}
+	moved, p, apply, err := s.linkWritePlanTx(tx, workspaceID, c, next, parentSc, budget, upd.Move, access)
+	if err != nil {
+		return nil, err
+	}
+	if upd.Move.Preview {
+		return &models.ScheduleLinkResult{Moved: *moved}, nil
+	}
 	allDay := 0
 	if next.Offset.AllDay {
 		allDay = 1
@@ -560,10 +633,15 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		next.Offset.Mode, next.Offset.ElapsedSecs, next.Offset.Days, next.Offset.ClockSecs, allDay, next.Offset.Zone, next.CancelPolicy, next.UpdatedAt, linkID); err != nil {
 		return nil, fmt.Errorf("update schedule link: %w", err)
 	}
+	if apply {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), openFilter, openArgs, budget); err != nil {
+			return nil, err
+		}
+	}
 	if err := budget.commit(tx); err != nil {
 		return nil, err
 	}
-	return linkDTO(next, parentItem, childItem), nil
+	return &models.ScheduleLinkResult{Link: linkDTO(next, parentItem, childItem), Moved: *moved}, nil
 }
 
 // DeleteScheduleLink removes a link. It needs edit on both ends.
