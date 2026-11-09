@@ -41,7 +41,8 @@ Do these in order:
    - If `first_connect` is **false**: this is a reconnect. Make no offer and do NOT run the
      playbook on your own; just re-affirm the connection. The one exception is a message
      that itself asked for it (it names the playbook, or says to run it): that request
-     stands, so run it as described above.
+     stands. Run `pad bootstrap --format json` to find the playbook by title or invocation
+     slug, then load and run it as described above.
 
 3. **Report the state.** Run `pad session status --format json`. Report it honestly:
    `announced_armed` true means this session is *set* to accept pushes (consent is on),
