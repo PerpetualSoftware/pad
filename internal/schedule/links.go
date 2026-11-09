@@ -75,6 +75,13 @@ func (o Offset) Validate() error {
 	return nil
 }
 
+// linkYearInRange reports whether t's UTC year is a year the package supports (minYear..maxYear). Civil results
+// are checked in their own zone at the call site; elapsed results and root dates use UTC.
+func linkYearInRange(t time.Time) bool {
+	y := t.UTC().Year()
+	return y >= minYear && y <= maxYear
+}
+
 // Apply derives the child date as a UTC instant.
 func (o Offset) Apply(parent time.Time) (time.Time, error) {
 	if err := o.Validate(); err != nil {
@@ -83,7 +90,7 @@ func (o Offset) Apply(parent time.Time) (time.Time, error) {
 	parent = parent.UTC()
 	if o.Mode == OffsetElapsed {
 		child := parent.Add(o.Elapsed)
-		if child.Sub(parent) != o.Elapsed {
+		if child.Sub(parent) != o.Elapsed || !linkYearInRange(child) {
 			return time.Time{}, linkInvalid("elapsed result is out of range")
 		}
 		return child, nil
@@ -118,7 +125,7 @@ func OffsetFromDrop(mode OffsetMode, parent, child time.Time, zone string, allDa
 	}
 	if mode == OffsetElapsed {
 		o.Elapsed = child.UTC().Sub(parent.UTC())
-		if !parent.UTC().Add(o.Elapsed).Equal(child) {
+		if !parent.UTC().Add(o.Elapsed).Equal(child) || !linkYearInRange(child) {
 			return Offset{}, linkInvalid("elapsed drop is out of range")
 		}
 		return o, nil
@@ -344,6 +351,9 @@ func (g *Graph) Plan(st State, mv Move, lim LinkLimits) (Impact, error) {
 	}
 	if _, ok := st[mv.Node].Dates[mv.Role]; !ok {
 		return Impact{}, linkInvalid("move date is missing from state")
+	}
+	if !linkYearInRange(mv.To) {
+		return Impact{}, linkInvalid("move date is out of range")
 	}
 	root := linkVertex{mv.Node, mv.Role}
 	visits, affected, hops, err := g.footprint(root, lim)
