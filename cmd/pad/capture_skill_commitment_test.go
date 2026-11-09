@@ -82,11 +82,13 @@ func TestCaptureSkillScenarios(t *testing.T) {
 		flags    map[string]string
 	}{
 		{"simple trash: one sentence, target only", "--every weekly", "pad remind",
-			map[string]string{"start": "", "every": "weekly"}},
+			map[string]string{"start": "2026-11-10T19:00", "every": "weekly"}},
 		{"deadline lapses vs stays owed", "--deadline hard", "pad remind",
-			map[string]string{"start": "", "deadline": "hard"}},
+			map[string]string{"start": "2026-04-15", "deadline": "hard"}},
+		{"lapses is a renegotiate step", "--behavior lapses", "pad remind renegotiate",
+			map[string]string{"scope": "series", "behavior": "lapses", "reason": "missed one is moot"}},
 		{"completed yesterday", "pad remind done", "pad remind done",
-			map[string]string{"at": ""}},
+			map[string]string{"at": "2026-11-08T17:30"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -104,9 +106,11 @@ func TestCaptureSkillScenarios(t *testing.T) {
 			if path != c.path {
 				t.Fatalf("%q resolved to %q, want %q", found, path, c.path)
 			}
-			for k := range c.flags {
-				if _, ok := set[k]; !ok {
+			for k, want := range c.flags {
+				if got, ok := set[k]; !ok {
 					t.Errorf("%q does not set --%s", found, k)
+				} else if got != want {
+					t.Errorf("%q sets --%s=%q, want %q", found, k, got, want)
 				}
 			}
 		})

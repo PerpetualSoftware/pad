@@ -53,7 +53,7 @@ a target, so ask nothing: one sentence in, one proposal out.
 ```
 pad remind TASK-5 --start 2026-11-10T19:00 --every weekly
 pad remind TASK-6 --start 2026-04-15 --deadline hard
-pad remind TASK-7 --start 2026-11-14T17:00 --deadline soft
+pad remind renegotiate TASK-6 --scope series --behavior lapses --reason "missed one is moot"
 pad remind done TASK-8 --at 2026-11-08T17:30
 pad remind show TASK-5
 ```
@@ -63,13 +63,20 @@ pad remind show TASK-5
   date, run `date` rather than guessing.
 - `--every` takes daily, weekdays, weekly, biweekly, monthly, monthly-last,
   quarterly, yearly, or an RRULE. Omit it for a one-time commitment.
-- `--deadline hard` is a due time the work must not miss; `soft` is a hope.
-  If the sentence does not say which, leave it out. Ask only when the answer
-  changes behaviour: whether a missed deadline lapses or stays owed ("if I
-  miss it, is it still on my list?"). Ask one question at a time, and skip the
-  question when the sentence already answers it.
-- Past completion ("I finished it yesterday") is `pad remind done <ref> --at
-  <wall time>`. The time cannot be in the future.
+- `--deadline hard` is a due time the work must not miss, and a missed one
+  stays owed by default. Without it there is no deadline, only a target. Leave
+  it out unless the sentence says the time is a must ("due", "by", "no later
+  than"). Ask only when the answer changes behaviour: whether a missed
+  deadline lapses or stays owed ("if I miss it, is it still on my list?").
+  Ask one question at a time, and skip it when the sentence already answers
+  it. "Stays owed" needs nothing more. "Lapses" is a second step after the
+  schedule exists: the `renegotiate` line above previews, and adding `--apply`
+  commits it after the user confirms.
+- Past completion ("I finished it yesterday") on an item that already has a
+  schedule is `pad remind done <ref> --at <wall time>`; the time cannot be in
+  the future or before the schedule was created. For something new that is
+  already done, create the item with its status set to the done state and do
+  not attach a schedule.
 - Never ask for an estimate, a handler or a category. Pad has none of those.
 
 **Read-back, then confirm.** Before running anything, show the proposal in
