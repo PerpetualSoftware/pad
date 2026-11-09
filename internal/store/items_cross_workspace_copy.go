@@ -232,6 +232,12 @@ type CrossWorkspaceCopyRequest struct {
 	// skipping it. Every HTTP door supplies it.
 	RelationVisibility RelationVisibilityFunc
 
+	// SourceChildReadable says which of the source milestone's selected
+	// children the requester may read, so the dropped-children count never
+	// includes one they cannot. Decided before the transaction opens; nil
+	// counts every child (internal callers only).
+	SourceChildReadable func(childID string) bool
+
 	// Actor is the user performing the copy. It becomes every cloned
 	// attachment's uploaded_by (DR-11: never the source uploader, who may not
 	// be a member of B at all) and the provenance row's created_by.
@@ -966,7 +972,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	if scheduleNow.IsZero() {
 		scheduleNow = time.Now()
 	}
-	scheduleReport, err := s.carrySourceScheduleTx(tx, sourceWorkspaceID, req.SourceItemID, req.TargetWorkspaceID, item.ID, derefStr(assignedUserID), req.ActorUserID, req.ArchiveSource, scheduleNow)
+	scheduleReport, err := s.carrySourceScheduleTx(tx, sourceWorkspaceID, req.SourceItemID, req.TargetWorkspaceID, item.ID, derefStr(assignedUserID), req.ActorUserID, req.ArchiveSource, scheduleNow, req.SourceChildReadable)
 	if err != nil {
 		return nil, err
 	}

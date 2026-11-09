@@ -283,7 +283,11 @@ type ItemCopySchedule struct {
 	Carried        bool `json:"carried"`
 	HistoryDropped int  `json:"history_dropped"`
 	ChangesDropped int  `json:"changes_dropped"`
-	Skipped        *struct {
+	// ForecastDropped and ChildrenDropped: a copy and a cross-workspace move
+	// leave the forecast and the selected children behind.
+	ForecastDropped int `json:"forecast_dropped"`
+	ChildrenDropped int `json:"children_dropped"`
+	Skipped         *struct {
 		Reason string `json:"reason"`
 	} `json:"skipped,omitempty"`
 }

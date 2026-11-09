@@ -1556,7 +1556,12 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 	if item.AssignedUserID != nil && !resp.Warnings.DroppedAssignee {
 		carriedAssignee = *item.AssignedUserID
 	}
-	sched, err := s.store.PreviewItemScheduleCarry(sourceWorkspaceID, item.ID, carriedAssignee, currentUserID(r), input.ArchiveSource)
+	readable, err := s.readableChildren(r, sourceWorkspaceID, item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	sched, err := s.store.PreviewItemScheduleCarry(sourceWorkspaceID, item.ID, carriedAssignee, currentUserID(r), input.ArchiveSource, readable)
 	if err != nil {
 		s.writeCopyError(w, r, err)
 		return
