@@ -200,13 +200,28 @@ func (c *commitmentComponent) itemOf(scheduleID string) string {
 // component that already holds more than maxLinkComponent links, so it can be
 // repaired.
 func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, openArgs []any, overCap bool, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
+	return s.pinCommitmentOpt(tx, workspaceID, openFilter, openArgs, overCap, false, rootItemID, extraItemIDs...)
+}
+
+// pinCommitmentOpt is pinCommitmentTx. With withDeleted the root item and the
+// seed schedules are found whether or not their item is soft-deleted: the one
+// caller is DeleteScheduleLink, which must be able to remove a link whose end
+// was deleted. The lock order is the same (root item by id, workspace, then the
+// component), a deleted root is locked like a live one, and liveness is still
+// read from the items, so a deleted end is never live in the component.
+func (s *Store) pinCommitmentOpt(tx *sql.Tx, workspaceID, openFilter string, openArgs []any, overCap, withDeleted bool, rootItemID string, extraItemIDs ...string) (*commitmentComponent, error) {
+	liveItem := ` AND deleted_at IS NULL`
+	liveJoin := ` AND i.deleted_at IS NULL`
+	if withDeleted {
+		liveItem, liveJoin = "", ""
+	}
 	pg := s.dialect.Driver() == DriverPostgres
 	lock := ""
 	if pg {
 		lock = ` FOR NO KEY UPDATE`
 	}
 	var one string
-	err := tx.QueryRow(s.q(`SELECT id FROM items WHERE id=? AND workspace_id=? AND deleted_at IS NULL`+lock), rootItemID, workspaceID).Scan(&one)
+	err := tx.QueryRow(s.q(`SELECT id FROM items WHERE id=? AND workspace_id=?`+liveItem+lock), rootItemID, workspaceID).Scan(&one)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrScheduleItemGone
 	} else if err != nil {
@@ -221,7 +236,7 @@ func (s *Store) pinCommitmentTx(tx *sql.Tx, workspaceID, openFilter string, open
 	seeds := map[string]bool{}
 	for i, item := range append([]string{rootItemID}, extraItemIDs...) {
 		var id string
-		err := tx.QueryRow(s.q(`SELECT sc.id FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.item_id=? AND sc.workspace_id=? AND i.deleted_at IS NULL`), item, workspaceID).Scan(&id)
+		err := tx.QueryRow(s.q(`SELECT sc.id FROM item_schedules sc JOIN items i ON i.id=sc.item_id WHERE sc.item_id=? AND sc.workspace_id=?`+liveJoin), item, workspaceID).Scan(&id)
 		if errors.Is(err, sql.ErrNoRows) {
 			if i == 0 {
 				return nil, ErrScheduleNotFound
@@ -604,6 +619,11 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		return nil, err
 	}
 	c, err := s.pinCommitmentTx(tx, workspaceID, openFilter, openArgs, true, parentItem, childItem)
+	if errors.Is(err, ErrScheduleItemGone) {
+		// A soft-deleted parent is the root the pin cannot find; answer as for an
+		// unreadable end, not with a code that tells the two apart.
+		return nil, ErrScheduleLinkNotFound
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -713,7 +733,10 @@ func (s *Store) DeleteScheduleLink(workspaceID, linkID string, access models.Com
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return err
 	}
-	if _, err := s.pinCommitmentTx(tx, workspaceID, "", nil, true, parentItem, childItem); err != nil {
+	// The root is the parent's item whether or not it is soft-deleted: it is
+	// pinned by id, first, then the workspace, as for a live link. A deleted end
+	// is read as part of the component but is never live in it.
+	if _, err := s.pinCommitmentOpt(tx, workspaceID, "", nil, true, true, parentItem, childItem); err != nil {
 		return err
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE id=? AND workspace_id=?`), linkID, workspaceID); err != nil {

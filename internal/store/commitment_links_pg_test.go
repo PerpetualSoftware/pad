@@ -269,3 +269,31 @@ func TestLinkWriteAgainstAResolveOfItsChildDoesNotDeadlock(t *testing.T) {
 		}
 	}
 }
+
+// A link delete whose root item is soft-deleted still takes the root item
+// first, then the workspace, and never asks for another item row, so it queues
+// with a cascade rooted at the live end and neither deadlocks.
+func TestLinkDeleteWithASoftDeletedRootAgainstACascadeDoesNotDeadlock(t *testing.T) {
+	f := newLinkPG(t, 3)
+	f.link(t, 0, 1)
+	f.link(t, 1, 2)
+	var id string
+	if err := f.s.db.QueryRow(`SELECT id FROM schedule_links WHERE parent_schedule_id=$1`, f.scs[0].ID).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.DeleteItem(f.items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	errs := f.run(t,
+		func() error { return f.s.DeleteScheduleLink(f.ws.ID, id, f.access()) },
+		func() error { return f.move(1, "2030-03-20T09:00:00Z") })
+	for _, err := range errs {
+		if err != nil {
+			t.Fatalf("errs=%v", errs)
+		}
+	}
+	var n int
+	if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM schedule_links`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("links=%d %v", n, err)
+	}
+}
