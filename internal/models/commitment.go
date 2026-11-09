@@ -14,6 +14,95 @@ type Commitment struct {
 	// ended.
 	OccurrenceKey string             `json:"occurrence_key,omitempty"`
 	Journal       []CommitmentChange `json:"journal"`
+	// Forecast is the hand-set estimate, null when none. It is not a role: it
+	// arms nothing and passing it is never a missed deadline.
+	Forecast *CommitmentForecast `json:"forecast"`
+	// Milestone is the outcome derived from the selected children, read for
+	// the one reader asking.
+	Milestone CommitmentMilestone `json:"milestone"`
+}
+
+// CommitmentForecast is a forecast and who set it. Passed is derived for
+// display on every read and is never stored.
+type CommitmentForecast struct {
+	Value     string          `json:"value"`
+	SetBy     string          `json:"set_by"`
+	SetByKind string          `json:"set_by_kind"`
+	SetAt     string          `json:"set_at"`
+	Source    string          `json:"source"`
+	Passed    bool            `json:"passed"`
+	History   []ForecastEvent `json:"history"`
+}
+
+// ForecastEvent is one append-only row of a forecast's history.
+type ForecastEvent struct {
+	ID         string `json:"id,omitempty"`
+	Action     string `json:"action"` // set | clear
+	Value      string `json:"value"`
+	PrevValue  string `json:"prev_value"`
+	SetBy      string `json:"set_by"`
+	SetByKind  string `json:"set_by_kind"`
+	Source     string `json:"source"`
+	RecordedAt string `json:"recorded_at"`
+}
+
+// MilestoneChild is one selected child as a reader that may see it reads it.
+type MilestoneChild struct {
+	ItemRef    string `json:"item_ref"`
+	Kind       string `json:"kind"`        // child | waiver
+	CloseState string `json:"close_state"` // open | done | abandoned | missing
+	DoneValue  string `json:"done_value,omitempty"`
+	Counts     bool   `json:"counts"`
+	Waived     bool   `json:"waived"`
+	Reason     string `json:"reason,omitempty"`
+	AddedBy    string `json:"added_by"`
+	AddedAt    string `json:"added_at"`
+}
+
+// MilestoneHistoryRow is a selection that was later removed.
+type MilestoneHistoryRow struct {
+	ItemRef   string `json:"item_ref"`
+	Kind      string `json:"kind"`
+	Reason    string `json:"reason,omitempty"`
+	AddedBy   string `json:"added_by"`
+	AddedAt   string `json:"added_at"`
+	RemovedBy string `json:"removed_by"`
+	RemovedAt string `json:"removed_at"`
+}
+
+// MilestoneEvidence is one child as it stood when the milestone was resolved.
+type MilestoneEvidence struct {
+	ItemRef    string `json:"item_ref"`
+	Kind       string `json:"kind"`
+	CloseState string `json:"close_state"`
+	DoneValue  string `json:"done_value,omitempty"`
+	RecordedAt string `json:"recorded_at"`
+}
+
+// MilestoneChange is a visible child whose live state differs from the
+// evidence recorded at completion.
+type MilestoneChange struct {
+	ItemRef  string `json:"item_ref"`
+	Was      string `json:"was"` // close state at completion, or "unselected"
+	Now      string `json:"now"` // live close state, or "unselected"
+	Reopened bool   `json:"reopened,omitempty"`
+}
+
+// CommitmentMilestone is the derived outcome. Result is completed, pending,
+// unknown (a selected child the reader cannot see) or null (nothing selected).
+// Totals and every list cover the children the reader can see; EvidenceChanged
+// is null whenever Result is unknown. Nothing here resolves an occurrence.
+type CommitmentMilestone struct {
+	Children        []MilestoneChild      `json:"children"`
+	Counted         int                   `json:"counted"`
+	Total           int                   `json:"total"`
+	Waivers         int                   `json:"waivers"`
+	Result          *string               `json:"result"`
+	CompletedAt     *string               `json:"completed_at,omitempty"`
+	EvidenceChanged *bool                 `json:"evidence_changed"`
+	Changes         []MilestoneChange     `json:"changes"`
+	Evidence        []MilestoneEvidence   `json:"evidence"`
+	History         []MilestoneHistoryRow `json:"history"`
 }
 
 // CommitmentRoles holds the effective value of each role for the outstanding

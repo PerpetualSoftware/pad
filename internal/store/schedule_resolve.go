@@ -378,6 +378,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, err
 		}
 		completion = actual
+		if err := s.snapshotMilestoneEvidenceTx(tx, workspaceID, sc.ID, OccurrenceKey(sc, xAt, xWall)); err != nil {
+			return nil, err
+		}
 		if in.ActualDoneAt != nil {
 			if err := s.recordOnTimeCorrectionTx(tx, sc, OccurrenceKey(sc, xAt, xWall), actual); err != nil {
 				return nil, err

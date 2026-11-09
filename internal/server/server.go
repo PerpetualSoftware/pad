@@ -2451,6 +2451,10 @@ func (s *Server) setupRouter() {
 						r.Delete("/commitment", s.handleDeleteItemCommitment)
 						r.Post("/commitment/resolve", s.handleResolveItemCommitment)
 						r.Post("/commitment/renegotiate", s.handleRenegotiateItemCommitment)
+						r.Put("/commitment/forecast", s.handlePutCommitmentForecast)
+						r.Delete("/commitment/forecast", s.handleDeleteCommitmentForecast)
+						r.Put("/commitment/children/{childRef}", s.handlePutMilestoneChild)
+						r.Delete("/commitment/children/{childRef}", s.handleDeleteMilestoneChild)
 						// Verifications (TASK-3617): per-criterion verdicts
 						// on the item that carries the acceptance criteria,
 						// judged against its present text at read time.

@@ -175,6 +175,10 @@ var migratedRefusalTables = []string{
 	"schedule_links",
 	"schedule_link_overrides",
 	"schedule_gates",
+	"schedule_forecasts",
+	"schedule_forecast_events",
+	"milestone_children",
+	"milestone_completion_evidence",
 	// A person's "mark caught up" cursor per workspace (TASK-3615 PR A),
 	// the same class: the bundle does not carry it (BUG-3958).
 	"workspace_read_cursors",

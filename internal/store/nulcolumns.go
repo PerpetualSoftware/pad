@@ -343,6 +343,12 @@ var nulColumns = []nulColumn{
 	{"schedule_changes", "after_json", classJSON},
 	{"schedule_changes", "actor", classText},
 	{"schedule_changes", "reason", classText},
+
+	// milestone forecasts and outcomes (TASK-4358).
+	{"schedule_forecasts", "source", classText},
+	{"schedule_forecast_events", "source", classText},
+	{"milestone_children", "reason", classText},
+	{"milestone_completion_evidence", "done_value", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -376,6 +382,7 @@ var nulTriggerMigrations = []string{
 	"163_nul_invariant_triggers_post162.sql",
 	"166_nul_invariant_triggers_post165.sql",
 	"168_nul_invariant_triggers_post167.sql",
+	"171_nul_invariant_triggers_post170.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
@@ -441,6 +448,11 @@ var nulColumnTriggerFile = map[string]string{
 	"schedule_changes.after_json":                  "168_nul_invariant_triggers_post167.sql",
 	"schedule_changes.actor":                       "168_nul_invariant_triggers_post167.sql",
 	"schedule_changes.reason":                      "168_nul_invariant_triggers_post167.sql",
+	// 170 introduced the tables (TASK-4358).
+	"schedule_forecasts.source":                "171_nul_invariant_triggers_post170.sql",
+	"schedule_forecast_events.source":          "171_nul_invariant_triggers_post170.sql",
+	"milestone_children.reason":                "171_nul_invariant_triggers_post170.sql",
+	"milestone_completion_evidence.done_value": "171_nul_invariant_triggers_post170.sql",
 }
 
 // nulTriggerFileFor names the trigger file a column's triggers are rendered
@@ -562,6 +574,42 @@ var nulExcluded = map[string]string{
 	"schedule_changes.root_change_id":             "server UUID (TASK-4349)",
 	"schedule_changes.parent_change_id":           "server UUID (TASK-4349)",
 	"schedule_changes.recorded_at":                "server timestamp (TASK-4349)",
+
+	"schedule_forecasts.schedule_id":               "schedule UUID foreign key (TASK-4358)",
+	"schedule_forecasts.workspace_id":              "workspace UUID foreign key (TASK-4358)",
+	"schedule_forecasts.item_id":                   "resolved item UUID (TASK-4358)",
+	"schedule_forecasts.value":                     "canonical date or UTC instant re-formatted from a parsed time (TASK-4358)",
+	"schedule_forecasts.set_by":                    "authenticated user UUID from the request context (TASK-4358)",
+	"schedule_forecasts.set_by_kind":               "fixed actor enum constrained by CHECK (TASK-4358)",
+	"schedule_forecasts.set_at":                    "server timestamp (TASK-4358)",
+	"schedule_forecast_events.id":                  "server UUID (TASK-4358)",
+	"schedule_forecast_events.workspace_id":        "workspace UUID foreign key (TASK-4358)",
+	"schedule_forecast_events.item_id":             "resolved item UUID (TASK-4358)",
+	"schedule_forecast_events.schedule_id":         "resolved schedule UUID (TASK-4358)",
+	"schedule_forecast_events.action":              "fixed action enum constrained by CHECK (TASK-4358)",
+	"schedule_forecast_events.value":               "canonical date or UTC instant re-formatted from a parsed time (TASK-4358)",
+	"schedule_forecast_events.prev_value":          "canonical value copied from the forecast row (TASK-4358)",
+	"schedule_forecast_events.set_by":              "authenticated user UUID from the request context (TASK-4358)",
+	"schedule_forecast_events.set_by_kind":         "fixed actor enum constrained by CHECK (TASK-4358)",
+	"schedule_forecast_events.recorded_at":         "server timestamp (TASK-4358)",
+	"milestone_children.id":                        "server UUID (TASK-4358)",
+	"milestone_children.workspace_id":              "workspace UUID foreign key (TASK-4358)",
+	"milestone_children.schedule_id":               "schedule UUID foreign key (TASK-4358)",
+	"milestone_children.child_item_id":             "resolved item UUID, a foreign key to items(id) (TASK-4358)",
+	"milestone_children.kind":                      "fixed selection enum constrained by CHECK (TASK-4358)",
+	"milestone_children.added_by":                  "authenticated user UUID from the request context (TASK-4358)",
+	"milestone_children.added_at":                  "server timestamp (TASK-4358)",
+	"milestone_children.removed_by":                "authenticated user UUID from the request context (TASK-4358)",
+	"milestone_children.removed_at":                "server timestamp (TASK-4358)",
+	"milestone_completion_evidence.id":             "server UUID (TASK-4358)",
+	"milestone_completion_evidence.workspace_id":   "workspace UUID foreign key (TASK-4358)",
+	"milestone_completion_evidence.schedule_id":    "resolved schedule UUID (TASK-4358)",
+	"milestone_completion_evidence.occurrence_key": "server-derived occurrence key from stored schedule columns (TASK-4358)",
+	"milestone_completion_evidence.child_item_id":  "resolved item UUID (TASK-4358)",
+	"milestone_completion_evidence.kind":           "fixed selection enum constrained by CHECK (TASK-4358)",
+	"milestone_completion_evidence.close_state":    "fixed close-state enum constrained by CHECK (TASK-4358)",
+	"milestone_completion_evidence.transition_seq": "integer mark read from status_transitions (TASK-4358)",
+	"milestone_completion_evidence.recorded_at":    "server timestamp (TASK-4358)",
 
 	"user_workspace_groups.id":                  "server-minted group UUID (TASK-4243)",
 	"user_workspace_groups.user_id":             "authenticated user UUID, a foreign key to users(id) (TASK-4243)",

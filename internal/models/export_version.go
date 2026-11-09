@@ -20,7 +20,7 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 	}
 	x.hasV2Members = raw.Changes != nil
 	for _, sc := range raw.Schedules {
-		for _, key := range []string{"id", "roles", "overrides"} {
+		for _, key := range []string{"id", "roles", "overrides", "forecast", "forecast_events", "children", "completion_evidence"} {
 			if _, ok := sc[key]; ok {
 				x.hasV2Members = true
 			}
@@ -46,7 +46,8 @@ func (x *WorkspaceExport) HasV2ScheduleMembers() bool {
 		return true
 	}
 	for _, sc := range x.Schedules {
-		if sc.ID != "" || sc.Roles != nil || sc.Overrides != nil {
+		if sc.ID != "" || sc.Roles != nil || sc.Overrides != nil ||
+			sc.Forecast != nil || sc.ForecastEvents != nil || sc.Children != nil || sc.CompletionEvidence != nil {
 			return true
 		}
 		for _, o := range sc.Occurrences {

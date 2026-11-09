@@ -74,6 +74,44 @@ type ScheduleExport struct {
 	// The row itself is rebuilt on import (export skips managed rows).
 	Reminder    *ScheduleReminderExport    `json:"reminder,omitempty"`
 	Occurrences []ScheduleOccurrenceExport `json:"occurrences,omitempty"`
+
+	// Milestone forecast and outcome members (TASK-4358). Optional, so the
+	// bundle stays v2; a v1 bundle that carries any of them is refused.
+	Forecast           *ForecastExport           `json:"forecast,omitempty"`
+	ForecastEvents     []ForecastEvent           `json:"forecast_events,omitempty"`
+	Children           []MilestoneChildExport    `json:"children,omitempty"`
+	CompletionEvidence []MilestoneEvidenceExport `json:"completion_evidence,omitempty"`
+}
+
+// ForecastExport is a schedule's current forecast.
+type ForecastExport struct {
+	Value     string `json:"value"`
+	SetBy     string `json:"set_by"`
+	SetByKind string `json:"set_by_kind"`
+	SetAt     string `json:"set_at"`
+	Source    string `json:"source,omitempty"`
+}
+
+// MilestoneChildExport is one selection row, active or removed. ItemID is the
+// source item id, remapped on import.
+type MilestoneChildExport struct {
+	ItemID    string `json:"item_id"`
+	Kind      string `json:"kind"`
+	Reason    string `json:"reason,omitempty"`
+	AddedBy   string `json:"added_by"`
+	AddedAt   string `json:"added_at"`
+	RemovedBy string `json:"removed_by,omitempty"`
+	RemovedAt string `json:"removed_at,omitempty"`
+}
+
+// MilestoneEvidenceExport is one completion-evidence row.
+type MilestoneEvidenceExport struct {
+	OccurrenceKey string `json:"occurrence_key"`
+	ItemID        string `json:"item_id"`
+	Kind          string `json:"kind"`
+	CloseState    string `json:"close_state"`
+	DoneValue     string `json:"done_value,omitempty"`
+	RecordedAt    string `json:"recorded_at"`
 }
 
 // ScheduleRolesExport carries the stored offsets from the recurrence seed.

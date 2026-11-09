@@ -549,6 +549,9 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 		if m, ok := rem[sc.ID]; ok {
 			x.Reminder = &models.ScheduleReminderExport{RemindAt: m.remindAt, FiredAt: m.firedAt}
 		}
+		if err := s.exportMilestoneInto(q, workspaceID, &x); err != nil {
+			return nil, err
+		}
 		out = append(out, x)
 	}
 	return out, nil

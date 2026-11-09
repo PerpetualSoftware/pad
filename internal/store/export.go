@@ -1747,6 +1747,14 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 						scheduleMap[sx.ID] = id
 					}
 					importedSchedules = append(importedSchedules, id)
+					mdrops, merr := s.importMilestoneTx(tx, ws.ID, id, newItemID, sx.Floating, sx, func(src string) (string, bool) {
+						dst := itemMap[src]
+						return dst, dst != "" && insertedItems[dst]
+					})
+					if merr != nil {
+						return nil, merr
+					}
+					drops = append(drops, mdrops...)
 					for _, reason := range drops {
 						report.DroppedSchedules = append(report.DroppedSchedules, models.ImportScheduleDrop{Item: itemRefs[newItemID], Reason: reason})
 					}
