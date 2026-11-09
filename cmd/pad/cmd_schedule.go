@@ -173,7 +173,7 @@ func remindShowCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "show <ref>",
 		Short:   "Show an item's schedule",
-		Example: `  pad item remind show TASK-5`,
+		Example: `  pad remind show TASK-5`,
 		Long: `Show the schedule on an item: kind, rule, zone (or floating), anchor, audience, the
 next occurrence in your time zone, how many occurrences passed unresolved, and
 whether the schedule is active, ended or in error.`,
@@ -249,7 +249,7 @@ var resolveVerbs = []resolveVerb{
 const commentHelp = "comment recorded on the item; optional"
 
 func remindResolveCmd(v resolveVerb) *cobra.Command {
-	var comment, occurrence, until string
+	var comment, occurrence, until, at string
 	needsUntil := v.state == "snooze" || v.state == "move"
 	use := v.use + " <ref>"
 	long := "Resolve the schedule's outstanding occurrence as " + v.state + ".\n\n" +
@@ -258,6 +258,9 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	switch v.state {
 	case "done", "skip":
 		long += "\n\nA recurring schedule arms its next occurrence; a one-shot ends."
+		if v.state == "done" {
+			long += "\n\n--at records when the work was really finished, if that was not now: an RFC3339 instant or a wall time read in your zone (2026-11-08T17:30); a bare date is refused. It cannot be in the future or before the schedule was created; the server says so unchanged."
+		}
 	case "snooze":
 		long += "\n\n--until is an RFC3339 instant, a wall time read in your zone (2026-11-10T09:00), or a duration from now (2h, 1d). A bare date is refused. The occurrence stays outstanding and re-fires once at --until."
 	case "move":
@@ -266,11 +269,24 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	c := &cobra.Command{
 		Use:     use,
 		Short:   v.short,
-		Example: "  pad item remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state] + ` -m "why"`,
+		Example: "  pad remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state] + ` -m "why"`,
 		Long:    long,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			req := schedule.CommitmentResolve{State: v.state, Comment: comment}
+			if cmd.Flags().Changed("at") {
+				if v.state != "done" {
+					return fmt.Errorf("--at records an actual completion time and applies to done only, not %s", v.state)
+				}
+				if untilDurationRE.MatchString(strings.TrimSpace(at)) {
+					return fmt.Errorf("--at %q: a duration is not a completion time; give an RFC3339 instant or a wall time (2026-11-08T17:30)", at)
+				}
+				t, err := parseInstantFlag("--at", at, false, time.Now())
+				if err != nil {
+					return err
+				}
+				req.ActualDoneAt = t.UTC().Format(time.RFC3339)
+			}
 			if needsUntil {
 				if until == "" {
 					return fmt.Errorf("--until is required for %s", v.use)
@@ -315,6 +331,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		},
 	}
 	c.Flags().StringVarP(&comment, "comment", "m", "", commentHelp)
+	c.Flags().StringVar(&at, "at", "", "when the work was really finished (done only): an RFC3339 instant or a wall time in your zone (2026-11-08T17:30)")
 	c.Flags().StringVar(&occurrence, "occurrence", "", "the occurrence's RFC3339 instant (default: the schedule's current one)")
 	if needsUntil {
 		c.Flags().StringVar(&until, "until", "", "when: an RFC3339 instant, a wall time in your zone (2026-11-10T09:00)"+map[bool]string{true: ", or a duration (2h, 1d)", false: ""}[v.state == "snooze"])
@@ -331,6 +348,9 @@ func resolveSentence(state, ref string, req schedule.CommitmentResolve, s schedu
 		return fmt.Sprintf("Moved %s to %s", ref, fmtInstant(req.Until, nil))
 	}
 	verb := map[string]string{"done": "Marked done", "skip": "Skipped"}[state]
+	if req.ActualDoneAt != "" {
+		occ += ", finished " + fmtInstant(req.ActualDoneAt, nil)
+	}
 	if s.EndedAt != nil {
 		return fmt.Sprintf("%s %s (%s); the schedule has ended", verb, ref, occ)
 	}
@@ -339,7 +359,11 @@ func resolveSentence(state, ref string, req schedule.CommitmentResolve, s schedu
 
 // staleHint adds the server's current occurrence to a 409 stale answer so the
 // user can retry; every other error is returned untouched.
-func staleHint(err error, ref string) error {
+func staleHint(err error, ref string) error { return staleHintWith(err, ref, true) }
+
+// staleHintWith is staleHint; advise adds the --occurrence retry advice, which
+// only a resolve can follow.
+func staleHintWith(err error, ref string, advise bool) error {
 	var apiErr *cli.APIError
 	if !errors.As(err, &apiErr) || apiErr.Code != "stale" {
 		return err
@@ -350,6 +374,8 @@ func staleHint(err error, ref string) error {
 	}
 	_ = json.Unmarshal(apiErr.Details, &d)
 	switch {
+	case d.NextOccurrence != nil && d.NextOccurrence.At != "" && !advise:
+		return fmt.Errorf("%s\ncurrent occurrence of %s: %s", apiErr.Message, ref, fmtInstant(d.NextOccurrence.At, nil))
 	case d.NextOccurrence != nil && d.NextOccurrence.At != "":
 		return fmt.Errorf("%s\ncurrent occurrence of %s: %s (pass --occurrence %s to resolve it)",
 			apiErr.Message, ref, fmtInstant(d.NextOccurrence.At, nil), d.NextOccurrence.At)
@@ -364,17 +390,21 @@ var untilDurationRE = regexp.MustCompile(`^(\d+)([mhd])$`)
 // parseUntil reads --until: an RFC3339 instant, a wall in the viewer's zone, or
 // (snooze) a duration from now. A bare date is refused as remind-at refuses it.
 func parseUntil(s string, allowDuration bool, now time.Time) (time.Time, error) {
+	return parseInstantFlag("--until", s, allowDuration, now)
+}
+
+func parseInstantFlag(flag, s string, allowDuration bool, now time.Time) (time.Time, error) {
 	s = strings.TrimSpace(s)
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
 		return t, nil
 	}
 	if m := untilDurationRE.FindStringSubmatch(s); m != nil {
 		if !allowDuration {
-			return time.Time{}, fmt.Errorf("--until %q: a duration works for snooze only; give an RFC3339 instant or a wall time (2026-11-10T09:00)", s)
+			return time.Time{}, fmt.Errorf("%s %q: a duration works for snooze only; give an RFC3339 instant or a wall time (2026-11-10T09:00)", flag, s)
 		}
 		n, err := strconv.Atoi(m[1])
 		if err != nil || n <= 0 || n > 100000 {
-			return time.Time{}, fmt.Errorf("--until %q is not a usable duration", s)
+			return time.Time{}, fmt.Errorf("%s %q is not a usable duration", flag, s)
 		}
 		switch m[2] {
 		case "d":
@@ -385,12 +415,12 @@ func parseUntil(s string, allowDuration bool, now time.Time) (time.Time, error) 
 		return now.Add(time.Duration(n) * time.Minute), nil
 	}
 	if len(s) == len("2006-01-02") {
-		return time.Time{}, fmt.Errorf("--until %q is a bare date; it names a 24-hour span, so give a time of day (2026-11-10T09:00)", s)
+		return time.Time{}, fmt.Errorf("%s %q is a bare date; it names a 24-hour span, so give a time of day (2026-11-10T09:00)", flag, s)
 	}
 	if w, err := schedule.ParseWall(s); err == nil && !w.AllDay {
 		return schedule.Resolve(cli.DisplayLocation(), w), nil
 	}
-	return time.Time{}, fmt.Errorf("--until %q: want an RFC3339 instant, a wall time in your zone (2026-11-10T09:00)%s", s,
+	return time.Time{}, fmt.Errorf("%s %q: want an RFC3339 instant, a wall time in your zone (2026-11-10T09:00)%s", flag, s,
 		map[bool]string{true: ", or a duration (2h, 1d)", false: ""}[allowDuration])
 }
 
@@ -399,7 +429,7 @@ func remindEditCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:     "edit <ref>",
 		Short:   "Change an item's schedule",
-		Example: `  pad item remind edit TASK-5 --every weekly --start 2026-11-16T10:00`,
+		Example: `  pad remind edit TASK-5 --every weekly --start 2026-11-16T10:00`,
 		Long: `Change the schedule on an item. Only the flags you give are sent.
 
 --every "" clears the rule (one occurrence at --start). Changing --tz pins the
@@ -450,7 +480,7 @@ func remindRmCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:     "rm <ref>",
 		Short:   "Delete an item's schedule",
-		Example: `  pad item remind rm TASK-5 --yes`,
+		Example: `  pad remind rm TASK-5 --yes`,
 		Long: `Delete the schedule on an item.
 
 Removed: the schedule and its rule, its history of resolved occurrences (done,
@@ -583,8 +613,8 @@ func remindAgendaCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "agenda",
 		Short: "List scheduled occurrences and dated items",
-		Example: `  pad item remind agenda
-  pad item remind agenda --from 2026-11-09 --days 14`,
+		Example: `  pad remind agenda
+  pad remind agenda --from 2026-11-09 --days 14`,
 		Long: `List the workspace's schedule occurrences and the items dated in a window, in your
 time zone.
 
@@ -814,5 +844,5 @@ func addRemindSubcommands(cmd *cobra.Command) {
 	for _, v := range resolveVerbs {
 		cmd.AddCommand(remindResolveCmd(v))
 	}
-	cmd.AddCommand(remindAgendaCmd(), remindEditCmd(), remindRmCmd())
+	cmd.AddCommand(remindRenegotiateCmd(), remindAgendaCmd(), remindEditCmd(), remindRmCmd())
 }

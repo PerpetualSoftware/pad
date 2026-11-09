@@ -12,6 +12,7 @@ import (
 // A client comparing against its own copy of the item could pair a fresh seq
 // with a stale body, and accept text it never showed.
 func TestTASK3462U3b_StateCarriesCurrentText(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, _ := task3462Workspace(t, srv, "Current 3462", "startup")
 		plan := task3462ItemByTitle(t, srv, slug, "playbooks", "Plan a new initiative")

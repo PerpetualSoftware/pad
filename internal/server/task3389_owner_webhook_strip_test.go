@@ -19,6 +19,7 @@ import (
 // Precondition legs prove the stored payloads DO carry the block, so the
 // delivered-body absence is the strip working, not the block missing.
 func TestTask3389_OwnerWebhooksNeverCarryTheAppProjection(t *testing.T) {
+	t.Parallel()
 	srv, sink, ws := drainFixture(t)
 	// The block is written only once the workspace has an installed app
 	// (TASK-3392).

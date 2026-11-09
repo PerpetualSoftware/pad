@@ -14,6 +14,7 @@ import (
 // table also holds the 2FA challenge signing secret and plan-limit rows; neither
 // may leak to the admin client.
 func TestAdminSettings_SecretsNotExposed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -67,6 +68,7 @@ func TestAdminSettings_SecretsNotExposed(t *testing.T) {
 // PATCH cannot overwrite the 2FA secret (or any non-allowlisted key) through the
 // settings endpoint.
 func TestAdminSettings_SecretNotWritable(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -96,6 +98,7 @@ func TestAdminSettings_SecretNotWritable(t *testing.T) {
 // (BUG-1890). GET /admin/settings emits this form and the update handler compares
 // against it to detect an echoed-back (unchanged) key.
 func TestMaskAPIKey(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name string
 		in   string
@@ -120,6 +123,7 @@ func TestMaskAPIKey(t *testing.T) {
 // without re-typing the key. The masked placeholder must NOT overwrite the real
 // stored key.
 func TestAdminSettings_MaskedKeyNotPersisted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -177,6 +181,7 @@ func TestAdminSettings_MaskedKeyNotPersisted(t *testing.T) {
 // the real short key. (The guard is format-agnostic string equality, but this pins
 // the "****" HTTP round-trip explicitly.)
 func TestAdminSettings_ShortKeyMaskNotPersisted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -206,6 +211,7 @@ func TestAdminSettings_ShortKeyMaskNotPersisted(t *testing.T) {
 // TestAdminSettings_RealKeyUpdateWins confirms the guard only skips the mask, not
 // a genuine new key: a real value entered by the admin replaces the stored key.
 func TestAdminSettings_RealKeyUpdateWins(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -234,6 +240,7 @@ func TestAdminSettings_RealKeyUpdateWins(t *testing.T) {
 // in-memory sender must be torn down — not just the DB row — so mail actually
 // stops without a restart.
 func TestAdminSettings_DisableTearsDownLiveSender(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -269,6 +276,7 @@ func TestAdminSettings_DisableTearsDownLiveSender(t *testing.T) {
 // sender (the deployment baseline) must survive a reconfigure when platform
 // settings carry no key — the admin UI doesn't disable env-configured email.
 func TestReconfigureEmail_EnvSenderPreserved(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	srv.SetEmailSender(email.NewSender("env-key-abcdef", "env@example.com", "Pad", "http://localhost"), "env-key-abcdef")
@@ -286,6 +294,7 @@ func TestReconfigureEmail_EnvSenderPreserved(t *testing.T) {
 // TestAdminSettings_EmptyKeyClears confirms an explicit empty value still clears
 // the key (the "disable email" path) — the guard only skips a non-empty mask.
 func TestAdminSettings_EmptyKeyClears(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 

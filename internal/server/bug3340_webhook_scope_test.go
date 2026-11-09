@@ -44,6 +44,7 @@ func bug3340Setup(t *testing.T) (*Server, *models.Workspace, string, string) {
 }
 
 func TestBUG3340_RestrictedOwnerCannotManageWebhooks(t *testing.T) {
+	t.Parallel()
 	srv, ws, ownerCookie, coCookie := bug3340Setup(t)
 	base := "/api/v1/workspaces/" + ws.Slug + "/webhooks"
 	body := map[string]string{"url": "https://8.8.8.8/hook"}
@@ -89,6 +90,7 @@ func TestBUG3340_RestrictedOwnerCannotManageWebhooks(t *testing.T) {
 }
 
 func TestBUG3340_DeletedWorkspaceWebhooksReceiveNothing(t *testing.T) {
+	t.Parallel()
 	srv, ws, _, _ := bug3340Setup(t)
 	if _, err := srv.store.CreateWebhook(ws.ID, models.WebhookCreate{URL: "https://8.8.8.8/hook"}); err != nil {
 		t.Fatal(err)

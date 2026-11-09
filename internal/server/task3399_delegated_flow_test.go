@@ -146,6 +146,7 @@ func (f delegatedFix) exchange(code string) *httptest.ResponseRecorder {
 }
 
 func TestTask3399_TheConsentPageIsFixedToTheInstall(t *testing.T) {
+	t.Parallel()
 	f := delegatedFixture(t, "inst-page", "write")
 	q := f.authorizeParams()
 	rr := f.get("/oauth/authorize?" + q.Encode())
@@ -172,6 +173,7 @@ func TestTask3399_TheConsentPageIsFixedToTheInstall(t *testing.T) {
 }
 
 func TestTask3399_ADelegatedSignInIssuesAPersonsToken(t *testing.T) {
+	t.Parallel()
 	f := delegatedFixture(t, "inst-flow", "write")
 	connsBefore := count3399(t, f.srv, `SELECT COUNT(*) FROM oauth_connections`)
 	rr := f.decide(t, f.authorizeParams(), "approve", "") // no choice: read-only
@@ -212,6 +214,7 @@ func TestTask3399_ADelegatedSignInIssuesAPersonsToken(t *testing.T) {
 }
 
 func TestTask3399_WriteIsChosenOnlyWhenOffered(t *testing.T) {
+	t.Parallel()
 	f := delegatedFixture(t, "inst-w", "write")
 	code, _ := codeFrom(f.decide(t, f.authorizeParams(), "approve", "write"))
 	if code == "" || f.exchange(code).Code != http.StatusOK {
@@ -226,6 +229,7 @@ func TestTask3399_WriteIsChosenOnlyWhenOffered(t *testing.T) {
 // The required race: a disable or rotate between the consent
 // decision (the code is minted) and the token exchange refuses the exchange.
 func TestTask3399_ADisableBetweenAuthorizeAndExchangeRefusesTheToken(t *testing.T) {
+	t.Parallel()
 	for name, q := range map[string]string{
 		"disable": `UPDATE app_installs SET state = 'disabling', auth_epoch = auth_epoch + 1 WHERE id = ?`,
 		"rotate":  `UPDATE app_installs SET auth_epoch = auth_epoch + 1 WHERE id = ?`,
@@ -248,6 +252,7 @@ func TestTask3399_ADisableBetweenAuthorizeAndExchangeRefusesTheToken(t *testing.
 }
 
 func TestTask3399_SignInRefusals(t *testing.T) {
+	t.Parallel()
 	// A non-member is refused, with no code.
 	f := delegatedFixture(t, "inst-nonmember", "write")
 	if _, err := f.srv.store.DB().Exec(`DELETE FROM workspace_members WHERE user_id = ? AND workspace_id = ?`, f.person.ID, f.in.wsID); err != nil {
@@ -327,6 +332,7 @@ func (f delegatedFix) signIn(t *testing.T, access string) (string, string) {
 // The console lists an app grant on its own, read-only plus
 // revoke; every connection mutation refuses it and changes nothing.
 func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
+	t.Parallel()
 	f := delegatedFixture(t, "inst-console", "write")
 	tok, reqID := f.signIn(t, "write")
 
@@ -394,6 +400,7 @@ func TestTask3399_TheConsoleShowsAndRevokesAppGrants(t *testing.T) {
 // On a self-host with apps on and MCP off, a person can
 // still sign in to an installed app, and still see and revoke the grant.
 func TestTask3399_AppGrantsWorkWithMCPOff(t *testing.T) {
+	t.Parallel()
 	f := delegatedFixtureOn(t, "inst-nomcp", "write", false)
 	if f.srv.oauthAvailable() {
 		t.Fatal("control: MCP is on in this fixture")

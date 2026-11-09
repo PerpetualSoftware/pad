@@ -31,6 +31,7 @@ func postOAuthLogin(t *testing.T, srv *Server, body map[string]interface{}) *htt
 }
 
 func TestOAuthLogin_AppleProvider_CreatesAndLinksUser(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 
@@ -85,6 +86,7 @@ func TestOAuthLogin_AppleProvider_CreatesAndLinksUser(t *testing.T) {
 }
 
 func TestOAuthLogin_AppleProvider_StillRequiresVerifiedEmail(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 
@@ -108,6 +110,7 @@ func TestOAuthLogin_AppleProvider_StillRequiresVerifiedEmail(t *testing.T) {
 // same ttl argument it uses for the store row, so asserting the cookie is
 // sufficient to pin both.
 func TestOAuthLogin_SessionTTLMatchesWebSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 
@@ -144,6 +147,7 @@ func TestOAuthLogin_SessionTTLMatchesWebSession(t *testing.T) {
 // wired there too — not just in oauth-login. (oauth-unlink shares the same
 // isSupportedOAuthProvider gate; it's covered by the unit test.)
 func TestOAuthLink_AppleProvider_Links(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 
@@ -180,6 +184,7 @@ func TestOAuthLink_AppleProvider_Links(t *testing.T) {
 }
 
 func TestOAuthLogin_UnknownProvider_Rejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode(oauthProviderTestSecret)
 
@@ -195,6 +200,7 @@ func TestOAuthLogin_UnknownProvider_Rejected(t *testing.T) {
 }
 
 func TestIsSupportedOAuthProvider(t *testing.T) {
+	t.Parallel()
 	for _, p := range []string{"github", "google", "apple"} {
 		if !isSupportedOAuthProvider(p) {
 			t.Errorf("%q should be supported", p)

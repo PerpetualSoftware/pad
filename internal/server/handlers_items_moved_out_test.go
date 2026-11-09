@@ -28,6 +28,7 @@ func getAuthedSession(t *testing.T, srv *Server, path, token string) *httptest.R
 // /items-changes when an item moves out of their visibility, so their
 // local cache evicts it instead of keeping a now-unauthorized row.
 func TestItemsChanges_MovedOutTombstoneForRestrictedMember(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{

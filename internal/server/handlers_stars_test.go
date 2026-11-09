@@ -22,6 +22,7 @@ import (
 // that re-introduces 204 (or drops the JSON branch) regresses the
 // test rather than the user.
 func TestStarUnstar_ReturnsStructuredJSON(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Seed workspace + item via the no-users-exist path (no auth
@@ -133,6 +134,7 @@ func TestStarUnstar_ReturnsStructuredJSON(t *testing.T) {
 // out each item's body and changes nothing else (the same items, in star
 // order), and a request without it still carries the bodies.
 func TestListStarred_SummaryOmitsContent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)

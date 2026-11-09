@@ -134,6 +134,7 @@ func TestBUG3327_ApplierPathBodyEditLeavesAVersion(t *testing.T) {
 // holding A, and a DIFFERENT writer's A->C must still get its own row rather
 // than have its change read as the first writer's.
 func TestBUG3327_DedupeSkipsOnlyFlushes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)

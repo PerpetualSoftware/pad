@@ -11,6 +11,7 @@ import (
 // enforced — without http.MaxBytesReader a multi-GB POST would stream
 // into a single allocation and could OOM the process.
 func TestDecodeJSON_RejectsOversizeBody(t *testing.T) {
+	t.Parallel()
 	// 3 MiB of harmless but oversize JSON.
 	body := []byte(`{"x":"` + strings.Repeat("a", 3<<20) + `"}`)
 	req := httptest.NewRequest("POST", "/", bytes.NewReader(body))
@@ -33,6 +34,7 @@ func TestDecodeJSON_RejectsOversizeBody(t *testing.T) {
 
 // TestDecodeJSON_AcceptsWithinLimit confirms the happy path still works.
 func TestDecodeJSON_AcceptsWithinLimit(t *testing.T) {
+	t.Parallel()
 	req := httptest.NewRequest("POST", "/", bytes.NewReader([]byte(`{"name":"ok"}`)))
 	req.Header.Set("Content-Type", "application/json")
 
@@ -50,6 +52,7 @@ func TestDecodeJSON_AcceptsWithinLimit(t *testing.T) {
 // TestDecodeJSONWithLimit_CustomCap verifies callers can opt in to a
 // larger cap (for bulk-import style endpoints).
 func TestDecodeJSONWithLimit_CustomCap(t *testing.T) {
+	t.Parallel()
 	// 1 MiB body; below default 2 MiB but above our custom 256 KiB cap.
 	body := []byte(`{"x":"` + strings.Repeat("a", 1<<20) + `"}`)
 	req := httptest.NewRequest("POST", "/", bytes.NewReader(body))

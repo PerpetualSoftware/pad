@@ -49,6 +49,7 @@ func refusedBlobServer(t *testing.T) (*Server, *models.Workspace, string) {
 }
 
 func TestBUG3652_RefusedUploadLeavesNoBlob(t *testing.T) {
+	t.Parallel()
 	srv, ws, token := refusedBlobServer(t)
 	if rr := capUpload(srv, ws.Slug, token, []byte(strings.Repeat("a", 30))); rr.Code != http.StatusCreated {
 		t.Fatalf("under the limit: %d %s", rr.Code, rr.Body.String())
@@ -65,6 +66,7 @@ func TestBUG3652_RefusedUploadLeavesNoBlob(t *testing.T) {
 // Put deduplicated onto that blob, so it is not the refused upload's to
 // delete, and the live file must still download.
 func TestBUG3652_RefusedUploadKeepsASharedBlob(t *testing.T) {
+	t.Parallel()
 	srv, ws, token := refusedBlobServer(t)
 	same := []byte(strings.Repeat("s", 25))
 	if rr := capUpload(srv, ws.Slug, token, same); rr.Code != http.StatusCreated {
@@ -92,6 +94,7 @@ func TestBUG3652_RefusedUploadKeepsASharedBlob(t *testing.T) {
 // limit is set to exactly what the workspace holds after the image and its
 // thumbnails, so any transform output is past it.
 func TestBUG3652_RefusedTransformLeavesNoBlob(t *testing.T) {
+	t.Parallel()
 	srv, ws, token := refusedBlobServer(t)
 	wireTestImageProcessor(srv)
 	if err := srv.store.SetUserPlanOverrides(ws.OwnerID, `{"storage_bytes":100000000}`); err != nil {
@@ -145,6 +148,7 @@ func TestBUG3652_RefusedTransformLeavesNoBlob(t *testing.T) {
 // Another writer is between its Put and its insert of the same bytes when
 // this upload is refused: the blob is theirs too, so it stays.
 func TestBUG3652_RefusedUploadKeepsABlobAnotherWriterHasInFlight(t *testing.T) {
+	t.Parallel()
 	srv, ws, token := refusedBlobServer(t)
 	if rr := capUpload(srv, ws.Slug, token, []byte(strings.Repeat("a", 30))); rr.Code != http.StatusCreated {
 		t.Fatalf("under the limit: %d %s", rr.Code, rr.Body.String())
@@ -163,6 +167,7 @@ func TestBUG3652_RefusedUploadKeepsABlobAnotherWriterHasInFlight(t *testing.T) {
 // A bundle import refused at the storage cap (BUG-3653) takes the blob it
 // rehydrated with it: the importer is left with no workspace and no bytes.
 func TestBUG3652_RefusedImportLeavesNoBlob(t *testing.T) {
+	t.Parallel()
 	bundle := realBundleWithBlob(t)
 	srv := attachmentsServerOn(t, store.DriverSQLite)
 	srv.cloudMode = true

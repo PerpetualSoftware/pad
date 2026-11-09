@@ -27,6 +27,7 @@ import (
 // a grant on an item that has been soft-deleted, which is exactly the input
 // that made the two resolvers differ.
 func TestAccessEpoch_DoorsAgreeForAGrantOnASoftDeletedItem(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{
@@ -132,6 +133,7 @@ func TestAccessEpoch_DoorsAgreeForAGrantOnASoftDeletedItem(t *testing.T) {
 // mechanism, not the fix; it is here so a future reader can see why the
 // fingerprint is the signal rather than a tombstone.
 func TestItemsChanges_AccessEpochChangesOnRevocation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{

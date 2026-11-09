@@ -17,6 +17,7 @@ import (
 // the drop as (item, field, value, holder). The store tests pin what is
 // stored; this pins the status and the response.
 func TestBUG3825_ImportDropsADuplicateInvocationSlugAndSaysSo(t *testing.T) {
+	t.Parallel()
 	const ts = "2026-10-15T00:00:00Z"
 	bundle := models.WorkspaceExport{
 		Version:   1,

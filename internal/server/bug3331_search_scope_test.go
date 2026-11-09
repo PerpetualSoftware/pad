@@ -221,6 +221,7 @@ func equalRefs(a, b []string) bool {
 }
 
 func TestBUG3331_SearchScopesToVisibleItems(t *testing.T) {
+	t.Parallel()
 	e := bug3331Setup(t)
 	all := sortedRefs("Zebra alpha", "Zebra bravo", "Zebra charlie")
 	refTitle := map[string]string{e.refAlpha: "Zebra alpha", e.refBravo: "Zebra bravo", e.refCharlie: "Zebra charlie"}
@@ -277,6 +278,7 @@ func TestBUG3331_SearchScopesToVisibleItems(t *testing.T) {
 // A user-less workspace token must stay inside its own workspace, and a
 // non-member must get nothing from either workspace.
 func TestBUG3331_UnscopedSearchStaysInsideAccess(t *testing.T) {
+	t.Parallel()
 	e := bug3331Setup(t)
 	if got := e.search(t, e.asCookie("outsider"), "zebra", ""); len(got) != 0 {
 		t.Errorf("non-member fan-out: got %v, want none", got)
@@ -297,6 +299,7 @@ func jsonUnmarshalString(s string, v any) error { return json.Unmarshal([]byte(s
 // BUG-3331 sibling: /collections reported whole-collection item counts to a
 // caller who can see only a granted item inside the collection.
 func TestBUG3331_CollectionCountsScopedToGrants(t *testing.T) {
+	t.Parallel()
 	e := bug3331Setup(t)
 	counts := func(key string) map[string][2]int {
 		t.Helper()
@@ -343,6 +346,7 @@ func TestBUG3331_CollectionCountsScopedToGrants(t *testing.T) {
 // restricted caller, and a fan-out over workspaces with DIFFERENT access,
 // where one workspace's full access must not widen the other's grants.
 func TestBUG3331_RestrictedNumberLookupTotalAndMixedFanOut(t *testing.T) {
+	t.Parallel()
 	e := bug3331Setup(t)
 	g := e.asCookie("guestitem")
 

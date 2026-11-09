@@ -74,6 +74,7 @@ func dropFirst(t *testing.T, fieldsJSON string) string {
 }
 
 func TestBUG2788_InsertAheadDoesNotRenumber(t *testing.T) {
+	t.Parallel()
 	blob := notesJSON(
 		`{"summary":"a","created_at":"2026-03-01T00:00:00Z"}`,
 		`{"summary":"b","created_at":"2026-03-01T00:00:00Z"}`,
@@ -100,6 +101,7 @@ func TestBUG2788_InsertAheadDoesNotRenumber(t *testing.T) {
 }
 
 func TestBUG2788_DeletingTheFirstDuplicateDoesNotChangeTheSurvivor(t *testing.T) {
+	t.Parallel()
 	blob := notesJSON(
 		`{"id":"dup","summary":"first","created_at":"2026-03-01T00:00:00Z"}`,
 		`{"id":"dup","summary":"survivor","created_at":"2026-03-01T00:00:00Z"}`,

@@ -29,6 +29,7 @@ import (
 // (handleGetItemProgress and collectionChildrenProgress), which are separate
 // code from the SQL the member reads (CONVE-19).
 func TestProgressLeavesAbandonedChildrenOut(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		ws, err := srv.store.GetWorkspaceBySlug(slug)

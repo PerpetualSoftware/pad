@@ -283,6 +283,7 @@ func (h *activityScriptOnlyHook) ProcessHook(next redis.ProcessHook) redis.Proce
 }
 
 func TestSessionActivityRedisWritesOnlyThroughScript(t *testing.T) {
+	t.Parallel()
 	p, reader, _ := newRedisPresencePair(t)
 	now := time.Now().UTC()
 	if err := p.SetActivity("A", presenceWorkerA, false, now, &now); err != nil {

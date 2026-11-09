@@ -42,6 +42,7 @@ func doArtifactRequestWithCookie(srv *Server, method, path string, body []byte, 
 // ---- Export ----
 
 func TestExportPlaybookArtifactRoundTrip(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -87,6 +88,7 @@ func TestExportPlaybookArtifactRoundTrip(t *testing.T) {
 }
 
 func TestExportConventionArtifactRoundTrip(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -117,6 +119,7 @@ func TestExportConventionArtifactRoundTrip(t *testing.T) {
 }
 
 func TestExportNonArtifactCollectionRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -132,6 +135,7 @@ func TestExportNonArtifactCollectionRejected(t *testing.T) {
 }
 
 func TestExportInvisibleItemNotAuthorized(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Activate auth so per-item visibility is enforced.
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -200,6 +204,7 @@ func TestExportInvisibleItemNotAuthorized(t *testing.T) {
 // ---- Safety layer ----
 
 func TestImportArtifactOversizedRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 	srv.SetImportArtifactMaxBytes(256) // tiny cap for the test
@@ -214,6 +219,7 @@ func TestImportArtifactOversizedRejected(t *testing.T) {
 }
 
 func TestImportArtifactBillionLaughsRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -240,6 +246,7 @@ body
 }
 
 func TestImportArtifactDeepNestingRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -262,6 +269,7 @@ func TestImportArtifactDeepNestingRejected(t *testing.T) {
 }
 
 func TestImportArtifactNormalPasses(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -289,6 +297,7 @@ func TestImportArtifactNormalPasses(t *testing.T) {
 // json case of ValidateFields rejects unless the handler normalizes the field
 // map through JSON first (matching the wire create path's []any shape).
 func TestImportArtifactWithArguments(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -326,6 +335,7 @@ func TestImportArtifactWithArguments(t *testing.T) {
 // artifact.Decode tolerates a missing/blank title (it would otherwise produce
 // an "untitled" item), so the import handler must enforce it explicitly.
 func TestImportArtifactEmptyTitleRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -355,6 +365,7 @@ func TestImportArtifactEmptyTitleRejected(t *testing.T) {
 // enforces the same workspace item-count limit handleCreateItem does, returning
 // the same 403 plan_limit_exceeded response when the cap is hit.
 func TestImportArtifactRejectedWhenOverWorkspaceItemQuota(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Bootstrap the first admin (before cloud mode — bootstrap is disabled in
@@ -402,6 +413,7 @@ func TestImportArtifactRejectedWhenOverWorkspaceItemQuota(t *testing.T) {
 // ---- Import ----
 
 func TestImportArtifactForcesStatusDraft(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -431,6 +443,7 @@ func TestImportArtifactForcesStatusDraft(t *testing.T) {
 }
 
 func TestImportArtifactBlanksForeignSelectValue(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -471,6 +484,7 @@ func TestImportArtifactBlanksForeignSelectValue(t *testing.T) {
 }
 
 func TestImportArtifactInvocationSlugCollision(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -507,6 +521,7 @@ func TestImportArtifactInvocationSlugCollision(t *testing.T) {
 }
 
 func TestImportArtifactCreateSideEffectsFire(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -586,6 +601,7 @@ func fieldString(t *testing.T, fieldsJSON, key string) string {
 // because there is no JSON decoder in the way to reject it. The predicate is
 // the same bindableText the path and query middlewares apply.
 func TestImportArtifactUnbindableTextRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -640,6 +656,7 @@ func TestImportArtifactUnbindableTextRejected(t *testing.T) {
 // be refused, not imported as a hollow draft. Run through the real handler
 // rather than read, because the CLI does no check of its own on this door.
 func TestImportArtifactBlankRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 	for name, body := range map[string]string{

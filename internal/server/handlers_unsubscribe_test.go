@@ -11,6 +11,7 @@ import (
 // "email" string is fed to the data struct. Before TASK-657 we used
 // fmt.Sprintf to inject the email directly into the page.
 func TestUnsubscribePage_EscapesUserInput(t *testing.T) {
+	t.Parallel()
 	malicious := `"><script>alert('xss')</script>`
 	rr := httptest.NewRecorder()
 	renderUnsubPage(rr, 200, unsubData{
@@ -34,6 +35,7 @@ func TestUnsubscribePage_EscapesUserInput(t *testing.T) {
 // TestUnsubscribePage_SetsStrictCSP verifies the defense-in-depth
 // headers are applied on every render path.
 func TestUnsubscribePage_SetsStrictCSP(t *testing.T) {
+	t.Parallel()
 	rr := httptest.NewRecorder()
 	renderUnsubPage(rr, 200, unsubData{Title: "x", Message: "x"})
 

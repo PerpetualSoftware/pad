@@ -13,6 +13,7 @@ import (
 // rows it cannot read); over only a SyncStep1 it is "view_only". A stamp that
 // does not advance is not counted, and the answer is unchanged.
 func TestWatermarkStamp_CountedByWhatItCovered(t *testing.T) {
+	t.Parallel()
 	f := newStampFixture(t)
 	m := metrics.New()
 	f.srv.SetMetrics(m)

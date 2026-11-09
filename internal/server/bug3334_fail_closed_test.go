@@ -70,6 +70,7 @@ var reachedNext = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) 
 // (A1) RequireAuth: an anonymous API request during a user-count fault is
 // refused, not let through as if the instance had no users.
 func TestBUG3334_RequireAuthFailsClosedOnUserCountError(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	breakTable(t, srv, "users")
 	rr := httptest.NewRecorder()
@@ -84,6 +85,7 @@ func TestBUG3334_RequireAuthFailsClosedOnUserCountError(t *testing.T) {
 // The workspace lookup ahead of the check reads the users table too, so the
 // fault is on the count alone (userCountFault).
 func TestBUG3334_RequireWorkspaceAccessFailsClosedOnUserCountError(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	calls := failUserCount(t, srv)
 	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+slug+"/collections", nil)
@@ -105,6 +107,7 @@ func TestBUG3334_RequireWorkspaceAccessFailsClosedOnUserCountError(t *testing.T)
 // (A1+A2) Through the real router: the anonymous read that both holes
 // together turned into owner access.
 func TestBUG3334_AnonymousReadDuringUserCountFaultIsRefused(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	calls := failUserCount(t, srv)
 	if rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/collections", nil); rr.Code == http.StatusOK {
@@ -116,6 +119,7 @@ func TestBUG3334_AnonymousReadDuringUserCountFaultIsRefused(t *testing.T) {
 // (A3) CSRFProtect: a cookie-borne mutation during a user-count fault is held
 // to the CSRF check rather than waved through as a fresh install.
 func TestBUG3334_CSRFFailsClosedOnUserCountError(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	breakTable(t, srv, "users")
 	req := httptest.NewRequest("POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", strings.NewReader(`{}`))
@@ -130,6 +134,7 @@ func TestBUG3334_CSRFFailsClosedOnUserCountError(t *testing.T) {
 // (A4) SSE revalidation: a user-count fault does not short-circuit the
 // recheck into "everyone has access"; an anonymous, tokenless stream ends.
 func TestBUG3334_SSERecheckFailsClosedOnUserCountError(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
 	if err != nil || ws == nil {
@@ -146,6 +151,7 @@ func TestBUG3334_SSERecheckFailsClosedOnUserCountError(t *testing.T) {
 
 // (A5) Collab: the same fault does not grant an anonymous socket write access.
 func TestBUG3334_CollabFailsClosedOnUserCountError(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	ws, _ := srv.store.GetWorkspaceBySlug(slug)
 	item, err := srv.store.CreateItem(ws.ID, mustCollectionID(t, srv, ws.ID, "tasks"), models.ItemCreate{Title: "Doc", Fields: `{"status":"open"}`})
@@ -253,6 +259,7 @@ func noLeak(t *testing.T, what string, rr *httptest.ResponseRecorder) {
 // The fixture itself: without a fault, the member is shown neither hidden
 // item, so a leak below is the fault's doing.
 func TestBUG3334_FixtureHidesBothSignals(t *testing.T) {
+	t.Parallel()
 	f := restrictedMember(t)
 	rr := f.do("GET", "/items/"+f.child.Slug, nil)
 	if rr.Code != http.StatusOK {
@@ -266,6 +273,7 @@ func TestBUG3334_FixtureHidesBothSignals(t *testing.T) {
 }
 
 func TestBUG3334_GetItemFailsClosedOnVisibilityError(t *testing.T) {
+	t.Parallel()
 	f := restrictedMember(t)
 	f.faultFrom(t, 1)
 	rr := f.do("GET", "/items/"+f.child.Slug, nil)
@@ -276,6 +284,7 @@ func TestBUG3334_GetItemFailsClosedOnVisibilityError(t *testing.T) {
 }
 
 func TestBUG3334_ProgressFailsClosedOnVisibilityError(t *testing.T) {
+	t.Parallel()
 	f := restrictedMember(t)
 	f.faultFrom(t, 1)
 	rr := f.do("GET", "/items/"+f.visibleTask.Slug+"/progress", nil)
@@ -287,6 +296,7 @@ func TestBUG3334_ProgressFailsClosedOnVisibilityError(t *testing.T) {
 // Update resolves visibility BEFORE writing: a fault is a 500 with nothing
 // written, never a committed write answered with an unfiltered response.
 func TestBUG3334_UpdateFailsClosedBeforeWriting(t *testing.T) {
+	t.Parallel()
 	f := restrictedMember(t)
 	f.faultFrom(t, 1)
 	rr := f.do("PATCH", "/items/"+f.child.Slug, map[string]any{"title": "Renamed"})
@@ -301,6 +311,7 @@ func TestBUG3334_UpdateFailsClosedBeforeWriting(t *testing.T) {
 }
 
 func TestBUG3334_RestoreFailsClosedBeforeWriting(t *testing.T) {
+	t.Parallel()
 	f := restrictedMember(t)
 	if err := f.srv.store.DeleteItem(f.child.ID); err != nil {
 		t.Fatal(err)
@@ -321,6 +332,7 @@ func TestBUG3334_RestoreFailsClosedBeforeWriting(t *testing.T) {
 // error checked; the response must be built from THAT result, not from a
 // second, unchecked resolution.
 func TestBUG3334_CreateResolvesVisibilityOnce(t *testing.T) {
+	t.Parallel()
 	f := restrictedMember(t)
 	calls := f.faultFrom(t, 2)
 	rr := f.do("POST", "/collections/tasks/items", map[string]any{"title": "New", "fields": `{"status":"open"}`})
@@ -333,6 +345,7 @@ func TestBUG3334_CreateResolvesVisibilityOnce(t *testing.T) {
 }
 
 func TestBUG3334_MoveBuildsItsResponseFromTheCheckedResolution(t *testing.T) {
+	t.Parallel()
 	f := restrictedMember(t)
 	if err := f.srv.store.SetMemberCollectionAccess(f.wsID, mustUserID(t, f.srv, "member-3334@example.com"), "specific",
 		[]string{mustCollectionID(t, f.srv, f.wsID, "tasks"), mustCollectionID(t, f.srv, f.wsID, "docs")}); err != nil {
@@ -382,6 +395,7 @@ func TestUserCountFaultIsNilInProduction(t *testing.T) {
 // with session_required (the BUG-2890 line); the admin's own browser session
 // and CLI session are not.
 func TestBUG3334_AuditLogRefusesAnAdminPAT(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	admin, err := srv.store.CreateUser(models.UserCreate{
 		Email: "admin-3334@example.com", Name: "Admin", Password: "correct-horse-battery-staple", Role: "admin",
@@ -414,6 +428,7 @@ func TestBUG3334_AuditLogRefusesAnAdminPAT(t *testing.T) {
 // A signed-in member keeps working through a user-count fault at every site
 // the fault no longer short-circuits: the fall-through, not a 500.
 func TestBUG3334_SignedInMemberWorksThroughUserCountFault(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	ws, _ := srv.store.GetWorkspaceBySlug(slug)
 	item, err := srv.store.CreateItem(ws.ID, mustCollectionID(t, srv, ws.ID, "tasks"), models.ItemCreate{Title: "Doc", Fields: `{"status":"open"}`})
@@ -444,6 +459,7 @@ func TestBUG3334_SignedInMemberWorksThroughUserCountFault(t *testing.T) {
 // nor a full-access member's unfiltered view (a demotion or a disable would
 // not show). Every event is denied until a recompute reads the row.
 func TestBUG3334_SSEVisibilityDeniesWithoutAFreshUser(t *testing.T) {
+	t.Parallel()
 	srv, slug := initializedWorkspace(t)
 	ws, _ := srv.store.GetWorkspaceBySlug(slug)
 	admin, err := srv.store.CreateUser(models.UserCreate{Email: "sse-admin-3334@example.com", Name: "Admin", Password: "pw-test-12345", Role: "admin"})

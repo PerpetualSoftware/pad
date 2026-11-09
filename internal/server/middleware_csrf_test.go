@@ -8,6 +8,7 @@ import (
 )
 
 func TestCSRF_SafeMethodsAllowed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions} {
@@ -25,6 +26,7 @@ func TestCSRF_SafeMethodsAllowed(t *testing.T) {
 }
 
 func TestCSRF_BearerTokenExempt(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Bootstrap admin so auth is required
@@ -48,6 +50,7 @@ func TestCSRF_BearerTokenExempt(t *testing.T) {
 }
 
 func TestCSRF_AuthEndpointsExempt(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Auth endpoints should work without CSRF token. logout is
@@ -78,6 +81,7 @@ func TestCSRF_AuthEndpointsExempt(t *testing.T) {
 }
 
 func TestCSRF_MissingTokenBlocked(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Bootstrap and login to get session token
@@ -99,6 +103,7 @@ func TestCSRF_MissingTokenBlocked(t *testing.T) {
 }
 
 func TestCSRF_MismatchBlocked(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -121,6 +126,7 @@ func TestCSRF_MismatchBlocked(t *testing.T) {
 }
 
 func TestCSRF_MatchingTokenAllowed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -153,6 +159,7 @@ func TestCSRF_MatchingTokenAllowed(t *testing.T) {
 }
 
 func TestCSRF_FreshInstallExempt(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// No users → fresh install → CSRF should be skipped
@@ -172,6 +179,7 @@ func TestCSRF_FreshInstallExempt(t *testing.T) {
 }
 
 func TestCSRF_LoginSetsCSRFCookie(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -207,6 +215,7 @@ func TestCSRF_LoginSetsCSRFCookie(t *testing.T) {
 }
 
 func TestCSRF_LogoutClearsCSRFCookie(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -250,6 +259,7 @@ func TestCSRF_LogoutClearsCSRFCookie(t *testing.T) {
 // Before B8 these were all bypassed by a blanket /api/v1/auth/ prefix
 // exemption.
 func TestCSRF_AuthMutatingEndpoints_RequireCSRF(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -306,6 +316,7 @@ func TestCSRF_AuthMutatingEndpoints_RequireCSRF(t *testing.T) {
 // session to an attacker-controlled CLI code) must require CSRF, while the
 // bare create/poll endpoints stay exempt/safe-method.
 func TestCSRF_CLISessionApprove_RequiresCSRF(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -359,6 +370,7 @@ func TestCSRF_CLISessionApprove_RequiresCSRF(t *testing.T) {
 // (session-gated) so this test isolates the exact-match property from the
 // currentUser(r) == nil gate register alone carries.
 func TestCSRF_TrailingSlashVariant_OfExemptPath_NotExempted(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -382,6 +394,7 @@ func TestCSRF_TrailingSlashVariant_OfExemptPath_NotExempted(t *testing.T) {
 // matching, to the required "/api/v1/auth/cli/sessions/{code}/approve"
 // sub-path.
 func TestCSRF_CLISessionsSubpath_DoesNotInheritCreateExemption(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -400,6 +413,7 @@ func TestCSRF_CLISessionsSubpath_DoesNotInheritCreateExemption(t *testing.T) {
 }
 
 func TestCSRF_AllMutationMethodsBlocked(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -439,6 +453,7 @@ func TestCSRF_AllMutationMethodsBlocked(t *testing.T) {
 // mutation must still be rejected (no CSRF fallback) until the browser
 // re-logs-in and receives __Host--prefixed cookies.
 func TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Bootstrap and log in while secureCookies is still false, so the
@@ -481,6 +496,7 @@ func TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure(t *testing.T) {
 // already closed. An admin session hitting /register without a CSRF token
 // must now be blocked.
 func TestCSRF_AdminSessionRegister_RequiresCSRF(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -504,6 +520,7 @@ func TestCSRF_AdminSessionRegister_RequiresCSRF(t *testing.T) {
 // still be able to create accounts — the fix only closes the missing-
 // token gap, it doesn't break the legitimate admin-created-account flow.
 func TestCSRF_AdminSessionRegister_ValidCSRFStillSucceeds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -530,6 +547,7 @@ func TestCSRF_AdminSessionRegister_ValidCSRFStillSucceeds(t *testing.T) {
 // rejected by CSRF, even once users already exist (so the separate
 // "fresh install" bypass doesn't mask the result).
 func TestCSRF_AnonymousRegister_StillExempt(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -562,6 +580,7 @@ func TestCSRF_AnonymousRegister_StillExempt(t *testing.T) {
 // session cookie plus an invalid Bearer header, with no CSRF token, must
 // now be blocked.
 func TestCSRF_SessionCookiePlusGarbageBearer_RequiresCSRF(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	sessionToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -590,6 +609,7 @@ func TestCSRF_SessionCookiePlusGarbageBearer_RequiresCSRF(t *testing.T) {
 // to get a clear "not logged in" rather than being misdiagnosed as a CSRF
 // failure.
 func TestCSRF_GarbageBearerNoCookie_StaysCLIRecoveryPath(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -618,6 +638,7 @@ func TestCSRF_GarbageBearerNoCookie_StaysCLIRecoveryPath(t *testing.T) {
 // short-circuits SessionAuth once currentUser is set, so the cookie's
 // value is irrelevant here; a different value would behave identically.
 func TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	sessionToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -650,6 +671,7 @@ func TestCSRF_ValidBearerPlusSessionCookie_ExemptRegardless(t *testing.T) {
 // coverage for the exact case the E2E suite hit, since static review
 // alone missed the blast radius of that fix.
 func TestCSRF_LoginAndBootstrap_ExemptEvenWithAmbientSessionCookie(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	sessionToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")

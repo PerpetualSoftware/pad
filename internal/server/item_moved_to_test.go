@@ -212,6 +212,7 @@ func (f *movedToFixture) requireNoPointer(rr *httptest.ResponseRecorder, label s
 // the destination is named in displayable terms, with no UUIDs, so the
 // consumer can render a link without a second call.
 func TestMovedTo_ArchivedSourceCallerCanReadDestination(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destB, true, 10)
 	f.archiveSource()
@@ -265,6 +266,7 @@ func TestMovedTo_ArchivedSourceCallerCanReadDestination(t *testing.T) {
 // the two bodies is attributable to the pointer alone. A null, an empty array,
 // a reordered key set or a differently-typed field would all fail here.
 func TestMovedTo_DeniedResponseIsByteIdenticalToNoMoveRecord(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	// Member of A only — a total stranger to B.
 	stranger := mustUser(t, f.srv, "stranger@example.com", "strangeruser", "")
@@ -297,6 +299,7 @@ func TestMovedTo_DeniedResponseIsByteIdenticalToNoMoveRecord(t *testing.T) {
 // workspace B generally while having no right to the copied item's collection;
 // a workspace-level check would hand them the pointer anyway.
 func TestMovedTo_WorkspaceAccessAloneIsNotEnough(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	u := mustUser(t, f.srv, "restricted-b@example.com", "restrictedb", "")
 	if err := f.srv.store.AddWorkspaceMember(f.wsA.ID, u.ID, "editor"); err != nil {
@@ -339,6 +342,7 @@ func (f *movedToFixture) request(user *models.User) *http.Request {
 // ("guest") and passes a workspace-level check, but the granted item is not
 // the copied one.
 func TestMovedTo_GuestWithUnrelatedItemGrantInDestination(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	u := mustUser(t, f.srv, "guest-b@example.com", "guestb", "")
 	if err := f.srv.store.AddWorkspaceMember(f.wsA.ID, u.ID, "editor"); err != nil {
@@ -370,6 +374,7 @@ func TestMovedTo_GuestWithUnrelatedItemGrantInDestination(t *testing.T) {
 // automatically only for the workspace in the URL. A token scoped to A must
 // not learn about B even though its owner is a full member there.
 func TestMovedTo_BearerTokenConsentedToSourceOnly(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	u := mustUser(t, f.srv, "consent@example.com", "consentuser", "")
 	for _, ws := range []*models.Workspace{f.wsA, f.wsB} {
@@ -402,6 +407,7 @@ func TestMovedTo_BearerTokenConsentedToSourceOnly(t *testing.T) {
 // split (BUG-1616/1617) must hold here too — a platform admin over a bearer
 // surface who is not a member of B learns nothing.
 func TestMovedTo_BearerPlatformAdminIsNotAShortcut(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	admin := mustUser(t, f.srv, "admin-movedto@example.com", "adminmovedto", "admin")
 	if err := f.srv.store.AddWorkspaceMember(f.wsA.ID, admin.ID, "editor"); err != nil {
@@ -429,6 +435,7 @@ func TestMovedTo_BearerPlatformAdminIsNotAShortcut(t *testing.T) {
 // and not the newer one, so first-match would hand them nothing at all rather
 // than the smaller true answer. See the SET note in item_moved_to.go.
 func TestMovedTo_MultipleDestinationsFilteredPerDestination(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	u := mustUser(t, f.srv, "multi@example.com", "multiuser", "")
 	if err := f.srv.store.AddWorkspaceMember(f.wsA.ID, u.ID, "editor"); err != nil {
@@ -466,6 +473,7 @@ func TestMovedTo_MultipleDestinationsFilteredPerDestination(t *testing.T) {
 // --- DR-2a: copies are not moves ---------------------------------------
 
 func TestMovedTo_PlainCopyNeverClaimsAMove(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destB, false, 0) // plain copy: archived_source = false
 	f.archiveSource()
@@ -476,6 +484,7 @@ func TestMovedTo_PlainCopyNeverClaimsAMove(t *testing.T) {
 
 // A source copied to C and then MOVED to B advertises only B.
 func TestMovedTo_MoveRowWinsOverCopyRow(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destC, false, 0)
 	f.record(f.destB, true, 11)
@@ -496,6 +505,7 @@ func TestMovedTo_MoveRowWinsOverCopyRow(t *testing.T) {
 // Past-tense provenance is the back-pointer question and applies equally to
 // plain copies, which this field must never claim as moves.
 func TestMovedTo_RestoredSourceOmitsTheBlock(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destB, true, 10)
 	f.archiveSource()
@@ -528,6 +538,7 @@ func TestMovedTo_RestoredSourceOmitsTheBlock(t *testing.T) {
 // A destination that has itself been archived is not advertised: pointing a
 // banner at an archived item is worse than saying nothing.
 func TestMovedTo_ArchivedDestinationIsNotAdvertised(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destB, true, 10)
 	f.archiveSource()
@@ -551,6 +562,7 @@ func TestMovedTo_ArchivedDestinationIsNotAdvertised(t *testing.T) {
 // pointer is withheld anyway, because the question this gate answers is what
 // the SOURCE grant conveys.
 func TestMovedTo_SourceItemGrantGuestNeverSeesPointer(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	guest := mustUser(t, f.srv, "source-guest@example.com", "sourceguest", "")
 	// No membership in A at all — the sole claim is one item grant on the
@@ -623,6 +635,7 @@ func TestMovedTo_SourceItemGrantGuestNeverSeesPointer(t *testing.T) {
 // The destination side applies the identical rule
 // (crossWorkspaceLiveCollection); this is its source-side mirror.
 func TestMovedTo_ArchivedSourceCollectionWithholdsPointer(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destB, true, 10)
 	f.archiveSource()
@@ -651,6 +664,7 @@ func TestMovedTo_ArchivedSourceCollectionWithholdsPointer(t *testing.T) {
 // source lives in A, and a grants-only guest of A who owns B would slip
 // through the one gate written to stop them.
 func TestMovedTo_RefusesForeignWorkspaceRequestContext(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destB, true, 10)
 	f.archiveSource()
@@ -691,6 +705,7 @@ func TestMovedTo_RefusesForeignWorkspaceRequestContext(t *testing.T) {
 // publishing destinations to anonymous visitors on every share link. Pinning
 // the exact key set makes that refactor fail loudly.
 func TestMovedTo_ShareLinkNeverCarriesPointer(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 
 	// The load-bearing half: hand the projection an item whose MovedTo is
@@ -764,6 +779,7 @@ func TestMovedTo_ShareLinkNeverCarriesPointer(t *testing.T) {
 // describes an item that, one instant earlier, was an archived source WITH a
 // live move row and therefore genuinely had a pointer to emit.
 func TestMovedTo_MutationResponsesDoNotCarryPointer(t *testing.T) {
+	t.Parallel()
 	f := newMovedToFixture(t)
 	f.record(f.destB, true, 10)
 	f.archiveSource()

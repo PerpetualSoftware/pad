@@ -100,6 +100,7 @@ func (f *bug3815Fixture) content(t *testing.T) string {
 }
 
 func TestBUG3815_RestoreRefusesAnUnreconstructableVersion(t *testing.T) {
+	t.Parallel()
 	f := newBug3815Fixture(t)
 	// Instrument: the walk must fail on vb and resolve vg and vp, or no leg
 	// below measures what it claims.
@@ -137,6 +138,7 @@ func TestBUG3815_RestoreRefusesAnUnreconstructableVersion(t *testing.T) {
 }
 
 func TestBUG3815_DiffRefusesAnUnreconstructableVersion(t *testing.T) {
+	t.Parallel()
 	f := newBug3815Fixture(t)
 	// vb's own body is the placeholder, and vg's pair has vb as its newer side.
 	for _, id := range []string{"vb", "vg"} {
@@ -165,6 +167,7 @@ func TestBUG3815_DiffRefusesAnUnreconstructableVersion(t *testing.T) {
 
 // The reads still serve the placeholder, flagged, and only on the failed row.
 func TestBUG3815_VersionReadsMarkTheUnreconstructableRow(t *testing.T) {
+	t.Parallel()
 	f := newBug3815Fixture(t)
 	rr := doRequest(f.srv, "GET", "/api/v1/workspaces/"+f.wsSlug+"/items/"+f.itemSlug+"/versions/vb", nil)
 	if rr.Code != http.StatusOK {
@@ -198,6 +201,7 @@ func TestBUG3815_VersionReadsMarkTheUnreconstructableRow(t *testing.T) {
 
 // CONTROLS: the narrow refusal leaves the rest of the history restorable.
 func TestBUG3815_OtherVersionsStillRestore(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct{ id, want string }{
 		{"vg", bug3815Good},      // resolved past the failed row (BUG-3655)
 		{"vp", bug3815Lookalike}, // a real body that only looks like the placeholder

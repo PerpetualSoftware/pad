@@ -14,6 +14,7 @@ import (
 // one is dropped, counted and named in the 201 as dropped_schedules while its
 // item and the rest of the import survive.
 func TestTASK4104_ImportReportsDroppedSchedules(t *testing.T) {
+	t.Parallel()
 	const ts = "2026-10-15T00:00:00Z"
 	good := models.ScheduleExport{
 		ItemID: "11111111-1111-4111-8111-111111111111", Kind: "check", Dtstart: "2030-01-01T09:00:00", Tz: "UTC",
@@ -76,6 +77,7 @@ func TestTASK4104_ImportReportsDroppedSchedules(t *testing.T) {
 }
 
 func TestImportBundleV2NativeRoles(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	const body = `{"version":2,"workspace":{"name":"Native import","slug":"native-import","settings":"{}"},"collections":[{"id":"c","name":"Tasks","slug":"tasks","prefix":"TASK","schema":"{\"fields\":[]}","settings":"{}","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-01T00:00:00Z"}],"items":[{"id":"i","collection_id":"c","title":"Renew","slug":"renew","fields":"{}","tags":"[]","item_number":1,"created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-01T00:00:00Z"}],"schedules":[{"id":"s","item_id":"i","kind":"check","dtstart":"2030-01-01T09:00:00","tz":"UTC","anchor":"calendar","audience":"both","next_at":"2030-01-01T09:00:00Z","next_wall":"2030-01-01T09:00:00","created_at":"2026-11-01T00:00:00Z","updated_at":"2026-11-01T00:00:00Z","roles":{"target_days":2,"target_secs":60,"deadline_days":3,"deadline_secs":0,"deadline_behavior":"lapses","roles_origin":"native","outcome":"Renewed"}}]}`
 	rr := rawJSONRequest(srv, "POST", "/api/v1/workspaces/import", body)

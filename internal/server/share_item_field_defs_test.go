@@ -50,6 +50,7 @@ func shareFieldDefsFor(t *testing.T, srv *Server, wsID, collID, ownerID, fields 
 }
 
 func TestItemShareCarriesDefsOnlyForTheFieldsItShows(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)

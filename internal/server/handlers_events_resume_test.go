@@ -166,6 +166,7 @@ func TestOrdinaryEventsStillCarryTheirID(t *testing.T) {
 // not tear down a healthy stream, while a write error means the peer is gone
 // and the caller must exit so the bus subscription is released.
 func TestWriteSSEResetCursorEventErrorPaths(t *testing.T) {
+	t.Parallel()
 	t.Run("write failure is reported so the caller can exit", func(t *testing.T) {
 		err := writeSSEResetCursorEvent(&failingWriter{err: errWriteFailed}, "sync_required", map[string]string{"reason": "x"})
 		if err == nil {

@@ -125,6 +125,7 @@ func (f *refResolverFixture) seedItem(collSlug, collPrefix, title string) *model
 // previous /{username}/{workspace}/ref/{ref} shape risked collision with
 // pre-existing `ref`-slugged collections.
 func TestRefResolver_Success(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	item := f.seedItem("decisions", "DECIS", "Orchestration model")
 
@@ -144,6 +145,7 @@ func TestRefResolver_Success(t *testing.T) {
 // whether the workspace, the ref, or the access check was the failing
 // gate, so callers can't probe workspace existence by diffing responses.
 func TestRefResolver_UnknownWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/-/r/ghost-workspace/TASK-1", nil)
 	if rr.Code != http.StatusNotFound {
@@ -154,6 +156,7 @@ func TestRefResolver_UnknownWorkspace(t *testing.T) {
 // TestRefResolver_UnknownRef asserts 404 for a workspace that exists but
 // has no item matching the requested ref.
 func TestRefResolver_UnknownRef(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	rr := f.doAs("GET", "/-/r/"+f.ws.Slug+"/DECIS-9999", nil)
 	if rr.Code != http.StatusNotFound {
@@ -166,6 +169,7 @@ func TestRefResolver_UnknownRef(t *testing.T) {
 // resolution, so a malformed ref against a real workspace looks the same
 // as a malformed ref against a phantom workspace — no oracle.
 func TestRefResolver_MalformedRef(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	cases := []string{
@@ -193,6 +197,7 @@ func TestRefResolver_MalformedRef(t *testing.T) {
 // fresh-install path here — distinct from the seeded-fixture path used
 // by other tests.
 func TestRefResolver_PreSetupBypass(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Claude"})
 	if rr.Code != http.StatusCreated {
@@ -231,6 +236,7 @@ func TestRefResolver_PreSetupBypass(t *testing.T) {
 // risk of someone restoring the older shape and rediscovering
 // the collision).
 func TestRefResolver_RejectsRefAsCollectionSlug(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	rr := f.doAs("POST", "/api/v1/workspaces/"+f.ws.Slug+"/collections", map[string]interface{}{
 		"name": "Ref", "slug": "ref", "prefix": "REF",
@@ -259,6 +265,7 @@ func TestRefResolver_RejectsRefAsCollectionSlug(t *testing.T) {
 // here is "the resolver did not intercept it", proved by absence of a
 // 302 Location header.)
 func TestRefResolver_URLShapeNonOverlap(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 
 	// Hit the page-URL shape directly. The resolver lives at /-/r/...
@@ -278,6 +285,7 @@ func TestRefResolver_URLShapeNonOverlap(t *testing.T) {
 // checkItemVisible's nil-user check fired first and false-404'd these
 // callers; the current ordering lets tokenized roles bypass the gate.
 func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// A real workspace + collection + item — needed because checkItemVisible
@@ -330,6 +338,7 @@ func TestCheckItemVisible_TokenizedRoleAllowsNilUser(t *testing.T) {
 //
 // The earlier buggy state returned true; the fixed state returns false.
 func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Seed a workspace under a separate owner so the editor under test
@@ -448,6 +457,7 @@ func TestCheckItemVisible_AuthenticatedEditorWithRestrictedAccess(t *testing.T) 
 // checkItemVisible helper is what backs it, same as every other
 // requireItemVisible consumer.
 func TestCheckItemVisible_AdminBearerRestrictedRoleDeniedOnHiddenCollection(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{
@@ -527,6 +537,7 @@ func TestCheckItemVisible_AdminBearerRestrictedRoleDeniedOnHiddenCollection(t *t
 // through the item-grants branch, so the listed 302 is the control for the
 // unlisted 404.
 func TestRefResolver_RestrictedMemberWithSystemCollection(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 
 	// Seed a regular collection A (the member's "specific" access list
@@ -626,6 +637,7 @@ func TestRefResolver_RestrictedMemberWithSystemCollection(t *testing.T) {
 // in their member_collection_access) PLUS a direct collection grant on
 // collection B must be able to resolve refs that live in collection B.
 func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 
 	// Two collections — A (member can see directly) and B (member sees
@@ -698,6 +710,7 @@ func TestRefResolver_RestrictedMemberWithCollectionGrant(t *testing.T) {
 // (workspace + ref + owner-username + collection-slug) the redirect would
 // otherwise leak. Membership-only stance, matching BUG-1616/1617.
 func TestRefResolver_AdminBearer_404OnNonMemberWorkspace(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	item := f.seedItem("decisions", "DECIS", "Orchestration model")
 
@@ -733,6 +746,7 @@ func TestRefResolver_AdminBearer_404OnNonMemberWorkspace(t *testing.T) {
 // reopen full resolver access + 302 URL leakage. Mirrors
 // TestSSESubscriberStillHasAccess_AdminBearer_DeniedEvenWithGrants.
 func TestRefResolver_AdminBearer_404EvenWithGrant(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	item := f.seedItem("decisions", "DECIS", "Orchestration model")
 
@@ -773,6 +787,7 @@ func TestRefResolver_AdminBearer_404EvenWithGrant(t *testing.T) {
 // workspace as the bearer case above — only the auth surface differs, and
 // the cookie path still 302s to the canonical item URL.
 func TestRefResolver_AdminCookie_StillRedirects(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	item := f.seedItem("decisions", "DECIS", "Orchestration model")
 

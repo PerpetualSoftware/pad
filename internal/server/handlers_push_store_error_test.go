@@ -59,6 +59,7 @@ import (
 // described as full coverage; closing it is a store-seam change, larger
 // than this unit.
 func TestComputeWatchAccessVisibility_ReportsStoreFailure(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithWatchEvents(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)

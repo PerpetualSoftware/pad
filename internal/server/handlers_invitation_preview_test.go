@@ -43,6 +43,7 @@ func seedOwnerWorkspace(t *testing.T, srv *Server, wsName string) (*models.User,
 // happy path: an unauthenticated caller gets the invited email + workspace
 // name, and the invitation stays pending afterward.
 func TestPreviewInvitation_ReturnsMetadataWithoutConsuming(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner, ws := seedOwnerWorkspace(t, srv, "Acme HQ")
 
@@ -88,6 +89,7 @@ func TestPreviewInvitation_ReturnsMetadataWithoutConsuming(t *testing.T) {
 // already exists for the invited address — the signal the /join page uses to
 // default to login mode.
 func TestPreviewInvitation_HasAccountTrue(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner, ws := seedOwnerWorkspace(t, srv, "Beta")
 
@@ -119,6 +121,7 @@ func TestPreviewInvitation_HasAccountTrue(t *testing.T) {
 // shape a valid-but-expired or deleted-workspace code would return, so the
 // response can't be used to probe which codes are real.
 func TestPreviewInvitation_UnknownCodeIsFoundFalse(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Users exist (RequireAuth active) — the endpoint must still be public.
 	bootstrapFirstUser(t, srv, "owner@example.com", "Owner")
@@ -141,6 +144,7 @@ func TestPreviewInvitation_UnknownCodeIsFoundFalse(t *testing.T) {
 // dedicated per-IP limiter (burst 20) so it can't be used to enumerate the
 // code space at speed.
 func TestPreviewInvitation_RateLimited(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	const ip = "203.0.113.55:1"
 

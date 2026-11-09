@@ -34,6 +34,7 @@ func uploadHelper(t *testing.T, srv *Server, slug string, filename string, body 
 }
 
 func TestDownload_HappyPathPNG(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := realPNG()
 	id, mime, urlPath := uploadHelper(t, srv, slug, "screen.png", body)
@@ -68,6 +69,7 @@ func TestDownload_HappyPathPNG(t *testing.T) {
 }
 
 func TestDownload_HTMLForcedAsAttachment(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	html := []byte("<!doctype html><html><body><script>alert(1)</script></body></html>")
 	_, _, urlPath := uploadHelper(t, srv, slug, "page.html", html)
@@ -86,6 +88,7 @@ func TestDownload_HTMLForcedAsAttachment(t *testing.T) {
 }
 
 func TestDownload_NotFound(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+slug+"/attachments/00000000-0000-0000-0000-000000000000", nil)
 	req.RemoteAddr = "127.0.0.1:1234"
@@ -97,6 +100,7 @@ func TestDownload_NotFound(t *testing.T) {
 }
 
 func TestDownload_HEADReturnsHeadersWithoutBody(t *testing.T) {
+	t.Parallel()
 	// The editor's file-chip NodeView (TASK-877) probes attachment metadata
 	// via a HEAD request — Content-Type powers the MIME-aware icon and
 	// Content-Length feeds the size readout. chi doesn't auto-route HEAD
@@ -135,6 +139,7 @@ func TestDownload_HEADReturnsHeadersWithoutBody(t *testing.T) {
 }
 
 func TestDownload_HEADCrossWorkspaceReturns404(t *testing.T) {
+	t.Parallel()
 	// Cross-workspace probing must return 404, not 403, on HEAD too —
 	// otherwise the metadata HEAD becomes a side-channel that lets a
 	// member of workspace B enumerate attachment IDs in workspace A.
@@ -152,6 +157,7 @@ func TestDownload_HEADCrossWorkspaceReturns404(t *testing.T) {
 }
 
 func TestDownload_CrossWorkspaceReturns404(t *testing.T) {
+	t.Parallel()
 	srv, slugA := testServerWithAttachments(t)
 	slugB := createWSForTest(t, srv)
 
@@ -172,6 +178,7 @@ func TestDownload_CrossWorkspaceReturns404(t *testing.T) {
 }
 
 func TestDownload_Range_206(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	// Build a payload long enough that a Range request makes sense.
 	// Use a real MP4 magic header so the upload passes MIME sniff, then
@@ -212,6 +219,7 @@ func TestDownload_Range_206(t *testing.T) {
 }
 
 func TestDownload_VariantFallbackToOriginal(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := realPNG()
 	_, _, urlPath := uploadHelper(t, srv, slug, "tiny.png", body)
@@ -232,6 +240,7 @@ func TestDownload_VariantFallbackToOriginal(t *testing.T) {
 }
 
 func TestDownload_VariantUnknown(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	_, _, urlPath := uploadHelper(t, srv, slug, "x.png", realPNG())
 	req := httptest.NewRequest("GET", urlPath+"?variant=quantum-foo", nil)
@@ -244,6 +253,7 @@ func TestDownload_VariantUnknown(t *testing.T) {
 }
 
 func TestDownload_VariantHitsDerivedRow(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := realPNG()
 	id, _, urlPath := uploadHelper(t, srv, slug, "with-thumb.png", body)
@@ -308,6 +318,7 @@ func TestDownload_BlobMissingOnDisk(t *testing.T) {
 }
 
 func TestDownload_FilenameSanitized(t *testing.T) {
+	t.Parallel()
 	// We can't trigger this via upload (filepath.Base strips path
 	// separators) so test the helper directly.
 	cases := map[string]string{

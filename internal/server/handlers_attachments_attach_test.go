@@ -89,6 +89,7 @@ func attachMember(t *testing.T, f shareAssetFixture, email, role string) *models
 // item's share (404 from the asset endpoint, no ref minted) until attach, and
 // served afterwards. The variant moves with the original.
 func TestAttach_UploaderBindsOrphanAndShareServesIt(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	uploader := attachMember(t, f, "uploader@test.com", "editor")
 	orig, variantID, md := seedOrphanImage(t, f, uploader.ID, 0x41)
@@ -129,6 +130,7 @@ func TestAttach_UploaderBindsOrphanAndShareServesIt(t *testing.T) {
 // where it was. A caller who can see the owner gets 409; one who cannot gets
 // the shared 404, so the refusal is not an oracle for hidden items.
 func TestAttach_RefusesAlreadyAttached(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	editor := attachMember(t, f, "editor@test.com", "editor")
 	owned, _ := f.seedImage(t, f.item2ID, 0x51)
@@ -161,6 +163,7 @@ func TestAttach_RefusesAlreadyAttached(t *testing.T) {
 // A foreign workspace's attachment, a variant addressed directly, and an
 // unknown id all get the shared 404 and change nothing.
 func TestAttach_RefusesForeignVariantAndUnknown(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	uploader := attachMember(t, f, "uploader@test.com", "editor")
 
@@ -194,6 +197,7 @@ func TestAttach_RefusesForeignVariantAndUnknown(t *testing.T) {
 // closes: a guest who could bind any id they know to an item they can edit
 // would publish it through that item's share.
 func TestAttach_WhoMayAttach(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	uploader := attachMember(t, f, "uploader@test.com", "editor")
 	otherEditor := attachMember(t, f, "other@test.com", "editor")
@@ -240,6 +244,7 @@ func TestAttach_WhoMayAttach(t *testing.T) {
 
 // The target item must resolve and be live.
 func TestAttach_TargetItem(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	uploader := attachMember(t, f, "uploader@test.com", "editor")
 	orig, _, _ := seedOrphanImage(t, f, uploader.ID, 0x81)
@@ -263,6 +268,7 @@ func TestAttach_TargetItem(t *testing.T) {
 // Attach and the never-attached GC claim are exclusive on the row: whichever
 // commits first wins, and the other matches nothing.
 func TestAttach_ExclusiveWithNeverAttachedClaim(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	a, _, _ := seedOrphanImage(t, f, "u", 0x91)
 	if err := f.srv.store.AttachAttachmentToItem(f.wsID, a, f.itemID); err != nil {
@@ -287,6 +293,7 @@ func TestAttach_ExclusiveWithNeverAttachedClaim(t *testing.T) {
 }
 
 func TestServerCapabilitiesAdvertisesAttachmentAttach(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, http.MethodGet, "/api/v1/server/capabilities", nil)
 	if rr.Code != http.StatusOK {
@@ -304,6 +311,7 @@ func TestServerCapabilitiesAdvertisesAttachmentAttach(t *testing.T) {
 // The store refuses to move an attached row on its own, without the handler's
 // earlier 409 in front of it: the row changes only while item_id IS NULL.
 func TestAttachStore_NeverMovesAnAttachedRow(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	owned, _ := f.seedImage(t, f.item2ID, 0xa1)
 	if err := f.srv.store.AttachAttachmentToItem(f.wsID, owned, f.itemID); !errors.Is(err, store.ErrAttachmentNotAttachable) {
@@ -317,6 +325,7 @@ func TestAttachStore_NeverMovesAnAttachedRow(t *testing.T) {
 // A restricted member cannot read unattached rows (PLAN-2382 DR-4), so it
 // cannot attach one either, even its own upload onto an item it can edit.
 func TestAttach_RestrictedMemberGets404(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	restricted := attachMember(t, f, "restricted@test.com", "editor")
 	if err := f.srv.store.SetMemberCollectionAccess(f.wsID, restricted.ID, "specific", []string{f.collID}); err != nil {
@@ -334,6 +343,7 @@ func TestAttach_RestrictedMemberGets404(t *testing.T) {
 // another workspace is not attachable to an item here, whatever the caller
 // checked first.
 func TestAttachStore_RefusesForeignWorkspaceRow(t *testing.T) {
+	t.Parallel()
 	f := newShareAssetFixture(t)
 	other, err := f.srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Other"})
 	if err != nil {

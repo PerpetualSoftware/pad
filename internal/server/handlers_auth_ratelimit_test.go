@@ -7,6 +7,7 @@ import (
 )
 
 func TestIsPlausibleEmail(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name  string
 		input string
@@ -34,6 +35,7 @@ func TestIsPlausibleEmail(t *testing.T) {
 // garbage string with no '@' does not create a bucket in the AuthEmail
 // limiter — the memory-DoS defense added in PR #178.
 func TestHandleLogin_ImplausibleEmail_NoBucketCreated(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "victim@example.com", "Victim")
 
@@ -69,6 +71,7 @@ func TestHandleLogin_ImplausibleEmail_NoBucketCreated(t *testing.T) {
 // when attempts come from many distinct IPs — exactly the credential-
 // spraying scenario the limiter is designed to defeat.
 func TestHandleLogin_PerEmailRateLimit(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "victim@example.com", "Victim")
 
@@ -114,6 +117,7 @@ func TestHandleLogin_PerEmailRateLimit(t *testing.T) {
 // by lowercased email, so an attacker can't bypass by alternating casing.
 // Each attempt uses a distinct IP so the per-IP limiter doesn't trip first.
 func TestHandleLogin_EmailCaseInsensitive(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "mixed@example.com", "Mixed")
 

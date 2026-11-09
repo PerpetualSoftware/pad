@@ -10,6 +10,7 @@ import (
 )
 
 func TestCommitmentPartialRolesHTTP(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name, roles, field, code string
 		status                   int
@@ -103,6 +104,7 @@ func TestCommitmentPartialRolesHTTP(t *testing.T) {
 }
 
 func TestCommitmentPostRolesRemainFull(t *testing.T) {
+	t.Parallel()
 	f := newSchedHTTP(t)
 	rr := f.as(f.token(f.owner, ""), "POST", commitmentPath(f), map[string]any{"dtstart": "2099-01-01T09:00", "tz": "UTC", "roles": map[string]any{"target_days": 1, "target_secs": 3600}})
 	c := readCommitment(t, rr, 201)
@@ -112,6 +114,7 @@ func TestCommitmentPostRolesRemainFull(t *testing.T) {
 }
 
 func TestCommitmentPartialRolesHTTPLegacyAndNoop(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		body   map[string]any

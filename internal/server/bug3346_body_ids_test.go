@@ -75,6 +75,7 @@ func bug3346Setup(t *testing.T) *bug3346Env {
 }
 
 func TestBUG3346_CommentParentMustBeOnTheSameItem(t *testing.T) {
+	t.Parallel()
 	e := bug3346Setup(t)
 	post := func(parent string) int {
 		rr := doRequestWithCookie(e.srv, "POST", "/api/v1/workspaces/"+e.wsA.Slug+"/items/"+e.itemA.Slug+"/comments",
@@ -105,6 +106,7 @@ func TestBUG3346_CommentParentMustBeOnTheSameItem(t *testing.T) {
 }
 
 func TestBUG3346_RawItemParentMustBeInTheWorkspace(t *testing.T) {
+	t.Parallel()
 	e := bug3346Setup(t)
 	create := func(parent string) int {
 		rr := doRequestWithCookie(e.srv, "POST", "/api/v1/workspaces/"+e.wsA.Slug+"/collections/tasks/items",
@@ -138,6 +140,7 @@ func TestBUG3346_RawItemParentMustBeInTheWorkspace(t *testing.T) {
 }
 
 func TestBUG3346_TokenWorkspaceMustBeTheCallers(t *testing.T) {
+	t.Parallel()
 	e := bug3346Setup(t)
 	mint := func(wsID string) int {
 		rr := doRequestWithCookie(e.srv, "POST", "/api/v1/auth/tokens", map[string]any{"name": "t", "workspace_id": wsID}, e.editorCookie)

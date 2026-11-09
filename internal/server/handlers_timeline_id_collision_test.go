@@ -76,6 +76,7 @@ func entriesByKind(entries []models.TimelineEntry, kind string) []models.Timelin
 // primary keys AND are what the client sends back as `before_id`, so moving
 // one breaks paging. The unvalidated side is the side that must move.
 func TestTimeline_StructuredIDCollidingWithACommentHidesNothing(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -140,6 +141,7 @@ func TestTimeline_StructuredIDCollidingWithACommentHidesNothing(t *testing.T) {
 // lifecycle, so a blob id can collide with one without anybody hand-editing
 // anything exotic.
 func TestTimeline_StructuredIDCollidingWithAnActivityHidesNothing(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -224,6 +226,7 @@ func TestTimeline_StructuredIDCollidingWithAnActivityHidesNothing(t *testing.T) 
 // collision, by contrast, cannot happen today — every SQL source mints
 // uuid.New() ids, including on import, and a UUID never equals `note-idx-N`.)
 func TestTimeline_StructuredIDEqualToAnotherEntrysFallback(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -259,6 +262,7 @@ func TestTimeline_StructuredIDEqualToAnotherEntrysFallback(t *testing.T) {
 // would pass the rest of this file — which is exactly what the first version
 // of the fix did, since it enumerated sources by hand.
 func TestTimeline_StructuredIDCollidingWithAVersionHidesNothing(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -336,6 +340,7 @@ func TestTimeline_StructuredIDCollidingWithAVersionHidesNothing(t *testing.T) {
 // on a narrow page fetched with a cursor, which is a property of the item
 // alone and cannot hold if the id consults the window.
 func TestTimeline_StructuredIDIsIndependentOfThePageWindow(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -406,6 +411,7 @@ func TestTimeline_StructuredIDIsIndependentOfThePageWindow(t *testing.T) {
 // is inserted BEFORE it — which holds for a derived id and cannot hold for a
 // positional one.
 func TestTimeline_DivertedIDIsStableAcrossBlobMutations(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -456,6 +462,7 @@ func TestTimeline_DivertedIDIsStableAcrossBlobMutations(t *testing.T) {
 // constant, and the collision tests' inequality checks are satisfied by the
 // positional fallback this deliberately replaced. These assert the contract.
 func TestTimeline_DerivedIDContract(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -507,6 +514,7 @@ func TestTimeline_DerivedIDContract(t *testing.T) {
 // derived id is server-minted, so it must be one the server itself accepts —
 // the exact failure validation-must-not-refuse-your-own-output describes.
 func TestTimeline_DerivedIDRoundTripsAsACursor(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 
@@ -547,6 +555,7 @@ func TestTimeline_DerivedIDRoundTripsAsACursor(t *testing.T) {
 // Asserted as a form, not merely as inequality, and with an entry inserted
 // afterwards to show the decision's id does not move.
 func TestTimeline_DerivedNamespaceIsClosedAcrossKinds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSForTest(t, srv)
 

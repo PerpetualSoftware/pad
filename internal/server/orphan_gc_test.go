@@ -17,6 +17,7 @@ import (
 // soft-deleted attachment past the grace period gets hard-deleted
 // from the DB AND its blob removed from the storage backend.
 func TestOrphanGC_ReclaimsSoftDeleted(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	body := realPNG()
@@ -83,6 +84,7 @@ func TestOrphanGC_ReclaimsSoftDeleted(t *testing.T) {
 // rows with item_id IS NULL AND deleted_at IS NULL aged past the
 // grace period get reclaimed.
 func TestOrphanGC_ReclaimsLongOrphans(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	if rr := doMultipartUpload(srv, slug, "orphan.png", realPNG()); rr.Code != 201 {
@@ -117,6 +119,7 @@ func TestOrphanGC_ReclaimsLongOrphans(t *testing.T) {
 // inside the grace window MUST NOT be reclaimed. Catches a typo
 // in the WHERE clause that would silently destroy live attachments.
 func TestOrphanGC_KeepsRecentRows(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	if rr := doMultipartUpload(srv, slug, "fresh.png", realPNG()); rr.Code != 201 {
@@ -149,6 +152,7 @@ func TestOrphanGC_KeepsRecentRows(t *testing.T) {
 // orphan, the row gets hard-deleted but the blob stays on disk so
 // the other row keeps working.
 func TestOrphanGC_PreservesSharedBlob(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	body := realPNG()
@@ -237,6 +241,7 @@ func TestOrphanGC_PreservesSharedBlob(t *testing.T) {
 // grace period might still be referenced — the GC must scan item
 // content before reclaiming.
 func TestOrphanGC_KeepsReferencedNeverAttachedRows(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -283,6 +288,7 @@ func TestOrphanGC_KeepsReferencedNeverAttachedRows(t *testing.T) {
 // a never-attached row past the grace period would be reclaimed and the
 // comment's embed would break.
 func TestOrphanGC_KeepsAttachmentReferencedFromComment(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -345,6 +351,7 @@ func TestOrphanGC_KeepsAttachmentReferencedFromComment(t *testing.T) {
 // running a sweep against an old soft-deleted row at that hash,
 // and asserting the blob stayed.
 func TestOrphanGC_RespectsInFlightUploads(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	if rr := doMultipartUpload(srv, slug, "victim.png", realPNG()); rr.Code != 201 {
@@ -395,6 +402,7 @@ func TestOrphanGC_RespectsInFlightUploads(t *testing.T) {
 // still inside its own grace window — the second row could be
 // restored / inspected and would otherwise hit a missing blob.
 func TestOrphanGC_RespectsSoftDeletedInGracePeer(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -477,6 +485,7 @@ func TestOrphanGC_RespectsSoftDeletedInGracePeer(t *testing.T) {
 // version still bumped BlobsReclaimed / BytesReclaimed for each
 // no-op, inflating the sweep metrics.
 func TestOrphanGC_DedupesBlobReclaimMetric(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -539,6 +548,7 @@ func TestOrphanGC_DedupesBlobReclaimMetric(t *testing.T) {
 // uploadInFlight must report > 0 whenever ANY goroutine is between
 // its mark and its release.
 func TestInFlightUploadHashes_ConcurrentReleaseReacquire(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 
 	const goroutines = 20
@@ -600,6 +610,7 @@ func TestOrphanGC_StartStop(t *testing.T) {
 // only thing standing between it and deletion — exactly the filed
 // mid-sweep window.
 func TestOrphanGC_ClaimRefusesFreshlyReferencedRow(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	body := realPNG()
@@ -679,6 +690,7 @@ func TestOrphanGC_ClaimRefusesFreshlyReferencedRow(t *testing.T) {
 // variants too — the scan consults the parent id for variant rows, and
 // the claim refuses on a fresh PARENT stamp.
 func TestOrphanGC_VariantProtectedByReferencedParent(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	rr := doMultipartUpload(srv, slug, "with-thumb.png", realPNG())
@@ -761,6 +773,7 @@ func statBlob(t *testing.T, srv *Server, key string) error {
 // counters, and all. This is the leak the row-driven sweep can never
 // reclaim, verified by the companion counterfactual below.
 func TestRowlessBlobSweep_ReclaimsAgedRowlessBlob(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	content := []byte("leaked-by-failed-insert")
 	_, key := putRowlessBlob(t, srv, content)
@@ -801,6 +814,7 @@ func TestRowlessBlobSweep_ReclaimsAgedRowlessBlob(t *testing.T) {
 // younger than the cutoff is the normal transient state of an upload
 // whose row insert hasn't happened yet, and must survive.
 func TestRowlessBlobSweep_KeepsYoungBlob(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	_, key := putRowlessBlob(t, srv, []byte("mid-upload"))
 
@@ -821,6 +835,7 @@ func TestRowlessBlobSweep_KeepsYoungBlob(t *testing.T) {
 // survive — any row in any state owns its bytes via the row sweep's
 // claim protocol, and the rowless sweep must not reach around it.
 func TestRowlessBlobSweep_KeepsRowBackedBlobs(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -868,6 +883,7 @@ func TestRowlessBlobSweep_KeepsRowBackedBlobs(t *testing.T) {
 // registration releases, so the fence — not something else — is what
 // held it.
 func TestRowlessBlobSweep_RespectsInFlightUploads(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	hash, key := putRowlessBlob(t, srv, []byte("in-flight-window"))
 
@@ -902,6 +918,7 @@ func TestRowlessBlobSweep_RespectsInFlightUploads(t *testing.T) {
 // released — must still protect its bytes. The pre-delete hook commits
 // the row at exactly that point.
 func TestRowlessBlobSweep_DeleteTimeRowRecheck(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 	content := []byte("late-row-writer")

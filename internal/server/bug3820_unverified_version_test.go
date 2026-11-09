@@ -16,6 +16,7 @@ import (
 // 409 version_unreconstructable, through HTTP. The store tests prove the
 // flag; this proves the doors act on it.
 func TestBUG3820_DoorsRefuseAnUnverifiedVersion(t *testing.T) {
+	t.Parallel()
 	v1 := "# Title\n\nAlpha paragraph about the plan.\n\nBeta paragraph with details.\n"
 	v2 := "# Title\n\nAlpha paragraph about the plan, revised.\n\nBeta paragraph with details.\n"
 	v3 := "# Title\n\nAlpha paragraph about the plan, revised.\n\nBeta paragraph with more details.\n\nGamma.\n"
@@ -99,6 +100,7 @@ func TestBUG3820_DoorsRefuseAnUnverifiedVersion(t *testing.T) {
 // restorable. The doors must disagree here: the web card keeps Restore on a
 // diff refusal because of exactly this case, and lets the restore decide.
 func TestBUG3820_VerifiedVersionBelowABrokenRowRestoresThoughItsDiffIsRefused(t *testing.T) {
+	t.Parallel()
 	v2 := "# Title\n\nAlpha paragraph about the plan, revised.\n\nBeta paragraph with details.\n"
 	v3 := "# Title\n\nAlpha paragraph about the plan, revised.\n\nBeta paragraph with more details.\n\nGamma.\n"
 

@@ -90,10 +90,12 @@ func assertRefsAreLocal(t *testing.T, srv *Server, ws *models.Workspace) {
 }
 
 func TestBUG3656_KeptPartialImportRemapsReferences_SQLite(t *testing.T) {
+	t.Parallel()
 	keptPartialImportRemaps(t, store.DriverSQLite)
 }
 
 func TestBUG3656_KeptPartialImportRemapsReferences_Postgres(t *testing.T) {
+	t.Parallel()
 	keptPartialImportRemaps(t, store.DriverPostgres)
 }
 
@@ -114,10 +116,12 @@ func keptPartialImportRemaps(t *testing.T, driver store.DriverType) {
 // The complete import, for both drivers: the golden's history carries a
 // reference in a full snapshot and in an older reverse patch (BUG-3655).
 func TestBUG3655_ImportRemapsVersionHistory_SQLite(t *testing.T) {
+	t.Parallel()
 	importRemapsVersionHistory(t, store.DriverSQLite)
 }
 
 func TestBUG3655_ImportRemapsVersionHistory_Postgres(t *testing.T) {
+	t.Parallel()
 	importRemapsVersionHistory(t, store.DriverPostgres)
 }
 
@@ -135,6 +139,7 @@ func importRemapsVersionHistory(t *testing.T, driver store.DriverType) {
 }
 
 func TestBUG3656_RemapFailureIsNotA201(t *testing.T) {
+	t.Parallel()
 	dest := attachmentsServerOn(t, store.DriverSQLite)
 	dest.importBundleRemapFault = func() error { return errors.New("injected remap failure") }
 	rr := postBundle(dest, "remapfails", packInterchangeBundle(t, readInterchangeGolden(t)))

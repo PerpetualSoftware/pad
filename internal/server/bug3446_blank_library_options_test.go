@@ -115,6 +115,7 @@ func usedWords(seed []string, vals []string) []string {
 // the CLI/MCP shape and in the web shape, and the options end at exactly the
 // words those activations used.
 func TestBUG3446_EveryLibraryEntryActivatesInABlankWorkspace(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		for _, door := range []struct {
 			name string
@@ -180,6 +181,7 @@ func TestBUG3446_EveryLibraryEntryActivatesInABlankWorkspace(t *testing.T) {
 // with the same word adds nothing; a word the library does not use is refused
 // as before and adds nothing.
 func TestBUG3446_LiteralItemCreateWidensOnlyByLibraryWordsAndRecordsIt(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := bug3446BlankWorkspace(t, srv, "Blank 3446 literal")
 		path := "/api/v1/workspaces/" + slug + "/collections/conventions/items"
@@ -240,6 +242,7 @@ func TestBUG3446_LiteralItemCreateWidensOnlyByLibraryWordsAndRecordsIt(t *testin
 
 // An EDITOR's create may widen, bounded the same way.
 func TestBUG3446_EditorCreateWidens(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := bug3446BlankWorkspace(t, srv, "Blank 3446 editor")
 		owner, err := srv.store.CreateUser(models.UserCreate{Email: "owner-3446@example.com", Name: "Owner", Username: "owner-3446", Password: "pw-test-12345"})
@@ -277,6 +280,7 @@ func TestBUG3446_EditorCreateWidens(t *testing.T) {
 // The artifact import door keeps its documented clear-and-warn for a select
 // value the destination does not list; it never widens.
 func TestBUG3446_ArtifactImportDoesNotWiden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, wsID := bug3446BlankWorkspace(t, srv, "Blank 3446 import")
 	data, err := artifact.Encode(artifact.Artifact{
@@ -304,6 +308,7 @@ func TestBUG3446_ArtifactImportDoesNotWiden(t *testing.T) {
 // The schema rewrite touches the FIRST definition of a key, the one
 // validation reads, and never duplicates a value.
 func TestBUG3446_AppendSelectOptionsJSON(t *testing.T) {
+	t.Parallel()
 	raw := `{"fields":[{"key":"trigger","type":"select","options":["always"],"x_extra":1},{"key":"trigger","type":"select","options":["always","on-commit"]}]}`
 	out, err := appendSelectOptionsJSON(raw, map[string][]string{"trigger": {"on-commit", "always"}})
 	if err != nil {
@@ -320,6 +325,7 @@ func TestBUG3446_AppendSelectOptionsJSON(t *testing.T) {
 // stored. Here the trigger is a library word but the status
 // is not a valid option.
 func TestBUG3446_RefusedCreateDoesNotWiden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, wsID := bug3446BlankWorkspace(t, srv, "Blank 3446 refused")
 	fields, _ := json.Marshal(map[string]string{"trigger": "on-commit", "status": "not-a-status"})

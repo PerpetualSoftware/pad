@@ -65,6 +65,7 @@ func cloudTutorialsServer(t *testing.T, catalogStatus int) (*Server, *[]string) 
 }
 
 func TestTASK3452_SelfHostedNeverFetchesAndAddsNoFrameSrc(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	var calls atomic.Int32
 	srv.tutorialsHTTP = &http.Client{Transport: tutorialsRoundTrip(func(r *http.Request) (*http.Response, error) {
@@ -87,6 +88,7 @@ func TestTASK3452_SelfHostedNeverFetchesAndAddsNoFrameSrc(t *testing.T) {
 }
 
 func TestTASK3452_CloudServesTheCatalogSameOrigin(t *testing.T) {
+	t.Parallel()
 	srv, asked := cloudTutorialsServer(t, 200)
 	rr := doRequest(srv, "GET", "/api/v1/tutorials", nil)
 	if rr.Code != http.StatusOK {
@@ -138,6 +140,7 @@ func TestTASK3452_CloudServesTheCatalogSameOrigin(t *testing.T) {
 }
 
 func TestTASK3452_CloudCatalogUnavailableFallsBackToLinks(t *testing.T) {
+	t.Parallel()
 	srv, _ := cloudTutorialsServer(t, http.StatusServiceUnavailable)
 	rr := doRequest(srv, "GET", "/api/v1/tutorials", nil)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"available":false`) {
@@ -146,6 +149,7 @@ func TestTASK3452_CloudCatalogUnavailableFallsBackToLinks(t *testing.T) {
 }
 
 func TestTASK3452_UIDismissals(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		u, err := srv.store.CreateUser(models.UserCreate{Email: "dismiss-3452@example.com", Name: "D", Username: "dismiss-3452", Password: "pw-test-12345"})
 		if err != nil {
@@ -244,6 +248,7 @@ func TestTASK3452_StaleCatalogServedWhileUpstreamHangs(t *testing.T) {
 // backends (SQLite serializes writers with BEGIN IMMEDIATE; Postgres takes
 // the users row FOR NO KEY UPDATE).
 func TestTASK3452_ConcurrentDismissalsBothLand(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		for round := 0; round < 5; round++ {
 			u, err := srv.store.CreateUser(models.UserCreate{Email: fmt.Sprintf("race-%d-3452@example.com", round), Name: "R", Username: fmt.Sprintf("race-%d-3452", round), Password: "pw-test-12345"})

@@ -186,6 +186,7 @@ func assertPreflightMatchesCopy(t *testing.T, f *copyPreflightFixture, label str
 //   - `priority` is optional with NO default, so nulling it must leave the
 //     key genuinely ABSENT — not present-and-null.
 func TestCopyEndpoint_PreflightAndCopyAgreeOnNullOverride(t *testing.T) {
+	t.Parallel()
 	t.Run("defaulted field re-defaults", func(t *testing.T) {
 		f := newCopyPreflightFixture(t)
 		body := f.resolvableBody()
@@ -240,6 +241,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeOnNullOverride(t *testing.T) {
 // "Refused" and "created it anyway without the key" would both produce a
 // non-201 if only the status were checked.
 func TestCopyEndpoint_PreflightAndCopyAgreeOnUndeclaredOverride(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	body := f.resolvableBody()
@@ -289,6 +291,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeOnUndeclaredOverride(t *testing.T) {
 // one would let an earlier case's write (a destination item that changes the
 // unique-slug space, say) decide a later one.
 func TestCopyEndpoint_PreflightAndCopyAgreeGenerally(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name      string
 		overrides map[string]any
@@ -364,6 +367,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeGenerally(t *testing.T) {
 // byte-identical to the copy's, which is a stronger assertion than a separate
 // preflight-only test would make.
 func TestCopyEndpoint_PreflightAndCopyAgreeWithNoAttributableActor(t *testing.T) {
+	t.Parallel()
 	// A FRESH INSTALL: zero users, so crossWorkspaceRole synthesises "owner"
 	// for a nil-user caller and the four-check ladder passes. That is the only
 	// state in which the actor can be unresolvable — with any user row
@@ -494,6 +498,7 @@ func TestCopyEndpoint_PreflightAndCopyAgreeWithNoAttributableActor(t *testing.T)
 // so the preview's byte total is the copy's byte total, and a client shows
 // the user that number before they agree.
 func TestCopyEndpoint_PreflightWarningsMatchTheCopy(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	att := &models.Attachment{
@@ -961,6 +966,7 @@ func TestCopyEndpoint_FanoutHarnessIsRealPositiveControl(t *testing.T) {
 // the item is the failure that matters, and a status-only assertion cannot
 // see it.
 func TestCopyEndpoint_AuthorizationDenials(t *testing.T) {
+	t.Parallel()
 	t.Run("source item not visible", func(t *testing.T) {
 		f := newCopyPreflightFixture(t)
 		otherA := mustSchemaCollection(t, f.srv, f.wsA.ID, "Other A", srcSchemaJSON)
@@ -1117,6 +1123,7 @@ func TestCopyEndpoint_AuthorizationDenials(t *testing.T) {
 // The item is moved into a collection the caller CANNOT see, so the refusal
 // is also the real DR-10b escalation and not merely a bookkeeping mismatch.
 func TestCopyEndpoint_InTransactionReCheckRefuses(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	hiddenA := mustSchemaCollection(t, f.srv, f.wsA.ID, "Hidden A", srcSchemaJSON)
@@ -1175,6 +1182,7 @@ func TestCopyEndpoint_InTransactionReCheckRefuses(t *testing.T) {
 // half of the invariant: the destination collection the copy locks must be
 // the one that was authorized, in the workspace that was authorized.
 func TestCopyEndpoint_ReCheckRefusesAForeignDestinationCollection(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	precheck := copyResourceInvariantPreCheck(copyAuthorizedResources{
@@ -1216,6 +1224,7 @@ func TestCopyEndpoint_ReCheckRefusesAForeignDestinationCollection(t *testing.T) 
 // logic: a PreCheck that is built and never passed to the store would leave
 // every assertion above true and the guarantee absent.
 func TestCopyEndpoint_PreCheckIsActuallyWired(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	var got store.CrossWorkspaceCopyRequest
@@ -1254,6 +1263,7 @@ func TestCopyEndpoint_PreCheckIsActuallyWired(t *testing.T) {
 // TestCopyEndpoint_EnforceItemLimitFollowsCloudMode is the other half of the
 // same obligation.
 func TestCopyEndpoint_EnforceItemLimitFollowsCloudMode(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	f.srv.cloudMode = true
 
@@ -1281,6 +1291,7 @@ func TestCopyEndpoint_EnforceItemLimitFollowsCloudMode(t *testing.T) {
 // one a future maintainer is most likely to add a retry for, so it is named
 // here.
 func TestCopyEndpoint_DoesNotRetryOnAmbiguousError(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		err  error
@@ -1327,6 +1338,7 @@ func TestCopyEndpoint_DoesNotRetryOnAmbiguousError(t *testing.T) {
 // obligations CrossWorkspaceCopyResult documents, for the two that cannot be
 // produced from a real fixture on a self-hosted SQLite server.
 func TestCopyEndpoint_TypedStoreErrorsMapToStatuses(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	t.Run("item limit renders the plan-limit payload", func(t *testing.T) {
@@ -1464,6 +1476,7 @@ func TestCopyEndpoint_UsesLockedCollectionSnapshots(t *testing.T) {
 // nothing from A, so invalidating A would be a needless recompute
 // masquerading as correctness.
 func TestCopyEndpoint_InvalidatesDestinationStorageCache(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	att := &models.Attachment{
@@ -1508,6 +1521,7 @@ func TestCopyEndpoint_InvalidatesDestinationStorageCache(t *testing.T) {
 // The panic is induced in the CACHE INVALIDATION rather than the fanout,
 // because that is the step that once sat outside the guard.
 func TestCopyEndpoint_PostCommitPanicStillReturns201(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	att := &models.Attachment{
@@ -1548,6 +1562,7 @@ func TestCopyEndpoint_PostCommitPanicStillReturns201(t *testing.T) {
 // conditional on attachments actually being copied, so the common case does
 // not pay for a recompute.
 func TestCopyEndpoint_NoAttachmentsLeavesTheCacheAlone(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	f.srv.storageInfoCache.set(f.wsB.ID, &store.WorkspaceStorageInfo{UsedBytes: 222222})
 
@@ -1566,6 +1581,7 @@ func TestCopyEndpoint_NoAttachmentsLeavesTheCacheAlone(t *testing.T) {
 // TASK-2366 (the CLI) and Phase 3 (the dialog) build against: enough to
 // reach the copy, and on a move enough to leave the source.
 func TestCopyEndpoint_ResponseIsNavigable(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	res := f.copyOK(f.resolvableBody())
 
@@ -1605,6 +1621,7 @@ func TestCopyEndpoint_ResponseIsNavigable(t *testing.T) {
 // resolve. Both endpoints report the RESOLVED canonical slug,
 // and both are checked here because they must agree.
 func TestCopyEndpoint_ReportsCanonicalWorkspaceSlugs(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	// Address the source workspace by UUID, exactly as the router permits.
@@ -1663,6 +1680,7 @@ func TestCopyEndpoint_ReportsCanonicalWorkspaceSlugs(t *testing.T) {
 // layer rather than the response: the source is gone from live reads and the
 // provenance row records where it went.
 func TestCopyEndpoint_MoveArchivesTheSource(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 	body := f.resolvableBody()
 	body["archive_source"] = true
@@ -1683,6 +1701,7 @@ func TestCopyEndpoint_MoveArchivesTheSource(t *testing.T) {
 // TestCopyEndpoint_RouteIsWired drives the real router, so a handler that
 // works in isolation but was never mounted fails here.
 func TestCopyEndpoint_RouteIsWired(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsA := createWSForTest(t, srv)
 	wsARow, err := srv.store.GetWorkspaceBySlug(wsA)
@@ -1725,6 +1744,7 @@ func TestCopyEndpoint_RouteIsWired(t *testing.T) {
 // Both directions in one test, deliberately: the interesting property is the
 // DIFFERENCE between them, and either half alone is satisfiable by a constant.
 func TestCopyEndpoint_ReferentialMetadataTravelsOnlyWithinItsWorkspace(t *testing.T) {
+	t.Parallel()
 	const pr = `{"number":42,"url":"https://example.invalid/42","state":"OPEN","repo":"acme/source-repo"}`
 	const notes = `[{"id":"note-1","summary":"history is true anywhere"}]`
 
@@ -1786,6 +1806,7 @@ func TestCopyEndpoint_ReferentialMetadataTravelsOnlyWithinItsWorkspace(t *testin
 // Refused, not silently dropped: a caller who asked for a value and got an item
 // without it has no way to tell.
 func TestCopyEndpoint_OverrideCannotReintroduceReferentialMetadata(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	body := f.resolvableBody()
@@ -1829,6 +1850,7 @@ func TestCopyEndpoint_OverrideCannotReintroduceReferentialMetadata(t *testing.T)
 // handler gate that now refuses such schemas — that gate grandfathers what
 // already exists, so this is the shape still out there in real workspaces.
 func TestCopyEndpoint_GrandfatheredReservedDeclarationDoesNotUnlockOverrides(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	legacy := mustSchemaCollection(t, f.srv, f.wsB.ID, "Legacy B", `{"fields":[

@@ -13,6 +13,7 @@ import (
 // so a change to the server's check that the label does not follow turns
 // one of the two red.
 func TestTokenScopeLevelsFixture(t *testing.T) {
+	t.Parallel()
 	raw, err := os.ReadFile("testdata/token_scope_levels.json")
 	if err != nil {
 		t.Fatal(err)

@@ -20,6 +20,7 @@ const rloEncoded = "%E2%80%AE"
 // The spoof is stored without its override: "x<RLO>gvs.txt" renders as
 // "xtxt.svg" in a bidi-aware UI; stored, it is the .txt it always was.
 func TestUpload_BUG3153_BidiOverrideIsStrippedNotRefused(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	rr := uploadEncodedName(t, srv, slug, "x"+rloEncoded+"gvs.txt", []byte("plain text\n"))
 	if rr.Code != http.StatusCreated {
@@ -39,6 +40,7 @@ func TestUpload_BUG3153_BidiOverrideIsStrippedNotRefused(t *testing.T) {
 // An override INSIDE the extension hid it from the blocklist, which judged
 // ".s<RLO>vg". The normalised name carries ".svg" and is refused.
 func TestUpload_BUG3153_OverrideHidingABlockedExtensionIsRefused(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	rr := uploadEncodedName(t, srv, slug, "x.s"+rloEncoded+"vg", svgScript)
 	if rr.Code != http.StatusUnsupportedMediaType || !strings.Contains(rr.Body.String(), "extension_blocked") {
@@ -49,6 +51,7 @@ func TestUpload_BUG3153_OverrideHidingABlockedExtensionIsRefused(t *testing.T) {
 // A LEGACY row is served without the characters, and one hiding a blocked
 // extension is served as .bin, before the startup backfill has rewritten it.
 func TestDownload_BUG3153_LegacyBidiRowIsServedClean(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	for _, c := range []struct{ legacy, want string }{
 		{"x\u202Egvs.txt", "xgvs.txt"},

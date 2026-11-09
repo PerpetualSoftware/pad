@@ -23,6 +23,7 @@ import (
 // (added in IDEA-1488). The view route is
 // PATCH /api/v1/workspaces/{ws}/collections/{coll}/views/{viewID}.
 func TestPatchView_FlexibleConfigShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -136,6 +137,7 @@ func TestPatchView_FlexibleConfigShape(t *testing.T) {
 // TestCreateView_FlexibleConfigShape mirrors the PATCH test for the POST
 // create path so the create/update gap doesn't reopen.
 func TestCreateView_FlexibleConfigShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -171,6 +173,7 @@ func TestCreateView_FlexibleConfigShape(t *testing.T) {
 // CollectionUpdate.UnmarshalJSON (IDEA-1488). The PATCH route is
 // /api/v1/workspaces/{ws}/collections/{collSlug}.
 func TestPatchCollection_FlexibleSettingsShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -250,6 +253,7 @@ func TestPatchCollection_FlexibleSettingsShape(t *testing.T) {
 // TestCreateCollection_FlexibleSettingsShape covers the
 // CollectionCreate.UnmarshalJSON path on POST.
 func TestCreateCollection_FlexibleSettingsShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

@@ -29,6 +29,7 @@ func postSetPlanAny(t *testing.T, srv *Server, body map[string]any) map[string]a
 }
 
 func TestBUG3356_SetPlanRefusesAStaleRevision(t *testing.T) {
+	t.Parallel()
 	srv, _, u := planSourceServer(t)
 
 	got := postSetPlanAny(t, srv, map[string]any{"user_id": u.ID, "plan": "free", "source": "stripe", "revision": 2000, "subscription_id": "sub_x"})
@@ -54,6 +55,7 @@ func TestBUG3356_SetPlanRefusesAStaleRevision(t *testing.T) {
 }
 
 func TestBUG3356_SetPlanRefusesANegativeRevision(t *testing.T) {
+	t.Parallel()
 	srv, _, u := planSourceServer(t)
 	body := map[string]any{"user_id": u.ID, "plan": "pro", "source": "stripe", "revision": -5, "cloud_secret": planSourceSecret}
 	req := cloudAdminReq(t, "POST", "/api/v1/admin/plan", body, map[string]string{"X-Cloud-Secret": planSourceSecret})
@@ -65,6 +67,7 @@ func TestBUG3356_SetPlanRefusesANegativeRevision(t *testing.T) {
 }
 
 func TestBUG3356_SetPlanRefusesAMalformedSubscriptionID(t *testing.T) {
+	t.Parallel()
 	srv, _, u := planSourceServer(t)
 	for _, id := range []string{"sub_\x00broken", "sub broken", "sub_" + strings.Repeat("a", 252)} {
 		body := map[string]any{"user_id": u.ID, "plan": "pro", "source": "stripe", "revision": 5, "subscription_id": id, "cloud_secret": planSourceSecret}
@@ -80,6 +83,7 @@ func TestBUG3356_SetPlanRefusesAMalformedSubscriptionID(t *testing.T) {
 // A manual write cannot carry a revision: it would replace the fence a
 // manual write sets with a value the caller chose.
 func TestBUG3356_SetPlanRefusesAManualRevision(t *testing.T) {
+	t.Parallel()
 	srv, _, u := planSourceServer(t)
 	body := map[string]any{"user_id": u.ID, "plan": "pro", "source": "manual", "revision": 5, "cloud_secret": planSourceSecret}
 	req := cloudAdminReq(t, "POST", "/api/v1/admin/plan", body, map[string]string{"X-Cloud-Secret": planSourceSecret})
@@ -93,6 +97,7 @@ func TestBUG3356_SetPlanRefusesAManualRevision(t *testing.T) {
 // The admin user update refuses an expiry that does not parse: under
 // expiry enforcement it would store pro and grant nothing.
 func TestBUG3356_AdminUpdateRefusesAMalformedExpiry(t *testing.T) {
+	t.Parallel()
 	srv, adminToken, u := planSourceServer(t)
 	rr := doRequestWithCookie(srv, "PATCH", "/api/v1/admin/users/"+u.ID,
 		map[string]any{"plan": "pro", "plan_expires_at": "2027-10-03"}, adminToken)

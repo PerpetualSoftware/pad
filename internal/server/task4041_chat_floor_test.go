@@ -10,6 +10,7 @@ import (
 
 // Store-seeded as in TASK-4060: reads cannot create a DM or change markers.
 func TestChat_GetCallerDeliveredFloorBoundary(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	alpha, _, err := f.srv.store.EnsureAgentDM(f.owner.ID, "alpha")
 	if err != nil {
@@ -83,6 +84,7 @@ func TestChat_GetCallerDeliveredFloorBoundary(t *testing.T) {
 }
 
 func TestChat_InboxOmitsDeliveredFloor(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	if _, _, err := f.srv.store.EnsureAgentDM(f.owner.ID, "alpha"); err != nil {
 		t.Fatal(err)

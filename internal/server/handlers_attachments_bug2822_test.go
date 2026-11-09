@@ -14,6 +14,7 @@ import (
 // file notes.
 
 func TestUpload_BUG2822_WindowsDeviceNameIsPrefixed(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	for _, c := range []struct{ sent, want string }{
 		{"nul.txt", "_nul.txt"},
@@ -40,6 +41,7 @@ func TestUpload_BUG2822_WindowsDeviceNameIsPrefixed(t *testing.T) {
 // A row stored before BUG-2822 keeps its device name in the table; the
 // download header serves it prefixed.
 func TestDownload_BUG2822_LegacyDeviceNameIsServedPrefixed(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	id, _, urlPath := uploadHelper(t, srv, slug, "legacy.xml", svgScript)
 	if _, err := srv.store.DB().Exec(`UPDATE attachments SET filename = ? WHERE id = ?`, "con.xml", id); err != nil {

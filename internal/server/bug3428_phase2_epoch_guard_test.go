@@ -166,10 +166,12 @@ func runLiveSetEpoch(t *testing.T, restricted bool) {
 }
 
 func TestAccessEpoch_MovesWhenACollectionIsSoftDeleted_Unrestricted(t *testing.T) {
+	t.Parallel()
 	runLiveSetEpoch(t, false)
 }
 
 func TestAccessEpoch_MovesWhenACollectionIsSoftDeleted_Restricted(t *testing.T) {
+	t.Parallel()
 	runLiveSetEpoch(t, true)
 }
 
@@ -178,6 +180,7 @@ func TestAccessEpoch_MovesWhenACollectionIsSoftDeleted_Restricted(t *testing.T) 
 // a parent nobody can close because of an item nobody can see is the worse
 // state. The control is the same child blocking the close before the delete.
 func TestOpenChildrenGuard_IgnoresChildrenOfSoftDeletedCollections(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
@@ -221,6 +224,7 @@ func TestOpenChildrenGuard_IgnoresChildrenOfSoftDeletedCollections(t *testing.T)
 // the response's epoch must then still be the pre-delete one, so the next poll
 // sees a change and resyncs.
 func TestItemDoors_EpochIsNotNewerThanTheirRows(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"items-index", "items-changes"} {
 		t.Run(door, func(t *testing.T) {
 			f := newEpochFixture(t, false)
@@ -281,6 +285,7 @@ func TestItemDoorAfterRowsHookIsNilInProduction(t *testing.T) {
 // whole-collection grant on the doomed collection plus an item grant
 // elsewhere; the hook deletes the doomed collection right after the rows.
 func TestItemsChanges_GrantFilteredEpochIsNotNewerThanItsRows(t *testing.T) {
+	t.Parallel()
 	f := newEpochFixture(t, true)
 	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, f.user.ID, "specific", []string{f.live.CollectionID}); err != nil {
 		t.Fatal(err)

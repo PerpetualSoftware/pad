@@ -93,6 +93,7 @@ func (f *restoreCollabFixture) assertRefusedIntact(t *testing.T, rr *httptest.Re
 }
 
 func TestRestoreRefusesOverPendingEdits_NoRoom(t *testing.T) {
+	t.Parallel()
 	f := newRestoreCollabFixture(t, "Bug3031NoRoom")
 	pendingID := f.seedPendingEdit(t)
 	seq, versions := f.itemSeq(t), f.versionCount(t)
@@ -129,6 +130,7 @@ func TestRestoreRefusesOverPendingEdits_LiveRoom(t *testing.T) {
 // The override is today's restore: the pending rows are pruned, the content is
 // restored, and the undo point brackets the saved body.
 func TestRestoreOverrideDiscardsPendingEdits(t *testing.T) {
+	t.Parallel()
 	f := newRestoreCollabFixture(t, "Bug3031Override")
 	f.seedPendingEdit(t)
 	versions := f.versionCount(t)
@@ -155,6 +157,7 @@ func TestRestoreOverrideDiscardsPendingEdits(t *testing.T) {
 
 // No pending edits: a bare POST restores exactly as before, with no body at all.
 func TestRestoreWithoutPendingEditsIsUnchanged(t *testing.T) {
+	t.Parallel()
 	f := newRestoreCollabFixture(t, "Bug3031Clean")
 	rr := f.restore(t)
 	if rr.Code != http.StatusOK {
@@ -176,6 +179,7 @@ func TestRestoreWithoutPendingEditsIsUnchanged(t *testing.T) {
 // watermark past the pending row, so the restore proceeds without the override,
 // and its undo point holds what the flush saved.
 func TestRestoreProceedsAfterInitiatorFlush(t *testing.T) {
+	t.Parallel()
 	f := newRestoreCollabFixture(t, "Bug3031Flushed")
 	pendingID := f.seedPendingEdit(t)
 
@@ -214,6 +218,7 @@ func TestRestoreProceedsAfterInitiatorFlush(t *testing.T) {
 }
 
 func TestRestoreRejectsMalformedBody(t *testing.T) {
+	t.Parallel()
 	f := newRestoreCollabFixture(t, "Bug3031BadBody")
 	req := httptest.NewRequest("POST",
 		"/api/v1/workspaces/"+f.wsSlug+"/items/"+f.itemSlug+"/versions/"+f.v1VersionID+"/restore",

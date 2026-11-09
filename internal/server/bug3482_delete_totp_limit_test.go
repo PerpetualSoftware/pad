@@ -28,6 +28,7 @@ func pinRecoveryCodeLimiter(t *testing.T, srv *Server) int {
 }
 
 func TestDeleteAccount_BUG3482_TOTPAttemptsAreLimited(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	burst := pinRecoveryCodeLimiter(t, srv)
 	srv.SetCloudSidecar(&fakeSidecar{})
@@ -58,6 +59,7 @@ func TestDeleteAccount_BUG3482_TOTPAttemptsAreLimited(t *testing.T) {
 // A code that already signed something in is spent: a replay within its
 // window is refused, as at login (BUG-2054).
 func TestDeleteAccount_BUG3482_TOTPCodeIsSingleUse(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudSidecar(&fakeSidecar{})
 

@@ -147,6 +147,7 @@ func liveAttachmentCount(t *testing.T, srv *Server, wsID string) int {
 // role gate, so the test would pass with the visibility check deleted and
 // prove nothing.
 func TestTransform_InvisibleItemIs404(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	f := newTransformFixture(t, srv)
@@ -182,6 +183,7 @@ func TestTransform_InvisibleItemIs404(t *testing.T) {
 // TestTransform_UnrestrictedEditorStillWorks — the gate replaced a role check
 // with visibility + edit permission; the ordinary case must be unaffected.
 func TestTransform_UnrestrictedEditorStillWorks(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	f := newTransformFixture(t, srv)
@@ -202,6 +204,7 @@ func TestTransform_UnrestrictedEditorStillWorks(t *testing.T) {
 // an item EDIT grant — who can already attach to that item (BUG-1661) — can
 // rotate what they uploaded. A view-only grant must not be enough.
 func TestTransform_ItemGrantEditorCanTransform(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	f := newTransformFixture(t, srv)
@@ -229,6 +232,7 @@ func TestTransform_ItemGrantEditorCanTransform(t *testing.T) {
 // same-workspace constraint, so a row in workspace A can name an item in B. A
 // grant in B must not authorize transforming A's bytes.
 func TestTransform_ForeignItemParentIs404(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	b := newTransformFixture(t, srv)
@@ -262,6 +266,7 @@ func TestTransform_ForeignItemParentIs404(t *testing.T) {
 // TestTransform_MalformedParentIs404 — a non-null item_id that resolves to
 // nothing at all is rejected too, not silently treated as an orphan.
 func TestTransform_MalformedParentIs404(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	f := newTransformFixture(t, srv)
@@ -288,6 +293,7 @@ func TestTransform_MalformedParentIs404(t *testing.T) {
 // the item takes its attachments out of the transform surface, so no quota is
 // burned producing bytes DR-13 refuses to serve.
 func TestTransform_SoftDeletedParentIs404(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	f := newTransformFixture(t, srv)
@@ -375,6 +381,7 @@ func (p *hookedProcessor) Encode(img image.Image, format string, w io.Writer) er
 // handler inserts a live, quota-counted attachment row hanging off an already
 // archived item, whose bytes the read gate then refuses to serve.
 func TestTransform_ParentArchivedMidFlightWritesNoRow(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	f := newTransformFixture(t, srv)
@@ -432,6 +439,7 @@ func TestTransform_ParentArchivedMidFlightWritesNoRow(t *testing.T) {
 // orphan here while a bad id answers 404. A viewer, who can already READ
 // orphans, gets the honest 403.
 func TestTransform_OrphanKeepsFlatEditorGate(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 	f := newTransformFixture(t, srv)

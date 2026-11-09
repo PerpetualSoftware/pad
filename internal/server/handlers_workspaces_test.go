@@ -20,6 +20,7 @@ import (
 // authenticated user. Cross-tenant visibility is available via the
 // admin panel routes (/api/v1/admin/...), not the personal switcher.
 func TestListWorkspaces_AdminScopedToMembership(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// 1. Bootstrap an admin (the first user is auto-admin).
@@ -93,6 +94,7 @@ func TestListWorkspaces_AdminScopedToMembership(t *testing.T) {
 // pre-existing behavior for non-admin users is unchanged: they only see
 // workspaces they own or have been added to.
 func TestListWorkspaces_RegularUserScopedToMembership(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
@@ -192,6 +194,7 @@ func setupOwnedDeletedWorkspace(t *testing.T, srv *Server) (aliceToken, bobToken
 // soft-deleted workspace (200 + restored, no deleted_at), and it
 // re-appears in their workspace list.
 func TestRestoreWorkspace_OwnerFlow(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	aliceToken, _, ws := setupOwnedDeletedWorkspace(t, srv)
 
@@ -234,6 +237,7 @@ func TestRestoreWorkspace_OwnerFlow(t *testing.T) {
 // TestRestoreWorkspace_NonOwnerForbidden: a non-owner who can see the
 // endpoint gets 403, not a restore — owner-only authz.
 func TestRestoreWorkspace_NonOwnerForbidden(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	aliceToken, bobToken, ws := setupOwnedDeletedWorkspace(t, srv)
 
@@ -253,6 +257,7 @@ func TestRestoreWorkspace_NonOwnerForbidden(t *testing.T) {
 // TestRestoreWorkspace_LiveOrUnknown404: restoring a live or unknown
 // workspace returns 404.
 func TestRestoreWorkspace_LiveOrUnknown404(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -284,6 +289,7 @@ func TestRestoreWorkspace_LiveOrUnknown404(t *testing.T) {
 // unauthenticated caller who guesses its slug. There is no fresh-install
 // UserCount==0 bypass on restore.
 func TestRestoreWorkspace_NoZeroUsersBypass(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Simulate the post-account-deletion state: a workspace whose owner is
@@ -329,6 +335,7 @@ func TestRestoreWorkspace_NoZeroUsersBypass(t *testing.T) {
 // TestRestoreWorkspace_NonOwnerForbidden), preserving the owner-only
 // contract.
 func TestRestoreWorkspace_OwnerGone404NotProbeable(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// A real, authenticated caller exists (so RequireAuth is active and
 	// this isn't the zero-user path).
@@ -368,6 +375,7 @@ func TestRestoreWorkspace_OwnerGone404NotProbeable(t *testing.T) {
 // too (even if the sweeper hasn't physically purged it yet) — restore and
 // the list share one horizon.
 func TestRestoreWorkspace_PastHorizon404(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	aliceToken, _, ws := setupOwnedDeletedWorkspace(t, srv)
 
@@ -401,6 +409,7 @@ func TestRestoreWorkspace_PastHorizon404(t *testing.T) {
 // TestListDeletedWorkspaces_OwnerScoped: the deleted-list is scoped to
 // the caller's owned workspaces and carries the purge-window fields.
 func TestListDeletedWorkspaces_OwnerScoped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	aliceToken, bobToken, ws := setupOwnedDeletedWorkspace(t, srv)
 

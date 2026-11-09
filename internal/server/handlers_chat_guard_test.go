@@ -18,6 +18,7 @@ import (
 
 // TASK-4041: chat has no kernel event, activity, outbox or webhook effects.
 func TestChatEmitsNoKernelEvent(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	bus := events.New()
 	f.srv.SetEventBus(bus)
@@ -70,6 +71,7 @@ func TestChatEmitsNoKernelEvent(t *testing.T) {
 	}
 }
 func TestChat_GuardHandlersDoNotReferenceEmitters(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob("handlers_chat*.go")
 	if err != nil {
 		t.Fatal(err)
@@ -96,6 +98,7 @@ func TestChat_GuardHandlersDoNotReferenceEmitters(t *testing.T) {
 	}
 }
 func TestChat_ResponsesNeverCarryRawIdentifiers(t *testing.T) {
+	t.Parallel()
 	f := newChatFixture(t)
 	p := f.ensure("rook")
 	f.must(f.request("POST", p+"/messages", "", map[string]any{"body": "[[TASK-999999]]", "context_workspace": f.wsSlug}), 201, "seed context")

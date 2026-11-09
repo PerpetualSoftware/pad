@@ -51,6 +51,7 @@ func itemCount(t *testing.T, srv *Server, ws, collSlug string) (int, int) {
 }
 
 func TestRestoreCollection_TASK2189_RoundTripWithItems(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	coll := seedCollectionWithItems(t, srv, ws, "Field Notes", 3)
@@ -110,6 +111,7 @@ func TestRestoreCollection_TASK2189_RoundTripWithItems(t *testing.T) {
 // A newer collection with the archived one's name took `x-2`, so a restore
 // brings the old one back beside it, both reachable.
 func TestRestoreCollection_TASK2189_BesideANewerSameNamedCollection(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	old := seedCollectionWithItems(t, srv, ws, "Notes", 1)
@@ -134,6 +136,7 @@ func TestRestoreCollection_TASK2189_BesideANewerSameNamedCollection(t *testing.T
 // A restricted owner can neither list nor restore an archived collection they
 // could not see live; the visible one works.
 func TestRestoreCollection_TASK2189_RestrictedOwnerVisibility(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	for _, c := range []*models.Collection{f.hiddenColl, f.visibleColl} {
 		if err := f.srv.store.DeleteCollection(c.ID, ""); err != nil {

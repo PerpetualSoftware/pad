@@ -130,6 +130,7 @@ func longRunOfAs(n int) string {
 // PAD_TEST_POSTGRES_URL and skips without it, so an unconfigured run proves
 // only that SQLite still accepts the bytes.
 func TestListBeforeTime_InvalidUTF8CursorIsADialectDivergence(t *testing.T) {
+	t.Parallel()
 	const badID = "note-\xff-1"
 	when := time.Now().UTC().Add(time.Minute)
 

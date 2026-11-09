@@ -214,6 +214,7 @@ func newRootCmd() *cobra.Command {
 		workspaceCmd(),
 		projectCmd(),
 		itemCmd(),
+		remindCmd(),
 		collectionCmd(),
 		libraryGroupCmd(),
 		agentCmd(),

@@ -66,6 +66,7 @@ func sessionAlive(t *testing.T, srv *Server, token string) bool {
 }
 
 func TestSignIn_AsDifferentUser_DestroysReplacedSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	_, aTok := loginTestUserAs(t, srv, "a@test.com", "A", replacedSessionPassword)
 	_, _ = loginTestUserAs(t, srv, "b@test.com", "B", replacedSessionPassword)
@@ -88,6 +89,7 @@ func TestSignIn_AsDifferentUser_DestroysReplacedSession(t *testing.T) {
 }
 
 func TestSignIn_SameUser_DestroysReplacedSessionOnly(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, oldTok := loginTestUserAs(t, srv, "a@test.com", "A", replacedSessionPassword)
 	// The same user's session on another device: a separate mint, never
@@ -115,6 +117,7 @@ func TestSignIn_SameUser_DestroysReplacedSessionOnly(t *testing.T) {
 }
 
 func TestSignIn_NoOrUnknownCookie_Succeeds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		cookies []signInCookie
@@ -140,6 +143,7 @@ func TestSignIn_NoOrUnknownCookie_Succeeds(t *testing.T) {
 // A CLI padsess_ bearer is not a cookie this response replaces: the CLI
 // ignores Set-Cookie and keeps using its own row.
 func TestSignIn_BearerSessionIsUntouched(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	_, cliTok := loginTestUserAs(t, srv, "a@test.com", "A", replacedSessionPassword)
 
@@ -156,6 +160,7 @@ func TestSignIn_BearerSessionIsUntouched(t *testing.T) {
 // __Host- cookie (validateSessionCookie prefers the prefixed name), so its
 // row is orphaned the same way and goes too.
 func TestSignIn_SecureMode_DestroysPrefixedAndLegacyCookieRows(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.secureCookies = true
 	_, prefixedTok := loginTestUserAs(t, srv, "a@test.com", "A", replacedSessionPassword)
@@ -180,6 +185,7 @@ func TestSignIn_SecureMode_DestroysPrefixedAndLegacyCookieRows(t *testing.T) {
 // handleResetPassword mints its session without createAuthSession, and its
 // DeleteUserSessions covers only the reset user, so it is a separate site.
 func TestResetPassword_InBrowserOfAnotherUser_DestroysReplacedSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	_, aTok := loginTestUserAs(t, srv, "a@test.com", "A", replacedSessionPassword)
 	b, _ := loginTestUserAs(t, srv, "b@test.com", "B", replacedSessionPassword)

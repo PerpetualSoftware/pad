@@ -76,6 +76,7 @@ func (e *restoreLimitEnv) restoreBulk(items ...*models.Item) *httptest.ResponseR
 // --- single door ---
 
 func TestRestorePlanLimit_Single_AtCap_Refused(t *testing.T) {
+	t.Parallel()
 	e := newRestoreLimitEnv(t)
 	gone := e.archived(t, 1)[0]
 	limit := e.liveItems(t) // the archived row does not count, so the cap is full
@@ -86,6 +87,7 @@ func TestRestorePlanLimit_Single_AtCap_Refused(t *testing.T) {
 }
 
 func TestRestorePlanLimit_Single_UnderCap_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newRestoreLimitEnv(t)
 	gone := e.archived(t, 1)[0]
 	limit := e.liveItems(t) + 1
@@ -103,6 +105,7 @@ func TestRestorePlanLimit_Single_UnderCap_Admitted(t *testing.T) {
 // The store refusal on its own, with the handler pre-check admitting: a row
 // that fills the cap lands between the pre-check and the restore.
 func TestRestorePlanLimit_Single_CompetingCreateInWindow_Refused(t *testing.T) {
+	t.Parallel()
 	e := newRestoreLimitEnv(t)
 	gone := e.archived(t, 1)[0]
 	limit := e.liveItems(t) + 1
@@ -128,6 +131,7 @@ func TestRestorePlanLimit_Single_CompetingCreateInWindow_Refused(t *testing.T) {
 // An item that is not archived still answers not-found, at the cap or not:
 // the limit must not turn "nothing to restore" into a plan refusal.
 func TestRestorePlanLimit_Single_LiveItemAtCap_NotFound(t *testing.T) {
+	t.Parallel()
 	e := newRestoreLimitEnv(t)
 	live, err := e.srv.store.CreateItem(e.home.ID, e.tasks, models.ItemCreate{Title: "already live"})
 	if err != nil {
@@ -159,6 +163,7 @@ type bulkEnvelope struct {
 }
 
 func TestRestorePlanLimit_Bulk_RoomForOne_SecondRefused(t *testing.T) {
+	t.Parallel()
 	e := newRestoreLimitEnv(t)
 	gone := e.archived(t, 2)
 	limit := e.liveItems(t) + 1
@@ -191,6 +196,7 @@ func TestRestorePlanLimit_Bulk_RoomForOne_SecondRefused(t *testing.T) {
 }
 
 func TestRestorePlanLimit_Bulk_RoomForBoth_Admitted(t *testing.T) {
+	t.Parallel()
 	e := newRestoreLimitEnv(t)
 	gone := e.archived(t, 2)
 	limit := e.liveItems(t) + 2
@@ -212,6 +218,7 @@ func TestRestorePlanLimit_Bulk_RoomForBoth_Admitted(t *testing.T) {
 // --- self-hosted: no cap applies ---
 
 func TestRestorePlanLimit_SelfHosted_NotEnforced(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"single", "bulk"} {
 		t.Run(door, func(t *testing.T) {
 			e := newRestoreLimitEnv(t)

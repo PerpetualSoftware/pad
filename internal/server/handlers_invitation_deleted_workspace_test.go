@@ -36,6 +36,7 @@ func deletedWorkspaceEnv(t *testing.T, deleteIt bool) (*acceptLimitEnv, *models.
 }
 
 func TestAcceptInvitation_DeletedWorkspace_NotFound(t *testing.T) {
+	t.Parallel()
 	t.Run("CONTROL: live workspace accepts", func(t *testing.T) {
 		e, inv := deletedWorkspaceEnv(t, false)
 		rr := e.acceptAs(t, "invitee-3104@example.com", inv)
@@ -60,6 +61,7 @@ func TestAcceptInvitation_DeletedWorkspace_NotFound(t *testing.T) {
 }
 
 func TestRegisterWithInvitation_DeletedWorkspace_Invalid(t *testing.T) {
+	t.Parallel()
 	t.Run("CONTROL: live workspace registers", func(t *testing.T) {
 		e, inv := deletedWorkspaceEnv(t, false)
 		rr := e.register("invitee-3104@example.com", inv)
@@ -86,6 +88,7 @@ func TestRegisterWithInvitation_DeletedWorkspace_Invalid(t *testing.T) {
 // needs its own check: without one it re-mints a live code for a deleted
 // workspace and emails the invitee about it.
 func TestAdminResendInvitation_DeletedWorkspace_NotFound(t *testing.T) {
+	t.Parallel()
 	adminSession := func(t *testing.T, e *acceptLimitEnv) string {
 		t.Helper()
 		admin, err := e.srv.store.CreateUser(models.UserCreate{

@@ -13,6 +13,7 @@ import (
 // or a guest holding a view grant, could claim an item (blocking others from
 // working it) or release someone else's lease.
 func TestBUG3341_LeaseRequiresEditPermission(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Leases"}, ownerCookie)
@@ -87,6 +88,7 @@ func TestBUG3341_LeaseRequiresEditPermission(t *testing.T) {
 // now bound to the user who claimed it; a lease from before the binding (no
 // user recorded) still works on its label until a refresh binds it.
 func TestBUG3341_LeaseBoundToItsClaimer(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Bound"}, ownerCookie)

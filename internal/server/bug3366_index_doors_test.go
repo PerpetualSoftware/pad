@@ -16,6 +16,7 @@ import (
 // this pins /items-index and /items-changes, which the web client actually
 // reads.
 func TestBUG3366_IndexDoorsDoNotNameAnUngrantedParent(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newAccessFixture(t, d)
 		parent := f.itemIn("tasks", map[string]any{"title": "Secret parent", "fields": `{"status":"open"}`})

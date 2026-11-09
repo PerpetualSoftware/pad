@@ -59,6 +59,7 @@ func restStatus(srv *Server) int {
 // every collab dial token, their REST calls still have the whole API burst.
 // Before the fix the dials had already spent it.
 func TestCollabDialsDoNotSpendTheAPIBucket(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	burst := srv.rateLimiters.CollabDial.config.Burst
 	if burst != 50 || srv.rateLimiters.CollabDial.config.Rate != 5 {
@@ -94,6 +95,7 @@ func TestCollabDialsDoNotSpendTheAPIBucket(t *testing.T) {
 
 // And the reverse: a user who has spent their API burst can still dial.
 func TestRESTCallsDoNotSpendTheCollabDialBucket(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	api := freezeBucket(srv.rateLimiters.API)
 	for i := 0; i < srv.rateLimiters.API.config.Burst; i++ {
@@ -116,6 +118,7 @@ func TestRESTCallsDoNotSpendTheCollabDialBucket(t *testing.T) {
 // ordinary API request and pays the API bucket, so it cannot be used to spend
 // the dial budget in place of the API one, or to escape the API one.
 func TestNonUpgradeCollabRequestPaysTheAPIBucket(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	plain := func() int {
 		req := httptest.NewRequest("GET", "/api/v1/collab/00000000-0000-0000-0000-000000000000", nil)
@@ -216,6 +219,7 @@ func TestCollabSocketCapPerPrincipal(t *testing.T) {
 // everyone would pass the fresh-install test above (its items sit in two
 // workspaces) and fail here.
 func TestCollabSocketCapIsPerUserWithinAWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	srv.SetCollabLimits(1)

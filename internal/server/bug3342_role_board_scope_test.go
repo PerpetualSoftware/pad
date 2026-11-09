@@ -16,6 +16,7 @@ import (
 // which also told a caller the id existed somewhere.
 
 func TestBUG3342_RoleBoardReorderRefusesAnotherWorkspacesItem(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, tok := loginTestUserAs(t, srv, "rb3342@example.test", "RB 3342", "pw-3342-abcdefgh")
 	wsA := mustCreateOwnedWorkspace(t, srv, "RB Alpha 3342", user)
@@ -69,6 +70,7 @@ func TestBUG3342_RoleBoardReorderRefusesAnotherWorkspacesItem(t *testing.T) {
 // write that did nothing (an item deleted after its check, or one from
 // another workspace).
 func TestBUG3342_UpdateRoleSortOrderCountsRows(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, _ := loginTestUserAs(t, srv, "rbs3342@example.test", "RBS 3342", "pw-3342-abcdefgh")
 	wsA := mustCreateOwnedWorkspace(t, srv, "RBS Alpha 3342", user)
@@ -115,6 +117,7 @@ func TestBUG3342_UpdateRoleSortOrderCountsRows(t *testing.T) {
 // Defence in depth: the visibility check itself refuses an item from
 // another workspace, even for a caller who may see everything in both.
 func TestBUG3342_CheckItemVisibleRequiresTheItemsWorkspace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	user, _ := loginTestUserAs(t, srv, "rbv3342@example.test", "RBV 3342", "pw-3342-abcdefgh")
 	wsA := mustCreateOwnedWorkspace(t, srv, "RBV Alpha 3342", user)

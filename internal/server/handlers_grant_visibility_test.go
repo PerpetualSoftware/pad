@@ -143,6 +143,7 @@ func (f *restrictedOwnerVisibilityFixture) seedGrantee(t *testing.T) *models.Use
 // item in a collection hidden from them, over either auth class. An
 // unrestricted (visible-collection) item still succeeds.
 func TestCreateItemShareLink_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/items/" + f.hiddenItem.Slug + "/share-links"
@@ -165,6 +166,7 @@ func TestCreateItemShareLink_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // TestListItemShareLinks_RestrictedOwner_HiddenCollection404 pins the
 // list-side of BUG-1920.
 func TestListItemShareLinks_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/items/" + f.hiddenItem.Slug + "/share-links"
@@ -191,6 +193,7 @@ func TestListItemShareLinks_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // collection hidden from the restricted owner must 404, over either auth
 // class.
 func TestCollectionShareLinks_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	createPath := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.hiddenColl.Slug + "/share-links"
@@ -221,6 +224,7 @@ func TestCollectionShareLinks_RestrictedOwner_HiddenCollection404(t *testing.T) 
 // TestCreateItemGrant_RestrictedOwner_HiddenCollection404 pins BUG-1920 for
 // item grants.
 func TestCreateItemGrant_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	grantee, err := f.srv.store.CreateUser(models.UserCreate{
@@ -251,6 +255,7 @@ func TestCreateItemGrant_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // TestListItemGrants_RestrictedOwner_HiddenCollection404 pins the list-side
 // of BUG-1920 for item grants.
 func TestListItemGrants_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	path := "/api/v1/workspaces/" + f.ws.Slug + "/items/" + f.hiddenItem.Slug + "/grants"
@@ -275,6 +280,7 @@ func TestListItemGrants_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // TestCollectionGrants_RestrictedOwner_HiddenCollection404 pins the
 // collection-level twin of BUG-1920 for grants.
 func TestCollectionGrants_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	grantee, err := f.srv.store.CreateUser(models.UserCreate{
@@ -322,6 +328,7 @@ func TestCollectionGrants_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // item-level operations on the granted item itself keep working (an item
 // grant legitimately entitles the holder to act on that item).
 func TestCollectionShareLinksAndGrants_ItemGrantOnly_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	f.grantHiddenItemToOwner(t)
 
@@ -408,6 +415,7 @@ func TestCollectionShareLinksAndGrants_ItemGrantOnly_HiddenCollection404(t *test
 // since the gate 404s before deleting, the same grant ID can be re-used for
 // both auth classes.
 func TestDeleteCollectionGrant_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	grantee := f.seedGrantee(t)
 
@@ -443,6 +451,7 @@ func TestDeleteCollectionGrant_RestrictedOwner_HiddenCollection404(t *testing.T)
 // TestDeleteItemGrant_RestrictedOwner_HiddenCollection404 pins the item-grant
 // twin of BUG-1923's delete-side fix.
 func TestDeleteItemGrant_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	grantee := f.seedGrantee(t)
 
@@ -481,6 +490,7 @@ func TestDeleteItemGrant_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // share-link target classes: handleDeleteShareLink operated on the link ID
 // directly with no check on the underlying item/collection.
 func TestDeleteShareLink_RestrictedOwner_HiddenTarget404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	hiddenItemLink, err := f.srv.store.CreateShareLink(f.ws.ID, "item", f.hiddenItem.ID, "view", f.ownerID, nil)
@@ -530,6 +540,7 @@ func TestDeleteShareLink_RestrictedOwner_HiddenTarget404(t *testing.T) {
 // view-history GET: handleShareLinkViews already resolved and
 // workspace-scoped the link but never checked visibility on its target.
 func TestShareLinkViews_RestrictedOwner_HiddenTarget404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	hiddenItemLink, err := f.srv.store.CreateShareLink(f.ws.ID, "item", f.hiddenItem.ID, "view", f.ownerID, nil)
@@ -577,6 +588,7 @@ func TestShareLinkViews_RestrictedOwner_HiddenTarget404(t *testing.T) {
 // collection-scoped grant/share-link for that collection, while delete
 // operations scoped to the granted item itself keep working.
 func TestCollectionGrantAndShareLinkDelete_ItemGrantOnly_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	f.grantHiddenItemToOwner(t)
 	grantee := f.seedGrantee(t)
@@ -646,6 +658,7 @@ func TestCollectionGrantAndShareLinkDelete_ItemGrantOnly_HiddenCollection404(t *
 // tracing requireCollectionFullyVisible → visibleCollectionIDs /
 // guestResourceFilter → GetMemberCollectionAccess.
 func TestDeleteCollectionGrant_SoftDeletedCollection_StillRevocable(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	grantee := f.seedGrantee(t)
 
@@ -688,6 +701,7 @@ func TestDeleteCollectionGrant_SoftDeletedCollection_StillRevocable(t *testing.T
 // soft-deleted collection — this is the common case (most owners are
 // unrestricted) and was fully broken by the GetCollection-based lookup.
 func TestDeleteCollectionGrant_SoftDeletedCollection_UnrestrictedOwnerStillRevokes(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	owner, err := srv.store.CreateUser(models.UserCreate{
 		Email: "unrestricted-owner@example.com", Name: "Unrestricted Owner", Password: "pw-test-12345",
@@ -765,6 +779,7 @@ func TestDeleteCollectionGrant_SoftDeletedCollection_UnrestrictedOwnerStillRevok
 // BUG-1923: a non-owner member gets 403 from requireMinRole regardless of
 // the target's visibility or existence.
 func TestShareLinkAndGrantDeleteViews_NonOwner_403BeforeVisibility(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	grantee := f.seedGrantee(t)
 
@@ -825,6 +840,7 @@ func TestShareLinkAndGrantDeleteViews_NonOwner_403BeforeVisibility(t *testing.T)
 // regression that swapped the check order (visibility before role) would
 // surface as an incorrect 404 here instead of the expected 403.
 func TestItemShareLinksAndGrants_NonOwner_403BeforeVisibility(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	editor, err := f.srv.store.CreateUser(models.UserCreate{
@@ -895,6 +911,7 @@ func decodeUserGrantsResponse(t *testing.T, rr *httptest.ResponseRecorder) userG
 // both auth classes (bearer PAT + session cookie), mirroring the fixture's
 // usual dual-auth coverage.
 func TestListUserGrants_RestrictedOwner_FiltersHiddenResourceGrants(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	target := f.seedGrantee(t)
 
@@ -942,6 +959,7 @@ func TestListUserGrants_RestrictedOwner_FiltersHiddenResourceGrants(t *testing.T
 // including an item-grant-only entry on a collection otherwise hidden from
 // them by collection_access="specific".
 func TestListUserGrants_SelfQuery_Unfiltered(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	f.grantHiddenItemToOwner(t)
 
@@ -965,6 +983,7 @@ func TestListUserGrants_SelfQuery_Unfiltered(t *testing.T) {
 // collection_access restriction) listing another user's grants sees
 // everything, with no filtering applied.
 func TestListUserGrants_UnrestrictedOwner_Unfiltered(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{

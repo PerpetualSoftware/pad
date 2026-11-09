@@ -90,6 +90,7 @@ func runRealRestoreTx(t *testing.T, srv *Server, itemID, content string) (*model
 // only WIRED IN on Postgres, where a durably-landed-but-ack-lost commit can occur.
 // The store gate lives in handleRestoreItemVersion.)
 func TestReconcileRestoreCommit(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -185,6 +186,7 @@ func TestReconcileRestoreCommit(t *testing.T) {
 // emits the item_updated SSE — instead of the false 404 it hit before
 // (UpdateItemWithPreCheck returns (nil, ackErr) on this path).
 func TestForceRefreshRoomAckLossReconciledReturnsRestoredItem(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	it := reconcileNewItem(t, srv, slug, reconcileOriginal)

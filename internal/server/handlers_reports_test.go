@@ -14,6 +14,7 @@ import (
 // tests cover the visibility-scoping mechanics; this locks the route, the
 // nil-visibility branch, and the JSON shape.
 func TestReportEndpoint_OwnerGetsFullReport(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -51,6 +52,7 @@ func TestReportEndpoint_OwnerGetsFullReport(t *testing.T) {
 // a cookie session (web UI admin affordance) but a SCOPED report over bearer
 // auth (PAT/CLI/OAuth) — never leaking the hidden collection's aggregates.
 func TestReportEndpoint_AdminBearerIsScoped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -127,6 +129,7 @@ func TestReportEndpoint_AdminBearerIsScoped(t *testing.T) {
 }
 
 func TestReportEndpoint_DefaultsToWeek(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

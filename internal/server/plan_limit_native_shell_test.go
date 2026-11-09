@@ -80,6 +80,7 @@ func assertShellRefusal(t *testing.T, msg string, details map[string]any, shell 
 }
 
 func TestPlanLimit_NativeShell_SingleDoor(t *testing.T) {
+	t.Parallel()
 	for _, shell := range []bool{true, false} {
 		t.Run(fmt.Sprintf("shell=%v", shell), func(t *testing.T) {
 			e := newPlanLimitEnv(t)
@@ -109,6 +110,7 @@ func TestPlanLimit_NativeShell_SingleDoor(t *testing.T) {
 }
 
 func TestPlanLimit_NativeShell_BulkDoor(t *testing.T) {
+	t.Parallel()
 	for _, shell := range []bool{true, false} {
 		t.Run(fmt.Sprintf("shell=%v", shell), func(t *testing.T) {
 			e := newRestoreLimitEnv(t)
@@ -146,6 +148,7 @@ func TestPlanLimit_NativeShell_BulkDoor(t *testing.T) {
 // The bundle import's own refusal (handlers_import_bundle.go, BUG-3103) is
 // the one that names `requested`: a bundle carrying more items than the cap.
 func TestPlanLimit_NativeShell_BundleImportDoor(t *testing.T) {
+	t.Parallel()
 	for _, shell := range []bool{true, false} {
 		t.Run(fmt.Sprintf("shell=%v", shell), func(t *testing.T) {
 			srv, _ := testServerWithAttachments(t)
@@ -266,6 +269,7 @@ func TestPlanLimitDetails_NativeShellOmitsOnlyUpgradeURL(t *testing.T) {
 // the existing-account accept and register-with-code, must drop that clause
 // for a shell and keep it for a browser (TASK-3293).
 func TestMemberLimitRefusal_NativeShell(t *testing.T) {
+	t.Parallel()
 	for _, door := range []string{"existing", "register"} {
 		for _, shell := range []bool{true, false} {
 			t.Run(fmt.Sprintf("%s/shell=%v", door, shell), func(t *testing.T) {

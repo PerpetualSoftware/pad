@@ -42,6 +42,7 @@ func sampleRequest(pattern string) *http.Request {
 }
 
 func TestCompressRouteCensus(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Built lazily: a server that has served nothing has a nil router.
 	srv.ensureRouter()

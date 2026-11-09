@@ -44,6 +44,7 @@ func moveTestCollections(t *testing.T, srv *Server) (string, *models.Collection,
 // Pre-fix this returned 400 missing_required_fields even though `ticket`
 // was supplied.
 func TestMoveItem_OverrideSatisfiesRequiredField(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, src, dst := moveTestCollections(t, srv)
 
@@ -86,6 +87,7 @@ func TestMoveItem_OverrideSatisfiesRequiredField(t *testing.T) {
 // "urgent" was written into the item unchecked, because result.Errors was
 // empty and nothing else validated the merged map.
 func TestMoveItem_InvalidOverrideRejected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, src, dst := moveTestCollections(t, srv)
 
@@ -213,6 +215,7 @@ func TestMoveItem_PaddedOverrideValueRefused(t *testing.T) {
 // refused with the copy's code and message, and nothing is written. Before the
 // fix it merged into the item as an invisible orphan field.
 func TestMoveItem_UndeclaredOverrideRefused(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, src, dst := moveTestCollections(t, srv)
 	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
@@ -261,6 +264,7 @@ func TestMoveItem_UndeclaredOverrideRefused(t *testing.T) {
 // any schema either, so the declared-key gate would also catch it, and the
 // order decides which message the caller reads.
 func TestMoveItem_ReservedOverrideKeepsItsOwnMessage(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, src, dst := moveTestCollections(t, srv)
 	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
@@ -282,6 +286,7 @@ func TestMoveItem_ReservedOverrideKeepsItsOwnMessage(t *testing.T) {
 // An explicit null override UNSETS the key, as the copy's does, rather than
 // storing a literal null (BUG-2379).
 func TestMoveItem_NullOverrideUnsetsTheField(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug, src, dst := moveTestCollections(t, srv)
 	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{

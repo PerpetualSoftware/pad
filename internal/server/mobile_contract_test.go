@@ -61,6 +61,7 @@ import (
 // insecure spelling is mentioned in nineteen test files, but as a helper
 // building a request rather than as a claim about the name.
 func TestMobileContract_SessionCookieNames(t *testing.T) {
+	t.Parallel()
 	if got := sessionCookieName(false); got != "pad_session" {
 		t.Errorf("sessionCookieName(false) = %q, want %q — pad-mobile reads this name literally", got, "pad_session")
 	}
@@ -75,6 +76,7 @@ func TestMobileContract_SessionCookieNames(t *testing.T) {
 // which a catch-all or a redirect can satisfy while the route itself is gone.
 // Walking asserts the METHOD + PATH pair is registered.
 func TestMobileContract_AuthRoutesExist(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// The router is built lazily on first request (ensureRouter), so a server
 	// that has served nothing has a nil one — walking it directly panics.
@@ -108,6 +110,7 @@ func TestMobileContract_AuthRoutesExist(t *testing.T) {
 // before showing any UI. A renamed key here reads on a phone as a blank screen
 // or a login form on an instance that needs setup, not as an error.
 func TestMobileContract_SessionPayloadKeys(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "GET", "/api/v1/auth/session", nil)
@@ -136,6 +139,7 @@ func TestMobileContract_SessionPayloadKeys(t *testing.T) {
 // challenge, login-verify redeems it with a recovery code — so a rename on
 // either side fails here rather than on a phone.
 func TestMobileContract_TwoFactorLoginRoundTrip(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	const email = "mobile-2fa@example.com"
@@ -195,6 +199,7 @@ func TestMobileContract_TwoFactorLoginRoundTrip(t *testing.T) {
 // about the parameter that follows it, so the filename could be dropped from
 // either branch with the suite green.
 func TestMobileContract_AttachmentDispositionCarriesAFilename(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	for _, tc := range []struct {

@@ -13,6 +13,7 @@ import (
 // live collection. Prefix renames alone, deleted unrelated collections, and
 // foreign prefixes do not establish that the item belonged to that prefix.
 func TestRelationRefDoesNotResolveByNumberAcrossALivePrefix(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"live", "renamed", "deleted", "foreign", "unknown", "exact"} {
 		t.Run(kind, func(t *testing.T) {
 			srv, wsSlug, ws, target := relationRefFixture(t)

@@ -49,6 +49,7 @@ func getItemFields(t *testing.T, srv *Server, wsSlug, itemSlug string) map[strin
 }
 
 func TestPatchItemFieldsPatchRefusesReservedKeys(t *testing.T) {
+	t.Parallel()
 	// A value shaped exactly like the one that produced this bug: the
 	// notes array passed as a JSON-encoded STRING, which is what
 	// `--field implementation_notes=[...]` sends.
@@ -139,6 +140,7 @@ func TestPatchItemFieldsPatchRefusesReservedKeys(t *testing.T) {
 // time — mutation-tested, and it survived. items.TestReservedFieldKeysIn owns
 // the sort (three keys, deterministic-enough, and it does fail unsorted).
 func TestPatchItemFieldsPatchRefusalNamesEveryReservedKeyPresent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -184,6 +186,7 @@ func TestPatchItemFieldsPatchRefusalNamesEveryReservedKeyPresent(t *testing.T) {
 // round a loop: field write refused → try the note → refused → back to the
 // field write. The message has to say so instead.
 func TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -224,6 +227,7 @@ func TestPatchItemFieldsPatchRemedyIsHonestWhenAlreadyUnreadable(t *testing.T) {
 // the reason the test above proves something: on an item whose stored value is
 // fine, the remedy IS `pad item note` and must still be named.
 func TestPatchItemFieldsPatchRemedyStandsOnAHealthyItem(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskThenSeedFields(t, srv, slug, "Healthy row",
@@ -250,6 +254,7 @@ func TestPatchItemFieldsPatchRemedyStandsOnAHealthyItem(t *testing.T) {
 // Without it, a gate that refused EVERY fields_patch would pass every
 // assertion above.
 func TestPatchItemFieldsPatchAllowsOrdinaryKeys(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -283,6 +288,7 @@ func TestPatchItemFieldsPatchAllowsOrdinaryKeys(t *testing.T) {
 // why it needs a test rather than vigilance. This forces the author to make
 // the "no remedy exists" call DELIBERATELY by adding the key here.
 func TestReservedFieldTablesAreExhaustive(t *testing.T) {
+	t.Parallel()
 	// Keys whose remedy is deliberately empty. Adding a key here is the
 	// deliberate call, and each needs its own reason:
 	//

@@ -76,6 +76,7 @@ func containsByte(s string, b byte) bool {
 }
 
 func TestBUG3789_ChildrenAreBoundedAndPaged(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Children 3789", "startup")
 		tasks, _ := srv.store.GetCollectionBySlug(wsID, "tasks")
@@ -118,6 +119,7 @@ func TestBUG3789_ChildrenAreBoundedAndPaged(t *testing.T) {
 // A restricted member's children window counts only children they may see,
 // and has_children reflects only visible grandchildren.
 func TestBUG3789_ChildrenWindowIsOverVisibleRows(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Vis 3789"}, ownerCookie)
@@ -188,6 +190,7 @@ func TestBUG3789_ChildrenWindowIsOverVisibleRows(t *testing.T) {
 }
 
 func TestBUG3790_StarredIsBoundedPagedAndLoadsBodiesForThePage(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Stars 3790"}, ownerCookie)
@@ -242,6 +245,7 @@ func TestBUG3790_StarredIsBoundedPagedAndLoadsBodiesForThePage(t *testing.T) {
 }
 
 func TestBUG3792_SharedCollectionIsBoundedAndPaged(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		_, wsID := task3462Workspace(t, srv, "Share 3792", "startup")
 		tasks, _ := srv.store.GetCollectionBySlug(wsID, "tasks")
@@ -311,6 +315,7 @@ func TestBUG3792_SharedCollectionIsBoundedAndPaged(t *testing.T) {
 // not total lets offset pages repeat or skip rows (SQLite happens to keep
 // paging consistent by scan order; Postgres does not promise it).
 func TestBUG3789_TiesComeBackInATotalOrder(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Ties 3789"}, ownerCookie)
@@ -367,6 +372,7 @@ func TestBUG3789_TiesComeBackInATotalOrder(t *testing.T) {
 // An offset past the end (#2153) is an empty page that serialises
 // as [] (not null), with has-more false, on both bare-array lists.
 func TestBUG3789_AnOffsetPastTheEndIsAnEmptyArray(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "End 3789"}, ownerCookie)

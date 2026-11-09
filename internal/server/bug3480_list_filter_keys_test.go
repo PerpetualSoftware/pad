@@ -25,6 +25,7 @@ func bug3480List(t *testing.T, srv *Server, path string) (int, []models.Item, st
 }
 
 func TestBUG3480_ListFilterKeys(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Filters 3480", "startup")
 		tasks, err := srv.store.GetCollectionBySlug(wsID, "tasks")

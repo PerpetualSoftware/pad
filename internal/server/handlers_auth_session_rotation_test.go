@@ -12,6 +12,7 @@ import (
 // Before TASK-652 a stolen cookie stayed valid forever after the owner
 // "rotated" their password.
 func TestPasswordChange_InvalidatesOtherSessions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 

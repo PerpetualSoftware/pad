@@ -15,6 +15,7 @@ import (
 // TestRelationDoors_BulkMoveReportsDroppedFields, exercises only a RELATION
 // drop, so the plain-field case this bug names was unpinned.
 func TestBUG2683_BulkMoveRecordsAnOrdinaryDroppedField(t *testing.T) {
+	t.Parallel()
 	f := newDoorFixture(t)
 	src := mustSchemaCollection(t, f.srv, f.ws.ID, "Estimated", `{"fields":[
 		{"key":"status","label":"Status","type":"select","options":["open","done"]},

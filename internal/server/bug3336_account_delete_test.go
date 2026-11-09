@@ -25,6 +25,7 @@ func stillThere(t *testing.T, srv *Server, id string) {
 
 // A cloud account WITH a password cannot skip it by sending confirm.
 func TestBUG3336_ConfirmOnlyRefusedForAPasswordAccount(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.cloudMode = true
 	id, token := bootstrapAccountDeleteUser(t, srv, "")
@@ -38,6 +39,7 @@ func TestBUG3336_ConfirmOnlyRefusedForAPasswordAccount(t *testing.T) {
 // A PAT is refused whatever it sends, before any identity check, so it can
 // neither delete nor probe the password.
 func TestBUG3336_APITokenCannotDeleteTheAccount(t *testing.T) {
+	t.Parallel()
 	for _, cloud := range []bool{false, true} {
 		srv := testServer(t)
 		srv.cloudMode = cloud
@@ -65,6 +67,7 @@ func TestBUG3336_APITokenCannotDeleteTheAccount(t *testing.T) {
 
 // The path confirm-only exists for still works: an OAuth-only cloud account.
 func TestBUG3336_OAuthOnlyCloudAccountDeletesWithConfirm(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.cloudMode = true
 	bootstrapFirstUser(t, srv, "admin-3336@test.com", "Admin")
@@ -114,6 +117,7 @@ func ageAllSessions(t *testing.T, srv *Server, userID string, d time.Duration) {
 // Confirm-only needs a recent sign-in: an 11-minute-old session is refused
 // with reauth_required and the account survives.
 func TestBUG3336_ConfirmOnlyNeedsARecentSignIn(t *testing.T) {
+	t.Parallel()
 	srv, u, token := oauthOnlyCloud(t)
 	ageAllSessions(t, srv, u.ID, accountDeleteReauthWindow+time.Minute)
 	rr := deleteAccountReq(srv, map[string]any{"confirm": true}, token)
@@ -126,6 +130,7 @@ func TestBUG3336_ConfirmOnlyNeedsARecentSignIn(t *testing.T) {
 // A legacy hybrid account (a real password, password_set false) is held to
 // the same window: a fresh sign-in may delete it, an old session may not.
 func TestBUG3336_HybridAccountConfirmOnlyIsWindowed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.cloudMode = true
 	id, token := bootstrapAccountDeleteUser(t, srv, "")
@@ -173,6 +178,7 @@ func TestBUG3336_RotationKeepsTheSignInTime(t *testing.T) {
 // fresh sign-in. The CLI session it mints carries the approver's sign-in
 // time, so it cannot confirm-delete; and a PAT cannot approve at all.
 func TestBUG3336_CLIApprovalDoesNotMintAFreshSignIn(t *testing.T) {
+	t.Parallel()
 	srv, u, token := oauthOnlyCloud(t)
 	ageAllSessions(t, srv, u.ID, time.Hour)
 	pending, err := srv.store.CreateCLIAuthSession()
@@ -209,6 +215,7 @@ func TestBUG3336_CLIApprovalDoesNotMintAFreshSignIn(t *testing.T) {
 // the header, padding included; and a rotation with no readable session of
 // the user mints nothing that could read as freshly signed in.
 func TestBUG3336_RotationNeedsTheRequestSession(t *testing.T) {
+	t.Parallel()
 	srv, u, token := oauthOnlyCloud(t)
 	// As TokenAuth records a padded session bearer.
 	req := httptest.NewRequest("POST", "/api/v1/auth/oauth-unlink", nil)
@@ -230,6 +237,7 @@ func TestBUG3336_RotationNeedsTheRequestSession(t *testing.T) {
 // bearer that TokenAuth let fall through to the cookie on /auth/* does not
 // hide the cookie session, so a legitimate CLI approval still works.
 func TestBUG3336_StaleBearerBesideAValidCookie(t *testing.T) {
+	t.Parallel()
 	srv, _, token := oauthOnlyCloud(t)
 	pending, _ := srv.store.CreateCLIAuthSession()
 	req := httptest.NewRequest("POST", "/api/v1/auth/cli/sessions/"+pending.Code+"/approve", nil)
@@ -249,6 +257,7 @@ func TestBUG3336_StaleBearerBesideAValidCookie(t *testing.T) {
 // Each session-minting door refuses an API token, and nothing is changed or
 // revoked behind the refusal.
 func TestBUG3336_SessionMintingDoorsRefuseAPIToken(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.cloudMode = true
 	id, sess := bootstrapAccountDeleteUser(t, srv, "")

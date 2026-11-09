@@ -64,6 +64,7 @@ import (
 // isolate. The claim is "no relation value reaches the import door", verified;
 // not "here is the single mechanism that stops it".
 func TestArtifactImport_DropsFieldKeysTheKindDoesNotDeclare(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	wsSlug := createWSForTest(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(wsSlug)

@@ -78,6 +78,7 @@ func itemsIn(t *testing.T, srv *Server, wsSlug, collSlug string) []string {
 // The reported case: a collection the hardcoded client map has never heard of
 // gets a working singular form.
 func TestResolveItemCollectionSlug_SingularOfANonDefaultCollection(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
@@ -102,6 +103,7 @@ func TestResolveItemCollectionSlug_SingularOfANonDefaultCollection(t *testing.T)
 // Listing resolves the same way creation does — they are the two halves of the
 // same complaint (`pad item create spec` / `pad item list spec`).
 func TestResolveItemCollectionSlug_ListAcceptsTheSingular(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
@@ -126,6 +128,7 @@ func TestResolveItemCollectionSlug_ListAcceptsTheSingular(t *testing.T) {
 // today (BUG-2630), and precisely the behaviour this resolver must not add on
 // the server.
 func TestResolveItemCollectionSlug_ExactMatchAlwaysWins(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Plan", "plan", "PLN")
@@ -161,6 +164,7 @@ func TestResolveItemCollectionSlug_ExactMatchAlwaysWins(t *testing.T) {
 // so dropping client normalization — including on the remote MCP transport,
 // which cannot retry — loses nothing. `t` must reach `tasks`.
 func TestResolveItemCollectionSlug_LegacyAbbreviationResolves(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv) // startup template ships `tasks`
 
@@ -177,6 +181,7 @@ func TestResolveItemCollectionSlug_LegacyAbbreviationResolves(t *testing.T) {
 // collection routes `t` to `t`, not to `tasks`. Same exact-match-first property
 // the ±s fallback already honors, asserted for the alias path too.
 func TestResolveItemCollectionSlug_ExactMatchBeatsAlias(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv) // ships `tasks`
 	makeCollection(t, srv, ws, "T", "t", "TT")
@@ -195,6 +200,7 @@ func TestResolveItemCollectionSlug_ExactMatchBeatsAlias(t *testing.T) {
 // The reverse direction: a workspace whose collection is genuinely singular
 // still answers to the plural a user might type out of habit.
 func TestResolveItemCollectionSlug_PluralOfASingularCollection(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Spec", "spec", "SPC")
@@ -211,6 +217,7 @@ func TestResolveItemCollectionSlug_PluralOfASingularCollection(t *testing.T) {
 // A name that matches nothing must still 404. The fallbacks widen what
 // resolves; they must not make everything resolve.
 func TestResolveItemCollectionSlug_UnknownStillNotFound(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -223,6 +230,7 @@ func TestResolveItemCollectionSlug_UnknownStillNotFound(t *testing.T) {
 // `pad item move <ref> <target-collection>` takes a user-typed collection name
 // too, and the bug's own body names move alongside create and list.
 func TestResolveItemCollectionSlug_MoveAcceptsTheSingular(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
@@ -248,6 +256,7 @@ func TestResolveItemCollectionSlug_MoveAcceptsTheSingular(t *testing.T) {
 // Unit-level coverage of the candidate generator, including the cases that
 // must produce NOTHING rather than a surprising guess.
 func TestCollectionSlugCandidates(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		in   string
 		want []string
@@ -303,6 +312,7 @@ func TestCollectionSlugCandidates(t *testing.T) {
 // addressed to. Reachable only because the resolver made `spec` succeed at
 // all, so the inconsistency arrived with this change.
 func TestResolveItemCollectionSlug_BulkMoveCanonicalizesTheTarget(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
@@ -351,6 +361,7 @@ func TestResolveItemCollectionSlug_BulkMoveCanonicalizesTheTarget(t *testing.T) 
 // The local-first index filters by exact slug too, so a direct API consumer
 // passing a singular got an empty index rather than an error.
 func TestResolveItemCollectionSlug_ItemsIndexAcceptsTheSingular(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Specs", "specs", "SPEC")
@@ -374,6 +385,7 @@ func TestResolveItemCollectionSlug_ItemsIndexAcceptsTheSingular(t *testing.T) {
 // they resolve the destination separately and a preflight that accepts a name
 // the copy then rejects is the worse failure of the two.
 func TestResolveItemCollectionSlug_CrossWorkspaceCopyAcceptsTheSingular(t *testing.T) {
+	t.Parallel()
 	f := newCopyPreflightFixture(t)
 
 	// A destination-only collection whose slug is plural, so `spec` resolves
@@ -424,6 +436,7 @@ func TestResolveItemCollectionSlug_CrossWorkspaceCopyAcceptsTheSingular(t *testi
 // misfile the write into `specs`, which is the same failure the
 // exact-match-wins rule prevents, reached by a different route.
 func TestResolveItemCollectionSlug_CaseFoldBeatsPluralization(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Spec", "spec", "SPC")
@@ -458,6 +471,7 @@ func TestResolveItemCollectionSlug_CaseFoldBeatsPluralization(t *testing.T) {
 // Every other test in this file uses an unrestricted owner, which is exactly
 // why none of them caught it.
 func TestCollectionItemList_ItemGrantOnly_DoesNotLeakSiblings(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	f.grantHiddenItemToOwner(t)
 
@@ -505,6 +519,7 @@ func TestCollectionItemList_ItemGrantOnly_DoesNotLeakSiblings(t *testing.T) {
 // restricted caller probes slugs and learns which collections they are not
 // allowed to know about.
 func TestBulkMove_HiddenAndUnknownTargetsAreIndistinguishable(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	// An item the restricted caller CAN see, so the request gets far enough
@@ -579,6 +594,7 @@ func normalizeBulkFailures(t *testing.T, body string) string {
 // refuses on the client side (BUG-2630), and it survives a later restore,
 // stranding items in the collection they were rerouted to.
 func TestResolveItemCollectionSlug_ArchivedCollectionBlocksTheAlias(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Spec", "spec", "SPC")
@@ -617,6 +633,7 @@ func TestResolveItemCollectionSlug_ArchivedCollectionBlocksTheAlias(t *testing.T
 // no LIVE row — so a guard on the input alone lets the archived name be
 // stepped over by a spelling of itself, and the write lands in `specs`.
 func TestResolveItemCollectionSlug_ArchivedBlocksCaseFoldedCandidateToo(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	makeCollection(t, srv, ws, "Spec", "spec", "SPC")

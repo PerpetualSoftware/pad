@@ -46,6 +46,7 @@ func totalFirstWrites(t *testing.T, m *metrics.Metrics) float64 {
 // app, anything else the web. An admin creating someone's account is not a
 // signup.
 func TestSignupMetricClientLabel(t *testing.T) {
+	t.Parallel()
 	srv, _ := newCloudEmailServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -90,6 +91,7 @@ func TestSignupMetricClientLabel(t *testing.T) {
 // under kind=item and client=web; a second item and a comment after it are
 // not first writes.
 func TestFirstWriteMetricOnceAndWindow(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -133,6 +135,7 @@ func TestFirstWriteMetricOnceAndWindow(t *testing.T) {
 // A comment that is the account's first write is counted as kind=comment
 // (the attachment kind is covered by TestRecordFirstWriteGates' control).
 func TestFirstWriteMetricKindFromCommentSite(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -182,6 +185,7 @@ func histogramCount(t *testing.T, m *metrics.Metrics, client string) uint64 {
 // recordFirstWrite's gates, directly: the 30-day window, an app principal,
 // and a call that was not a first write.
 func TestRecordFirstWriteGates(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -219,6 +223,7 @@ func TestRecordFirstWriteGates(t *testing.T) {
 }
 
 func TestWriteClientLabel(t *testing.T) {
+	t.Parallel()
 	for _, c := range []struct {
 		name    string
 		headers map[string]string
@@ -297,6 +302,7 @@ func funnelOwner(t *testing.T, srv *Server) (cookie string, ws models.Workspace,
 // Every call site, through its handler, as the account's first write: the
 // reply route, the attachment upload, and an item create by an agent.
 func TestFirstWriteMetricEachCallSite(t *testing.T) {
+	t.Parallel()
 	t.Run("reply", func(t *testing.T) {
 		srv := testServer(t)
 		m := metrics.New()
@@ -349,6 +355,7 @@ func TestFirstWriteMetricEachCallSite(t *testing.T) {
 // A workspace restore records the write but is not an item write, so as an
 // account's first write it is not counted (TASK-3926 r1).
 func TestFirstWriteMetricSkipsWorkspaceRestore(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)
@@ -378,6 +385,7 @@ func TestFirstWriteMetricSkipsWorkspaceRestore(t *testing.T) {
 
 // The bootstrap admin is not a signup.
 func TestSignupMetricSkipsBootstrap(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	m := metrics.New()
 	srv.SetMetrics(m)

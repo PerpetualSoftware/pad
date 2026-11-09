@@ -14,6 +14,7 @@ import (
 // in cloud mode can create exactly 3 workspaces — all three must return 201.
 // TASK-1609: cap reduced from 5 to 3.
 func TestWorkspaceCap_FreeTierAllowsUpToThree(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 
@@ -49,6 +50,7 @@ func TestWorkspaceCap_FreeTierAllowsUpToThree(t *testing.T) {
 // creation attempt for a free-tier user in cloud mode returns 403 with
 // error code plan_limit_exceeded. TASK-1609: cap is 3, not 5.
 func TestWorkspaceCap_FreeTierBlocksFourth(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 
@@ -117,6 +119,7 @@ func TestWorkspaceCap_FreeTierBlocksFourth(t *testing.T) {
 // TestWorkspaceCap_ProTierUnlimited verifies that a pro-tier user in cloud
 // mode can create more than 3 workspaces without being blocked.
 func TestWorkspaceCap_ProTierUnlimited(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 
@@ -150,6 +153,7 @@ func TestWorkspaceCap_ProTierUnlimited(t *testing.T) {
 // TestWorkspaceCap_SelfHostedNoLimit confirms that without SetCloudMode the
 // workspace cap is not enforced — any number of workspaces can be created.
 func TestWorkspaceCap_SelfHostedNoLimit(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t) // no SetCloudMode → self-hosted mode
 	// No auth required when no users exist yet.
 	for i := 1; i <= 5; i++ {
@@ -166,6 +170,7 @@ func TestWorkspaceCap_SelfHostedNoLimit(t *testing.T) {
 // entry raising the workspace cap beyond 3 allows a free-tier user to create
 // a 4th workspace in cloud mode.
 func TestWorkspaceCap_OverrideUnblocks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 
@@ -206,6 +211,7 @@ func TestWorkspaceCap_OverrideUnblocks(t *testing.T) {
 // enforcePlanLimit("members_per_workspace") — a workspace-scoped limit distinct
 // from the workspace-count limit tested by TestWorkspaceCap_FreeTierBlocksFourth.
 func TestPlanLimitError_ResponseShape(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	srv.SetCloudMode("test-cloud-secret")
 

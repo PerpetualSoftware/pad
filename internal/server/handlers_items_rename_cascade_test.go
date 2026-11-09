@@ -107,6 +107,7 @@ func TestItemRenameCascadeTooLarge_IsPermanentShapedNotRetryable(t *testing.T) {
 // test above: without it, a handler arm that answered 413 for EVERY rename
 // would pass every assertion there.
 func TestItemRename_OrdinaryCascadeStillSucceeds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

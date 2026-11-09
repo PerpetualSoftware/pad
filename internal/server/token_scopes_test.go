@@ -6,6 +6,7 @@ import (
 )
 
 func TestTokenScopeAllows(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name   string
 		scopes string

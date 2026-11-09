@@ -11,6 +11,7 @@ import (
 // GET /api/app/v1/me, answered from the token's binding. A delegated token
 // never sees the install-code redeem, so this is its only way in.
 func TestBug3416_UnscopedMeNamesTheBinding(t *testing.T) {
+	t.Parallel()
 	check := func(t *testing.T, f appAPIFix, wantKind, wantUser string, wantApp bool) {
 		t.Helper()
 		rr := appGet(f.srv, appAPIPrefix+"/me", f.token)
@@ -54,6 +55,7 @@ func TestBug3416_UnscopedMeNamesTheBinding(t *testing.T) {
 // spent: the workspace is resolved live inside the redeem's transaction,
 // before the code is consumed (BUG-3416).
 func TestBug3416_RedeemRefusesASoftDeletedWorkspace(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)
@@ -80,6 +82,7 @@ func TestBug3416_RedeemRefusesASoftDeletedWorkspace(t *testing.T) {
 // A database failure while reading the install is a 500 the app may retry,
 // not invalid_install_code, which would tell it the code is bad (BUG-3416).
 func TestBug3416_RedeemReportsADatabaseFailureAsAFault(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)

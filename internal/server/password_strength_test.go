@@ -7,6 +7,7 @@ import (
 )
 
 func TestValidatePasswordStrength(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name       string
 		password   string
@@ -57,6 +58,7 @@ func TestValidatePasswordStrength(t *testing.T) {
 // string as a banned substring, and "" is a substring of everything, so
 // passing "" would make every password fail. We filter empties.
 func TestValidatePasswordStrength_EmptyUserInputsAreIgnored(t *testing.T) {
+	t.Parallel()
 	if err := validatePasswordStrength("correct-horse-battery-staple", "", ""); err != nil {
 		t.Fatalf("empty user inputs should be ignored, got error: %v", err)
 	}
@@ -68,6 +70,7 @@ func TestValidatePasswordStrength_EmptyUserInputsAreIgnored(t *testing.T) {
 // doesn't. Without it, PATCH /auth/me's "use the pending name" fix is
 // silent.
 func TestValidatePasswordStrength_ContextPenalizesDerivedPasswords(t *testing.T) {
+	t.Parallel()
 	// A password that zxcvbn rates score == 2 without context but that
 	// becomes score < 2 once "zaphod" is declared a user-input (the
 	// substring gets penalized). The exact scores depend on the
@@ -98,6 +101,7 @@ func TestValidatePasswordStrength_ContextPenalizesDerivedPasswords(t *testing.T)
 // identity-derived penalty because the previous name was still the
 // validation context.
 func TestPasswordChange_RejectsPasswordDerivedFromPendingName(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	token := bootstrapFirstUser(t, srv, "beeblebrox@example.com", "Arthur")
 
@@ -123,6 +127,7 @@ func TestPasswordChange_RejectsPasswordDerivedFromPendingName(t *testing.T) {
 // than bootstrap/register/rotation — a real bypass since the reset URL
 // is the most common post-compromise recovery path.
 func TestPasswordReset_UsesIdentityContext(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "zaphodbeeblebrox@example.com", "Zaphod Beeblebrox")
 
@@ -166,6 +171,7 @@ func TestPasswordReset_UsesIdentityContext(t *testing.T) {
 // invariant: validatePasswordStrength with a username-derived password
 // plus "zaphod123" as the username is rejected.
 func TestRegister_IncludesUsernameInStrengthContext(t *testing.T) {
+	t.Parallel()
 	// The registration handler calls:
 	//   validatePasswordStrength(input.Password, input.Email, input.Name, input.Username)
 	// so a password literally containing the username must be rejected.
@@ -189,6 +195,7 @@ func makeStr(n int, c byte) string {
 // form without failing anything else, so the prefixes are pinned: change
 // them together with that regex.
 func TestValidatePasswordStrength_MessagesTheWebFormsRoute(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		password string
 		want     string

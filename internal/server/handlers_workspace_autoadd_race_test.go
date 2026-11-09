@@ -31,6 +31,7 @@ import (
 // the store method are pinned in internal/store/oauth_connections_autoadd_test.go.
 
 func TestAutoAddCreatorConnection_RevokedMidFlight_NotAdded(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, true)
 
 	ran := false
@@ -71,6 +72,7 @@ func TestAutoAddCreatorConnection_RevokedMidFlight_NotAdded(t *testing.T) {
 // Control: the same seam, with the grant left as it was. Without this leg a
 // fix that stopped auto-adding altogether would pass the revoking leg.
 func TestAutoAddCreatorConnection_GrantUnchangedMidFlight_Added(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, true)
 
 	ran := false
@@ -107,6 +109,7 @@ func TestAutoAddCreatorConnection_GrantUnchangedMidFlight_Added(t *testing.T) {
 // Parsed with go/parser, not scanned as text, so formatting, comments and
 // string literals cannot satisfy it or trip it.
 func TestAutoAddCreatorConnection_HandlerMakesOnlyTheAtomicCall(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "handlers_workspaces.go", nil, 0)
 	if err != nil {

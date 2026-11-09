@@ -10,6 +10,7 @@ import (
 // BUG-3703: a list request's field filters are bounded before any store work;
 // at the bound it is still answered.
 func TestBUG3703_TooManyFieldFiltersAreRefusedBeforeAnyProbe(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, _ := task3462Workspace(t, srv, "Cap 3703", "startup")
 		path := func(n int) string {

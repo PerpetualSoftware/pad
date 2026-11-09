@@ -34,6 +34,7 @@ func chatRefs(t *testing.T, rr *httptest.ResponseRecorder) []map[string]any {
 }
 
 func TestChat_Refs_TruncatedAt200(t *testing.T) {
+	t.Parallel()
 	for _, count := range []int{0, 10, 200, 6000} {
 		t.Run(fmt.Sprint(count), func(t *testing.T) {
 			f := newChatEnrichFixture(t)
@@ -89,6 +90,7 @@ func TestChat_Refs_TruncatedAt200(t *testing.T) {
 }
 
 func TestChat_ContextWorkspace_ShownThenHiddenAfterMemberRemoved(t *testing.T) {
+	t.Parallel()
 	f := newChatEnrichFixture(t)
 	p := f.ensure("rook")
 	sent := f.request("POST", p+"/messages", "", map[string]any{"body": "hello", "context_workspace": f.wsSlug})
@@ -137,6 +139,7 @@ func TestChat_ContextWorkspace_ShownThenHiddenAfterMemberRemoved(t *testing.T) {
 }
 
 func TestChat_ContextWorkspace_SoftDeletedWorkspaceHidden(t *testing.T) {
+	t.Parallel()
 	f := newChatEnrichFixture(t)
 	p := f.ensure("rook")
 	sent := f.request("POST", p+"/messages", "", map[string]any{"body": "hello", "context_workspace": f.wsID})
@@ -160,6 +163,7 @@ func TestChat_ContextWorkspace_SoftDeletedWorkspaceHidden(t *testing.T) {
 }
 
 func TestChat_ContextWorkspace_BadValueIs400(t *testing.T) {
+	t.Parallel()
 	f := newChatEnrichFixture(t)
 	p := f.ensure("rook")
 	other := mkUser(t, f.srv, "other-context@example.com")
@@ -197,6 +201,7 @@ func TestChat_ContextWorkspace_BadValueIs400(t *testing.T) {
 }
 
 func TestChat_Refs_VisibleRestrictedUnresolved(t *testing.T) {
+	t.Parallel()
 	t.Run("visibility and extraction", func(t *testing.T) {
 		f := newChatEnrichFixture(t)
 		p := f.ensure("rook")
@@ -300,6 +305,7 @@ func TestChat_Refs_VisibleRestrictedUnresolved(t *testing.T) {
 }
 
 func TestChat_Refs_TokenAllowListHonoured(t *testing.T) {
+	t.Parallel()
 	f := newChatEnrichFixture(t)
 	p := f.ensure("rook")
 	item := f.seedItem()
@@ -322,6 +328,7 @@ func TestChat_Refs_TokenAllowListHonoured(t *testing.T) {
 
 // TASK-4039 r1: bare refs without context do not consume lookup slots.
 func TestChat_Refs_ContextlessRefsDoNotConsumeCap(t *testing.T) {
+	t.Parallel()
 	f := newChatEnrichFixture(t)
 	p := f.ensure("rook")
 	item := f.seedItem()

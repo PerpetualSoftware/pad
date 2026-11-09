@@ -54,6 +54,7 @@ func mkAdminCookieReq(t *testing.T, path string, admin *models.User) *http.Reque
 // the bearer-aware revalidation path. Cookie admin → still has access;
 // bearer admin (Authorization: Bearer header) → denied.
 func TestSSESubscriberStillHasAccess_AdminBearer_DeniedOnNonMember(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -92,6 +93,7 @@ func TestSSESubscriberStillHasAccess_AdminBearer_DeniedOnNonMember(t *testing.T)
 // revalidation tick. Mirrors the same stance enforced by
 // RequireWorkspaceAccess.
 func TestSSESubscriberStillHasAccess_AdminBearer_DeniedEvenWithGrants(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -137,6 +139,7 @@ func TestSSESubscriberStillHasAccess_AdminBearer_DeniedEvenWithGrants(t *testing
 // collection because the recompute fell through the admin bypass
 // before resolving VisibleCollectionIDs.
 func TestComputeSSEVisibility_AdminBearer_GetsFilter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{
@@ -192,6 +195,7 @@ func TestComputeSSEVisibility_AdminBearer_GetsFilter(t *testing.T) {
 // item → forbidden. Cookie-admin → allowed (web UI preserves the
 // global-admin affordance).
 func TestAuthorizeCollabAccess_AdminBearer_DeniedOnNonMember(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	admin, err := srv.store.CreateUser(models.UserCreate{

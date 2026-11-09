@@ -19,6 +19,7 @@ import (
 // manifest + every original blob, and the bytes match what was
 // uploaded.
 func TestExportBundle_RoundTrip(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	// Upload two attachments so the bundle has something to ship.
@@ -110,6 +111,7 @@ func TestExportBundle_RoundTrip(t *testing.T) {
 // on import; shipping them would double the bundle size for no
 // benefit.
 func TestExportBundle_HidesThumbnails(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -176,6 +178,7 @@ func TestExportBundle_HidesThumbnails(t *testing.T) {
 // We synthesize the desync by setting size_bytes higher than the
 // actual on-disk blob length.
 func TestExportBundle_TruncatedBlobAbortsStream(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -244,6 +247,7 @@ func TestExportBundle_TruncatedBlobAbortsStream(t *testing.T) {
 // sets the trailer to "ok" so a CLI can confirm the bundle is
 // complete before reporting success to the user.
 func TestExportBundle_SuccessTrailer(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	if rr := doMultipartUpload(srv, slug, "x.png", realPNG()); rr.Code != http.StatusCreated {
 		t.Fatalf("upload: %d", rr.Code)
@@ -262,6 +266,7 @@ func TestExportBundle_SuccessTrailer(t *testing.T) {
 // query param) export endpoint still returns plain JSON, so any
 // existing automation continues to work after TASK-884 lands.
 func TestExportBundle_LegacyJSONStillWorks(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/export", nil)
 	if rr.Code != http.StatusOK {

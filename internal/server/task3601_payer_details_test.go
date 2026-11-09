@@ -13,6 +13,7 @@ import (
 // payer_is_you=true (the client offers checkout); anyone else sees
 // payer_is_you=false and the payer's name ("Ask Dana to upgrade").
 func TestTask3601_PlanLimitDetailsNameThePayer(t *testing.T) {
+	t.Parallel()
 	res := &store.LimitResult{Feature: "members_per_workspace", Limit: 3, Current: 3, Plan: "free", PayerID: "owner-1", PayerName: "Dana"}
 	as := func(userID string) map[string]interface{} {
 		r := httptest.NewRequest("POST", "/api/v1/workspaces/x/members/invite", nil)

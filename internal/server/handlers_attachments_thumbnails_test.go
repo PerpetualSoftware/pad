@@ -147,6 +147,7 @@ func TestThumbnails_GeneratedOnPNGUpload(t *testing.T) {
 // TestThumbnails_GeneratedOnJPEGUpload — thumb output should be JPEG
 // when the source is JPEG (covers the ThumbnailFormat policy).
 func TestThumbnails_GeneratedOnJPEGUpload(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := makeIntegrationJPEG(t, 1500, 1200)
 
@@ -177,6 +178,7 @@ func TestThumbnails_GeneratedOnJPEGUpload(t *testing.T) {
 // share byte path serves variants ONLY and never an original, so a small
 // image must have a genuine derived row to render at all.
 func TestThumbnails_DerivedForSmallSourceImage(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := makeIntegrationPNG(t, 200, 150) // < both 256 and 1024, previously skipped
 
@@ -245,6 +247,7 @@ func TestThumbnails_ServeViaVariantQueryParam(t *testing.T) {
 // quota. Verify the WorkspaceStorageUsage accumulator picks up both
 // variants in addition to the original.
 func TestThumbnails_CountsTowardWorkspaceUsage(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := makeIntegrationPNG(t, 2000, 1500)
 
@@ -276,6 +279,7 @@ func TestThumbnails_CountsTowardWorkspaceUsage(t *testing.T) {
 // TestServerCapabilities_Endpoint — the new /api/v1/server/capabilities
 // endpoint reports what the editor needs for rotate/crop UI gating.
 func TestServerCapabilities_Endpoint(t *testing.T) {
+	t.Parallel()
 	srv, _ := testServerWithAttachments(t)
 	defer srv.Stop()
 
@@ -317,6 +321,7 @@ func TestServerCapabilities_Endpoint(t *testing.T) {
 // list rather than 500-ing. The editor reads this as "disable
 // rotate/crop UI" without failing the editor mount.
 func TestServerCapabilities_DegradedWhenProcessorMissing(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Intentionally NOT wiring SetImageProcessor.
 
@@ -345,6 +350,7 @@ func TestServerCapabilities_DegradedWhenProcessorMissing(t *testing.T) {
 // Without that, the editor's pre-login fetch (e.g. on the share
 // preview surface) gets 401'd. Regression guard for the exact issue (TASK-878).
 func TestServerCapabilities_PublicAfterBootstrap(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// Bootstrap an admin so the RequireAuth gate is active for
 	// non-public paths. The test client below sends NO auth cookie,
@@ -369,6 +375,7 @@ func TestServerCapabilities_PublicAfterBootstrap(t *testing.T) {
 // tombstoned parent, and the just-Put blob is cleaned up under the
 // in-flight fence.
 func TestThumbnails_PersistRefusedWhenParentDeleted(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	if srv.imageProcessor == nil {
 		t.Skip("no image processor in this build")
@@ -457,6 +464,7 @@ func TestThumbnails_PersistRefusedWhenParentDeleted(t *testing.T) {
 // it) is claimed by the sweep; and the claim refuses when the parent
 // is restored first.
 func TestOrphanGC_ReclaimsLeakedLiveVariant(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	rr := doMultipartUpload(srv, slug, "leaked.png", realPNG())

@@ -100,6 +100,7 @@ func mustSeedWorkspaceForMutation(t *testing.T, srv *Server, ownerID, slug, role
 }
 
 func TestHandleRenameConnectedApp_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	_, tok, _ := seedConnectedAppForMutations(t, srv, "rename-chain")
 
@@ -118,6 +119,7 @@ func TestHandleRenameConnectedApp_HappyPath(t *testing.T) {
 }
 
 func TestHandleRenameConnectedApp_LengthCap(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	_, tok, _ := seedConnectedAppForMutations(t, srv, "long-name-chain")
 
@@ -135,6 +137,7 @@ func TestHandleRenameConnectedApp_LengthCap(t *testing.T) {
 }
 
 func TestHandleRenameConnectedApp_NotOwner404(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	// Connection belongs to Alice.
 	seedConnectedAppForMutations(t, srv, "alice-chain")
@@ -156,6 +159,7 @@ func TestHandleRenameConnectedApp_NotOwner404(t *testing.T) {
 }
 
 func TestHandleUpdateConnectedAppFlags_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	_, tok, _ := seedConnectedAppForMutations(t, srv, "flags-chain")
 
@@ -179,6 +183,7 @@ func TestHandleUpdateConnectedAppFlags_HappyPath(t *testing.T) {
 }
 
 func TestHandleUpdateConnectedAppFlags_EmptyAllowListBlocked(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	// Create a connection with no join rows, all_current=true currently.
@@ -216,6 +221,7 @@ func TestHandleUpdateConnectedAppFlags_EmptyAllowListBlocked(t *testing.T) {
 // reports zero slugs, making the toggle impossible regardless of
 // pre-staging.
 func TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	// Wildcard connection — no join rows yet.
@@ -262,6 +268,7 @@ func TestHandleUpdateConnectedAppFlags_WildcardToSpecific_AfterPrestage(t *testi
 // staged slugs under wildcard, leaving them invisible until the
 // user flipped wildcard off.
 func TestHandleAddConnectedAppWorkspace_VisibleUnderWildcard(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok := loginTestUser(t, srv)
 	// Wildcard connection.
@@ -297,6 +304,7 @@ func TestHandleAddConnectedAppWorkspace_VisibleUnderWildcard(t *testing.T) {
 }
 
 func TestHandleAddConnectedAppWorkspace_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok, _ := seedConnectedAppForMutations(t, srv, "add-ws-chain")
 	// Seed a second workspace the user owns so we have something to add.
@@ -321,6 +329,7 @@ func TestHandleAddConnectedAppWorkspace_HappyPath(t *testing.T) {
 }
 
 func TestHandleAddConnectedAppWorkspace_NonMember404(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok, _ := seedConnectedAppForMutations(t, srv, "add-nonmember-chain")
 	// Other user owns a workspace our test user isn't a member of.
@@ -346,6 +355,7 @@ func TestHandleAddConnectedAppWorkspace_NonMember404(t *testing.T) {
 }
 
 func TestHandleRemoveConnectedAppWorkspace_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	user, tok, _ := seedConnectedAppForMutations(t, srv, "rm-ws-chain")
 	// Add a second workspace so removing the first doesn't trip the
@@ -370,6 +380,7 @@ func TestHandleRemoveConnectedAppWorkspace_HappyPath(t *testing.T) {
 }
 
 func TestHandleRemoveConnectedAppWorkspace_LastBlocked(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	_, tok, _ := seedConnectedAppForMutations(t, srv, "rm-last-chain")
 	// Connection has all_current=false + exactly one workspace.
@@ -384,6 +395,7 @@ func TestHandleRemoveConnectedAppWorkspace_LastBlocked(t *testing.T) {
 }
 
 func TestHandleRemoveConnectedAppWorkspace_IdempotentMissing(t *testing.T) {
+	t.Parallel()
 	srv, _ := connectedAppsTestServer(t)
 	_, tok, _ := seedConnectedAppForMutations(t, srv, "rm-idem-chain")
 

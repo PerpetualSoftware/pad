@@ -81,6 +81,7 @@ func TestBUG3659_EveryExportReadIsBoundedByTheDeadline(t *testing.T) {
 }
 
 func TestBUG3659_AttributionErrorAbortsTheExport(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
 	srv.accountExportHooks.itemAttribution = func([]string) (map[string]store.AppAttribution, error) {
@@ -109,6 +110,7 @@ func bug3659OwnerAndWorkspace(t *testing.T, srv *Server) (string, *models.Worksp
 // The snapshot re-checks it, so the export aborts rather than ship content
 // the account can no longer see.
 func TestBUG3659_AccessRestrictedAfterPreflightIsNotExported(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
 	ownerID, ws := bug3659OwnerAndWorkspace(t, srv)
@@ -131,6 +133,7 @@ func TestBUG3659_AccessRestrictedAfterPreflightIsNotExported(t *testing.T) {
 // collection and item created between the two reads are in neither, and every
 // exported item's collection is in the export.
 func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	tok := bug3626Owner(t, srv)
 	_, ws := bug3659OwnerAndWorkspace(t, srv)
@@ -192,6 +195,7 @@ func TestBUG3659_CollectionsAndItemsShareOneSnapshot(t *testing.T) {
 // hides the workspace's collection, the pool path and the snapshot path both
 // read the caller as restricted, and the snapshot refuses the workspace.
 func TestBUG3659_SnapshotAccessCheckAppliesTheAppCeiling(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	_ = bug3626Owner(t, srv)
 	ownerID, ws := bug3659OwnerAndWorkspace(t, srv)

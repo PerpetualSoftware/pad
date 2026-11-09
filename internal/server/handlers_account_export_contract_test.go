@@ -24,6 +24,7 @@ import (
 // workspaces} envelope, the user projection's fields, and that an owned
 // workspace carries its collections + items inline.
 func TestExportAccount_HappyPath_ArtifactContract(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	owner, err := srv.store.CreateUser(models.UserCreate{

@@ -18,6 +18,7 @@ import (
 // already gave the whole collection, so those keep their items, as a full
 // member keeps a deleted collection's live items.
 func TestBUG3333_DeletedCollectionNotVisibleThroughAGrant(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Target"}, ownerCookie)
@@ -156,6 +157,7 @@ func bug3333Equal(a, b []string) bool {
 // with a grant on a since-deleted collection kept receiving its live items as
 // upserts from /items-changes.
 func TestBUG3333_GuestDeltaSyncDropsDeletedGrantedCollection(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ownerCookie := bootstrapFirstUser(t, srv, "owner@test.com", "Owner")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Target"}, ownerCookie)

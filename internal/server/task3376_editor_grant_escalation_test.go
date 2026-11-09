@@ -21,6 +21,7 @@ import (
 // control: same member, same item, same requests, only the grant level
 // differs.
 func TestTask3376_RestrictedEditorViewGrantCannotWrite(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name   string
 		system bool
@@ -128,6 +129,7 @@ func TestTask3376_RestrictedEditorViewGrantCannotWrite(t *testing.T) {
 // everywhere, so the server must agree. Same shape as the editor test above,
 // where the same request is refused: only the role differs.
 func TestTask3376_RestrictedOwnerRoleKeepsEdit(t *testing.T) {
+	t.Parallel()
 	f := newRefResolverFixture(t)
 	st := f.srv.store
 	listed, err := st.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Listed", Slug: "listed", Prefix: "LST"})

@@ -70,6 +70,7 @@ func parseJSON(t *testing.T, rr *httptest.ResponseRecorder, v interface{}) {
 }
 
 func TestHealthEndpoint(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/health", nil)
 
@@ -89,6 +90,7 @@ func TestHealthEndpoint(t *testing.T) {
 }
 
 func TestWorkspaceEndpoints(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Create
@@ -148,6 +150,7 @@ func TestWorkspaceEndpoints(t *testing.T) {
 }
 
 func TestWorkspaceValidation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Missing name
@@ -172,6 +175,7 @@ func TestWorkspaceValidation(t *testing.T) {
 }
 
 func TestWorkspaceContextAPI(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]interface{}{
@@ -237,6 +241,7 @@ func createWSForTest(t *testing.T, srv *Server) string {
 }
 
 func TestDocumentEndpoints(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 
@@ -297,6 +302,7 @@ func TestDocumentEndpoints(t *testing.T) {
 }
 
 func TestDocumentValidation(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 
@@ -334,6 +340,7 @@ func TestDocumentValidation(t *testing.T) {
 }
 
 func TestSearchEndpoint(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 
@@ -368,6 +375,7 @@ func TestSearchEndpoint(t *testing.T) {
 }
 
 func TestActivityEndpoints(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSForTest(t, srv)
 

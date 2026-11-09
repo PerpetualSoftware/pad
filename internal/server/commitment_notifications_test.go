@@ -11,6 +11,7 @@ import (
 )
 
 func TestCommitmentNotices_Settings(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"unassigned", "renegotiation_refused"} {
 		set := models.DefaultNotificationSettings()
 		n := store.Notification{Kind: kind}
@@ -25,6 +26,7 @@ func TestCommitmentNotices_Settings(t *testing.T) {
 }
 
 func TestCommitmentNotices_DispatchAndItemGates(t *testing.T) {
+	t.Parallel()
 	for _, kind := range []string{"unassigned", "renegotiation_refused"} {
 		for _, assigned := range []bool{false, true} {
 			t.Run(kind+map[bool]string{false: "/away", true: "/assigned"}[assigned], func(t *testing.T) {
@@ -63,6 +65,7 @@ func TestCommitmentNotices_DispatchAndItemGates(t *testing.T) {
 }
 
 func TestCommitmentNotices_RefusalResponseUnchanged(t *testing.T) {
+	t.Parallel()
 	f := newSchedHTTP(t)
 	editor := f.member("refused-editor@example.com", "editor")
 	viewer := f.member("refused-viewer@example.com", "viewer")
@@ -131,6 +134,7 @@ func TestCommitmentNotices_RefusalResponseUnchanged(t *testing.T) {
 // stated ended refusal for every scope and mode, and one without keeps the
 // byte-identical 403 and sends no notice.
 func TestRenegotiateEndedScheduleRefusal(t *testing.T) {
+	t.Parallel()
 	f := newSchedHTTP(t)
 	editor := f.member("ended-editor@example.com", "editor")
 	readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)

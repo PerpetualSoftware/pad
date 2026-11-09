@@ -56,6 +56,7 @@ func (e *consentEnv) tarBundle(t *testing.T) []byte {
 }
 
 func TestImportWorkspace_JSON_AutoAddsToTheOAuthConnection(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, true)
 	rr := e.do("POST", "/api/v1/workspaces/import?name=Imported-JSON",
 		"application/json", e.exportBody(t), e.requestID)
@@ -70,6 +71,7 @@ func TestImportWorkspace_JSON_AutoAddsToTheOAuthConnection(t *testing.T) {
 }
 
 func TestImportWorkspace_Bundle_AutoAddsToTheOAuthConnection(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, true)
 	bundle := e.tarBundle(t)
 	rr := e.do("POST", "/api/v1/workspaces/import?name=Imported-Bundle",
@@ -88,6 +90,7 @@ func TestImportWorkspace_Bundle_AutoAddsToTheOAuthConnection(t *testing.T) {
 // step. The precondition asserts the partial workspace really exists, so the
 // absence below is not just the absence of any workspace.
 func TestImportWorkspace_FailedBundle_DoesNotAutoAddThePartialWorkspace(t *testing.T) {
+	t.Parallel()
 	e := newConsentEnv(t, true)
 	bad := withUndecodableManifest(t, e.tarBundle(t))
 	rr := e.do("POST", "/api/v1/workspaces/import?name=Imported-Partial",
@@ -108,6 +111,7 @@ func TestImportWorkspace_FailedBundle_DoesNotAutoAddThePartialWorkspace(t *testi
 // finishWorkspaceMint, so a future mint door cannot call one side effect and
 // skip another, and cannot skip them all by forgetting a line only create had.
 func TestAutoAddHasOneCaller_FinishWorkspaceMint(t *testing.T) {
+	t.Parallel()
 	fset := token.NewFileSet()
 	files, err := filepath.Glob("*.go")
 	if err != nil {

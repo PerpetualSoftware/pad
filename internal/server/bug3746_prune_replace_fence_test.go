@@ -22,6 +22,7 @@ import (
 // force_refresh) is unchanged and already tested for restores; this pins that
 // a replacement now moves the boundary, durably and in memory.
 func TestBUG3746_ContentReplacementMovesTheSeedBoundary(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	slug := createWSWithCollections(t, srv)
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections/tasks/items", map[string]interface{}{
@@ -66,6 +67,7 @@ func TestBUG3746_ContentReplacementMovesTheSeedBoundary(t *testing.T) {
 // content route, which already stamps a boundary, so this asserts the
 // boundary moves past the seed's seq to the patch's.
 func TestBUG3746_PatchReplacementMovesTheSeedBoundary(t *testing.T) {
+	t.Parallel()
 	srv := testServerWithCollab(t)
 	f := newPatchFixture(t, srv, "alpha\nbeta\ngamma\n")
 	seeded := f.current(t).Seq

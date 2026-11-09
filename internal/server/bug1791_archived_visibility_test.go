@@ -13,6 +13,7 @@ import (
 // they try to mutate it, return a clear "archived" conflict instead of a bare
 // 404 that reads as data loss / index corruption.
 func TestArchivedItem_Get200WithMarker_Update409(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

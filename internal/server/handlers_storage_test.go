@@ -26,6 +26,7 @@ type storageUsageResponse struct {
 // workspace has no owner_id, no attachments. Expected: used_bytes = 0,
 // limit_bytes = -1 (unlimited fallback), plan empty, no override.
 func TestStorageUsage_EmptyWorkspace(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	rr := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/storage/usage", nil)
@@ -53,6 +54,7 @@ func TestStorageUsage_EmptyWorkspace(t *testing.T) {
 // also exercise the cache invalidation hook by uploading twice and
 // asserting the second value reflects both blobs.
 func TestStorageUsage_TracksUploads(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	first := realPNG()
 
@@ -101,6 +103,7 @@ func TestStorageUsage_TracksUploads(t *testing.T) {
 // item-grant fixture (which would require a member-role user, an item,
 // a grant row, and a session — all just to flip a single role string).
 func TestStorageUsage_RejectsGuests(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	req := httptest.NewRequest("GET", "/api/v1/workspaces/"+slug+"/storage/usage", nil)
@@ -121,6 +124,7 @@ func TestStorageUsage_RejectsGuests(t *testing.T) {
 //   - sort=size ascends from smallest
 //   - limit + offset paginate correctly with the right total count
 func TestListAttachments_Pagination(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	// Three uploads. realPNG is the only stdlib-decodable shape we
@@ -212,6 +216,7 @@ func TestListAttachments_Pagination(t *testing.T) {
 // running the real thumbnail pipeline, which would require a decodable
 // image the pure-Go processor accepts.
 func TestListAttachments_HidesDerived(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -255,6 +260,7 @@ func TestListAttachments_HidesDerived(t *testing.T) {
 // list call that no longer sees the row. Storage usage drops to 0
 // confirming the cache invalidation hook fires.
 func TestDeleteAttachment_HappyPath(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	body := realPNG()
 
@@ -311,6 +317,7 @@ func TestDeleteAttachment_HappyPath(t *testing.T) {
 // SoftDeleteAttachment. This test creates an item, attaches a row,
 // soft-deletes the item, and then exercises the delete endpoint.
 func TestDeleteAttachment_AfterParentSoftDeleted(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -373,6 +380,7 @@ func TestDeleteAttachment_AfterParentSoftDeleted(t *testing.T) {
 // rather than silently succeed (which would leave the original
 // without thumbnails until a regenerate job runs).
 func TestDeleteAttachment_DerivedRefused(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 

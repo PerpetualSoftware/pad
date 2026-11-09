@@ -13,6 +13,7 @@ import (
 // shown with a blank Status. The row must carry the value that closed it. The
 // tasks item is the control: a status collection renders exactly as before.
 func TestBUG2640_CompletedRowsShowTheDoneFieldValue(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug := createWSWithCollections(t, srv)
 		if rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/collections", map[string]any{
@@ -65,6 +66,7 @@ func TestBUG2640_CompletedRowsShowTheDoneFieldValue(t *testing.T) {
 // completedWorkValue falls back to "status" when the item's collection is not
 // in the map (an otherwise uncovered branch, BUG-2640).
 func TestBUG2640_CompletedWorkValueFallsBackToStatus(t *testing.T) {
+	t.Parallel()
 	item := models.Item{CollectionID: "unknown", Fields: `{"status":"done","stage":"complete"}`}
 	if got := completedWorkValue(item, map[string]string{"other": "stage"}); got != "done" {
 		t.Errorf("unmapped collection: got %q, want the status value", got)

@@ -31,6 +31,7 @@ import (
 //     misconfigured deployment can't accept its own forgeable codes.
 
 func TestDeriveClaimCode_Deterministic(t *testing.T) {
+	t.Parallel()
 	secret := []byte("a-very-deterministic-test-secret-32")
 	at := time.Date(2026, 5, 18, 4, 0, 0, 0, time.UTC)
 	a := DeriveClaimCode(secret, "user-1", "ws-1", at)
@@ -49,6 +50,7 @@ func TestDeriveClaimCode_Deterministic(t *testing.T) {
 }
 
 func TestDeriveClaimCode_ZeroPadded(t *testing.T) {
+	t.Parallel()
 	// Brute-force search for an input whose derive happens to be small —
 	// we want to verify zero-padding works. With 10^6 possible codes,
 	// roughly 1-in-10 derives lands under 100000; trying 200 different
@@ -69,6 +71,7 @@ func TestDeriveClaimCode_ZeroPadded(t *testing.T) {
 }
 
 func TestDeriveClaimCode_NoCollisionOnConcatBoundary(t *testing.T) {
+	t.Parallel()
 	// Without length-prefixing, ("abc", "def") and ("abcdef", "") would
 	// HMAC the same byte sequence and produce identical codes. The
 	// length-prefix in writeLenPrefixed prevents this. Regression
@@ -84,6 +87,7 @@ func TestDeriveClaimCode_NoCollisionOnConcatBoundary(t *testing.T) {
 }
 
 func TestVerifyClaimCode_CurrentBucketAccepted(t *testing.T) {
+	t.Parallel()
 	secret := []byte("verify-current-secret-bytes-here-32")
 	at := time.Date(2026, 5, 18, 4, 0, 0, 0, time.UTC)
 	code := DeriveClaimCode(secret, "u", "w", at)
@@ -93,6 +97,7 @@ func TestVerifyClaimCode_CurrentBucketAccepted(t *testing.T) {
 }
 
 func TestVerifyClaimCode_PreviousBucketAccepted(t *testing.T) {
+	t.Parallel()
 	secret := []byte("verify-previous-secret-bytes-here-32")
 	at := time.Date(2026, 5, 18, 4, 0, 0, 0, time.UTC)
 	code := DeriveClaimCode(secret, "u", "w", at)
@@ -108,6 +113,7 @@ func TestVerifyClaimCode_PreviousBucketAccepted(t *testing.T) {
 }
 
 func TestVerifyClaimCode_AgedOutRejected(t *testing.T) {
+	t.Parallel()
 	secret := []byte("verify-aged-secret-bytes-here-3232")
 	at := time.Date(2026, 5, 18, 4, 0, 0, 0, time.UTC)
 	code := DeriveClaimCode(secret, "u", "w", at)
@@ -119,6 +125,7 @@ func TestVerifyClaimCode_AgedOutRejected(t *testing.T) {
 }
 
 func TestVerifyClaimCode_WrongInputsRejected(t *testing.T) {
+	t.Parallel()
 	secret := []byte("verify-wrong-secret-bytes-here-3232")
 	at := time.Date(2026, 5, 18, 4, 0, 0, 0, time.UTC)
 	code := DeriveClaimCode(secret, "right-user", "right-ws", at)
@@ -152,6 +159,7 @@ func TestVerifyClaimCode_WrongInputsRejected(t *testing.T) {
 }
 
 func TestVerifyClaimCode_ShortSecretFailsClosed(t *testing.T) {
+	t.Parallel()
 	// Derive with a too-short secret — the derive path doesn't reject
 	// (it's a pure function; the SetClaimSecret setter is where the
 	// guard nominally lives). Verify with the same secret must still

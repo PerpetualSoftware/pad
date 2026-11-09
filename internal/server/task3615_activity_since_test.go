@@ -16,6 +16,7 @@ import (
 // window. Three rows are pinned 30 seconds apart. Every leg names the rows it
 // expects, and a control leg one second later shows the filter actually bites.
 func TestTASK3615_ActivitySinceAcceptsRFC3339(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	f := newTask3615Fixture(t, srv)
 

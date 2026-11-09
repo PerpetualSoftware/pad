@@ -36,6 +36,7 @@ func contentOf(t *testing.T, srv *Server, id string) string {
 }
 
 func TestBUG3080_OlderWriteLandingLastIsRefusedAndNotWritten(t *testing.T) {
+	t.Parallel()
 	for _, path := range []struct{ name, query string }{
 		{"plain content PATCH (raw saver)", ""},
 		{"collab-snapshot flush", "?source=collab-snapshot"},
@@ -70,6 +71,7 @@ func TestBUG3080_OlderWriteLandingLastIsRefusedAndNotWritten(t *testing.T) {
 }
 
 func TestBUG3080_InOrderWritesBothApply(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -88,6 +90,7 @@ func TestBUG3080_InOrderWritesBothApply(t *testing.T) {
 }
 
 func TestBUG3080_TabsAreIndependent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -106,6 +109,7 @@ func TestBUG3080_TabsAreIndependent(t *testing.T) {
 }
 
 func TestBUG3080_UnstampedWriteIsUnaffectedByAnyMark(t *testing.T) {
+	t.Parallel()
 	// The CLI and MCP never send client_write. A tab having a high mark on
 	// the row must not change what they get.
 	srv := testServer(t)
@@ -128,6 +132,7 @@ func TestBUG3080_UnstampedWriteIsUnaffectedByAnyMark(t *testing.T) {
 }
 
 func TestBUG3080_AFailedWriteDoesNotMoveTheMark(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -147,6 +152,7 @@ func TestBUG3080_AFailedWriteDoesNotMoveTheMark(t *testing.T) {
 }
 
 func TestBUG3080_MalformedStampIsA400(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
@@ -259,6 +265,7 @@ func TestBUG3080_MarksAgeOutAndStayBounded(t *testing.T) {
 }
 
 func TestBUG3080_AStampOnANonContentWriteNeitherOrdersNorMarks(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)

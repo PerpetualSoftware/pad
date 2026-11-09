@@ -64,6 +64,7 @@ func blobPresent(t *testing.T, srv *Server, storageKey string) bool {
 // a workspace soft-deleted past the retention window is hard-deleted and
 // its attachment blob reclaimed through the storage backend.
 func TestWorkspacePurgeSweep_PurgesEligibleReclaimsBlob(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	if rr := doMultipartUpload(srv, slug, "doomed.png", realPNG()); rr.Code != 201 {
@@ -115,6 +116,7 @@ func TestWorkspacePurgeSweep_PurgesEligibleReclaimsBlob(t *testing.T) {
 // no-over-purge guarantee: a workspace soft-deleted inside the window
 // and a live workspace are both invisible to the sweep.
 func TestWorkspacePurgeSweep_LeavesRecentAndLiveUntouched(t *testing.T) {
+	t.Parallel()
 	srv, liveSlug := testServerWithAttachments(t)
 	liveWS := workspaceIDForSlug(t, srv, liveSlug)
 
@@ -147,6 +149,7 @@ func TestWorkspacePurgeSweep_LeavesRecentAndLiveUntouched(t *testing.T) {
 // that a different workspace still references (identical bytes dedupe to
 // one physical blob).
 func TestWorkspacePurgeSweep_CrossWorkspaceDedupKeepsSharedBlob(t *testing.T) {
+	t.Parallel()
 	srv, doomedSlug := testServerWithAttachments(t)
 	keeperSlug := createWSForTest(t, srv)
 
@@ -195,6 +198,7 @@ func TestWorkspacePurgeSweep_CrossWorkspaceDedupKeepsSharedBlob(t *testing.T) {
 // than purged into an orphaned blob. A subsequent sweep with a healthy
 // backend then completes the purge (idempotent self-heal).
 func TestWorkspacePurgeSweep_BlobFailureDefersNoOrphan(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 
@@ -253,6 +257,7 @@ func TestWorkspacePurgeSweep_BlobFailureDefersNoOrphan(t *testing.T) {
 // everything eligible is purged is a clean no-op — a single run doesn't
 // wedge the loop and repeats are safe.
 func TestWorkspacePurgeSweep_Idempotent(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	wsID := workspaceIDForSlug(t, srv, slug)
 	softDeleteWorkspaceAt(t, srv, wsID, time.Now().Add(-31*24*time.Hour))

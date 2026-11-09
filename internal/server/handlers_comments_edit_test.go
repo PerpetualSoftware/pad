@@ -12,6 +12,7 @@ import (
 // (TASK-1663 / PLAN-1662): only the comment author or a platform admin may
 // edit; non-author non-admins are rejected; empty bodies are rejected.
 func TestUpdateComment_Permissions(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 
 	// Owner (the bootstrap user) is the platform admin. Create an item.
@@ -79,6 +80,7 @@ func TestUpdateComment_Permissions(t *testing.T) {
 // no recorded user_id (pre-identity / agent / imported) has no provable
 // author, so only an admin can edit it.
 func TestUpdateComment_NullUserIDIsAdminOnly(t *testing.T) {
+	t.Parallel()
 	env := setupRBACEnv(t)
 	wsID := workspaceIDForSlug(t, env.srv, env.wsSlug)
 

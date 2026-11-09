@@ -11,6 +11,7 @@ import (
 // one that permanently refused it. A transient endpoint is retried and its
 // attempts and last error are recorded.
 func TestTask3409_ARetryGoesOnlyToOwnerEndpointsStillOwed(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	var refuses, flaky, healthy atomic.Int32
 	refuses.Store(http.StatusNotFound)
@@ -68,6 +69,7 @@ func TestTask3409_ARetryGoesOnlyToOwnerEndpointsStillOwed(t *testing.T) {
 // Parity: a single owner endpoint behaves as before, apart from the record.
 // A success acks at once; a 429 is retried as transient (TASK-3409).
 func TestTask3409_ASingleOwnerEndpointBehavesAsBefore(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	var st atomic.Int32
 	st.Store(http.StatusTooManyRequests)
@@ -92,6 +94,7 @@ func TestTask3409_ASingleOwnerEndpointBehavesAsBefore(t *testing.T) {
 // owed it. The event is acked, and the endpoint's drop is recorded and
 // counted rather than silent.
 func TestTask3409_AnEndpointDeactivatedWhileOwedIsCountedAsDropped(t *testing.T) {
+	t.Parallel()
 	e := newDeliveryEnv(t)
 	var down atomic.Int32
 	down.Store(http.StatusServiceUnavailable)

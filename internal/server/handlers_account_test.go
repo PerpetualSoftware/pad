@@ -115,6 +115,7 @@ func deleteAccountReq(srv *Server, body interface{}, token string) *httptest.Res
 // cancel would be called, the row would already be absent and the
 // assertion would fire inside the hook.
 func TestHandleDeleteAccount_CancelsStripeBeforeDelete(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	userID, token := bootstrapAccountDeleteUser(t, srv, "cus_paying_user")
@@ -167,6 +168,7 @@ func TestHandleDeleteAccount_CancelsStripeBeforeDelete(t *testing.T) {
 // owns. (Before, such a user was never asked about, and that customer kept
 // charging after the account was gone.)
 func TestHandleDeleteAccount_AsksSidecarByUserWhenNoLinkedCustomer(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)
@@ -200,6 +202,7 @@ func TestHandleDeleteAccount_AsksSidecarByUserWhenNoLinkedCustomer(t *testing.T)
 // before, so this one answer lets the deletion of a user with no linked
 // customer proceed: either deploy order is safe.
 func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// The body exactly as the old sidecar's json.Encoder writes it, newline included.
 	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusBadRequest, Body: "{\"error\":\"customer_id must start with 'cus_'\"}\n"}}
@@ -220,6 +223,7 @@ func TestHandleDeleteAccount_OlderSidecar400WithNoLinkedCustomerProceeds(t *test
 // only the old sidecar's exact refusal means nothing could have been
 // cancelled. A current sidecar's 400 may come while stamped customers bill.
 func TestHandleDeleteAccount_NoLinkedCustomerOther400Aborts(t *testing.T) {
+	t.Parallel()
 	for _, body := range []string{
 		`{"error":"customer_id or user_id is required"}`,
 		`{"error":"Invalid request body"}`,
@@ -248,6 +252,7 @@ func TestHandleDeleteAccount_NoLinkedCustomerOther400Aborts(t *testing.T) {
 // Any other failure with no linked customer still aborts: a stamped customer
 // may exist, and deleting the account would leave it charging.
 func TestHandleDeleteAccount_NoLinkedCustomerSidecar5xxAborts(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{err: &billing.SidecarError{Status: http.StatusInternalServerError, Body: `{"error":"boom"}`}}
 	srv.SetCloudSidecar(fake)
@@ -264,6 +269,7 @@ func TestHandleDeleteAccount_NoLinkedCustomerSidecar5xxAborts(t *testing.T) {
 }
 
 func TestHandleDeleteAccount_SkipsWhenNoSidecarConfigured(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	// No SetCloudSidecar — the reverse hook is nil.
 
@@ -287,6 +293,7 @@ func TestHandleDeleteAccount_SkipsWhenNoSidecarConfigured(t *testing.T) {
 // (no SidecarError) means transport failure or timeout. We MUST NOT delete
 // the user; a retry needs the data intact to re-drive the cancel.
 func TestHandleDeleteAccount_AbortsOnSidecarTransportFailure(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{err: errors.New("connect: connection refused")}
 	srv.SetCloudSidecar(fake)
@@ -315,6 +322,7 @@ func TestHandleDeleteAccount_AbortsOnSidecarTransportFailure(t *testing.T) {
 // Treated identically to transport failure: user stays put, retry can
 // re-drive the cancel.
 func TestHandleDeleteAccount_AbortsOnSidecar5xx(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{err: &billing.SidecarError{
 		Status: http.StatusInternalServerError,
@@ -347,6 +355,7 @@ func TestHandleDeleteAccount_AbortsOnSidecar5xx(t *testing.T) {
 // subscription kept billing — the exact regression TASK-690 exists to
 // prevent.
 func TestHandleDeleteAccount_AbortsOnSidecar4xx(t *testing.T) {
+	t.Parallel()
 	cases := []struct {
 		name   string
 		status int
@@ -406,6 +415,7 @@ func TestHandleDeleteAccount_AbortsOnSidecar4xx(t *testing.T) {
 // now that FK is ON DELETE SET NULL. (Each test gets an isolated DB file
 // copy, so the drop can't leak into sibling tests.)
 func TestHandleDeleteAccount_PartialDelete_WhenLocalDeleteFailsAfterCancel(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	fake.hook = func(string) {
@@ -453,6 +463,7 @@ func TestHandleDeleteAccount_PartialDelete_WhenLocalDeleteFailsAfterCancel(t *te
 // a cancel RPC. (Otherwise an attacker with a session cookie but no
 // password could still cancel the victim's Stripe subscription.)
 func TestHandleDeleteAccount_SkipsCancelOnWrongPassword(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)
@@ -508,6 +519,7 @@ func validTOTPCode(t *testing.T, secret string) string {
 // its own assertion. This is the non-2FA, non-Stripe baseline; the TOTP
 // happy-path test below covers the same envelope on the 2FA branch.
 func TestHandleDeleteAccount_SuccessBody(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)
@@ -539,6 +551,7 @@ func TestHandleDeleteAccount_SuccessBody(t *testing.T) {
 // the correct password AND a valid TOTP code deletes successfully (200
 // {ok:true}) and the user row is gone.
 func TestHandleDeleteAccount_TOTPEnabled_ValidCode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)
@@ -573,6 +586,7 @@ func TestHandleDeleteAccount_TOTPEnabled_ValidCode(t *testing.T) {
 // with the correct password but NO totp_code is rejected with totp_required,
 // no Stripe cancel is attempted, and the user row survives.
 func TestHandleDeleteAccount_TOTPEnabled_MissingCode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)
@@ -606,6 +620,7 @@ func TestHandleDeleteAccount_TOTPEnabled_MissingCode(t *testing.T) {
 // with the correct password but a WRONG totp_code is rejected with
 // totp_invalid, no Stripe cancel is attempted, and the user row survives.
 func TestHandleDeleteAccount_TOTPEnabled_InvalidCode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)
@@ -646,6 +661,7 @@ func TestHandleDeleteAccount_TOTPEnabled_InvalidCode(t *testing.T) {
 // unchanged by this feature: no totp_code is required, and supplying one is
 // simply ignored. The delete succeeds exactly as before.
 func TestHandleDeleteAccount_NoTOTP_Unaffected(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	fake := &fakeSidecar{}
 	srv.SetCloudSidecar(fake)

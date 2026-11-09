@@ -42,6 +42,7 @@ func uploadSource(t *testing.T, srv *Server, slug, encoded string) (id, filename
 }
 
 func TestUpload_BUG2819_FilenameSourceIsRecordedAtTheDoor(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 
 	_, callerName, callerSource := uploadSource(t, srv, slug, "upload.txt")
@@ -84,6 +85,7 @@ func TestUpload_BUG2819_FilenameSourceIsRecordedAtTheDoor(t *testing.T) {
 // "substituted" (the bundle's claim), where recomputing at the importer would
 // have called it the caller's own name.
 func TestImportBundle_BUG2819_FilenameSourceSurvivesARoundTrip(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 	uploadSource(t, src, srcSlug, "upload.txt")
 	uploadSource(t, src, srcSlug, "%FF%FE.txt")
@@ -128,6 +130,7 @@ func TestImportBundle_BUG2819_FilenameSourceSurvivesARoundTrip(t *testing.T) {
 }
 
 func TestThumbnails_BUG2819_VariantsAreDerived(t *testing.T) {
+	t.Parallel()
 	f := newDerivationFixture(t)
 	attID := f.attachTo(t, &f.itemID)
 	f.srv.deriveThumbnails(attID)

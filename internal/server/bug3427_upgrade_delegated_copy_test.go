@@ -12,6 +12,7 @@ import (
 // appAdmitDelegated grants, and the second test holds the code to that copy.
 
 func TestBug3427_WidenedDelegatedDetailStatesTheRule(t *testing.T) {
+	t.Parallel()
 	old := diffBase() // delegated "read"
 	next := clone(old)
 	next.Scopes.Delegated.Access = "write"
@@ -46,6 +47,7 @@ func TestBug3427_WidenedDelegatedDetailStatesTheRule(t *testing.T) {
 // to write, a person who consented to read stays read, and a sign-in after
 // the widening can consent to write.
 func TestBug3427_WideningKeepsExistingConsentsAndOpensNewOnes(t *testing.T) {
+	t.Parallel()
 	create := func(f delegatedAPIFix) int {
 		return appDo(f.srv, "POST", f.path("/collections/requests/items"), f.token, map[string]any{"title": "x"}).Code
 	}

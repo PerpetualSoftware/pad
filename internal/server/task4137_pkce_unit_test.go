@@ -6,6 +6,7 @@ import (
 )
 
 func TestTASK4137_PKCEHelpers(t *testing.T) {
+	t.Parallel()
 	if !pkceVerifierMatches(t4137Verifier, t4137Chall) { // RFC 7636 appendix B
 		t.Error("RFC 7636 appendix B pair does not match")
 	}

@@ -55,6 +55,7 @@ func uploadEncodedName(t *testing.T, srv *Server, slug, encoded string, body []b
 // as ".svg" is now refused as extension_blocked, because the blocklist judges
 // the normalised name.
 func TestUpload_BUG2818_HiddenBlockedExtensionIsRefused(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	for _, encoded := range []string{
 		"x.s%0Bvg",    // vertical tab (C0)
@@ -79,6 +80,7 @@ func TestUpload_BUG2818_HiddenBlockedExtensionIsRefused(t *testing.T) {
 
 // A benign name carrying a stray control byte is stored without it, not refused.
 func TestUpload_BUG2818_BenignControlByteIsNormalisedNotRefused(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	rr := uploadEncodedName(t, srv, slug, "my%09notes.txt", []byte("plain text\n"))
 	if rr.Code != http.StatusCreated {
@@ -98,6 +100,7 @@ func TestUpload_BUG2818_BenignControlByteIsNormalisedNotRefused(t *testing.T) {
 // A LEGACY row, stored before ingest normalised, is served under a name that
 // cannot be the blocked type, whatever its stored bytes say.
 func TestDownload_BUG2818_LegacyRowIsNotServedAsABlockedExtension(t *testing.T) {
+	t.Parallel()
 	srv, slug := testServerWithAttachments(t)
 	for _, legacy := range []string{"x.s\vvg", `x.s"vg`, "x.svg.", "setup.e\x08xe"} {
 		id, _, urlPath := uploadHelper(t, srv, slug, "legacy.xml", svgScript)
@@ -136,6 +139,7 @@ func dispositionFilename(t *testing.T, header string) string {
 // (the importer skips a refused attachment), while an entry whose name only
 // needs cleaning is imported cleaned.
 func TestImportBundle_BUG2818_ManifestNamesAreNormalisedBeforeTheBlocklist(t *testing.T) {
+	t.Parallel()
 	src, srcSlug := testServerWithAttachments(t)
 	uploadHelper(t, src, srcSlug, "attack.xml", svgScript)
 	uploadHelper(t, src, srcSlug, "benign.txt", []byte("plain text\n"))
@@ -254,6 +258,7 @@ func rewriteManifestNames(t *testing.T, bundle []byte, rename map[string]string)
 // This is the invariant for BUG-2818 as a test: a sanitiser with
 // its own character switch (the pre-fix shape) differs on C1 and fails here.
 func TestSanitizeHeaderFilename_DropsExactlyTheIngestPredicate(t *testing.T) {
+	t.Parallel()
 	for r := rune(0); r <= utf8.MaxRune; r++ {
 		if !utf8.ValidRune(r) {
 			continue

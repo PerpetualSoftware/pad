@@ -83,6 +83,7 @@ func redeem(srv *Server, body string) *httptest.ResponseRecorder {
 }
 
 func TestAppInstallConfirm_ProvisionsEverything(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)
@@ -180,6 +181,7 @@ func appRows(t *testing.T, e *appsEnv, q string, args ...any) int {
 
 // The confirm must name the manifest the owner reviewed.
 func TestAppInstallConfirm_ManifestMismatchWritesNothing(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	before := provisionCensus(t, e)
@@ -194,6 +196,7 @@ func TestAppInstallConfirm_ManifestMismatchWritesNothing(t *testing.T) {
 // differs, the owner is told what changed, and nothing is written. Each
 // sub-case moves a different state the preview depended on.
 func TestAppInstallConfirm_ReviewStale(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		move     func(t *testing.T, e *appsEnv)
 		wantText []string
@@ -253,6 +256,7 @@ func squatPlaybook(t *testing.T, e *appsEnv, title, slug string) {
 // that skip the workspace lock (a collection archive, a
 // relation target's collection archive).
 func TestProvisionAppInstall_InTransactionRecheck(t *testing.T) {
+	t.Parallel()
 	cases := map[string]struct {
 		setup    func(t *testing.T, e *appsEnv)
 		move     func(t *testing.T, e *appsEnv)
@@ -386,6 +390,7 @@ func ownerIDOf(t *testing.T, e *appsEnv) string {
 // Redeem consumes the code once and returns the secret once; a reissued code
 // rotates the secret again, and the earlier secret stops matching.
 func TestAppInstallRedeem(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)
@@ -446,6 +451,7 @@ func TestAppInstallRedeem(t *testing.T) {
 
 // Every refusal is the same 400, and the body cap holds.
 func TestAppInstallRedeem_Refusals(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)
@@ -490,6 +496,7 @@ func TestAppInstallRedeem_Refusals(t *testing.T) {
 // Redeem is unauthenticated and not under /api/v1: a cookie or bearer is
 // neither needed nor consulted, and apps being off answers 404.
 func TestAppInstallRedeem_GateAndMount(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	rr := doRequestWithCookie(e.srv, "PUT", "/api/v1/admin/apps", map[string]any{"enabled": false}, e.token)
 	if rr.Code != http.StatusOK {
@@ -505,6 +512,7 @@ func TestAppInstallRedeem_GateAndMount(t *testing.T) {
 
 // The per-address limiter refuses a stream of probes.
 func TestAppInstallRedeem_RateLimited(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	limited := false
 	for i := 0; i < 30; i++ {
@@ -521,6 +529,7 @@ func TestAppInstallRedeem_RateLimited(t *testing.T) {
 // The store re-checks the reviewed manifest hash itself, so a caller that
 // skipped the handler's comparison still cannot provision another record.
 func TestProvisionAppInstall_RefusesAnUnreviewedManifest(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	req, derive := prepareProvision(t, e, p)
@@ -539,6 +548,7 @@ func TestProvisionAppInstall_RefusesAnUnreviewedManifest(t *testing.T) {
 // archived (which skips the workspace lock), and a title default that a new
 // item makes ambiguous.
 func TestProvisionAppInstall_RelationRecheck(t *testing.T) {
+	t.Parallel()
 	type env struct {
 		e      *appsEnv
 		people *models.Collection
@@ -620,6 +630,7 @@ func TestProvisionAppInstall_RelationRecheck(t *testing.T) {
 // The store re-checks the pending record itself: not staged, expired, or
 // another owner's or workspace's record is refused with nothing written.
 func TestProvisionAppInstall_PendingRecordGuards(t *testing.T) {
+	t.Parallel()
 	for name, mutate := range map[string]func(t *testing.T, e *appsEnv, req *store.ProvisionRequest){
 		"not staged": func(t *testing.T, e *appsEnv, req *store.ProvisionRequest) {
 			if _, err := e.srv.store.DB().Exec(`UPDATE app_install_pending SET state = 'fetching'`); err != nil {
@@ -680,6 +691,7 @@ func ownerRequest(t *testing.T, e *appsEnv) *http.Request {
 // "<slug>-collection", which the app cannot address. The preview refuses it,
 // and the store refuses a de-collided OR rewritten slug as a backstop.
 func TestAppInstall_ReservedCompanionSlug(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	m := e.manifest(t)
 	m["companion_pack"].(map[string]any)["collections"].([]any)[0].(map[string]any)["slug"] = "settings"
@@ -715,6 +727,7 @@ func TestAppInstall_ReservedCompanionSlug(t *testing.T) {
 // unknown one. It never charges the install bucket, so it can never draw a
 // 429 the unknown code would not, and it cannot throttle a fresh code.
 func TestAppInstallRedeem_DeadCodeNeverChargesTheInstallBucket(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	p := e.stagePreview(t)
 	rr := e.confirm(t, p, p.ManifestSHA256)
@@ -820,6 +833,7 @@ func TestProvisionDerive_WritesNothing(t *testing.T) {
 // longer resolves, so the stored bytes do not change and only a warning
 // appears. The owner reviewed the warnings too, so the derivation refuses.
 func TestProvisionAppInstall_SuppliedRelationTargetDeleted(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	people, err := e.srv.store.CreateCollection(e.wsID, models.CollectionCreate{Name: "People", Slug: "people"})
 	if err != nil {
@@ -863,6 +877,7 @@ func TestProvisionAppInstall_SuppliedRelationTargetDeleted(t *testing.T) {
 // re-stamped to the new install, ONLY when its holder is uninstalled. Every
 // other holder state is refused, naming the state.
 func TestAppInstall_AdoptionByHolderState(t *testing.T) {
+	t.Parallel()
 	install := func(t *testing.T, e *appsEnv) string {
 		t.Helper()
 		p := e.stagePreview(t)
@@ -927,6 +942,7 @@ func TestAppInstall_AdoptionByHolderState(t *testing.T) {
 // bearer. Redeem must never reach that middleware: the install code is its
 // credential (reviewed on #1771).
 func TestAppInstallRedeem_OutsideTheAppTokenRouter(t *testing.T) {
+	t.Parallel()
 	e := newProvisionEnv(t)
 	rr := redeem(e.srv, `{"code":"padic_unknown"}`)
 	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "invalid_install_code") {

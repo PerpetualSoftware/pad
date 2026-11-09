@@ -31,6 +31,7 @@ func makeLegacy(t *testing.T, srv *Server, wsID string) {
 }
 
 func TestTASK3462U4_LegacyAdoption(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Legacy 3462", "startup")
 		conv := task3462ItemByTitle(t, srv, slug, "conventions", "Conventional commit format")
@@ -126,6 +127,7 @@ func makeLegacyDatesOnly(t *testing.T, srv *Server, wsID string) {
 // The matcher: exact title, or a playbook's invocation_slug; an ambiguous
 // title resolves only by exact body.
 func TestTASK3462U4_MatchLegacyBuiltin(t *testing.T) {
+	t.Parallel()
 	entries := []collections.BuiltinEntry{
 		{Key: "a/one", Kind: "convention", Title: "Same title", Content: "body one"},
 		{Key: "b/one", Kind: "convention", Title: "Same title", Content: "body two"},
@@ -154,6 +156,7 @@ func TestTASK3462U4_MatchLegacyBuiltin(t *testing.T) {
 // An item created in the very second the origin migration
 // was applied (timestamps are second-precision) is still a legacy item.
 func TestTASK3462U4_SameSecondAsTheMigrationIsLegacy(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		_, wsID := task3462Workspace(t, srv, "Same second 3462", "startup")
 		makeLegacy(t, srv, wsID)
@@ -180,6 +183,7 @@ func TestTASK3462U4_SameSecondAsTheMigrationIsLegacy(t *testing.T) {
 // (none writes into an existing one), so the workspace's own created_at is
 // the arrival bound.
 func TestTASK3462U4_ImportedAfterTheCutoffIsNotLegacy(t *testing.T) {
+	t.Parallel()
 	bothBackends(t, func(t *testing.T, srv *Server) {
 		slug, wsID := task3462Workspace(t, srv, "Import src 3462", "startup")
 		makeLegacy(t, srv, wsID)

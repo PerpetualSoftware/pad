@@ -44,6 +44,7 @@ func staleBundle(t *testing.T, states ...string) []byte {
 }
 
 func TestImportReportsHowManyBodiesWereStaleWhenTheBundleWasWritten(t *testing.T) {
+	t.Parallel()
 	t.Run("a clean bundle sets no header", func(t *testing.T) {
 		// THE CONTROL, first. A tally that counted every item, or that set the
 		// header unconditionally, would satisfy the assertion below.

@@ -77,6 +77,7 @@ func fetchVersions(t *testing.T, srv *Server, wsSlug, itemSlug, query string) []
 }
 
 func TestItemVersions_LimitBoundsTheWindow(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := seedVersionedItem(t, srv, ws, 5)
@@ -108,6 +109,7 @@ func TestItemVersions_LimitBoundsTheWindow(t *testing.T) {
 // that truncates a request nobody bounded is a silent-truncation trap for
 // third-party API consumers.
 func TestItemVersions_AbsentLimitIsUnbounded(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 
@@ -126,6 +128,7 @@ func TestItemVersions_AbsentLimitIsUnbounded(t *testing.T) {
 }
 
 func TestItemVersions_OversizedLimitIsClamped(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := seedVersionedItem(t, srv, ws, 8)
@@ -154,6 +157,7 @@ func TestItemVersions_OversizedLimitIsClamped(t *testing.T) {
 // above: that one proves an oversized ask is accepted, this one proves the
 // number it is accepted AS — and covers the inputs a URL can actually carry.
 func TestItemVersions_ClampArithmetic(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		raw  string
 		want int
@@ -198,6 +202,7 @@ func TestItemVersions_ClampArithmetic(t *testing.T) {
 // production path; the cost of being wrong here is performance, not
 // correctness, so that instrument is not built.
 func TestItemVersions_SummaryOmitsContentButKeepsMetadata(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := seedVersionedItem(t, srv, ws, 3)
@@ -243,6 +248,7 @@ func TestItemVersions_SummaryOmitsContentButKeepsMetadata(t *testing.T) {
 // summary and limit compose: the bound applies to the metadata-only path too,
 // which is the combination every agent call actually uses.
 func TestItemVersions_SummaryRespectsLimit(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := seedVersionedItem(t, srv, ws, 5)
@@ -263,6 +269,7 @@ func TestItemVersions_SummaryRespectsLimit(t *testing.T) {
 // would make older versions unrestorable — the one place the limit must not
 // reach (BUG-1612's expand path has the same requirement).
 func TestItemVersions_RestoreStillReachesOldVersions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createTestWorkspaceViaAPI(t, srv)
 	item := seedVersionedItem(t, srv, ws, 6)

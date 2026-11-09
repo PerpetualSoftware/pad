@@ -41,6 +41,7 @@ func bug3202CompareFixture(t *testing.T) (*Server, string, func(title, fields st
 
 // The activity feed's `changes` metadata (diffFields).
 func TestActivityChangesCompareNumbersByValue(t *testing.T) {
+	t.Parallel()
 	srv, ws, mk := bug3202CompareFixture(t)
 	changesFor := func(it *models.Item) string {
 		acts, err := srv.store.ListDocumentActivity(it.ID, models.ActivityListParams{})
@@ -79,6 +80,7 @@ func TestActivityChangesCompareNumbersByValue(t *testing.T) {
 // The BUG-3163 carry check: a full `fields` write may carry a stored reserved
 // value unchanged, compared by value.
 func TestReservedCarryComparesNumbersByValue(t *testing.T) {
+	t.Parallel()
 	srv, ws, mk := bug3202CompareFixture(t)
 	const pr = `"url":"https://example.com/pr/1"`
 
@@ -109,6 +111,7 @@ func TestReservedCarryComparesNumbersByValue(t *testing.T) {
 // Sorting on a number field orders by value, so equal values in different
 // spellings sit together (SQLite; json_extract yields a number).
 func TestFieldSortOrdersNumbersByValue(t *testing.T) {
+	t.Parallel()
 	srv, ws, mk := bug3202CompareFixture(t)
 	mk("a", `{"status":"open","n":1001}`)
 	mk("b", `{"status":"open","n":1e3}`)

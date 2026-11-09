@@ -105,6 +105,7 @@ func TestExpectedUpdatedAt_CannotSeeASameSecondRace(t *testing.T) {
 // TestExpectedSeq_RefusesASameSecondRace is the FIX: the identical race, with
 // the strong token.
 func TestExpectedSeq_RefusesASameSecondRace(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, ws, "Same-second race, strong token", `{"status":"open","priority":"high"}`)
@@ -163,6 +164,7 @@ func TestExpectedSeq_RefusesASameSecondRace(t *testing.T) {
 
 // The two legs that keep the fix from being "refuse more things".
 func TestExpectedSeq_AcceptsTheCurrentTokenAndATokenlessWrite(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, ws, "Not everything conflicts", `{"status":"open"}`)
@@ -190,6 +192,7 @@ func TestExpectedSeq_AcceptsTheCurrentTokenAndATokenlessWrite(t *testing.T) {
 // A seq the server could never have issued is a 400, not a 409 — a conflict
 // would read as contention that never clears.
 func TestExpectedSeq_BelowOneIsABadRequest(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, ws, "Impossible token", `{"status":"open"}`)
@@ -213,6 +216,7 @@ func TestExpectedSeq_BelowOneIsABadRequest(t *testing.T) {
 // both. Enforcing the weak token on top of a satisfied strong one adds no
 // protection and breaks that migration path.
 func TestExpectedSeq_DecidesWhenBothTokensAreSent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	ws := createWSWithCollections(t, srv)
 	item := createTaskWithFields(t, srv, ws, "Both tokens", `{"status":"open"}`)

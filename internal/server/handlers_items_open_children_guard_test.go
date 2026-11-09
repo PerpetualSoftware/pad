@@ -52,6 +52,7 @@ func seedParentAndChildren(t *testing.T, srv *Server, wsSlug string, childStatus
 }
 
 func TestOpenChildrenGuard_RejectsTerminalWithOpenChildren(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -128,6 +129,7 @@ func TestOpenChildrenGuard_RejectsTerminalWithOpenChildren(t *testing.T) {
 }
 
 func TestOpenChildrenGuard_NoChildren_OK(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -148,6 +150,7 @@ func TestOpenChildrenGuard_NoChildren_OK(t *testing.T) {
 }
 
 func TestOpenChildrenGuard_AllChildrenTerminal_OK(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -162,6 +165,7 @@ func TestOpenChildrenGuard_AllChildrenTerminal_OK(t *testing.T) {
 }
 
 func TestOpenChildrenGuard_ForceOverrides(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -184,6 +188,7 @@ func TestOpenChildrenGuard_ForceOverrides(t *testing.T) {
 }
 
 func TestOpenChildrenGuard_NonTerminalTransition_NotGuarded(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -199,6 +204,7 @@ func TestOpenChildrenGuard_NonTerminalTransition_NotGuarded(t *testing.T) {
 }
 
 func TestOpenChildrenGuard_TerminalToTerminal_NotGuarded(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -244,6 +250,7 @@ func TestOpenChildrenGuard_TerminalToTerminal_NotGuarded(t *testing.T) {
 }
 
 func TestOpenChildrenGuard_NoOpTerminal_NotGuarded(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -268,6 +275,7 @@ func TestOpenChildrenGuard_NoOpTerminal_NotGuarded(t *testing.T) {
 }
 
 func TestOpenChildrenGuard_UsesCollectionTerminalOptions(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -327,6 +335,7 @@ func TestOpenChildrenGuard_UsesCollectionTerminalOptions(t *testing.T) {
 // #3 (the brief explicitly adopts it). Uses a Task with a child Task
 // to exercise the non-plan path.
 func TestOpenChildrenGuard_GuardAppliesToAnyParent(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -365,6 +374,7 @@ func TestOpenChildrenGuard_GuardAppliesToAnyParent(t *testing.T) {
 // payload — hidden children appear only as a count, never with refs
 // or titles.
 func TestOpenChildrenGuard_VisibilitySanitizesPayload(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 
@@ -500,6 +510,7 @@ func TestOpenChildrenGuard_VisibilitySanitizesPayload(t *testing.T) {
 // generic and `details.open_children` is empty while
 // `hidden_blocker_count` is non-zero.
 func TestOpenChildrenGuard_AllBlockersHiddenSurfaceGenericMessage(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
 
@@ -666,6 +677,7 @@ func TestOpenChildrenGuard_TOCTOURace(t *testing.T) {
 // MoveItemWithPreCheck wiring, this PATCH would silently complete
 // a parent that still has open children.
 func TestOpenChildrenGuard_MoveItem_RejectsTerminalWithOpenChildren(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -727,6 +739,7 @@ func TestOpenChildrenGuard_MoveItem_RejectsTerminalWithOpenChildren(t *testing.T
 // path's `?force=true` query escapes the guard, mirroring the update
 // path's --force.
 func TestOpenChildrenGuard_MoveItem_ForceOverrides(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -878,6 +891,7 @@ func TestOpenChildrenGuard_LinkMutationRace(t *testing.T) {
 // evaluated against the custom done-field — not the default-status
 // fallback which would mis-classify it as non-terminal.
 func TestOpenChildrenGuard_SoftDeletedCollectionSchemaHonored(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 
@@ -947,6 +961,7 @@ func TestOpenChildrenGuard_SoftDeletedCollectionSchemaHonored(t *testing.T) {
 // closed" which surfaces from visibleCollectionIDs → writeInternalError
 // → 500 with the generic error envelope (no children listed).
 func TestOpenChildrenGuard_VisibilityLookupErrorFailsClosed(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	plan, _ := seedParentAndChildren(t, srv, slug, []string{"open"})
@@ -992,6 +1007,7 @@ func TestOpenChildrenGuard_VisibilityLookupErrorFailsClosed(t *testing.T) {
 // must show the post-mutation value — otherwise the precheck was
 // using a stale view.
 func TestOpenChildrenGuard_PrecheckReadsInTxSnapshot(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	plan, _ := seedParentAndChildren(t, srv, slug, []string{"done"})
@@ -1050,6 +1066,7 @@ func TestOpenChildrenGuard_PrecheckReadsInTxSnapshot(t *testing.T) {
 // verify the server returns the same wire shape, which is the
 // upstream signal the CLI lifts.
 func TestBulkUpdateStructuredFailuresCarryOpenChildrenDetails(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	plan, _ := seedParentAndChildren(t, srv, slug, []string{"open"})
@@ -1273,6 +1290,7 @@ func mustCreate(t *testing.T, srv *Server, wsSlug, collectionSlug string, body m
 // the link change. Pre-fix the link committed before the guard ran,
 // so the caller saw 409 but the parent had already moved.
 func TestOpenChildrenGuard_PatchAtomicRejectionPreservesParentLink(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 

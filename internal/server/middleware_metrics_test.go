@@ -12,6 +12,7 @@ import (
 )
 
 func TestMetricsMiddleware_RecordsRequestMetrics(t *testing.T) {
+	t.Parallel()
 	m := metrics.New()
 
 	r := chi.NewRouter()
@@ -72,6 +73,7 @@ func TestMetricsMiddleware_RecordsRequestMetrics(t *testing.T) {
 }
 
 func TestMetricsMiddleware_UsesRoutePattern(t *testing.T) {
+	t.Parallel()
 	m := metrics.New()
 
 	r := chi.NewRouter()
@@ -106,6 +108,7 @@ func TestMetricsMiddleware_UsesRoutePattern(t *testing.T) {
 }
 
 func TestMetricsMiddleware_UnmatchedRoute(t *testing.T) {
+	t.Parallel()
 	m := metrics.New()
 
 	r := chi.NewRouter()

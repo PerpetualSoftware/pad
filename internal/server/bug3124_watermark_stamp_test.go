@@ -66,6 +66,7 @@ func (f *stampFixture) state(t *testing.T) string {
 }
 
 func TestWatermarkStamp_CaughtUpTabClearsPendingWithoutWriting(t *testing.T) {
+	t.Parallel()
 	f := newStampFixture(t)
 	if f.state(t) == "" {
 		t.Fatal("premise: an op-log row above a NULL watermark must read pending")
@@ -100,6 +101,7 @@ func TestWatermarkStamp_CaughtUpTabClearsPendingWithoutWriting(t *testing.T) {
 // The ruling's named case: a cursor behind MAX is a no-op. The tab has not
 // applied every row, so it cannot vouch that the body covers them.
 func TestWatermarkStamp_StaleCursorIsANoOp(t *testing.T) {
+	t.Parallel()
 	f := newStampFixture(t)
 	newer, err := f.srv.store.AppendYjsUpdate(f.itemID, []byte{0x00, 0x02, 0x03, 0x04, 0x05, 0x06}, "1")
 	if err != nil {
@@ -120,6 +122,7 @@ func TestWatermarkStamp_StaleCursorIsANoOp(t *testing.T) {
 }
 
 func TestWatermarkStamp_BodyMismatchIsANoOp(t *testing.T) {
+	t.Parallel()
 	f := newStampFixture(t)
 	if _, adv := f.stamp(t, map[string]any{"op_log_cursor": f.lastOpLog, "content_sha256": sha(f.content + "x")}); adv {
 		t.Fatal("a tab whose document renders to a different body must not stamp")
@@ -132,6 +135,7 @@ func TestWatermarkStamp_BodyMismatchIsANoOp(t *testing.T) {
 // The body changed between the tab's load and its stamp (a CLI write): the
 // tab's hash describes content the row no longer holds.
 func TestWatermarkStamp_BodyChangedSinceTheTabLoadedIsANoOp(t *testing.T) {
+	t.Parallel()
 	f := newStampFixture(t)
 	rr := doRequest(f.srv, "PATCH", "/api/v1/workspaces/"+f.ws+"/items/"+f.slug, map[string]any{"content": "rewritten by the CLI"})
 	if rr.Code != http.StatusOK {
@@ -149,6 +153,7 @@ func TestWatermarkStamp_BodyChangedSinceTheTabLoadedIsANoOp(t *testing.T) {
 }
 
 func TestWatermarkStamp_MalformedInputIs400(t *testing.T) {
+	t.Parallel()
 	f := newStampFixture(t)
 	for name, body := range map[string]map[string]any{
 		"cursor zero":     {"op_log_cursor": 0, "content_sha256": sha(f.content)},
@@ -166,6 +171,7 @@ func TestWatermarkStamp_MalformedInputIs400(t *testing.T) {
 // Moving the watermark is a write decision (it makes rows GC-eligible), so it
 // takes edit permission like the flush it stands in for.
 func TestWatermarkStamp_ViewerIsRefused(t *testing.T) {
+	t.Parallel()
 	f := newStampFixture(t)
 	ws, err := f.srv.store.GetWorkspaceBySlug(f.ws)
 	if err != nil || ws == nil {

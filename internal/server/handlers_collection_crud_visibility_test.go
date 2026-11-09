@@ -24,6 +24,7 @@ import (
 // hidden from them, over either auth class. The same owner can still PATCH
 // a visible collection.
 func TestUpdateCollection_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	hiddenPath := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.hiddenColl.Slug
@@ -52,6 +53,7 @@ func TestUpdateCollection_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // successful delete of the visible collection in one case doesn't affect
 // another.
 func TestDeleteCollection_RestrictedOwner_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	t.Run("bearer", func(t *testing.T) {
 		f := newRestrictedOwnerVisibilityFixture(t)
 		hiddenPath := "/api/v1/workspaces/" + f.ws.Slug + "/collections/" + f.hiddenColl.Slug
@@ -92,6 +94,7 @@ func TestDeleteCollection_RestrictedOwner_HiddenCollection404(t *testing.T) {
 // check (handleGetCollection's idiom) rather than the strict
 // requireCollectionFullyVisible helper.
 func TestUpdateDeleteCollection_ItemGrantOnly_HiddenCollection404(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 	f.grantHiddenItemToOwner(t)
 
@@ -125,6 +128,7 @@ func TestUpdateDeleteCollection_ItemGrantOnly_HiddenCollection404(t *testing.T) 
 // swapped the check order (visibility before role) would surface as an
 // incorrect 404 here instead of the expected 403.
 func TestUpdateDeleteCollection_NonOwner_403BeforeVisibility(t *testing.T) {
+	t.Parallel()
 	f := newRestrictedOwnerVisibilityFixture(t)
 
 	editor, err := f.srv.store.CreateUser(models.UserCreate{

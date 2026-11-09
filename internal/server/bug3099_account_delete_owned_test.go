@@ -47,6 +47,7 @@ func liveWorkspace(t *testing.T, srv *Server, id string) bool {
 // control workspace, owned before the request, was deleted before the fix
 // too; if it survives, the harness is wrong, not the fix.
 func TestDeleteAccount_WorkspaceMintedInTheWindowIsDeleted(t *testing.T) {
+	t.Parallel()
 	for _, driver := range []store.DriverType{store.DriverSQLite, store.DriverPostgres} {
 		t.Run(string(driver), func(t *testing.T) {
 			srv := accountDeleteServer(t, driver)
@@ -98,6 +99,7 @@ func TestDeleteAccount_WorkspaceMintedInTheWindowIsDeleted(t *testing.T) {
 // that is owned but not joined was therefore invisible to the list with no
 // race on the read at all.
 func TestDeleteAccount_OwnedWorkspaceWithoutMembershipIsDeleted(t *testing.T) {
+	t.Parallel()
 	for _, driver := range []store.DriverType{store.DriverSQLite, store.DriverPostgres} {
 		t.Run(string(driver), func(t *testing.T) {
 			srv := accountDeleteServer(t, driver)

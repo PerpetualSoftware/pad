@@ -10,6 +10,7 @@ import (
 // TestMentionShapeParity pins links.ExtractMentions's name shape to
 // ValidateUsername's, ignoring the reserved list (TASK-3917).
 func TestMentionShapeParity(t *testing.T) {
+	t.Parallel()
 	names := []string{
 		"alice", "bob", "abc", "a-b", "a1b", "123", "a-b-c", "x9-9y",
 		strings.Repeat("a", 39),

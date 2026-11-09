@@ -29,6 +29,7 @@ func storedObject(t *testing.T, raw string) map[string]any {
 // typed members (PLAN-3535, IDEA-3906). Whitespace-only settings must do the
 // same.
 func TestBUG3985_WhitespaceSettingsOnPatchActAsEmpty(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
 		const seed = `{"layout":"balanced","tracks_work":true,"awaits_human":true}`
@@ -50,6 +51,7 @@ func TestBUG3985_WhitespaceSettingsOnPatchActAsEmpty(t *testing.T) {
 
 // Create keeps its repair: whitespace-only settings land as an object.
 func TestBUG3985_WhitespaceSettingsOnCreateActAsEmpty(t *testing.T) {
+	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
 		for i, raw := range []string{"", " ", "\t\n "} {

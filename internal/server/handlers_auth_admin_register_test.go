@@ -57,6 +57,7 @@ func assertNoSessionMinted(t *testing.T, srv *Server, rr *httptest.ResponseRecor
 }
 
 func TestRegister_AdminBearer_MintsNoSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminTok := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -80,6 +81,7 @@ func TestRegister_AdminBearer_MintsNoSession(t *testing.T) {
 // its own session (before BUG-3232 the response overwrote its cookie, and
 // since BUG-3011 that also destroyed the admin's row).
 func TestRegister_AdminCookie_KeepsAdminSession(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	adminTok := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 
@@ -99,6 +101,7 @@ func TestRegister_AdminCookie_KeepsAdminSession(t *testing.T) {
 // Pin: an invitation signup is the new user signing up, and still gets a
 // session: token in the body, the cookie set, and a live row.
 func TestRegister_Invitation_StillSignsIn(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
 	admin, err := srv.store.GetUserByEmail("admin@test.com")
@@ -124,6 +127,7 @@ func TestRegister_Invitation_StillSignsIn(t *testing.T) {
 // Pin: cloud self-serve signup is the new user signing up, and still gets a
 // session.
 func TestRegister_SelfServe_StillSignsIn(t *testing.T) {
+	t.Parallel()
 	srv, _ := newCloudEmailServer(t)
 	rr := doRequest(srv, http.MethodPost, "/api/v1/auth/register", map[string]string{
 		"email": "newbie@pad.test", "name": "Newbie", "password": "correct-horse-battery-staple",

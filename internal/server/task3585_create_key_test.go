@@ -10,6 +10,7 @@ import (
 
 // TASK-3585: idempotency keys on item create.
 func TestTASK3585_CreateReplaysTheItemItMade(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	path := "/api/v1/workspaces/" + slug + "/collections/tasks/items"
@@ -49,6 +50,7 @@ func TestTASK3585_CreateReplaysTheItemItMade(t *testing.T) {
 }
 
 func TestTASK3585_RefusedCreateReleasesItsKey(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	path := "/api/v1/workspaces/" + slug + "/collections/tasks/items"
@@ -64,6 +66,7 @@ func TestTASK3585_RefusedCreateReleasesItsKey(t *testing.T) {
 
 // The CLI and MCP send the key as op_key in the body, not the header.
 func TestTASK3585_CreateBodyKeyReplays(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
 	path := "/api/v1/workspaces/" + slug + "/collections/tasks/items"

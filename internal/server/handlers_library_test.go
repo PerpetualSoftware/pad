@@ -12,6 +12,7 @@ import (
 // stable — the web UI library page and the MCP dispatcher both consume this
 // without query params and expect full bodies.
 func TestConventionLibrary_NoParams(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/convention-library", nil)
 	if rr.Code != http.StatusOK {
@@ -47,6 +48,7 @@ func TestConventionLibrary_NoParams(t *testing.T) {
 
 // TestConventionLibrary_CategoryFilter — ?category=git returns only git.
 func TestConventionLibrary_CategoryFilter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/convention-library?category=git", nil)
 	if rr.Code != http.StatusOK {
@@ -68,6 +70,7 @@ func TestConventionLibrary_CategoryFilter(t *testing.T) {
 // TestConventionLibrary_UnknownCategory — empty categories slice, NOT 404.
 // The library itself exists; the filter just produced no rows.
 func TestConventionLibrary_UnknownCategory(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/convention-library?category=nonexistent-zzz", nil)
 	if rr.Code != http.StatusOK {
@@ -84,6 +87,7 @@ func TestConventionLibrary_UnknownCategory(t *testing.T) {
 
 // TestPlaybookLibrary_NoParams — legacy shape: full Content, no Summary.
 func TestPlaybookLibrary_NoParams(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/playbook-library", nil)
 	if rr.Code != http.StatusOK {
@@ -110,6 +114,7 @@ func TestPlaybookLibrary_NoParams(t *testing.T) {
 
 // TestPlaybookLibrary_CategoryFilter — ?category=agent-workflows.
 func TestPlaybookLibrary_CategoryFilter(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/playbook-library?category=agent-workflows", nil)
 	if rr.Code != http.StatusOK {
@@ -129,6 +134,7 @@ func TestPlaybookLibrary_CategoryFilter(t *testing.T) {
 
 // TestPlaybookLibrary_SummaryMode — Content stripped, Summary populated.
 func TestPlaybookLibrary_SummaryMode(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/playbook-library?summary=true", nil)
 	if rr.Code != http.StatusOK {
@@ -163,6 +169,7 @@ func TestPlaybookLibrary_SummaryMode(t *testing.T) {
 // shared slice backing. A second non-summary request must still see full
 // bodies after a summary request.
 func TestPlaybookLibrary_SummaryDoesNotMutateGlobal(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	// Request with summary=true first.
@@ -200,6 +207,7 @@ func TestPlaybookLibrary_SummaryDoesNotMutateGlobal(t *testing.T) {
 
 // TestPlaybookLibrary_CategoryAndSummary — both flags together.
 func TestPlaybookLibrary_CategoryAndSummary(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/playbook-library?category=agent-workflows&summary=true", nil)
 	if rr.Code != http.StatusOK {
@@ -224,6 +232,7 @@ func TestPlaybookLibrary_CategoryAndSummary(t *testing.T) {
 
 // TestLibraryEntry_Convention — title resolves to a convention, full body.
 func TestLibraryEntry_Convention(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/library/entry?title="+url.QueryEscape("Commit after task completion"), nil)
 	if rr.Code != http.StatusOK {
@@ -247,6 +256,7 @@ func TestLibraryEntry_Convention(t *testing.T) {
 
 // TestLibraryEntry_Playbook — title resolves to a playbook, full body.
 func TestLibraryEntry_Playbook(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/library/entry?title="+url.QueryEscape("Ship tasks"), nil)
 	if rr.Code != http.StatusOK {
@@ -274,6 +284,7 @@ func TestLibraryEntry_Playbook(t *testing.T) {
 // TestLibraryEntry_MissingTitle — 400 in the canonical {error: {code, message}}
 // envelope (matches the rest of the API). CLI parseError relies on this shape.
 func TestLibraryEntry_MissingTitle(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/library/entry", nil)
 	if rr.Code != http.StatusBadRequest {
@@ -296,6 +307,7 @@ func TestLibraryEntry_MissingTitle(t *testing.T) {
 
 // TestLibraryEntry_NotFound — 404 with the canonical envelope.
 func TestLibraryEntry_NotFound(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 	rr := doRequest(srv, "GET", "/api/v1/library/entry?title="+url.QueryEscape("definitely not a real library entry"), nil)
 	if rr.Code != http.StatusNotFound {

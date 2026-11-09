@@ -7,6 +7,7 @@ import (
 )
 
 func TestSecurityHeaders(t *testing.T) {
+	t.Parallel()
 	srv := testServer(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/v1/health", nil)
@@ -41,6 +42,7 @@ func TestSecurityHeaders(t *testing.T) {
 }
 
 func TestParseCORSOrigins(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		input string
 		want  []string
@@ -72,6 +74,7 @@ func TestParseCORSOrigins(t *testing.T) {
 }
 
 func TestCorsAllowCredentials(t *testing.T) {
+	t.Parallel()
 	// When PAD_CORS_ORIGINS is empty (or whitespace-only), AllowCredentials
 	// defaults to false. When an operator sets any non-empty value they
 	// opt into credential sharing across the listed origins. We don't

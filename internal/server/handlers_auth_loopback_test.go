@@ -11,6 +11,7 @@ import (
 // CapturePeerAddr, not r.RemoteAddr. A proxied attacker setting
 // X-Forwarded-For: 127.0.0.1 must not be able to trick the check.
 func TestRequestIsLoopback_IgnoresRealIPRewrite(t *testing.T) {
+	t.Parallel()
 	tests := []struct {
 		name         string
 		peer         string

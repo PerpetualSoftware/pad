@@ -25,6 +25,7 @@ import (
 // session cookie, so the plan-limit middleware and the handlers are the code
 // under test, not a store shortcut.
 func TestTASK798_DemotionToFree_GrandfathersExistingWork(t *testing.T) {
+	t.Parallel()
 	srv, _, owner := planSourceServer(t)
 	for k, v := range map[string]string{
 		"plan_limits_free_items_per_workspace":   "3",
