@@ -288,7 +288,8 @@ func (d deadlineCandidate) eligible(now time.Time, state deadlineJournalState) b
 // EvaluateDeadlines scans without locks, then pins and rechecks each due row.
 // Overdue stays-owed rows are rescanned each tick: recorded rows cost reads,
 // but never consume a cap slot. Only a miss recorded by this pass counts toward
-// the cap, so a row that keeps failing cannot starve the rows behind it. No occurrence is closed by this pass.
+// the cap, so a row that keeps failing cannot starve the rows behind it.
+// A lapsing deadline closes and advances its occurrence in the same transaction.
 func (s *Store) EvaluateDeadlines(nowTS string, limit int) (DeadlineEvalResult, error) {
 	var result DeadlineEvalResult
 	nowT, err := time.Parse(time.RFC3339, nowTS)
@@ -375,6 +376,9 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 	if err := s.recordDeadlineMissTx(tx, *d); err != nil {
 		return false, err
 	}
+	if _, err := s.lapseOccurrenceTx(tx, *d, nowT); err != nil {
+		return false, err
+	}
 	if err := tx.Commit(); err != nil {
 		return false, err
 	}
@@ -436,4 +440,38 @@ func (s *Store) recordDeadlineMissTx(tx *sql.Tx, d deadlineCandidate) error {
 		return err
 	}
 	return nil
+}
+
+// lapseOccurrenceTx closes a lapsing promise immediately after its miss is
+// recorded. All callers hold the schedule pin and commit both writes together.
+// The behavior is read under that pin, never from the scan page.
+func (s *Store) lapseOccurrenceTx(tx *sql.Tx, d deadlineCandidate, nowT time.Time) (*ResolveResult, error) {
+	var behavior sql.NullString
+	if err := tx.QueryRow(s.q(`SELECT deadline_behavior FROM item_schedules WHERE id=?`), d.sc.ID).Scan(&behavior); err != nil {
+		return nil, err
+	}
+	if behavior.String != "lapses" {
+		return nil, nil
+	}
+	sc, err := s.getScheduleQ(tx, d.sc.WorkspaceID, d.sc.ItemID, false)
+	if err != nil {
+		return nil, err
+	}
+	var rec *time.Location
+	if sc.Floating {
+		rec, err = s.scheduleRecipientZone(tx, sc.ItemID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	x, _, err := OutstandingInstant(sc, rec)
+	if err != nil {
+		return nil, err
+	}
+	before, err := s.scheduleSnapshotTx(tx, sc.ID)
+	if err != nil {
+		return nil, err
+	}
+	nowT = nowT.UTC().Truncate(time.Second)
+	return s.closeOccurrenceTx(tx, sc, ResolveInput{State: "lapsed", Actor: "system"}, rec, x, nowT, nowT, "", "", before)
 }

@@ -199,6 +199,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 
 	if sc.EndedAt != nil || sc.NextAt == nil || sc.NextWall == nil {
+		if in.State == "done" {
+			return s.completeLapsedOccurrenceTx(tx, sc, in, in.OccurrenceAt.UTC().Truncate(time.Second), nowT, actual, actualSource)
+		}
 		return nil, &ErrStaleOccurrence{Schedule: sc}
 	}
 	var rec *time.Location // the recipient's zone; nil for a pinned schedule
@@ -228,6 +231,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		}
 	}
 	if !matched {
+		if in.State == "done" {
+			return s.completeLapsedOccurrenceTx(tx, sc, in, want, nowT, actual, actualSource)
+		}
 		return nil, &ErrStaleOccurrence{Schedule: sc}
 	}
 	if sc.ErrorCode != nil {
@@ -250,8 +256,12 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 
 	if in.State == "skip" {
-		if err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs); err != nil {
+		lapse, err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs)
+		if err != nil {
 			return nil, err
+		}
+		if lapse != nil {
+			return s.commitResolve(tx, workspaceID, itemID, lapse)
 		}
 	}
 	res := &ResolveResult{}
@@ -357,7 +367,74 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return s.commitResolve(tx, workspaceID, itemID, res)
 	}
 
-	// done / skip: the passed-over instances, then the next occurrence.
+	// Store the recipient reading; the caller zone only gated acceptance.
+	if !xRec.IsZero() {
+		x = xRec
+	}
+	closed, err := s.closeOccurrenceTx(tx, sc, in, rec, x, nowT, actual, actualSource, commentID, before)
+	if err != nil {
+		return nil, err
+	}
+	res.MissedRecorded += closed.MissedRecorded
+	return s.commitResolve(tx, workspaceID, itemID, res)
+}
+
+// completeLapsedOccurrenceTx records work delivered after an obligation closed.
+// It updates history only; the current occurrence and managed reminder stay armed.
+func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveInput, want, nowT, actual time.Time, actualSource string) (*ResolveResult, error) {
+	var at, wall string
+	err := tx.QueryRow(s.q(`SELECT occurrence_at,occurrence_wall FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`), sc.ID, NormalizeInstant(want)).Scan(&at, &wall)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, &ErrStaleOccurrence{Schedule: sc}
+	}
+	if err != nil {
+		return nil, err
+	}
+	res := &ResolveResult{}
+	commentID := ""
+	if in.Comment != nil {
+		in.Comment.Input.ActivityID, err = s.createActivityQ(tx, in.Comment.Activity)
+		if err != nil {
+			return nil, fmt.Errorf("insert activity for resolution: %w", err)
+		}
+		commentID, err = s.createCommentTx(tx, sc.WorkspaceID, sc.ItemID, in.Comment.UserID, in.Comment.Input)
+		if err != nil {
+			return nil, err
+		}
+		res.Comment, err = s.getCommentQ(tx, commentID)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if _, err := tx.Exec(s.q(`UPDATE schedule_occurrences SET state='done',comment_id=?,actor=?,resolved_at=?,actual_done_at=?,actual_source=? WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`), nilIfEmpty(commentID), in.Actor, nowT.Format(time.RFC3339), NormalizeInstant(actual), actualSource, sc.ID, at); err != nil {
+		return nil, err
+	}
+	key := OccurrenceKey(sc, at, wall)
+	if err := s.snapshotMilestoneEvidenceTx(tx, sc.WorkspaceID, sc.ID, key); err != nil {
+		return nil, err
+	}
+	if in.ActualDoneAt != nil {
+		// Correction must judge the closed occurrence wall, including on a
+		// one-off whose current next_wall is now NULL.
+		history := *sc
+		history.NextAt, history.NextWall = &at, &wall
+		if err := s.recordOnTimeCorrectionTx(tx, &history, key, actual); err != nil {
+			return nil, err
+		}
+	}
+	if err := s.journalScheduleChangeTx(tx, sc.ID, "done", key, "", "", "", in.Actor); err != nil {
+		return nil, err
+	}
+	return s.commitResolve(tx, sc.WorkspaceID, sc.ItemID, res)
+}
+
+// closeOccurrenceTx is the shared done, skip and lapse advance path. The caller
+// holds the schedule pin and commits the occurrence, schedule and reminder together.
+func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveInput, rec *time.Location, x, nowT, actual time.Time, actualSource, commentID, before string) (*ResolveResult, error) {
+	xAt, xWall := x.Format(time.RFC3339), *sc.NextWall
+	ts := nowT.Format(time.RFC3339)
+	res := &ResolveResult{}
+	// Record passed-over instances separately from the occurrence being closed.
 	missed, _, err := missedOccurrences(sc, rec, nowT)
 	if err != nil {
 		return nil, err
@@ -372,11 +449,8 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	state := "done"
 	if in.State == "skip" {
 		state = "skipped"
-	}
-	// The history row is the recipient's reading; the caller's zone only gated
-	// acceptance (D2), and snooze/move above keep the matched instant.
-	if !xRec.IsZero() {
-		x, xAt = xRec, xRec.Format(time.RFC3339)
+	} else if in.State == "lapsed" {
+		state = "lapsed"
 	}
 	if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, state, commentID, in.Actor, ts); err != nil {
 		return nil, err
@@ -392,7 +466,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, err
 		}
 		completion = actual
-		if err := s.snapshotMilestoneEvidenceTx(tx, workspaceID, sc.ID, OccurrenceKey(sc, xAt, xWall)); err != nil {
+		if err := s.snapshotMilestoneEvidenceTx(tx, sc.WorkspaceID, sc.ID, OccurrenceKey(sc, xAt, xWall)); err != nil {
 			return nil, err
 		}
 		if in.ActualDoneAt != nil {
@@ -443,14 +517,19 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	} else if ok, err := s.rearmManagedReminderTx(tx, sc.ID, remindAt); err != nil {
 		return nil, err
 	} else if !ok {
-		if err := s.insertManagedReminderTx(tx, workspaceID, itemID, sc.ID, remindAt); err != nil {
+		if err := s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, remindAt); err != nil {
 			return nil, err
 		}
 	}
-	if err := s.journalScheduleAfterTx(tx, sc.ID, in.State, OccurrenceKey(sc, xAt, xWall), "", before, in.Actor); err != nil {
+	change := in.State
+	if change == "lapsed" {
+		// The miss journal is the evidence; closure uses the existing skip advance.
+		change = "skip"
+	}
+	if err := s.journalScheduleAfterTx(tx, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, in.Actor); err != nil {
 		return nil, err
 	}
-	return s.commitResolve(tx, workspaceID, itemID, res)
+	return res, nil
 }
 
 // skipDeadlineGuardTx judges a skip of a native row's outstanding occurrence
@@ -462,33 +541,36 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 //   - passed and already recorded, or before a legacy conversion: nothing.
 //
 // A legacy row has no evaluated deadline and is unchanged.
-func (s *Store) skipDeadlineGuardTx(tx *sql.Tx, itemID string, sc *models.ItemSchedule, in ResolveInput, nowT time.Time, openFilter string, openArgs []any) error {
+func (s *Store) skipDeadlineGuardTx(tx *sql.Tx, itemID string, sc *models.ItemSchedule, in ResolveInput, nowT time.Time, openFilter string, openArgs []any) (*ResolveResult, error) {
 	d, eligible, err := s.deadlineStateTx(tx, sc.ID, nowT)
 	if err != nil || d == nil {
-		return err
+		return nil, err
 	}
 	if !d.due(nowT) {
 		if matches, err := s.commitmentAssigneeMatchesTx(tx, itemID, in.ExpectedAssignee); err != nil {
-			return err
+			return nil, err
 		} else if !matches {
-			return ErrCommitmentChanged
+			return nil, ErrCommitmentChanged
 		}
 		if !in.MaySkipBeforeDeadline {
-			return ErrSkipDeadlineAuthority
+			return nil, ErrSkipDeadlineAuthority
 		}
-		return nil
+		return nil, nil
 	}
 	if !eligible {
-		return nil
+		return nil, nil
 	}
 	var open bool
 	if err := tx.QueryRow(s.q(`SELECT `+openFilter+` FROM items i WHERE i.id=?`), append(append([]any{}, openArgs...), itemID)...).Scan(&open); err != nil {
-		return err
+		return nil, err
 	}
 	if !open {
-		return nil
+		return nil, nil
 	}
-	return s.recordDeadlineMissTx(tx, *d)
+	if err := s.recordDeadlineMissTx(tx, *d); err != nil {
+		return nil, err
+	}
+	return s.lapseOccurrenceTx(tx, *d, nowT)
 }
 
 // armAfterPastMoveTx leaves the moved target in history, records the instances

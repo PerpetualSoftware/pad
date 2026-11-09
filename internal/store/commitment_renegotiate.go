@@ -116,6 +116,18 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		if err := s.recordDeadlineMissTx(tx, *plan.miss); err != nil {
 			return nil, err
 		}
+		lapse, err := s.lapseOccurrenceTx(tx, *plan.miss, nowT)
+		if err != nil {
+			return nil, err
+		}
+		if lapse != nil {
+			// The preview named an occurrence that just closed. Commit its miss
+			// and lapse, and require a new preview before changing the commitment.
+			if err := tx.Commit(); err != nil {
+				return nil, fmt.Errorf("lapse before renegotiation: %w", err)
+			}
+			return nil, ErrCommitmentChanged
+		}
 	}
 	if in.Scope == "occurrence" {
 		if err := s.upsertScheduleOverrideTx(tx, sc.ID, plan.result.Preview.OccurrenceKey, "deadline", plan.until, nil); err != nil {
