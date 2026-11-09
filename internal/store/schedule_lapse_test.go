@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
 const lapseNow = "2026-10-26T12:00:00Z"
@@ -509,6 +510,37 @@ func TestLapseBrokenScheduleKeepsMiss(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestLapseMissedExpansionCapKeepsMiss(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := lapseSchedule(t, f, true)
+	// The BY part requires a wall-clock walk from the old start. Resolve can
+	// re-anchor at the outstanding occurrence, but the missed walk cannot.
+	f.exec(t, `UPDATE item_schedules SET dtstart='2020-01-01T09:00:00',rrule='FREQ=MINUTELY;BYMINUTE=0',anchor_wall=NULL WHERE id=?`, sc.ID)
+	before := f.reload(t, sc.ItemID)
+	reminder := f.managed(t, before)
+	if _, found, _, _, err := f.s.nextAfterResolve(before, time.UTC, rt(deadlineOccAt), rt(lapseNow), rt(lapseNow)); err != nil || !found {
+		t.Fatalf("next expansion: found=%v err=%v", found, err)
+	}
+	_, _, err := missedOccurrences(before, time.UTC, rt(lapseNow))
+	var capErr *schedule.CapError
+	if !errors.As(err, &capErr) || capErr.Kind != schedule.CapScan {
+		t.Fatalf("missed expansion = %v, want CapScan", err)
+	}
+	for i := 0; i < 2; i++ {
+		got := f.eval(t, lapseNow, 0)
+		want := 0
+		if i == 0 {
+			want = 1
+		}
+		if got.Missed != want || f.deadlineEvidence(t) != 1 || f.deadlineNotices(t) != 1 {
+			t.Fatalf("capped expansion miss: %+v", got)
+		}
+		if f.occTotal(t, sc.ID) != 0 || !reflect.DeepEqual(before, f.reload(t, sc.ItemID)) || !reflect.DeepEqual(reminder, f.managed(t, before)) {
+			t.Fatal("capped expansion closed or advanced the occurrence")
+		}
 	}
 }
 

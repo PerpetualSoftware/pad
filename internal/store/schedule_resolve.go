@@ -470,6 +470,10 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	// Record passed-over instances separately from the occurrence being closed.
 	missed, _, err := missedOccurrences(sc, rec, nowT)
 	if err != nil {
+		if in.State == "lapsed" {
+			// This expansion also precedes closure writes, so preserve the miss.
+			return nil, nil
+		}
 		return nil, err
 	}
 	for _, m := range missed {
