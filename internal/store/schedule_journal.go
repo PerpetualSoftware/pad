@@ -121,7 +121,12 @@ func (s *Store) journalScheduleChangeReasonTx(tx *sql.Tx, id, change, key, role,
 // parent is parentID and its root is rootID. With both empty the row is its own
 // root and has no parent.
 func (s *Store) journalScheduleChangeLineageTx(tx *sql.Tx, id, change, key, role, before, after, actor, reason, source, parentID, rootID string) error {
-	changeID := newID()
+	return s.journalScheduleChangeRowTx(tx, newID(), id, change, key, role, before, after, actor, reason, source, parentID, rootID)
+}
+
+// journalScheduleChangeRowTx is the lineage writer with the row id chosen by
+// the caller, so a cascade can name its first row as the root of the rest.
+func (s *Store) journalScheduleChangeRowTx(tx *sql.Tx, changeID, id, change, key, role, before, after, actor, reason, source, parentID, rootID string) error {
 	if rootID == "" {
 		rootID = changeID
 	}

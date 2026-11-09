@@ -298,19 +298,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			// fireInstant, unchanged, lands exactly on until.
 			override = until.Add(time.Duration(sc.LeadMinutes) * time.Minute)
 		}
-		fireLoc := rec
-		if !sc.Floating {
-			if fireLoc, err = time.LoadLocation(*sc.Tz); err != nil {
-				return nil, fmt.Errorf("load schedule zone: %w", err)
-			}
-		}
-		wall, err := schedule.ParseWall(xWall)
+		fire, err := reminderFireAt(sc, rec, x, xWall, override, in.State == "move", until, nowT)
 		if err != nil {
-			return nil, fmt.Errorf("parse next_wall: %w", err)
-		}
-		fire := fireInstant(x, wall, fireLoc, sc.LeadMinutes, &override)
-		if in.State == "move" && !fire.After(nowT) {
-			fire = until
+			return nil, err
 		}
 		if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at = ?, next_override_at = ?, updated_at = ? WHERE id = ?`),
 			xAt, override.UTC().Format(time.RFC3339), ts, sc.ID); err != nil {
@@ -332,12 +322,8 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 				return nil, err
 			}
 			res.MissedRecorded += n
-		} else if ok, err := s.rearmManagedReminderTx(tx, sc.ID, NormalizeInstant(fire)); err != nil {
+		} else if err := s.armManagedReminderTx(tx, sc, NormalizeInstant(fire)); err != nil {
 			return nil, err
-		} else if !ok {
-			if err := s.insertManagedReminderTx(tx, workspaceID, itemID, sc.ID, NormalizeInstant(fire)); err != nil {
-				return nil, err
-			}
 		}
 		if in.State == "move" {
 			reason, source := "Rescheduled", "system"
@@ -535,6 +521,39 @@ func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *tim
 		return recorded, s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, NormalizeInstant(fire))
 	}
 	return recorded, nil
+}
+
+// reminderFireAt is the instant the managed reminder fires for an override of
+// the outstanding occurrence: the override less the lead, and for a move that
+// would fire at or before now, the moved target itself.
+func reminderFireAt(sc *models.ItemSchedule, rec *time.Location, x time.Time, xWall string, override time.Time, move bool, until, nowT time.Time) (time.Time, error) {
+	fireLoc := rec
+	if !sc.Floating {
+		var err error
+		if fireLoc, err = time.LoadLocation(*sc.Tz); err != nil {
+			return time.Time{}, fmt.Errorf("load schedule zone: %w", err)
+		}
+	}
+	wall, err := schedule.ParseWall(xWall)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse next_wall: %w", err)
+	}
+	fire := fireInstant(x, wall, fireLoc, sc.LeadMinutes, &override)
+	if move && !fire.After(nowT) {
+		fire = until
+	}
+	return fire, nil
+}
+
+// armManagedReminderTx re-arms the schedule's managed reminder at remindAt, or
+// inserts it when the row is missing. The caller holds the schedule.
+func (s *Store) armManagedReminderTx(tx *sql.Tx, sc *models.ItemSchedule, remindAt string) error {
+	if ok, err := s.rearmManagedReminderTx(tx, sc.ID, remindAt); err != nil {
+		return err
+	} else if !ok {
+		return s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, remindAt)
+	}
+	return nil
 }
 
 func (s *Store) commitResolve(tx *sql.Tx, workspaceID, itemID string, res *ResolveResult) (*ResolveResult, error) {
