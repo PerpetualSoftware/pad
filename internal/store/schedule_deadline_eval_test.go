@@ -364,7 +364,7 @@ func TestDeadlineEvalResolvedBeforeDeadline(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			f := newSchedFixture(t)
 			sc := f.overdueSchedule(t, "Resolve", "stays_owed")
-			_, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{State: state, OccurrenceAt: rt(deadlineOccAt), View: time.UTC, Actor: "user"}, rt("2026-10-26T09:30:00Z"))
+			_, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{State: state, OccurrenceAt: rt(deadlineOccAt), View: time.UTC, Actor: "user", MaySkipBeforeDeadline: true}, rt("2026-10-26T09:30:00Z"))
 			if err != nil {
 				t.Fatal(err)
 			}

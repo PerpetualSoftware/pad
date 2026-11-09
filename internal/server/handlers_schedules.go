@@ -493,7 +493,27 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if in.State == "skip" {
+		// The same authority as renegotiate and DELETE; the store applies it only
+		// to a native row whose deadline has not passed.
+		allowed, err := s.canRenegotiateCommitment(r, workspaceID, item)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		in.MaySkipBeforeDeadline = allowed
+		in.ExpectedAssignee = commitmentAssigneeGuard(r, item)
+	}
+
 	res, err := s.store.ResolveOccurrence(workspaceID, item.ID, in)
+	if errors.Is(err, store.ErrSkipDeadlineAuthority) {
+		writeSkipDeadlineOwnerRequired(w)
+		return
+	}
+	if errors.Is(err, store.ErrCommitmentChanged) {
+		writeSkipCommitmentChanged(w)
+		return
+	}
 	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeResolveError(w, r, err) {
 		return
 	}
@@ -518,6 +538,9 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 			ActorName:    actorNameFromRequest(r),
 			Summary:      truncateForSummary(res.Comment.Body, 120),
 		})
+	}
+	if res.TargetAfterDeadline {
+		resolution["warning"] = "target_after_deadline"
 	}
 	v, err := s.buildCommitmentView(r, workspaceID, item, res.Schedule, "")
 	if err != nil {

@@ -192,6 +192,11 @@ describe('resolve identity and dialogs', () => {
   if (code !== 'internal') await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
   expect(h.resolve).toHaveBeenCalledTimes(source === 'view' ? 0 : 1);
  });
+ it('shows the server sentence when a skip before a hard deadline needs the owner, and keeps the button', async () => {
+  const sentence = 'Only the assignee or a workspace owner can skip this occurrence before its hard deadline.';
+  h.resolve.mockRejectedValue({ code: 'deadline_owner_required', message: sentence }); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText(sentence);
+  expect(h.agenda).toHaveBeenCalledTimes(1); expect((screen.getByRole('button', { name: 'Done EX-30' }) as HTMLButtonElement).disabled).toBe(false);
+ });
  it('keeps rows on quiet refresh and retries only the read after a successful write', async () => {
   const refresh = deferred<AgendaResponse>(); h.agenda.mockResolvedValueOnce(response()).mockReturnValueOnce(refresh.promise); await mount();
   await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText('Updating agenda…'); expect(screen.getByText('First item')).toBeTruthy();

@@ -83,6 +83,13 @@ type ResolveInput struct {
 	View    *time.Location
 	Actor   string // schedule_occurrences.actor: "user" or "agent"
 	Comment *ResolveComment
+	// MaySkipBeforeDeadline is the caller's decision that the actor may skip an
+	// occurrence of a native row whose deadline has not passed (the assignee, a
+	// workspace owner, or any editor on an unassigned item). ExpectedAssignee
+	// guards that decision as DeleteScheduleChecked's does: nil means it does not
+	// depend on assignment.
+	MaySkipBeforeDeadline bool
+	ExpectedAssignee      *string
 }
 
 // ResolveResult is the committed resolution.
@@ -90,7 +97,14 @@ type ResolveResult struct {
 	Schedule       *models.ItemSchedule
 	Comment        *models.Comment
 	MissedRecorded int
+	// TargetAfterDeadline is set by a move that put the target after the row's
+	// own deadline. The move is saved; the deadline and its miss are unchanged.
+	TargetAfterDeadline bool
 }
+
+// ErrSkipDeadlineAuthority refuses a skip of an occurrence whose hard deadline
+// has not passed when the actor may not drop that promise.
+var ErrSkipDeadlineAuthority = errors.New("only the assignee or a workspace owner can skip this occurrence before its hard deadline")
 
 // ResolveOccurrence resolves the outstanding occurrence of an item's schedule.
 func (s *Store) ResolveOccurrence(workspaceID, itemID string, in ResolveInput) (*ResolveResult, error) {
@@ -100,7 +114,10 @@ func (s *Store) ResolveOccurrence(workspaceID, itemID string, in ResolveInput) (
 func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput, nowT time.Time) (*ResolveResult, error) {
 	// Every stamp and walk of a resolve is a whole second: the engine's walls
 	// are, and an elapsed grid must read back exactly from its start.
-	nowT = nowT.UTC().Truncate(time.Second)
+	// The past-target checks read the clock as it is: a fraction of a second
+	// matters to "has this instant gone by".
+	clock := nowT.UTC()
+	nowT = clock.Truncate(time.Second)
 	actual, actualSource := nowT, "recorded_now"
 	if in.ActualDoneAt != nil {
 		if in.State != "done" {
@@ -124,7 +141,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if in.Until == nil {
 			return nil, fieldErr("until", "required", "snooze and move need until")
 		}
-		if in.State == "snooze" && !in.Until.After(nowT) {
+		if in.State == "snooze" && !in.Until.After(clock) {
 			return nil, fieldErr("until", "range", "until must be after now and within 366 days")
 		}
 		if in.Until.After(nowT.Add(maxResolveUntil)) {
@@ -132,6 +149,18 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		}
 	default:
 		return nil, fieldErr("state", "enum", "state must be one of done, skip, snooze, move")
+	}
+
+	// The terminal filter reads through the pool, which can be one connection, so
+	// it is loaded before the transaction holds it (as renegotiation does).
+	var openFilter string
+	var openArgs []any
+	if in.State == "skip" {
+		openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
+	}
+	moveChecksDeadline := false
+	if s.beforeCommitmentPin != nil && in.State == "skip" {
+		s.beforeCommitmentPin() // test seam: the item changes between the handler's read and the lock
 	}
 
 	tx, err := s.db.Begin()
@@ -160,14 +189,13 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, fieldErr("actual_done_at", "range", "actual completion cannot be before schedule creation; the earliest allowed is "+created.UTC().Truncate(time.Second).Format(time.RFC3339))
 		}
 	}
+	var moveRoles *scheduleRoles
 	if in.State == "move" {
 		roles, err := s.scheduleRolesOf(tx, sc)
 		if err != nil {
 			return nil, err
 		}
-		if roles.DeadlineDays != nil {
-			return nil, fieldErr("state", "combination", "a hard deadline cannot be moved; use POST .../commitment/renegotiate with a reason")
-		}
+		moveRoles = &roles
 	}
 
 	if sc.EndedAt != nil || sc.NextAt == nil || sc.NextWall == nil {
@@ -205,13 +233,45 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	if sc.ErrorCode != nil {
 		return nil, &ErrScheduleBroken{Code: *sc.ErrorCode}
 	}
+	if moveRoles != nil && moveRoles.DeadlineDays != nil {
+		// Move policy speaks only for an occurrence the caller really named.
+		if moveRoles.Origin != "native" {
+			// The evaluator does not run on a legacy row, so its target is the
+			// only date anything enforces, and renegotiation refuses it too.
+			return nil, fieldErr("state", "combination", "a legacy hard deadline cannot be moved; PATCH .../commitment naming a role converts the row to native roles, after which the target can be moved")
+		}
+		// A native deadline is its own role: a move changes the target only.
+		// A move into the past would arm the next occurrence and drop this
+		// occurrence's deadline unrecorded, so it is refused as snooze is.
+		if !in.Until.After(clock) {
+			return nil, fieldErr("until", "range", "until must be after now on a schedule with a hard deadline")
+		}
+		moveChecksDeadline = true
+	}
+
+	if in.State == "skip" {
+		if err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs); err != nil {
+			return nil, err
+		}
+	}
+	res := &ResolveResult{}
+	if moveChecksDeadline {
+		// The deadline is read through the evaluator's own candidate, so a
+		// per-occurrence override counts. A move does not change it.
+		d, _, err := s.deadlineStateTx(tx, sc.ID, nowT)
+		if err != nil {
+			return nil, err
+		}
+		if d != nil && in.Until.After(d.at) {
+			res.TargetAfterDeadline = true
+		}
+	}
 
 	before, err := s.scheduleSnapshotTx(tx, sc.ID)
 	if err != nil {
 		return nil, err
 	}
 	ts := nowT.Format(time.RFC3339)
-	res := &ResolveResult{}
 	commentID := ""
 	if in.Comment != nil && (in.State != "move" || strings.TrimSpace(in.Comment.Input.Body) != "") {
 		in.Comment.Input.ActivityID, err = s.createActivityQ(tx, in.Comment.Activity)
@@ -391,6 +451,44 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, err
 	}
 	return s.commitResolve(tx, workspaceID, itemID, res)
+}
+
+// skipDeadlineGuardTx judges a skip of a native row's outstanding occurrence
+// against its deadline, under the pin, from the evaluator's own decision:
+//   - deadline not yet passed: the promise is dropped only by someone who may
+//     (DeleteScheduleChecked's shape); a changed assignee is ErrCommitmentChanged;
+//   - passed and not yet recorded: an open item's miss is recorded first, in this
+//     transaction, so the skip cannot erase it;
+//   - passed and already recorded, or before a legacy conversion: nothing.
+//
+// A legacy row has no evaluated deadline and is unchanged.
+func (s *Store) skipDeadlineGuardTx(tx *sql.Tx, itemID string, sc *models.ItemSchedule, in ResolveInput, nowT time.Time, openFilter string, openArgs []any) error {
+	d, eligible, err := s.deadlineStateTx(tx, sc.ID, nowT)
+	if err != nil || d == nil {
+		return err
+	}
+	if !d.due(nowT) {
+		if matches, err := s.commitmentAssigneeMatchesTx(tx, itemID, in.ExpectedAssignee); err != nil {
+			return err
+		} else if !matches {
+			return ErrCommitmentChanged
+		}
+		if !in.MaySkipBeforeDeadline {
+			return ErrSkipDeadlineAuthority
+		}
+		return nil
+	}
+	if !eligible {
+		return nil
+	}
+	var open bool
+	if err := tx.QueryRow(s.q(`SELECT `+openFilter+` FROM items i WHERE i.id=?`), append(append([]any{}, openArgs...), itemID)...).Scan(&open); err != nil {
+		return err
+	}
+	if !open {
+		return nil
+	}
+	return s.recordDeadlineMissTx(tx, *d)
 }
 
 // armAfterPastMoveTx leaves the moved target in history, records the instances
