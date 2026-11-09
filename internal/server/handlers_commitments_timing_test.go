@@ -302,6 +302,8 @@ func TestCommitmentWindowTimingPreservesOffset(t *testing.T) {
 	}
 }
 
+// A native deadline row can have its target moved; the deadline stays, and a
+// move into the past is refused on until (TASK-4353).
 func TestCommitmentResolveUsesDeadlineRole(t *testing.T) {
 	t.Parallel()
 	f := timingFixture(t, "native", true)
@@ -309,13 +311,20 @@ func TestCommitmentResolveUsesDeadlineRole(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := commitmentSnapshot(t, f)
-	rr := f.as(f.token(f.owner, ""), "POST", commitmentPath(f)+"/resolve", map[string]any{"state": "move", "occurrence_at": "2099-01-01T09:00:00Z", "until": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)})
-	f.expectErr(rr, 400, "validation_error", "combination")
-	if !strings.Contains(rr.Body.String(), "POST .../commitment/renegotiate") || strings.Contains(rr.Body.String(), "change its kind") {
-		t.Fatalf("message: %s", rr.Body.String())
+	past := f.as(f.token(f.owner, ""), "POST", commitmentPath(f)+"/resolve", map[string]any{"state": "move", "occurrence_at": "2099-01-01T09:00:00Z", "until": time.Now().Add(-time.Hour).UTC().Format(time.RFC3339)})
+	f.expectErr(past, 400, "validation_error", "range")
+	if !strings.Contains(past.Body.String(), `"field":"until"`) {
+		t.Fatalf("past move not on until: %s", past.Body.String())
 	}
 	if !reflect.DeepEqual(before, commitmentSnapshot(t, f)) {
 		t.Fatal("refused move wrote")
+	}
+	rr := f.as(f.token(f.owner, ""), "POST", commitmentPath(f)+"/resolve", map[string]any{"state": "move", "occurrence_at": "2099-01-01T09:00:00Z", "until": time.Now().Add(24 * time.Hour).UTC().Format(time.RFC3339)})
+	if rr.Code != 200 {
+		t.Fatalf("native move: %d %s", rr.Code, rr.Body.String())
+	}
+	if !strings.Contains(rr.Body.String(), `"deadline":"2099-01-02T09:00:00Z"`) {
+		t.Fatalf("deadline moved: %s", rr.Body.String())
 	}
 }
 

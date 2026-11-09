@@ -386,28 +386,39 @@ func (s *Store) evaluateDeadline(candidate deadlineCandidate, nowT time.Time) (b
 // renegotiation preview uses the same decision as the evaluator and apply.
 // The caller has already checked the item's terminal status.
 func (s *Store) deadlineMissCandidateTx(tx *sql.Tx, scheduleID string, nowT time.Time) (*deadlineCandidate, error) {
-	d, err := scanDeadline(tx.QueryRow(s.q(`SELECT `+deadlineColumnsSQL+deadlineFromSQL+` AND sc.id=?`), scheduleID), false)
+	d, eligible, err := s.deadlineStateTx(tx, scheduleID, nowT)
+	if err != nil || d == nil || !eligible {
+		return nil, err
+	}
+	return d, nil
+}
+
+// deadlineStateTx is the decision under deadlineMissCandidateTx with its two
+// "nil" answers told apart. d is nil when the schedule has no native deadline
+// to judge. Otherwise d.due(nowT) says whether the deadline has passed, and
+// eligible says whether the evaluator would record its miss now: false for a
+// deadline that is not due, one already recorded, or one that predates a legacy
+// conversion.
+func (s *Store) deadlineStateTx(tx *sql.Tx, scheduleID string, nowT time.Time) (d *deadlineCandidate, eligible bool, err error) {
+	cand, err := scanDeadline(tx.QueryRow(s.q(`SELECT `+deadlineColumnsSQL+deadlineFromSQL+` AND sc.id=?`), scheduleID), false)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, nil
+		return nil, false, nil
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	if err = d.resolve(); err != nil {
-		return nil, err
+	if err = cand.resolve(); err != nil {
+		return nil, false, err
 	}
-	states, err := s.deadlineJournal(tx, []deadlineCandidate{d})
+	states, err := s.deadlineJournal(tx, []deadlineCandidate{cand})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	state := states[d.sc.ID]
+	state := states[cand.sc.ID]
 	if state.err != nil {
-		return nil, state.err
+		return nil, false, state.err
 	}
-	if !d.eligible(nowT, state) {
-		return nil, nil
-	}
-	return &d, nil
+	return &cand, cand.eligible(nowT, state), nil
 }
 
 // recordDeadlineMissTx is the evaluator's writer, also used before applying a

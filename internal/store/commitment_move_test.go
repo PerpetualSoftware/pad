@@ -559,13 +559,14 @@ func TestTimingEditClearsOverrides(t *testing.T) {
 	})
 }
 
+// A legacy row keeps the refusal (TASK-4353): nothing else enforces its deadline.
 func TestHardDeadlineMoveStillRefused(t *testing.T) {
 	f := newSchedFixture(t)
 	sc := moveSchedule(t, f, "deadline_hard", 0, "")
 	before := commitmentOldRows(t, f.s)
 	_, err := f.resolve(t, f.item, moveInput(sc, "2026-10-31T10:00:00Z"), moveNow)
 	var fe *ScheduleFieldError
-	if !errors.As(err, &fe) || fe.Field != "state" || fe.Code != "combination" || fe.Message != "a hard deadline cannot be moved; use POST .../commitment/renegotiate with a reason" {
+	if !errors.As(err, &fe) || fe.Field != "state" || fe.Code != "combination" || fe.Message != "a legacy hard deadline cannot be moved; PATCH .../commitment naming a role converts the row to native roles, after which the target can be moved" {
 		t.Fatalf("hard deadline error=%v", err)
 	}
 	if !reflect.DeepEqual(before, commitmentOldRows(t, f.s)) || len(moveEntries(t, f, sc.ID)) != 1 {
