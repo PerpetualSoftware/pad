@@ -151,7 +151,10 @@
 			const code = (error as { code?: string })?.code;
 			const stale = code === 'stale' || (viewing && code === 'not_found');
 			const forbidden = code === 'forbidden' || code === 'permission_denied';
-			actionError = stale ? staleCopy : forbidden ? permissionCopy : genericCopy;
+			const message = (error as { message?: unknown })?.message;
+			// The server's own sentence says who may skip before a hard deadline; the entry is unchanged, so no reload.
+			const ownerRequired = code === 'deadline_owner_required' && typeof message === 'string' && message !== '';
+			actionError = ownerRequired ? message : stale ? staleCopy : forbidden ? permissionCopy : genericCopy;
 			if (stale || forbidden) await load(day, zone, true);
 		} finally {
 			if (sameIdentity()) pending = { ...pending, [key]: false };
