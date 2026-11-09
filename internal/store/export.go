@@ -665,7 +665,10 @@ type ImportReport struct {
 	DroppedUniqueValues []models.ImportUniqueDrop
 	// DroppedSchedules lists each bundled schedule the import did not store
 	// because its rule or state failed validation (TASK-4104 D2). The item and
-	// the rest of the import are unaffected.
+	// the rest of the import are unaffected. It also lists each time link the
+	// import did not store (reason links:*) and each link override row it
+	// dropped from a link it kept (reason link_overrides:*), with the item of
+	// the link's child (TASK-4353).
 	DroppedSchedules []models.ImportScheduleDrop
 }
 
@@ -767,6 +770,12 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	}
 	if data.Version == models.WorkspaceExportVersion1 && data.HasV2ScheduleMembers() {
 		return nil, fmt.Errorf("export version 1 contains version 2 schedule members")
+	}
+	// Links are a version 3 member: an older bundle that carries them was not
+	// written by an exporter that knew them, and is refused rather than read
+	// with a member it would have to guess the meaning of.
+	if data.Version < models.WorkspaceExportVersion && data.HasV3ScheduleMembers() {
+		return nil, invalidf("export version %d contains version 3 schedule members", data.Version)
 	}
 	if err := checkImportSourceIDs(data); err != nil {
 		return nil, err
@@ -1787,6 +1796,20 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			return nil, fmt.Errorf("import schedule: %w", err)
 		}
 	}
+
+	// Links, before the journal restore below can mint ids for schedules that
+	// were deleted at the source: an end must be a schedule stored just above.
+	// Atomic with them: the same transaction.
+	linkDrops, err := s.importScheduleLinksTx(tx, ws.ID, data.ScheduleLinks, scheduleMap, sourceSchedules, func(sourceItemID string) string {
+		if newItemID := itemMap[sourceItemID]; insertedItems[newItemID] {
+			return itemRefs[newItemID]
+		}
+		return ""
+	})
+	if err != nil {
+		return nil, err
+	}
+	report.DroppedSchedules = append(report.DroppedSchedules, linkDrops...)
 
 	changeDrops, err := s.restoreScheduleChangesTx(tx, ws.ID, data.ScheduleChanges, insertedItemMap, scheduleMap, sourceSchedules)
 	if err != nil {
