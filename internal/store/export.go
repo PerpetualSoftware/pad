@@ -342,7 +342,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// BUG-3072 gave the migration the transaction for exactly that reason, and
 	// BUG-3654 gave the two HTTP export doors a read-only one.
 	itemRows, err := q.Query(s.q(`
-		SELECT i.id, i.collection_id, i.title, i.slug, i.content, CASE WHEN i.deleted_at IS NULL THEN `+contentStateSQL+` ELSE '' END, i.fields, i.tags, i.pinned, i.sort_order,
+		SELECT i.id, i.collection_id, i.title, i.slug, CASE WHEN i.deleted_at IS NULL THEN i.content ELSE '' END, CASE WHEN i.deleted_at IS NULL THEN `+contentStateSQL+` ELSE '' END, i.fields, i.tags, i.pinned, i.sort_order,
 		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at, COALESCE(i.deleted_at, '')
 		FROM items i WHERE i.workspace_id = ? AND (i.deleted_at IS NULL OR EXISTS (
 		    SELECT 1 FROM schedule_gates g JOIN items blocked ON blocked.id=g.blocked_item_id
@@ -366,8 +366,9 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		return nil, err
 	}
 
-	// Only gate-referenced deleted blockers join the item rows above. Their
-	// schedules, comments, history and versions keep the live-item filters.
+	// Only gate-referenced deleted blockers join the item rows above, without
+	// their body. Their schedules, comments, history and versions keep the
+	// live-item filters.
 
 	// Set-aside edits (BUG-3244), attached to their items. Read through the
 	// same executor as the items, so on the migration's transaction a row and
@@ -1374,7 +1375,9 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// invocation_slug index never sees the duplicate, and before
 		// coercedFields, which the second pass rewrites the row from.
 		itemRef := fmt.Sprintf("%s-%d", collPrefix[newCollID], itemNumber)
-		if keys := collUniqueKeys[newCollID]; len(keys) > 0 {
+		// A soft-deleted row holds no unique value: the live uniqueness rules
+		// do not see it, so it cannot take one from a live item.
+		if keys := collUniqueKeys[newCollID]; len(keys) > 0 && it.DeletedAt == "" {
 			kept, drops, err := dropImportedUniqueDuplicates(fieldsJSON, newCollID, itemRef, keys, claimedUnique)
 			if err != nil {
 				return nil, fmt.Errorf("import item %s: %w", it.ID, err)
@@ -1455,6 +1458,12 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// at-cap control leg exists.
 	if itemLimit != nil && itemLimit.Limit >= 0 {
 		landed := len(insertedItems)
+		for _, it := range data.Items {
+			// The limit counts live items, and a soft-deleted row is not one.
+			if it.DeletedAt != "" && insertedItems[itemMap[it.ID]] {
+				landed--
+			}
+		}
 		if itemLimit.Current+landed > itemLimit.Limit {
 			refused := *itemLimit
 			refused.Allowed = false
