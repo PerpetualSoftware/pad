@@ -3,6 +3,8 @@ package cli
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/serveridentity"
 )
 
 // Client is a thin HTTP client for the Pad API.
@@ -134,6 +137,68 @@ func (c *Client) SetAgentName(name string) {
 // SetAuthToken sets the authorization token for API requests.
 func (c *Client) SetAuthToken(token string) {
 	c.authToken = token
+}
+
+// SetHTTPClient sets the HTTP client used for API requests. Configure it before use.
+func (c *Client) SetHTTPClient(client *http.Client) {
+	c.httpClient = client
+}
+
+// ServerIdentity proves possession of the returned server key with a fresh challenge.
+// It sends no credentials, ignores cookie jars and refuses redirects and URL userinfo.
+func (c *Client) ServerIdentity() (string, error) {
+	challenge := make([]byte, 32)
+	if _, err := rand.Read(challenge); err != nil {
+		return "", fmt.Errorf("server identity challenge: %w", err)
+	}
+	endpoint, err := url.Parse(c.baseURL + "/server/identity")
+	if err != nil {
+		return "", fmt.Errorf("server identity URL: %w", err)
+	}
+	if endpoint.User != nil {
+		return "", errors.New("server identity URL must not contain credentials")
+	}
+	query := endpoint.Query()
+	query.Set("challenge", base64.RawURLEncoding.EncodeToString(challenge))
+	endpoint.RawQuery = query.Encode()
+	req, err := http.NewRequest(http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return "", err
+	}
+	// Clone a plain transport to preserve TLS/proxy settings without inheriting
+	// credential-injecting wrappers. No jar or API request headers are copied.
+	probe := &http.Client{
+		Transport:     c.copyTransport(),
+		Timeout:       10 * time.Second,
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	defer probe.CloseIdleConnections()
+	resp, err := probe.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("server identity probe: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("server identity probe: status %d", resp.StatusCode)
+	}
+	var proof struct {
+		Version   int    `json:"version"`
+		Algorithm string `json:"algorithm"`
+		PublicKey string `json:"public_key"`
+		Signature string `json:"signature"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&proof); err != nil {
+		return "", fmt.Errorf("server identity proof: %w", err)
+	}
+	if proof.Version != 1 || proof.Algorithm != "ed25519" || len(proof.PublicKey) != 43 || len(proof.Signature) != 86 {
+		return "", errors.New("invalid server identity proof")
+	}
+	pub, pubErr := base64.RawURLEncoding.Strict().DecodeString(proof.PublicKey)
+	signature, sigErr := base64.RawURLEncoding.Strict().DecodeString(proof.Signature)
+	if pubErr != nil || sigErr != nil || !serveridentity.Verify(pub, challenge, signature) {
+		return "", errors.New("invalid server identity signature")
+	}
+	return serveridentity.Fingerprint(pub), nil
 }
 
 // Health checks if the server is running.

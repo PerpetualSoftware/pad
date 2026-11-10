@@ -457,3 +457,65 @@ Bodies are strict, as for schedules: non-objects (including top-level `null`), u
 - **A failed read** leaves `agenda` off and is logged; the bootstrap does not fail on it.
 
 `GET /workspaces/{ws}/agenda?stale=true[&from=<RFC3339>][&tz=<IANA>]` lists what the bootstrap collapsed: the caller's occurrences unresolved for more than 14 days, oldest first, with the same visibility and the same kind and recipient filters. `{tz, stale: true, timezone_note?, entries: [row], next_from?}`; rows are the bootstrap's. A page is 50 rows, extended to take every row due at the same instant as its last, so `next_from` (absent on the last page) is strictly after every row shown: the due instant of the first row not shown, passed back as `from` (inclusive). `truncated` says the read stopped at its 1000-schedule scan cap. A repeated, empty or non-`true` `stale` is `400`. `to` with `stale` is `400 validation_error` (`details: {field: "to", code: "unsupported"}`), an unparseable `from` is `400`. The CLI is `pad item remind agenda --stale [--from]`; MCP is `pad_item` `agenda` with `stale: true`.
+
+### Server identity proof
+
+`GET /api/v1/server/identity?challenge=<challenge>` proves possession of a
+persistent Ed25519 server key before a client sends credentials. It is mounted
+outside token auth, session auth, CSRF and CORS, accepts any Host, reads no
+credential and sets no cookie. It takes exactly one `challenge` query value:
+43 characters from `A-Z`, `a-z`, `0-9`, `-`, `_`, encoding exactly 32 bytes as
+canonical base64url without padding. Repeated values, nonzero trailing bits,
+padding, CR and LF are invalid.
+
+A successful response has `Cache-Control: no-store` and exactly these members:
+
+```json
+{"version":1,"algorithm":"ed25519","public_key":"<32 raw bytes, base64url without padding>","signature":"<64 raw bytes, base64url without padding>"}
+```
+
+The signature is plain RFC 8032 Ed25519 over exactly 105 bytes, concatenated
+without encoding or length prefixes:
+
+1. The 40 ASCII bytes `pad-server-identity/v1/ed25519/challenge`.
+2. One zero byte (`00`).
+3. The 32 raw public key bytes.
+4. The 32 raw challenge bytes.
+
+The 32-byte Ed25519 seed is HKDF-SHA-256 with the deployment encryption key as
+input key material, no salt, and ASCII `pad-server-identity-ed25519-v1` as info.
+Each server instance derives and caches its key once; the handler otherwise
+needs no database. The fingerprint is the first 16 bytes of SHA-256 of the raw
+public key, lowercase hex split into eight groups of four characters with `-`.
+A valid proof demonstrates possession of the returned key; compare it to a
+previously trusted key or fingerprint to identify a particular server.
+
+| Status | Code | Meaning |
+| --- | --- | --- |
+| 200 | — | Signed proof as above. |
+| 400 | `invalid_challenge` | Every invalid challenge has the same error body. |
+| 429 | `rate_limited` | Per-address bucket exhausted: 10 requests/second, burst 120. Charged before validation or derivation, using the resolved client address (IPv6 /64). `Retry-After: 1`, `X-RateLimit-Limit: 600`, `X-RateLimit-Remaining: 0`. |
+| 503 | `server_identity_unavailable` | Server key derivation failed, including a missing encryption key. No signature is returned. |
+
+Errors use the usual JSON error envelope. This endpoint is exempt from the
+main API middleware and has its own limiter. The server-wide request checks
+still run first: a query string that is not valid UTF-8 or contains a NUL gets
+`400 invalid_query` from them, before this limiter and with their CORS headers.
+
+Known-answer vector (all values below are hexadecimal except the fingerprint):
+
+```text
+encryption_key=000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f
+challenge=202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f
+seed=8c8346ca5da1a4799127ba98788225abc169fc5923a75cf2e502268ed9a849ef
+public_key=a3383163144f101b00c64da51cc890afa84413255dc552b5e8e025b7389828ec
+signature=efbb59aed8b78429f45e4e39a96155f2af5daa2ccf6336a43945adb0738b8bb8c46c6d5c247bbab53b4b312e628eeb48368efd7bdc4ac324074e5b419339c301
+fingerprint=ee57-02d8-a6c5-d1cd-6fc4-249a-e07b-da2a
+```
+
+`pad server info` sends a fresh random challenge without credentials, requires
+version 1 and algorithm `ed25519`, and verifies the signature before showing
+`connection.fingerprint` in JSON or the fingerprint in the table. When the
+endpoint is absent or verification fails, the command still succeeds, omits the
+fingerprint, and reports `Server identity could not be verified` through
+`connection.identity_error` and the table.

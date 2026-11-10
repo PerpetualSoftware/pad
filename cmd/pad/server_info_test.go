@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
@@ -152,5 +155,116 @@ func TestIncludeLocalRuntimeWhenUnconfigured(t *testing.T) {
 	cfg.URL = "https://pad.example.com"
 	if includeLocalRuntime(cfg) {
 		t.Fatal("expected URL-configured client to skip local runtime")
+	}
+}
+
+func TestServerInfoReportsIdentityFingerprint(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_TOKEN", "probe-must-not-send-this")
+	priv := ed25519.NewKeyFromSeed(make([]byte, 32))
+	pub := priv.Public().(ed25519.PublicKey)
+	// Fixed independently of the response under test.
+	const fingerprint = "139e-3940-e64b-5491-7220-88d9-a0d7-4162"
+	for _, mode := range []string{"valid", "bad_signature", "not_found", "wrong_version", "wrong_algorithm"} {
+		t.Run(mode, func(t *testing.T) {
+			probes := 0
+			seen := map[string]bool{}
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch r.URL.Path {
+				case "/api/v1/health":
+					w.WriteHeader(200)
+				case "/api/v1/auth/session":
+					_, _ = w.Write([]byte(`{"authenticated":false}`))
+				case "/api/v1/server/identity":
+					probes++
+					if r.Method != "GET" || r.Header.Get("Authorization") != "" || r.Header.Get("Cookie") != "" || r.Header.Get("X-Pad-Agent") != "" || r.URL.User != nil {
+						t.Error("identity probe carried credentials or unexpected method")
+					}
+					value := r.URL.Query().Get("challenge")
+					challenge, err := base64.RawURLEncoding.Strict().DecodeString(value)
+					if err != nil || len(challenge) != 32 || seen[value] {
+						t.Error("challenge is not fresh 32-byte randomness")
+					}
+					seen[value] = true
+					if mode == "not_found" {
+						http.NotFound(w, r)
+						return
+					}
+					message := append([]byte("pad-server-identity/v1/ed25519/challenge\x00"), pub...)
+					message = append(message, challenge...)
+					sig := ed25519.Sign(priv, message)
+					if mode == "bad_signature" {
+						sig[0] ^= 1
+					}
+					version, algorithm := 1, "ed25519"
+					if mode == "wrong_version" {
+						version = 2
+					}
+					if mode == "wrong_algorithm" {
+						algorithm = "other"
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"version": version, "algorithm": algorithm, "public_key": base64.RawURLEncoding.EncodeToString(pub), "signature": base64.RawURLEncoding.EncodeToString(sig)})
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer srv.Close()
+			cfg := config.DefaultConfig()
+			cfg.Mode = config.ModeRemote
+			cfg.URL = srv.URL
+			cfg.LoadedFromFile = true
+			for i := 0; i < 2; i++ {
+				client := cli.NewClientFromURLWithAgentName(srv.URL, "")
+				client.SetHTTPClient(srv.Client())
+				report, err := collectServerInfoWithClient(cfg, client)
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := json.Marshal(report)
+				if err != nil {
+					t.Fatal(err)
+				}
+				table := captureStdout(t, func() { printServerInfo(report) })
+				if mode == "valid" {
+					if !strings.Contains(string(data), `"fingerprint":"`+fingerprint+`"`) || !strings.Contains(table, fingerprint) {
+						t.Fatalf("fingerprint missing: %s\n%s", data, table)
+					}
+				} else {
+					if strings.Contains(string(data), `"fingerprint"`) || strings.Contains(table, fingerprint) || !strings.Contains(string(data), "could not be verified") || !strings.Contains(table, "could not be verified") {
+						t.Fatalf("unverified identity output: %s\n%s", data, table)
+					}
+				}
+			}
+			if probes != 2 {
+				t.Fatalf("identity probes = %d, want 2", probes)
+			}
+		})
+	}
+}
+
+func TestServerInfoSkipsIdentityProbeWhenUnhealthy(t *testing.T) {
+	probes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/server/identity" {
+			probes++
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	cfg := config.DefaultConfig()
+	cfg.Mode = config.ModeRemote
+	cfg.URL = srv.URL
+	cfg.LoadedFromFile = true
+	client := cli.NewClientFromURLWithAgentName(srv.URL, "")
+	client.SetHTTPClient(srv.Client())
+	report, err := collectServerInfoWithClient(cfg, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Connection.Reachable || probes != 0 {
+		t.Fatalf("reachable=%v probes=%d", report.Connection.Reachable, probes)
+	}
+	if report.Connection.Fingerprint != "" || !strings.Contains(report.Connection.IdentityError, "could not be verified") {
+		t.Fatalf("identity report: %+v", report.Connection)
 	}
 }
