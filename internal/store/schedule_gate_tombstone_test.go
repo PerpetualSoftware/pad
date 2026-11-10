@@ -11,6 +11,32 @@ import (
 // row must not take anything from the live items beside it, and must not put
 // back into the bundle the trashed body it has never carried.
 
+// gateOnTombstone makes bundle item blocker a soft-deleted blocker of item blocked.
+func gateOnTombstone(b *models.WorkspaceExport, blocker, blocked models.ItemExport) {
+	b.ScheduleGates = append(b.ScheduleGates, models.ScheduleGateExport{
+		ID: "gate-" + blocker.ID, BlockedItemID: blocked.ID, BlockerItemID: blocker.ID, CreatedAt: "2026-10-15T00:00:00Z",
+	})
+}
+
+func TestTASK4423_R10ImportRefusesADeletedRowThatBlocksNothing(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	bundle := bug3825Export("code")
+	bundle.Version = models.WorkspaceExportVersion
+	bundle.Items[0].DeletedAt = "2026-10-16T00:00:00Z"
+	_, _, err := s.ImportWorkspaceWithReport(bundle, "Stray tombstone", "", "")
+	if _, ok := AsValidationError(err); !ok {
+		t.Fatalf("err = %v, want a validation refusal", err)
+	}
+	ws, err := s.GetWorkspaceBySlug("stray-tombstone")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ws != nil {
+		t.Fatalf("a refused import left workspace %q", ws.Slug)
+	}
+}
+
 func TestTASK4423_R10TombstoneHoldsNoUniqueValue(t *testing.T) {
 	t.Parallel()
 	for _, key := range []string{"code", "invocation_slug"} {
@@ -19,6 +45,7 @@ func TestTASK4423_R10TombstoneHoldsNoUniqueValue(t *testing.T) {
 			bundle := bug3825Export(key)
 			bundle.Version = models.WorkspaceExportVersion
 			bundle.Items[0].DeletedAt = "2026-10-16T00:00:00Z"
+			gateOnTombstone(bundle, bundle.Items[0], bundle.Items[1])
 			ws, report, err := s.ImportWorkspaceWithReport(bundle, "Tombstone "+key, "", "")
 			if err != nil {
 				t.Fatalf("import: %v", err)
@@ -55,6 +82,7 @@ func TestTASK4423_R10TombstoneIsNotCountedByThePlanLimit(t *testing.T) {
 	extra.ItemNumber = 99
 	extra.DeletedAt = "2026-10-16T00:00:00Z"
 	bundle.Items = append(bundle.Items, extra)
+	gateOnTombstone(bundle, extra, bundle.Items[0])
 
 	ws, err := s.ImportWorkspace(bundle, "tombstone-at-cap", owner, "api", WithPlanLimit())
 	if err != nil {

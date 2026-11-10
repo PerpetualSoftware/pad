@@ -53,8 +53,9 @@ func TestTASK4423_R10ImportStoresNoTombstoneBody(t *testing.T) {
 	bundle := bug3825Export("code")
 	bundle.Version = models.WorkspaceExportVersion
 	bundle.Items[0].DeletedAt = "2026-10-16T00:00:00Z"
-	bundle.Items[0].Content = "a body in a deleted row"
+	bundle.Items[0].Content = "a body in a deleted row, linking [[Second]]"
 	bundle.Items[1].Content = "a live body"
+	gateOnTombstone(bundle, bundle.Items[0], bundle.Items[1])
 	ws, _, err := s.ImportWorkspaceWithReport(bundle, "Hollow tombstone", "", "")
 	if err != nil {
 		t.Fatalf("import: %v", err)
@@ -68,5 +69,12 @@ func TestTASK4423_R10ImportStoresNoTombstoneBody(t *testing.T) {
 	}
 	if deleted != "" || live != "a live body" {
 		t.Fatalf("deleted body = %q, live body = %q", deleted, live)
+	}
+	var links int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM item_wiki_links wl JOIN items i ON i.id=wl.source_item_id WHERE i.workspace_id=?`), ws.ID).Scan(&links); err != nil {
+		t.Fatal(err)
+	}
+	if links != 0 {
+		t.Fatalf("%d wiki links indexed from a body that was not stored", links)
 	}
 }

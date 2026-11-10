@@ -791,10 +791,25 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	if data.Version < models.WorkspaceExportVersion && data.HasV4ScheduleMembers() {
 		return nil, invalidf("export version %d contains version 4 schedule members", data.Version)
 	}
-	for _, it := range data.Items {
-		if it.DeletedAt != "" && !validLinkStamps(it.DeletedAt) {
+	// A soft-deleted row travels only as the blocker of a gate, and an exporter
+	// writes it with no body. Clearing a body here covers every later read of
+	// it: the insert, the wiki links and the attachment references.
+	gateBlockers := make(map[string]bool, len(data.ScheduleGates))
+	for _, g := range data.ScheduleGates {
+		gateBlockers[g.BlockerItemID] = true
+	}
+	for i := range data.Items {
+		it := &data.Items[i]
+		if it.DeletedAt == "" {
+			continue
+		}
+		if !validLinkStamps(it.DeletedAt) {
 			return nil, invalidf("invalid deleted_at on item %q", it.ID)
 		}
+		if !gateBlockers[it.ID] {
+			return nil, invalidf("deleted item %q blocks no schedule gate", it.ID)
+		}
+		it.Content = ""
 	}
 	if err := checkImportSourceIDs(data); err != nil {
 		return nil, err
@@ -1421,16 +1436,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// item has NO answers rather than stale ones until its next direct
 		// write enqueues it. Whether import should enqueue is an open policy
 		// question on TASK-3117, not something to change silently here.
-		// An exporter writes a soft-deleted row with no body, so a body here is
-		// not a restore of anything.
-		itemContent := it.Content
-		if it.DeletedAt != "" {
-			itemContent = ""
-		}
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, deleted_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
-			newItemID, ws.ID, newCollID, itemTitle, itemSlug, itemContent, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
+			newItemID, ws.ID, newCollID, itemTitle, itemSlug, it.Content, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, itemNumber,
 			it.CreatedAt, it.UpdatedAt, nilIfEmpty(it.DeletedAt), ws.ID)
 		if err != nil {
