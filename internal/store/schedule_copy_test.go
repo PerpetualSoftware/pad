@@ -93,6 +93,7 @@ func (c *schedCopy) history(t *testing.T, sc *models.ItemSchedule, n int) {
 func (c *schedCopy) do(t *testing.T, archive bool) *CrossWorkspaceCopyResult {
 	t.Helper()
 	req := c.req()
+	req.LinkEndReadable = func(string) bool { return true }
 	req.SourceItemID = c.src.ID
 	req.ArchiveSource = archive
 	req.scheduleNow = copyNow

@@ -283,6 +283,10 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 		}
 	}
 	for _, c := range kept {
+		// A missing causal row must not turn private cross-item text into local history.
+		if (c.RootChangeID != "" && changeMap[c.RootChangeID] == "") || (c.ParentChangeID != nil && *c.ParentChangeID != "" && changeMap[*c.ParentChangeID] == "") {
+			c.Reason, c.ReasonSource, c.Actor = "Date changed", "system", "system"
+		}
 		root := changeMap[c.RootChangeID]
 		if root == "" {
 			root = changeMap[c.ID]

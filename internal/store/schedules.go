@@ -1107,6 +1107,13 @@ func (s *Store) DeleteScheduleChecked(workspaceID, itemID string, mayDropDeadlin
 			}
 		}
 	}
+	used, err := s.linkedRolesTx(tx, cur.ID)
+	if err != nil {
+		return false, err
+	}
+	if len(used) > 0 {
+		return false, ErrScheduleLinked
+	}
 	before, err := s.scheduleSnapshotTx(tx, cur.ID)
 	if err != nil {
 		return false, err
