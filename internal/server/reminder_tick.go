@@ -4,6 +4,9 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // The reminder tick: the half of IDEA-2641 that ACTS at a target time.
@@ -172,4 +175,35 @@ func (s *Server) runReminderTick() {
 	if result.Missed > 0 {
 		slog.Info("reminder tick: missed deadlines", "count", result.Missed)
 	}
+	for _, lapse := range result.Lapsed {
+		s.announceDeadlineLapse(lapse)
+	}
+}
+
+// announceDeadlineLapse does for a lapse what recordScheduleWrite does for a
+// user's resolve, so an open view drops the closed occurrence instead of
+// answering a 409 on its next action. The evaluator's own transaction has
+// already written the miss notice, so this adds no notification. Best-effort
+// like every other activity write: the lapse is committed either way.
+func (s *Server) announceDeadlineLapse(lapse store.DeadlineLapse) {
+	item, err := s.store.GetItem(lapse.ItemID)
+	if err != nil {
+		slog.Error("reminder tick: lapse announce: read item", "item", lapse.ItemID, "error", err)
+		return
+	}
+	if item == nil {
+		return
+	}
+	const system = "system"
+	if _, err := s.store.CreateActivity(models.Activity{
+		WorkspaceID: lapse.WorkspaceID,
+		DocumentID:  lapse.ItemID,
+		Action:      "schedule_resolved",
+		Actor:       system,
+		Source:      system,
+		Metadata:    resolveActivityMeta(lapse.Kind, "lapsed"),
+	}); err != nil {
+		slog.Error("reminder tick: lapse announce: activity", "item", lapse.ItemID, "error", err)
+	}
+	s.publishItemEventWithName(sseItemUpdated, lapse.WorkspaceID, item.ID, item.Title, item.CollectionSlug, system, "", system, item.Seq)
 }

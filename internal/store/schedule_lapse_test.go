@@ -618,7 +618,7 @@ func TestLapseDowntimeClosesEachDueOccurrence(t *testing.T) {
 			if next.NextAt == nil || *next.NextAt != nextAt || f.managed(t, next).RemindAt != nextAt {
 				t.Fatalf("first not-due occurrence not armed: %+v", next)
 			}
-			if got := f.eval(t, now, 0); got != (DeadlineEvalResult{}) || !reflect.DeepEqual(next, f.reload(t, sc.ItemID)) || f.deadlineEvidence(t) != want || f.deadlineNotices(t) != want {
+			if got := f.eval(t, now, 0); !reflect.DeepEqual(got, DeadlineEvalResult{}) || !reflect.DeepEqual(next, f.reload(t, sc.ItemID)) || f.deadlineEvidence(t) != want || f.deadlineNotices(t) != want {
 				t.Fatalf("second pass changed schedule: %+v", got)
 			}
 		})
@@ -642,7 +642,7 @@ func TestLapseCatchUpBoundedPerSchedule(t *testing.T) {
 			t.Fatalf("bounded next: %+v", next)
 		}
 	}
-	if got := f.eval(t, now, 0); got != (DeadlineEvalResult{}) {
+	if got := f.eval(t, now, 0); !reflect.DeepEqual(got, DeadlineEvalResult{}) {
 		t.Fatalf("caught up: %+v", got)
 	}
 }
@@ -733,7 +733,7 @@ func TestLapseTerminalAfterDeadlinePage(t *testing.T) {
 			before := f.reload(t, sc.ItemID)
 			reminder, history := f.managed(t, before), f.occs(t, sc.ID)
 			f.exec(t, `UPDATE items SET fields=? WHERE id=?`, `{"status":"done"}`, sc.ItemID)
-			if missed, err := f.s.evaluateDeadline(page[0], rt(lapseNow)); err != nil || missed {
+			if missed, _, err := f.s.evaluateDeadline(page[0], rt(lapseNow)); err != nil || missed {
 				t.Fatalf("terminal evaluation: missed=%v err=%v", missed, err)
 			}
 			if f.deadlineEvidence(t) != 0 || f.deadlineNotices(t) != 0 || !reflect.DeepEqual(before, f.reload(t, sc.ItemID)) || !reflect.DeepEqual(reminder, f.managed(t, before)) || !reflect.DeepEqual(history, f.occs(t, sc.ID)) {
