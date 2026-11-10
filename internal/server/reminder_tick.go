@@ -150,6 +150,9 @@ func (s *Server) runReminderTick() {
 	s.reminderTick.mu.Unlock()
 
 	nowTS := time.Now().UTC().Format(time.RFC3339)
+	if err := s.store.EvaluateCommitmentGates(nowTS, limit); err != nil {
+		slog.Error("reminder tick: commitment gate evaluation failed", "error", err)
+	}
 	// A pass can BOTH fire and fail: the store continues past a broken row
 	// rather than letting it block newer reminders, so it returns the
 	// reminders it fired alongside the joined errors. Both halves are

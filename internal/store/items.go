@@ -2951,6 +2951,10 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, err
 	}
 
+	if err := s.pinGateBlockerTx(tx, existing.WorkspaceID, id); err != nil {
+		return nil, err
+	}
+
 	// IDEA-1494: run the caller's invariant check (if any)
 	// AFTER the locks are held but BEFORE any mutation. Closing the
 	// guard-vs-write TOCTOU window relies on this ordering — the
@@ -3670,6 +3674,9 @@ func (s *Store) updateItemWithParentLinkOnce(
 				VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextTransitionSeqSubquery+`)
 			`), newID(), id, existing.WorkspaceID, existing.CollectionID, doneKey, statusBefore, newStatus, ts); err != nil {
 				return nil, fmt.Errorf("record status transition: %w", err)
+			}
+			if err := s.openGatesForBlockerTx(tx, existing.WorkspaceID, id); err != nil {
+				return nil, err
 			}
 			mutSignal.StatusChanged = true
 			mutSignal.StatusFieldKey = doneKey
@@ -6140,6 +6147,10 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, err
 	}
 
+	if err := s.pinGateBlockerTx(tx, existing.WorkspaceID, itemID); err != nil {
+		return nil, err
+	}
+
 	if precheck != nil {
 		freshExisting, ferr := s.getItemTx(tx, itemID)
 		if ferr != nil {
@@ -6214,6 +6225,9 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, fmt.Errorf("move item: %w", err)
 	}
 
+	if err := s.openGatesForBlockerTx(tx, existing.WorkspaceID, itemID); err != nil {
+		return nil, err
+	}
 	// Re-index against the DESTINATION collection (PLAN-2857 U5). A move is
 	// the one write where the blob and the SCHEMA change together: the
 	// identical value indexes differently on the other side, because which

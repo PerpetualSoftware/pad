@@ -29,6 +29,13 @@ func (s *Store) commitmentNoticeRecipientTx(tx *sql.Tx, workspaceID, itemID stri
 	if recipient == "" {
 		return item, "", nil
 	}
+	user, err := s.GetUserQ(tx, recipient)
+	if err != nil {
+		return item, "", err
+	}
+	if user == nil || user.IsDisabled() || user.IsApp() {
+		return item, "", nil
+	}
 	visible, err := s.notificationRecipientVisibleTx(tx, item, recipient)
 	if err != nil || !visible {
 		return item, "", err

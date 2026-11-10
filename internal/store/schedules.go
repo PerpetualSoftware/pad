@@ -533,7 +533,7 @@ func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.Sche
 	if err != nil {
 		return nil, err
 	}
-	if err := s.insertManagedReminderTx(tx, workspaceID, itemID, id, NormalizeInstant(arm.RemindAt)); err != nil {
+	if err := s.armManagedReminderTx(tx, sc, NormalizeInstant(arm.RemindAt)); err != nil {
 		return nil, err
 	}
 	if roles == nil {

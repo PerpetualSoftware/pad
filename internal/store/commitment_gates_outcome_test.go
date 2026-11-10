@@ -291,7 +291,10 @@ func (f *linkFix) buildItem(t *testing.T, status string) *models.Item {
 
 func (f *linkFix) setBlockerStatus(t *testing.T, it *models.Item, status string) {
 	t.Helper()
-	f.exec(t, `UPDATE items SET fields=? WHERE id=?`, `{"status":"`+status+`"}`, it.ID)
+	fields := `{"status":"` + status + `"}`
+	if _, err := f.s.UpdateItem(it.ID, models.ItemUpdate{Fields: &fields}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestABlockerWithNoCommitmentSucceedsOnATerminalStatusThatIsNotAbandoned(t *testing.T) {
@@ -420,7 +423,7 @@ func TestAGateWithAnUnreadableSucceededBlockerShowsNothingAndStillOpens(t *testi
 	}
 	// Opening does not depend on who reads: the blocker succeeded.
 	if !f.openedAt(t, g.ID).Valid {
-		t.Fatal("a read that cannot see the blocker did not open the gate the blocker released")
+		t.Fatal("the blocker write did not record the gate opening")
 	}
 	// A reader who sees both ends gets the state and the detail.
 	f.expect(t, "reader of both ends", 0, all, models.GateStateReleased, models.GateOutcomeSucceeded)

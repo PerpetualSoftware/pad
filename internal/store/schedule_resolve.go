@@ -425,7 +425,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	if in.State == "skip" {
 		// A skip cancels the occurrence: a link under the cancel policy marks its
 		// paired child occurrence No longer needed, in this transaction.
-		if err := s.markChildrenNoLongerNeededTx(tx, sc, in.Actor, nowT, openFilter, openArgs); err != nil {
+		if err := s.markChildrenNoLongerNeededTx(tx, sc, in.Actor, nowT, openFilter, openArgs, in.LinkAccess); err != nil {
 			return nil, err
 		}
 	}
@@ -469,6 +469,9 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 		}
 	}
 	if _, err := tx.Exec(s.q(`UPDATE schedule_occurrences SET state='done',comment_id=?,actor=?,resolved_at=?,actual_done_at=?,actual_source=? WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`), nilIfEmpty(commentID), in.Actor, nowT.Format(time.RFC3339), NormalizeInstant(actual), actualSource, sc.ID, at); err != nil {
+		return nil, err
+	}
+	if err := s.openGatesForBlockerTx(tx, sc.WorkspaceID, sc.ItemID); err != nil {
 		return nil, err
 	}
 	key := OccurrenceKey(sc, at, wall)
@@ -552,6 +555,9 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		state = "lapsed"
 	}
 	if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, state, commentID, in.Actor, ts); err != nil {
+		return nil, err
+	}
+	if err := s.openGatesForBlockerTx(tx, sc.WorkspaceID, sc.ItemID); err != nil {
 		return nil, err
 	}
 
@@ -722,6 +728,26 @@ func reminderFireAt(sc *models.ItemSchedule, rec *time.Location, x time.Time, xW
 // armManagedReminderTx re-arms the schedule's managed reminder at remindAt, or
 // inserts it when the row is missing. The caller holds the schedule.
 func (s *Store) armManagedReminderTx(tx *sql.Tx, sc *models.ItemSchedule, remindAt string) error {
+	ev, err := s.evaluateGatesQ(tx, sc.WorkspaceID, sc.ItemID)
+	if err != nil {
+		return err
+	}
+	if ev.state != models.GateStateReleased {
+		// Keep an outstanding row available for release without clearing a fire
+		// already recorded for this occurrence.
+		if _, err := tx.Exec(s.q(`UPDATE item_reminders SET remind_at=?,updated_at=? WHERE schedule_id=? AND fired_at IS NULL`), remindAt, now(), sc.ID); err != nil {
+			return err
+		}
+		var n int
+		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM item_reminders WHERE schedule_id=?`), sc.ID).Scan(&n); err != nil {
+			return err
+		}
+		if n > 0 {
+			return nil
+		}
+		return s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, remindAt)
+	}
+
 	if ok, err := s.rearmManagedReminderTx(tx, sc.ID, remindAt); err != nil {
 		return err
 	} else if !ok {

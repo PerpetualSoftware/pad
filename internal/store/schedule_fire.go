@@ -104,6 +104,15 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 	if sc == nil || sc.NextAt == nil || sc.NextWall == nil {
 		return false, errors.New("managed reminder has no outstanding occurrence")
 	}
+	ev, err := s.evaluateGatesQ(tx, sc.WorkspaceID, sc.ItemID)
+	if err != nil {
+		return false, err
+	}
+	if ev.state != models.GateStateReleased {
+		// The arbiter marked this row fired. A gate hold must leave it outstanding.
+		_, err := tx.Exec(s.q(`UPDATE item_reminders SET fired_at=NULL WHERE id=?`), r.ID)
+		return false, err
+	}
 	wall, err := schedule.ParseWall(*sc.NextWall)
 	if err != nil {
 		return false, fmt.Errorf("parse next_wall: %w", err)

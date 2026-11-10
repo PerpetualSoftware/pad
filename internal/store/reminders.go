@@ -519,48 +519,50 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	if limit <= 0 {
 		limit = defaultReminderFireLimit
 	}
-	// SOFT-DELETED ITEMS ARE EXCLUDED HERE, not merely skipped downstream
-	// fireOneReminder rolls back when it finds the item gone,
-	// which leaves the reminder ARMED and therefore a candidate again on the
-	// next pass — so a batch bounded at `limit` and ordered oldest-first can be
-	// filled entirely by archived items, and no live reminder ever fires. The
-	// starvation is permanent and silent: the tick reports zero fired and looks
-	// idle. Filtering in the candidate query means those rows never occupy a
-	// slot, while the reminders themselves are kept, so restoring the item
-	// restores its reminder with it.
-	// THE WORKSPACE IS CHECKED TOO, not only the item.
-	// Workspace soft-delete deliberately leaves items in place for the 30-day
-	// restore window, so a workspace-level filter on the ITEM finds nothing
-	// wrong — and the tick kept firing, emitting outbound webhook events for a
-	// workspace whose owner had deleted it, possibly as part of deleting their
-	// account. That is the one failure mode here that reaches outside the
-	// process, which is why it outranks the starvation cases even though the
-	// SQL change is the same size.
-	//
-	// A restored workspace resumes normally: nothing is destroyed, the
-	// reminders simply stop being candidates while it is gone.
-	rows, err := s.db.Query(s.q(`
-		SELECT id FROM item_reminders
-		WHERE fired_at IS NULL AND remind_at <= ?
-		  AND `+reminderFireable+`
-		ORDER BY remind_at, id
-		LIMIT ?
-	`), nowTS, limit)
-	if err != nil {
-		return nil, fmt.Errorf("due reminder candidates: %w", err)
-	}
-	defer rows.Close()
-
 	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan due reminder id: %w", err)
+	cursorAt, cursorID := "", ""
+	for len(ids) < limit {
+		size := limit - len(ids)
+		rows, err := s.db.Query(s.q(`SELECT id,workspace_id,item_id,schedule_id,remind_at FROM item_reminders
+ WHERE fired_at IS NULL AND remind_at<=? AND `+reminderFireable+`
+ AND (remind_at>? OR (remind_at=? AND id>?)) ORDER BY remind_at,id LIMIT ?`), nowTS, cursorAt, cursorAt, cursorID, size)
+		if err != nil {
+			return nil, err
 		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate due reminders: %w", err)
+		type candidate struct {
+			id, workspace, item, at string
+			sc                      sql.NullString
+		}
+		var page []candidate
+		for rows.Next() {
+			var c candidate
+			if err := rows.Scan(&c.id, &c.workspace, &c.item, &c.sc, &c.at); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			page = append(page, c)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range page {
+			cursorAt, cursorID = c.at, c.id
+			if c.sc.Valid {
+				ev, err := s.evaluateGatesQ(s.db, c.workspace, c.item)
+				if err != nil {
+					return nil, err
+				}
+				if ev.state != models.GateStateReleased {
+					continue
+				}
+			}
+			ids = append(ids, c.id)
+		}
+		if len(page) < size {
+			break
+		}
 	}
 	return ids, nil
 }
@@ -758,6 +760,22 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 			return nil, nil
 		case err != nil:
 			return nil, fmt.Errorf("pin reminder %s item and workspace: %w", id, err)
+		}
+	}
+
+	if managed {
+		sc, err := s.getScheduleByIDQ(tx, scheduleID.String)
+		if err != nil {
+			return nil, err
+		}
+		if sc != nil {
+			ev, err := s.evaluateGatesQ(tx, sc.WorkspaceID, sc.ItemID)
+			if err != nil {
+				return nil, err
+			}
+			if ev.state != models.GateStateReleased {
+				return nil, nil
+			}
 		}
 	}
 
