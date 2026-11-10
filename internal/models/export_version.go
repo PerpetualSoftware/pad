@@ -12,9 +12,9 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 	}
 	*x = WorkspaceExport(decoded)
 	var raw struct {
-		Changes   json.RawMessage              `json:"schedule_changes"`
-		Links     json.RawMessage              `json:"schedule_links"`
-		Gates     json.RawMessage              `json:"schedule_gates"`
+		Changes json.RawMessage `json:"schedule_changes"`
+		Links   json.RawMessage `json:"schedule_links"`
+		Gates   json.RawMessage `json:"schedule_gates"`
 		// Only the presence of deleted_at: a map here would hold every body twice.
 		Items []struct {
 			DeletedAt json.RawMessage `json:"deleted_at"`
