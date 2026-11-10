@@ -108,25 +108,18 @@ type Dialect interface {
 	// PostgreSQL: expr1 || expr2 (same, but useful as abstraction point)
 	Concat(exprs ...string) string
 
-	// FTSMatch returns the full-text search WHERE clause fragment.
-	// SQLite: "table MATCH ?" — consumes ONE arg.
-	// PostgreSQL: an OR-combined plainto_tsquery match that consumes TWO
-	// args — the raw user query AND its hyphen-sanitized form. See
-	// sanitizePGFTSQuery for the rationale (BUG-842).
-	FTSMatch(table, column string) string
+	// FTSMatch returns the full-text search predicate and its arguments.
+	// SQLite quotes tokens and prefixes the last eligible part. PostgreSQL
+	// preserves both whole-word legs (BUG-842) and adds an eligible prefix leg.
+	FTSMatch(table, column, query string) (string, []interface{})
 
-	// FTSSnippet returns SQL for highlighted search result snippets.
-	// SQLite: snippet(fts_table, col_idx, '<mark>', '</mark>', '...', 32)
-	// — consumes ONE arg.
-	// PostgreSQL: ts_headline backed by the same OR-combined tsquery as
-	// FTSMatch — consumes TWO args (raw, sanitized).
-	FTSSnippet(ftsTable string, colIndex int, sourceColumn string) string
+	// FTSSnippet returns highlighted snippet SQL and its arguments.
+	// PostgreSQL uses the same tsquery as FTSMatch; SQLite uses the MATCH context.
+	FTSSnippet(ftsTable string, colIndex int, sourceColumn, query string) (string, []interface{})
 
-	// FTSRank returns the column/expression for full-text relevance ranking.
-	// SQLite: rank (built-in FTS5 column) — consumes ZERO args.
-	// PostgreSQL: ts_rank backed by the same OR-combined tsquery as
-	// FTSMatch — consumes TWO args (raw, sanitized).
-	FTSRank(table, column string) string
+	// FTSRank returns relevance SQL and its arguments.
+	// PostgreSQL uses the same tsquery as FTSMatch; SQLite uses the MATCH context.
+	FTSRank(table, column, query string) (string, []interface{})
 
 	// JSONArrayContains returns SQL + the arg to check if a JSON array column
 	// contains a given text value, compared exactly (case and all).
@@ -221,16 +214,16 @@ func (d *sqliteDialect) Concat(exprs ...string) string {
 	return strings.Join(exprs, " || ")
 }
 
-func (d *sqliteDialect) FTSMatch(table, _ string) string {
-	return fmt.Sprintf("%s MATCH ?", table)
+func (d *sqliteDialect) FTSMatch(table, _, query string) (string, []interface{}) {
+	return fmt.Sprintf("%s MATCH ?", table), []interface{}{sanitizeFTSQuery(query)}
 }
 
-func (d *sqliteDialect) FTSSnippet(ftsTable string, colIndex int, _ string) string {
-	return fmt.Sprintf("snippet(%s, %d, '<mark>', '</mark>', '...', 32)", ftsTable, colIndex)
+func (d *sqliteDialect) FTSSnippet(ftsTable string, colIndex int, _, _ string) (string, []interface{}) {
+	return fmt.Sprintf("snippet(%s, %d, '<mark>', '</mark>', '...', 32)", ftsTable, colIndex), nil
 }
 
-func (d *sqliteDialect) FTSRank(_, _ string) string {
-	return "rank"
+func (d *sqliteDialect) FTSRank(_, _, _ string) (string, []interface{}) {
+	return "rank", nil
 }
 
 func (d *sqliteDialect) JSONArrayContains(column, value string) (string, interface{}) {
@@ -323,27 +316,40 @@ func (d *postgresDialect) Concat(exprs ...string) string {
 // miss. ORing the two query variants together covers both cases. See
 // BUG-842 and sanitizePGFTSQuery.
 //
-// Each method below consumes TWO `?` placeholders (raw query, sanitized
-// query). Callers pass them in args via sanitizePGFTSQueryArgs.
-func (d *postgresDialect) FTSMatch(table, column string) string {
-	return fmt.Sprintf(
-		"%s.%s @@ (plainto_tsquery('english', ?) || plainto_tsquery('english', ?))",
-		table, column,
-	)
+// postgresFTSQuery builds the shared tsquery and its arguments together so
+// matching, snippets, and ranking cannot choose different query shapes.
+func postgresFTSQuery(query string) (string, []interface{}) {
+	sql := "plainto_tsquery('english', ?) || plainto_tsquery('english', ?)"
+	args := []interface{}{query, sanitizePGFTSQuery(query)}
+	if head, part := splitFTSPrefix(query); part != "" {
+		// Normalize the prefix through the English dictionary and also keep its
+		// literal lexeme, so stop words such as "the" can prefix-match "thesis".
+		// The tsquery cast does not fold case the way the parser does, so the
+		// literal leg lowercases first, or "The" would match nothing. The head
+		// gets the same two whole-word variants as the query itself, so a
+		// hyphenated earlier word ("task-five wid") still matches its parts.
+		sql += " || ((plainto_tsquery('english', ?) || plainto_tsquery('english', ?)) && (to_tsquery('english', quote_literal(?) || ':*') || (quote_literal(lower(?)) || ':*')::tsquery))"
+		args = append(args, head, sanitizePGFTSQuery(head), part, part)
+	}
+	return sql, args
 }
 
-func (d *postgresDialect) FTSSnippet(_ string, _ int, sourceColumn string) string {
-	return fmt.Sprintf(
-		"ts_headline('english', %s, plainto_tsquery('english', ?) || plainto_tsquery('english', ?), 'StartSel=<mark>,StopSel=</mark>,MaxFragments=1,MaxWords=32')",
-		sourceColumn,
-	)
+func (d *postgresDialect) FTSMatch(table, column, query string) (string, []interface{}) {
+	tsquery, args := postgresFTSQuery(query)
+	return fmt.Sprintf("%s.%s @@ (%s)", table, column, tsquery), args
 }
 
-func (d *postgresDialect) FTSRank(table, column string) string {
+func (d *postgresDialect) FTSSnippet(_ string, _ int, sourceColumn, query string) (string, []interface{}) {
+	tsquery, args := postgresFTSQuery(query)
 	return fmt.Sprintf(
-		"ts_rank(%s.%s, plainto_tsquery('english', ?) || plainto_tsquery('english', ?))",
-		table, column,
-	)
+		"ts_headline('english', %s, %s, 'StartSel=<mark>,StopSel=</mark>,MaxFragments=1,MaxWords=32')",
+		sourceColumn, tsquery,
+	), args
+}
+
+func (d *postgresDialect) FTSRank(table, column, query string) (string, []interface{}) {
+	tsquery, args := postgresFTSQuery(query)
+	return fmt.Sprintf("ts_rank(%s.%s, %s)", table, column, tsquery), args
 }
 
 func (d *postgresDialect) JSONArrayContains(column, value string) (string, interface{}) {

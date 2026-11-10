@@ -78,7 +78,7 @@ func TestSQLiteDialect(t *testing.T) {
 	if got := d.Now(); got != "datetime('now')" {
 		t.Errorf("Now = %q", got)
 	}
-	if got := d.FTSMatch("items_fts", "search_vector"); got != "items_fts MATCH ?" {
+	if got, _ := d.FTSMatch("items_fts", "search_vector", "hello"); got != "items_fts MATCH ?" {
 		t.Errorf("FTSMatch = %q", got)
 	}
 	if got := d.GroupConcat("u.name", true); got != "GROUP_CONCAT(DISTINCT u.name)" {

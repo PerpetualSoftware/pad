@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -356,13 +358,10 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 
 	if s.dialect.Driver() == DriverPostgres {
 		// PostgreSQL: search_vector is a column on the items table (aliased as "i"); no JOIN needed.
-		ftsSnippet := s.dialect.FTSSnippet("i", 1, "i.content")
-		ftsRank := s.dialect.FTSRank("i", "search_vector")
-		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
+		ftsSnippet, snippetArgs := s.dialect.FTSSnippet("i", 1, "i.content", params.Query)
+		ftsRank, rankArgs := s.dialect.FTSRank("i", "search_vector", params.Query)
+		ftsMatch, matchArgs := s.dialect.FTSMatch("i", "search_vector", params.Query)
 
-		// PG FTSSnippet, FTSRank, and FTSMatch each consume TWO "?" args
-		// (raw query + hyphen-sanitized query) for the OR-combined
-		// plainto_tsquery — see dialect.go and BUG-842.
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
 			       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
@@ -379,18 +378,12 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 			WHERE %s
 		`, ftsSnippet, ftsRank, ftsMatch)
-		searchQuery := params.Query
-		sanitized := sanitizePGFTSQuery(searchQuery)
-		args = []interface{}{
-			searchQuery, sanitized, // FTSSnippet
-			searchQuery, sanitized, // FTSRank
-			searchQuery, sanitized, // FTSMatch
-		}
+		args = append(append(snippetArgs, rankArgs...), matchArgs...)
 	} else {
 		// SQLite: uses FTS5 virtual table with JOIN on rowid.
-		ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")
-		ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
-		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+		ftsSnippet, snippetArgs := s.dialect.FTSSnippet("items_fts", 1, "i.content", params.Query)
+		ftsRank, rankArgs := s.dialect.FTSRank("items_fts", "search_vector", params.Query)
+		ftsMatch, matchArgs := s.dialect.FTSMatch("items_fts", "search_vector", params.Query)
 
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
@@ -409,7 +402,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 			WHERE %s
 		`, ftsSnippet, ftsRank, ftsMatch)
-		args = []interface{}{sanitizeFTSQuery(params.Query)}
+		args = append(append(snippetArgs, rankArgs...), matchArgs...)
 	}
 
 	if params.Workspace != "" {
@@ -460,17 +453,16 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	copy(countArgs, args)
 
 	if s.dialect.Driver() == DriverPostgres {
-		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
+		ftsMatch, matchArgs := s.dialect.FTSMatch("i", "search_vector", params.Query)
 		countQuery = fmt.Sprintf(`
 			SELECT COUNT(*)
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
 			WHERE %s
 		`, ftsMatch)
-		// PG FTSMatch consumes TWO args (raw + sanitized) — BUG-842.
-		countArgs = []interface{}{params.Query, sanitizePGFTSQuery(params.Query)}
+		countArgs = matchArgs
 	} else {
-		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+		ftsMatch, matchArgs := s.dialect.FTSMatch("items_fts", "search_vector", params.Query)
 		countQuery = fmt.Sprintf(`
 			SELECT COUNT(*)
 			FROM items_fts fts
@@ -478,7 +470,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			JOIN collections c ON c.id = i.collection_id
 			WHERE %s
 		`, ftsMatch)
-		countArgs = []interface{}{sanitizeFTSQuery(params.Query)}
+		countArgs = matchArgs
 	}
 
 	// Replay the same filters for the count query
@@ -690,23 +682,22 @@ func (s *Store) searchFacets(params SearchParams) *SearchFacets {
 	var baseArgs []interface{}
 
 	if s.dialect.Driver() == DriverPostgres {
-		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
+		ftsMatch, matchArgs := s.dialect.FTSMatch("i", "search_vector", params.Query)
 		baseQuery = fmt.Sprintf(`
 			FROM items i
 			JOIN collections c ON c.id = i.collection_id
 			WHERE %s
 		`, ftsMatch)
-		// PG FTSMatch consumes TWO args (raw + sanitized) — BUG-842.
-		baseArgs = []interface{}{params.Query, sanitizePGFTSQuery(params.Query)}
+		baseArgs = matchArgs
 	} else {
-		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
+		ftsMatch, matchArgs := s.dialect.FTSMatch("items_fts", "search_vector", params.Query)
 		baseQuery = fmt.Sprintf(`
 			FROM items_fts fts
 			JOIN items i ON i.rowid = fts.rowid
 			JOIN collections c ON c.id = i.collection_id
 			WHERE %s
 		`, ftsMatch)
-		baseArgs = []interface{}{sanitizeFTSQuery(params.Query)}
+		baseArgs = matchArgs
 	}
 
 	baseQuery, baseArgs = s.appendSearchFilters(baseQuery, baseArgs, params)
@@ -753,6 +744,7 @@ func (s *Store) searchFacets(params SearchParams) *SearchFacets {
 
 // sanitizeFTSQuery wraps each token in double quotes so FTS5 treats
 // special characters (like hyphens) as literals rather than operators.
+// The final token gains a prefix marker when its final part is long enough.
 // Only used for SQLite FTS5 queries.
 func sanitizeFTSQuery(q string) string {
 	q = strings.TrimSpace(q)
@@ -765,7 +757,42 @@ func sanitizeFTSQuery(q string) string {
 		t = strings.ReplaceAll(t, `"`, ``)
 		tokens[i] = `"` + t + `"`
 	}
+	if _, part := splitFTSPrefix(q); part != "" {
+		tokens[len(tokens)-1] += "*"
+	}
 	return strings.Join(tokens, " ")
+}
+
+// maxFTSPrefixBytes is the smallest operand, in bytes, that a Postgres
+// tsquery refuses.
+const maxFTSPrefixBytes = 2047
+
+// splitFTSPrefix separates the final alphanumeric part from the whole-word
+// head. An empty part disables prefix matching. Only letters and decimal
+// digits can enter the prefix tsquery; punctuation in the head goes to
+// plainto_tsquery. Other number runes (superscripts, fractions) split the
+// part, because the Postgres parser drops them and would otherwise stem "m²"
+// into a one-letter prefix.
+func splitFTSPrefix(q string) (head, part string) {
+	words := strings.Fields(q)
+	if len(words) == 0 {
+		return "", ""
+	}
+	parts := strings.FieldsFunc(words[len(words)-1], func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	if len(parts) == 0 {
+		return "", ""
+	}
+	part = parts[len(parts)-1]
+	// Postgres rejects a tsquery operand of maxFTSPrefixBytes or more with
+	// an error, and never indexes a word that long, so such a prefix could
+	// match nothing. Both engines skip it to keep their behaviour the same.
+	if utf8.RuneCountInString(part) < 2 || len(part) >= maxFTSPrefixBytes {
+		return "", ""
+	}
+	head = strings.Join(append(words[:len(words)-1], parts[:len(parts)-1]...), " ")
+	return head, part
 }
 
 // sanitizePGFTSQuery returns a copy of q with hyphens replaced by spaces.
