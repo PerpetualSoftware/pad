@@ -141,7 +141,11 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		if err != nil {
 			return nil, err
 		}
-		plan.result.Cascade = cascade
+		// With nothing to show beyond the root, the answer is the unlinked one, so
+		// a dependent the caller cannot read does not change its shape.
+		if cascade != nil && cascadeNamesADependent(cascade, itemID) {
+			plan.result.Cascade = cascade
+		}
 	}
 	if in.Scope == "series" {
 		// A series change replaces the deadline role. Refuse it for a role a link
@@ -240,6 +244,18 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		return nil, fmt.Errorf("renegotiate commitment: %w", err)
 	}
 	return &plan.result, nil
+}
+
+func cascadeNamesADependent(c *models.LinkedMoveResult, rootItemID string) bool {
+	if len(c.Violations) > 0 || len(c.LeftInPlace) > 0 {
+		return true
+	}
+	for _, ch := range c.Changes {
+		if ch.ItemID != rootItemID {
+			return true
+		}
+	}
+	return false
 }
 
 func deadlineRolesSnapshot(r scheduleRoles) string {

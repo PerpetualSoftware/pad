@@ -345,7 +345,10 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 				return nil, err
 			}
 			if commentID != "" {
-				if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, "moved", commentID, in.Actor, ts); err != nil {
+				// The recipient's instant, the row the cascade wrote; xAt may be the
+				// caller's reading of a floating occurrence.
+				at := linked.nodes[linked.root].x.Format(time.RFC3339)
+				if err := s.upsertOccurrenceTx(tx, sc.ID, at, xWall, "moved", commentID, in.Actor, ts); err != nil {
 					return nil, err
 				}
 			}

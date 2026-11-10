@@ -438,6 +438,11 @@ func TestLinkedRenegotiationCrossingCascadeDoesNotDeadlock(t *testing.T) {
 
 func assertLinkedConcurrencyResults(t *testing.T, errs []error) {
 	t.Helper()
+	// IsDBBusy also answers true for a deadlock, which is the failure these
+	// tests exist to catch.
+	if deadlocked(errs) != 0 {
+		t.Fatalf("crossing linked transactions deadlocked: %v", errs)
+	}
 	busy := 0
 	for _, err := range errs {
 		if errors.Is(err, ErrLinkBudget) || IsDBBusy(err) {
