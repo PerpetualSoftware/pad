@@ -130,7 +130,7 @@
 				return;
 			}
 			viewing = false;
-			await api.resolveCommitment(entry.workspace!, entry.item_ref, {
+			const result = await api.resolveCommitment(entry.workspace!, entry.item_ref, {
 				occurrence_at: view.next_occurrence.at, state,
 				...(until !== undefined ? { until } : {}),
 				...(comment !== undefined ? { comment } : {})
@@ -144,7 +144,9 @@
 				savedRefreshError = true;
 				loadError = false;
 			} else {
-				announcement = { done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', move: 'Occurrence moved.' }[state];
+				announcement = result?.resolution?.warning === 'target_after_deadline'
+					? 'Occurrence moved. The new date is after its deadline.'
+					: { done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', move: 'Occurrence moved.' }[state];
 			}
 		} catch (error) {
 			if (!sameIdentity()) return;

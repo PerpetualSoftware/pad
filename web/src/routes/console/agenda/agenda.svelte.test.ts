@@ -124,11 +124,17 @@ describe('agenda Day page', () => {
   const pending = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(pending.promise); render(Agenda); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
   h.epoch++; h.user = user; pending.resolve(response()); await settle(); expect(screen.queryByText('First item')).toBeNull();
  });
- it('offers controls only on outstanding schedules and disables hard-deadline Move', async () => {
+ it('offers controls only on outstanding schedules and disables legacy hard-deadline Move', async () => {
   const entries = ['scheduled', 'done', 'skipped', 'moved', 'missed', 'unrecorded'].map((state, i) => row({ state: state as AgendaEntry['state'], item_ref: `EX-${i}`, schedule_id: `s${i}` }));
-  h.agenda.mockResolvedValue(response([...entries, ...['date', 'created', 'completed'].map(type => row({ type: type as AgendaEntry['type'] })), row({ kind: 'deadline_hard' })]));
+  h.agenda.mockResolvedValue(response([...entries, ...['date', 'created', 'completed'].map(type => row({ type: type as AgendaEntry['type'] })), row({ kind: 'deadline_hard', roles_origin: 'legacy_backfill' })]));
   render(Agenda); await screen.findByRole('button', { name: 'Done EX-30' }); expect(screen.getAllByRole('button', { name: /^Done / })).toHaveLength(1);
-  await menu(); expect((screen.getByRole('menuitem', { name: 'Hard deadlines cannot be moved.' }) as HTMLButtonElement).disabled).toBe(true);
+  await menu(); expect((screen.getByRole('menuitem', { name: 'Legacy hard deadlines cannot be moved.' }) as HTMLButtonElement).disabled).toBe(true);
+ });
+ it('offers Move for a native hard deadline without a legacy note', async () => {
+  h.agenda.mockResolvedValue(response([row({ kind: 'deadline_hard', roles_origin: 'native' })]));
+  await mount(); await menu();
+  expect((screen.getByRole('menuitem', { name: 'Move…' }) as HTMLButtonElement).disabled).toBe(false);
+  expect(screen.queryByRole('menuitem', { name: 'Legacy hard deadlines cannot be moved.' })).toBeNull();
  });
 });
 
@@ -167,6 +173,14 @@ describe('resolve identity and dialogs', () => {
   await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: 'Waiting for review' } });
   await fireEvent.click(within(d).getByRole('button', { name: 'Move occurrence' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'move', until: '2026-11-06T14:30:00.000Z', comment: 'Waiting for review' })); await screen.findByText('Occurrence moved.');
+ });
+ it('Move says when the new target is after the deadline', async () => {
+  h.agenda.mockResolvedValue(response([row({ kind: 'deadline_hard', roles_origin: 'native' })]));
+  h.resolve.mockResolvedValue({ commitment: {}, resolution: { occurrence_at: frozenAt, state: 'move', missed_recorded: 0, warning: 'target_after_deadline' } });
+  await mount(); const d = await dialog('Move'); await fillTime(d);
+  await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: 'Slipped' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move occurrence' }));
+  await screen.findByText('Occurrence moved. The new date is after its deadline.');
  });
  it('Snooze sends until with no comment and retains input on failure', async () => {
   h.resolve.mockRejectedValue(new Error('offline')); await mount(); const d = await dialog('Snooze'); expect(h.view).not.toHaveBeenCalled(); await fillTime(d);

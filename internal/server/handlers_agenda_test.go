@@ -110,6 +110,93 @@ func seen(m map[string]any) string {
 	return strings.Join(out, ",")
 }
 
+// agendaRolesWorld builds both origins through their respective store writers.
+func agendaRolesWorld(t *testing.T) (*agendaWorld, map[string]string) {
+	t.Helper()
+	w := newAgendaWorld(t, "tasks")
+	native := w.item(t, "tasks", "Native deadline", `{"status":"open","due_date":"2031-03-10"}`, nil)
+	days, secs, behavior := 1, 0, "stays_owed"
+	sc, err := w.srv.store.CreateCommitmentSchedule(w.ws.ID, native.ID, *oneShot(), models.CommitmentRolesInput{
+		DeadlineDays: &days, DeadlineSecs: &secs, DeadlineBehavior: &behavior,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacy := w.item(t, "tasks", "Legacy deadline", `{"status":"open"}`, nil)
+	in := *oneShot()
+	in.Kind = "deadline_hard"
+	old, err := w.srv.store.CreateSchedule(w.ws.ID, legacy.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sc.Kind != "deadline_hard" || old.Kind != "deadline_hard" {
+		t.Fatalf("expected two hard deadline rows: native=%s legacy=%s", sc.Kind, old.Kind)
+	}
+	return w, map[string]string{sc.ID: "native", old.ID: "legacy_backfill"}
+}
+
+func assertAgendaRoles(t *testing.T, m map[string]any, want map[string]string) {
+	t.Helper()
+	seen := map[string]bool{}
+	for _, e := range entriesOf(m) {
+		if e["type"] != "schedule" {
+			if _, has := e["roles_origin"]; has {
+				t.Errorf("%v entry carries roles_origin: %v", e["type"], e)
+			}
+			continue
+		}
+		id, _ := e["schedule_id"].(string)
+		origin, ok := want[id]
+		if !ok || e["roles_origin"] != origin {
+			t.Errorf("schedule %s roles_origin = %v, want %s", id, e["roles_origin"], origin)
+		}
+		seen[id] = true
+	}
+	if len(seen) != len(want) {
+		t.Errorf("saw %d schedules, want %d", len(seen), len(want))
+	}
+}
+
+func TestAgendaRolesOrigin(t *testing.T) {
+	t.Parallel()
+	w, want := agendaRolesWorld(t)
+	tok, err := w.srv.store.CreateSession(w.owner.ID, "web-test", "192.0.2.1", "", webSessionTTL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer(w.srv)
+	defer srv.Close()
+	for _, path := range []string{"/workspaces/" + w.ws.Slug + "/agenda", "/me/agenda"} {
+		t.Run(path, func(t *testing.T) {
+			req, err := http.NewRequest(http.MethodGet, srv.URL+"/api/v1"+path+"?"+agendaWindow, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			req.AddCookie(&http.Cookie{Name: sessionCookieName(w.srv.secureCookies), Value: tok})
+			resp, err := srv.Client().Do(req)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resp.Body.Close()
+			var m map[string]any
+			if err := json.NewDecoder(resp.Body).Decode(&m); err != nil {
+				t.Fatal(err)
+			}
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("agenda: %d %v", resp.StatusCode, m)
+			}
+			assertAgendaRoles(t, m, want)
+			hasDate := false
+			for _, e := range entriesOf(m) {
+				hasDate = hasDate || e["type"] == "date"
+			}
+			if !hasDate {
+				t.Fatal("expected a date entry to check roles_origin omission")
+			}
+		})
+	}
+}
+
 func TestAgendaGuestVisibility(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "secret", "ideas")

@@ -28,7 +28,7 @@
 		{#if canMove(entry)}
 			<MenuItem disabled={pending || disabled} onclick={() => pick('move')}>Move…</MenuItem>
 		{:else}
-			<MenuItem disabled><span class="hard-note">Hard deadlines cannot be moved.</span></MenuItem>
+			<MenuItem disabled><span class="hard-note">Legacy hard deadlines cannot be moved.</span></MenuItem>
 		{/if}
 	</Menu>
 	{#if pending}<span class="saving">Saving…</span>{/if}

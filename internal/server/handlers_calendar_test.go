@@ -82,6 +82,12 @@ func (w *agendaWorld) setCreated(t *testing.T, it *models.Item, at string) {
 	}
 }
 
+func TestCalendarRolesOrigin(t *testing.T) {
+	t.Parallel()
+	w, want := agendaRolesWorld(t)
+	assertAgendaRoles(t, w.calOK(t, w.owner, "tasks", calMarch), want)
+}
+
 func TestCalendarItemsAndSchedulesMerge(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "ideas")

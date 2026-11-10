@@ -20,10 +20,11 @@ const AgendaMaxPerSchedule = 100
 
 // AgendaSchedule is a schedule with the facts of its item the agenda shows.
 type AgendaSchedule struct {
-	Schedule   *models.ItemSchedule
-	ItemRef    string
-	ItemTitle  string
-	Collection string // slug
+	Schedule    *models.ItemSchedule
+	ItemRef     string
+	ItemTitle   string
+	Collection  string // slug
+	RolesOrigin string
 	// Terminal is set only by ListSchedulesForCalendar: the item is in a
 	// terminal status of its collection.
 	Terminal bool
@@ -99,10 +100,36 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 	if len(out) == 0 {
 		return nil, truncated, nil
 	}
+	if err := s.fillAgendaRolesOrigin(out); err != nil {
+		return nil, false, err
+	}
 	if err := s.fillAgendaItemFacts(out, doneSQL, doneArgs); err != nil {
 		return nil, false, err
 	}
 	return out, truncated, nil
+}
+
+// fillAgendaRolesOrigin sets each row's origin, by schedule id. It is a separate
+// read because scheduleColumns feeds every schedule scan, and only the agenda
+// needs this.
+func (s *Store) fillAgendaRolesOrigin(out []AgendaSchedule) error {
+	ids, byID := make([]any, len(out)), map[string]*AgendaSchedule{}
+	for i := range out {
+		ids[i], byID[out[i].Schedule.ID] = out[i].Schedule.ID, &out[i]
+	}
+	rows, err := s.db.Query(s.q(`SELECT id, roles_origin FROM item_schedules WHERE id IN (`+placeholders(len(ids))+`)`), ids...)
+	if err != nil {
+		return fmt.Errorf("read agenda roles origin: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, origin string
+		if err := rows.Scan(&id, &origin); err != nil {
+			return fmt.Errorf("scan agenda roles origin: %w", err)
+		}
+		byID[id].RolesOrigin = origin
+	}
+	return rows.Err()
 }
 
 // fillAgendaItemFacts sets the item ref, title and collection of each schedule.

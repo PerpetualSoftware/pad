@@ -112,7 +112,7 @@ export function canResolve(entry: AgendaEntry): boolean {
 }
 
 export function canMove(entry: AgendaEntry): boolean {
-	return canResolve(entry) && entry.kind !== 'deadline_hard';
+	return canResolve(entry) && !(entry.kind === 'deadline_hard' && entry.roles_origin !== 'native');
 }
 
 export function entryChips(entry: AgendaEntry): { text: string; color: string }[] {
