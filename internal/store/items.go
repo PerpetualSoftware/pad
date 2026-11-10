@@ -2100,6 +2100,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	var query string
 	var args []interface{}
 	var ftsRank string
+	var rankArgs []interface{}
 	// As in ListItems: archived (soft-deleted) items only on request
 	// (BUG-3686; the clause used to be hard-coded, so include_archived was
 	// ignored whenever the list carried a search term).
@@ -2117,8 +2118,8 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 
 	if s.dialect.Driver() == DriverPostgres {
 		// PostgreSQL: search_vector lives on the items table (aliased as "i").
-		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
-		ftsRank = s.dialect.FTSRank("i", "search_vector")
+		ftsMatch, matchArgs := s.dialect.FTSMatch("i", "search_vector", params.Search)
+		ftsRank, rankArgs = s.dialect.FTSRank("i", "search_vector", params.Search)
 
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, `+contentCol+`, `+stateCol+`, i.fields, i.tags,
@@ -2135,16 +2136,11 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 			WHERE i.workspace_id = ?%s
 			AND %s
 		`, archivedClause, ftsMatch)
-		// PG FTSMatch consumes TWO args: the raw user query AND its
-		// hyphen-sanitized form, OR-combined inside the SQL fragment so
-		// that hyphenated terms like `task-five` match titles indexed as
-		// `task-five-distinctive` while preserving `BUG-842`-style
-		// matches (BUG-842).
-		args = []interface{}{workspaceID, params.Search, sanitizePGFTSQuery(params.Search)}
+		args = append([]interface{}{workspaceID}, matchArgs...)
 	} else {
 		// SQLite: uses FTS5 virtual table "items_fts".
-		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
-		ftsRank = s.dialect.FTSRank("items_fts", "search_vector")
+		ftsMatch, matchArgs := s.dialect.FTSMatch("items_fts", "search_vector", params.Search)
+		ftsRank, rankArgs = s.dialect.FTSRank("items_fts", "search_vector", params.Search)
 
 		query = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, `+contentCol+`, `+stateCol+`, i.fields, i.tags,
@@ -2167,7 +2163,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		// rather than boolean operators. Without this, `?search=TASK-5` raises
 		// "no such column: 5" — see BUG-818. Postgres handles raw input via
 		// the OR-combined plainto_tsquery in the dialect (BUG-842).
-		args = []interface{}{workspaceID, sanitizeFTSQuery(params.Search)}
+		args = append([]interface{}{workspaceID}, matchArgs...)
 	}
 	// As in ListItems (BUG-3425).
 	if !params.IncludeDeletedCollections {
@@ -2270,8 +2266,6 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 	// paging stays stable either way.
 	// SQLite bm25(): more negative = more relevant → ASC (default).
 	// PostgreSQL ts_rank(): higher = more relevant → DESC.
-	// PG FTSRank embeds the same OR-combined plainto_tsquery as FTSMatch
-	// and consumes TWO args (raw + hyphen-sanitized) — BUG-842.
 	if strings.TrimSpace(params.Sort) != "" || params.OrderByDay != "" {
 		orderSQL, orderArgs, err := s.itemOrder(workspaceID, params, completed)
 		if err != nil {
@@ -2281,7 +2275,7 @@ func (s *Store) listItemsFTS(workspaceID string, params models.ItemListParams) (
 		args = append(args, orderArgs...)
 	} else if s.dialect.Driver() == DriverPostgres {
 		query += " ORDER BY " + ftsRank + " DESC, i.id"
-		args = append(args, params.Search, sanitizePGFTSQuery(params.Search))
+		args = append(args, rankArgs...)
 	} else {
 		query += " ORDER BY " + ftsRank + ", i.id"
 	}
@@ -4135,9 +4129,9 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 
 	if s.dialect.Driver() == DriverPostgres {
 		// PostgreSQL: search_vector lives on the items table (aliased as "i").
-		ftsSnippet := s.dialect.FTSSnippet("i", 1, "i.content")
-		ftsMatch := s.dialect.FTSMatch("i", "search_vector")
-		ftsRank := s.dialect.FTSRank("i", "search_vector")
+		ftsSnippet, snippetArgs := s.dialect.FTSSnippet("i", 1, "i.content", query)
+		ftsMatch, matchArgs := s.dialect.FTSMatch("i", "search_vector", query)
+		ftsRank, rankArgs := s.dialect.FTSRank("i", "search_vector", query)
 
 		sqlQuery = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
@@ -4156,16 +4150,12 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 			WHERE %s
 			AND i.deleted_at IS NULL
 		`, ftsSnippet, ftsRank, ftsMatch)
-		// PG FTSSnippet, FTSRank, and FTSMatch each consume TWO "?" args
-		// (raw query + hyphen-sanitized query) for the OR-combined
-		// plainto_tsquery — see dialect.go and BUG-842.
-		sanitized := sanitizePGFTSQuery(query)
-		args = []interface{}{query, sanitized, query, sanitized, query, sanitized}
+		args = append(append(snippetArgs, rankArgs...), matchArgs...)
 	} else {
 		// SQLite: uses FTS5 virtual table "items_fts".
-		ftsSnippet := s.dialect.FTSSnippet("items_fts", 1, "i.content")
-		ftsMatch := s.dialect.FTSMatch("items_fts", "search_vector")
-		ftsRank := s.dialect.FTSRank("items_fts", "search_vector")
+		ftsSnippet, snippetArgs := s.dialect.FTSSnippet("items_fts", 1, "i.content", query)
+		ftsMatch, matchArgs := s.dialect.FTSMatch("items_fts", "search_vector", query)
+		ftsRank, rankArgs := s.dialect.FTSRank("items_fts", "search_vector", query)
 
 		sqlQuery = fmt.Sprintf(`
 			SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags,
@@ -4187,7 +4177,7 @@ func (s *Store) SearchItems(workspaceID, query string) ([]ItemSearchResult, erro
 		`, ftsSnippet, ftsRank, ftsMatch)
 		// Sanitize the user query so FTS5 special characters (hyphens, boolean
 		// operators) are treated as literals — see BUG-818.
-		args = []interface{}{sanitizeFTSQuery(query)}
+		args = append(append(snippetArgs, rankArgs...), matchArgs...)
 	}
 
 	if workspaceID != "" {
