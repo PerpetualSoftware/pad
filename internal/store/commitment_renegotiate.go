@@ -137,7 +137,7 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		if !in.Preview && in.Revision != plan.result.Revision {
 			return nil, ErrCommitmentChanged
 		}
-		cascade, _, err := s.settleLinkedPlan(linked, budget, linkedOptions{actor: actor, reason: in.Reason, revision: linked.revision, preview: in.Preview, access: in.Access, rootAuthorized: true})
+		cascade, _, err := s.settleLinkedPlan(linked, budget, linkedOptions{actor: actor, reason: in.Reason, revision: linked.revision, preview: in.Preview, acknowledge: in.AcknowledgeViolations, access: in.Access, rootAuthorized: true})
 		if err != nil {
 			return nil, err
 		}
@@ -203,7 +203,7 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 		if !rootLapsed && !lapsed {
-			if err := s.applyLinkedPlanTx(tx, linked, actor, in.Reason, in.Reason, nowT, budget); err != nil {
+			if err := s.applyLinkedPlanTx(tx, linked, actor, in.Reason, "Moved with a linked date", nowT, budget); err != nil {
 				return nil, err
 			}
 		}

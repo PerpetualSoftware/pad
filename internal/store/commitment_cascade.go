@@ -631,10 +631,15 @@ func (s *Store) lapseDueInPlanTx(tx *sql.Tx, p *linkedPlan, nowT time.Time) (boo
 				return false, err
 			}
 		}
-		if _, err := s.lapseOccurrenceTx(tx, *d, nowT); err != nil {
+		closed, err := s.lapseOccurrenceTx(tx, *d, nowT)
+		if err != nil {
 			return false, err
 		}
-		lapsed = true
+		// A row that cannot be expanded keeps its miss and stays outstanding, so
+		// a refusal here would repeat on every retry.
+		if closed != nil {
+			lapsed = true
+		}
 	}
 	return lapsed, nil
 }

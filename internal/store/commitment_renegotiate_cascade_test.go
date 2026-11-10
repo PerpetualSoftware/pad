@@ -183,3 +183,55 @@ func TestLinkedOccurrenceRenegotiationLapsesAllDueNodes(t *testing.T) {
 		})
 	}
 }
+
+func TestLinkedOccurrenceRenegotiationAcknowledgesReadableBound(t *testing.T) {
+	f := deadlineLinkFixture(t, 2)
+	f.linkRaw(t, 0, 1, "deadline", "target", oneDay)
+	in := linkedRenegotiationInput()
+	in.Access = f.allEdit()
+	p, err := f.renegotiateLinked(0, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Cascade.Violations) != 1 {
+		t.Fatalf("preview violations = %+v", p.Cascade.Violations)
+	}
+	in.Preview, in.Revision = false, p.Revision
+	before := renegotiateState(t, f.s)
+	if _, err := f.renegotiateLinked(0, in); !errors.Is(err, ErrLinkViolationAck) {
+		t.Fatalf("unacknowledged = %v, want violation acknowledgement", err)
+	}
+	if !reflect.DeepEqual(before, renegotiateState(t, f.s)) {
+		t.Fatal("refused apply wrote rows")
+	}
+	in.AcknowledgeViolations = true
+	if _, err := f.renegotiateLinked(0, in); err != nil {
+		t.Fatalf("acknowledged: %v", err)
+	}
+	if f.role(t, 1, "target") != "2030-03-11T10:00:00Z" {
+		t.Fatal("the acknowledged apply did not move the child")
+	}
+	if f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND role='target' AND reason='Moved with a linked date' AND reason_source='system'`, f.scheds[1].ID) != 1 {
+		t.Fatal("a dependent target took the deadline's reason")
+	}
+}
+
+func TestLapseDueInPlanOnlyRefusesAClosedOccurrence(t *testing.T) {
+	f := dueLinkedFixture(t, 2, "lapses")
+	f.linkRaw(t, 0, 1, "target", "deadline", oneDay)
+	// An occurrence that cannot be expanded keeps its miss and stays outstanding.
+	f.exec(t, `UPDATE item_schedules SET rrule='NOT A RULE' WHERE id=?`, f.scheds[1].ID)
+	p, err := f.move(0, "target", "2030-03-10T09:00:00Z", func(in *models.LinkedMoveInput) { in.Preview, in.Reason = true, "Changed plans" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.move(0, "target", "2030-03-10T09:00:00Z", func(in *models.LinkedMoveInput) { in.Revision, in.Reason = p.Revision, "Changed plans" }); err != nil {
+		t.Fatalf("apply = %v, want the plan applied", err)
+	}
+	if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE state='lapsed'`) != 0 || f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND change_type='missed_recorded'`) != 1 {
+		t.Fatal("expected one miss and no lapse")
+	}
+	if f.role(t, 1, "deadline") != "2030-03-11T09:00:00Z" {
+		t.Fatal("the plan did not apply")
+	}
+}
