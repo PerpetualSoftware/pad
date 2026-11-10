@@ -724,3 +724,8 @@ func linkViolations(st State, changed map[linkVertex]bool) []Violation {
 	})
 	return result
 }
+
+// DateConflicts reports a commitment own date bounds, independent of its links.
+func DateConflicts(dates map[Role]time.Time) []Violation {
+	return linkViolations(State{Node{}: NodeState{Dates: dates}}, nil)
+}

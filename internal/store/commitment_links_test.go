@@ -340,8 +340,8 @@ func TestLinkToAChildDeadlineIsARenegotiation(t *testing.T) {
 	if len(prev.Revision) != 43 {
 		t.Fatalf("token length %d", len(prev.Revision))
 	}
-	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND reason='slip' AND reason_source='user'`); n != 2 {
-		t.Fatalf("%d renegotiation journal rows, want 2 under one reason", n)
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND reason_source='system' AND reason IN ('Moved with a linked date','Moved to follow its link')`); n != 2 {
+		t.Fatalf("%d renegotiation journal rows, want 2 with a content-free system reason", n)
 	}
 }
 

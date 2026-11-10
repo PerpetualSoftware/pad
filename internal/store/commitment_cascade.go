@@ -568,7 +568,7 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why 
 		before, after := dateJSON(name, ch.From), dateJSON(name, ch.To)
 		why, source := why, "system"
 		switch {
-		case ch.Role == schedule.RoleDeadline:
+		case ch.Role == schedule.RoleDeadline && ch.Root:
 			why, source = reason, "user"
 		case ch.Root:
 			why = "Rescheduled"
@@ -601,7 +601,7 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why 
 			return err
 		}
 	}
-	return nil
+	return s.enqueueLinkedMoveNoticesTx(tx, p, rootChange, actor)
 }
 
 // lapseDueInPlanTx closes due lapsing occurrences before any planned date or
