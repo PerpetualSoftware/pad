@@ -319,7 +319,8 @@ export const PadText = Text.extend({
 							if ((ordered && (Number(ordered[1]) !== 1 || !/\S/.test(line.slice(ordered[0].length)))) || /^ {0,3}\+[ \t]*$/.test(line)) m = null;
 							// A delimiter row after a break must remain paragraph text.
 							if (!next && /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/.test(text) && text.includes('|')) {
-								m = { raw: '\\' + text[0], length: 1, beyondBlockStartEscape: false };
+								const indent = text.length - text.trimStart().length;
+								m = { raw: text.slice(0, indent) + '\\' + text[indent], length: indent + 1, beyondBlockStartEscape: false };
 							}
 						}
 						// At a true block start prosemirror-markdown's own escape already

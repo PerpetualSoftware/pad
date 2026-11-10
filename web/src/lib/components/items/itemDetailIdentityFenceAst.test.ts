@@ -303,7 +303,7 @@ const CONTINUATIONS: SignedRow[] = [
 		why: 're-arms the BUG-3005 teardown latch, itself identity-checked. TASK-2199: the prompt decision now also counts unsent collab edits and an uncopied offline version; nothing else moved. BUG-3556: the prompt reads the provider getter editsAtRiskOnClose instead of unsentLocalEdits (a read, no await, no write); nothing else moved. BUG-3571: one early return when a confirmed sign-out discard is under way (signOutDiscarding(), a module read; no await, no write); nothing else moved', reviewed: 'a2ac35d7a207',
 		may: ['teardownFlushed'],
 	},
-	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first. BUG-3582: seedMd above it is now computed by toEditorMarkdown, the same value as the inline conversion it replaced; the microtask is unchanged', reviewed: 'c7cb2bde28ce' },
+	{ call: /^queueMicrotask\($/, body: /./, why: 'collab lazy seed: refuses a retired or re-identified context first. BUG-3582: seedMd above it is now computed by toEditorMarkdown, the same value as the inline conversion it replaced; the microtask is unchanged. BUG-4447: it also resets seedFlat and legacyFlat on the context it just checked, synchronously, with no await', reviewed: 'c7cb2bde28ce' },
 	{ call: /^tick\(\)\.then\($/, body: /./, why: 'schedules a focus frame; commits nothing itself', reviewed: '5e6c58358fa7' },
 	{
 		call: /^requestAnimationFrame\($/,

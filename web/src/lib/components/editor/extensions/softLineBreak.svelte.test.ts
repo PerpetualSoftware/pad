@@ -107,6 +107,17 @@ describe('body line breaks (BUG-4447)', () => {
 		});
 	}
 
+	it('an indented table delimiter escapes its first visible character', () => {
+		const ed = editor();
+		ed.commands.setContent(documentWith([text('| h |'), br, text(' |---|')]));
+		const first = markdown(ed);
+		expect(first).toBe('| h |\n \\|---|');
+		ed.commands.setContent(first);
+		expect(markdown(ed)).toBe('| h |\n\\|---|');
+		expect(ed.state.doc.childCount).toBe(1);
+		expect(ed.state.doc.firstChild?.type.name).toBe('paragraph');
+	});
+
 	it('a heading keeps its explicit hard-break encoding', () => {
 		const ed = editor();
 		ed.commands.setContent(documentWith([text('a'), br, text('b')], 'heading'));
