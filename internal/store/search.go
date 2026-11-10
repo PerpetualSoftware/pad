@@ -763,6 +763,10 @@ func sanitizeFTSQuery(q string) string {
 	return strings.Join(tokens, " ")
 }
 
+// maxFTSPrefixBytes is the smallest operand, in bytes, that a Postgres
+// tsquery refuses.
+const maxFTSPrefixBytes = 2047
+
 // splitFTSPrefix separates the final alphanumeric part from the whole-word
 // head. An empty part disables prefix matching. Only letters and numbers can
 // enter the prefix tsquery; punctuation in the head goes to plainto_tsquery.
@@ -778,7 +782,10 @@ func splitFTSPrefix(q string) (head, part string) {
 		return "", ""
 	}
 	part = parts[len(parts)-1]
-	if utf8.RuneCountInString(part) < 2 {
+	// Postgres rejects a tsquery operand of maxFTSPrefixBytes or more with
+	// an error, and never indexes a word that long, so such a prefix could
+	// match nothing. Both engines skip it to keep their behaviour the same.
+	if utf8.RuneCountInString(part) < 2 || len(part) >= maxFTSPrefixBytes {
 		return "", ""
 	}
 	head = strings.Join(append(words[:len(words)-1], parts[:len(parts)-1]...), " ")

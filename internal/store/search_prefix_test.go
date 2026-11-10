@@ -152,6 +152,65 @@ func TestSearchPrefixDirectLookup(t *testing.T) {
 	}
 }
 
+func TestSearchPrefixLongWord(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Long word search")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	createTestItem(t, s, ws.ID, col.ID, "polishing widget", "polishing widget")
+	createTestDoc(t, s, ws.ID, "polishing widget", "polishing widget")
+	for _, query := range []string{
+		strings.Repeat("a", maxFTSPrefixBytes-1),
+		strings.Repeat("a", maxFTSPrefixBytes),
+		strings.Repeat("a", 3000),
+		"polishing " + strings.Repeat("界", 700),
+	} {
+		t.Run(fmt.Sprintf("%d bytes", len(query)), func(t *testing.T) {
+			if _, err := s.Search(SearchParams{Query: query, WorkspaceIDs: []string{ws.ID}, Unrestricted: true}); err != nil {
+				t.Errorf("Search: %v", err)
+			}
+			if _, err := s.ListItems(ws.ID, models.ItemListParams{Search: query}); err != nil {
+				t.Errorf("ListItems: %v", err)
+			}
+			if _, err := s.ListDocuments(ws.ID, models.DocumentListParams{Query: query}); err != nil {
+				t.Errorf("ListDocuments: %v", err)
+			}
+			if _, err := s.SearchItems(ws.ID, query); err != nil {
+				t.Errorf("SearchItems: %v", err)
+			}
+		})
+	}
+	if _, part := splitFTSPrefix(strings.Repeat("a", maxFTSPrefixBytes-1)); part == "" {
+		t.Error("a part one byte under the limit lost its prefix")
+	}
+	if _, part := splitFTSPrefix(strings.Repeat("a", maxFTSPrefixBytes)); part != "" {
+		t.Error("a part at the limit kept its prefix")
+	}
+}
+
+func TestSearchPrefixDirectLookupTwoDigits(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Direct search two digits")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	var item models.Item
+	for i := 0; i < 12; i++ {
+		item = *createTestItem(t, s, ws.ID, col.ID, fmt.Sprintf("Filler %d", i), "body")
+	}
+	if *item.ItemNumber < 10 {
+		t.Fatalf("item number %d has one digit", *item.ItemNumber)
+	}
+	for _, query := range []string{fmt.Sprintf("%s-%d", col.Prefix, *item.ItemNumber), fmt.Sprint(*item.ItemNumber)} {
+		t.Run(query, func(t *testing.T) {
+			res, err := s.Search(SearchParams{Query: query, WorkspaceIDs: []string{ws.ID}, Unrestricted: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Results) == 0 || res.Results[0].Item.ID != item.ID || res.Results[0].Rank != -1000 {
+				t.Errorf("direct lookup = %+v", res)
+			}
+		})
+	}
+}
+
 func TestPostgresFTSQuery(t *testing.T) {
 	for _, tc := range []struct {
 		query string
