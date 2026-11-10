@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -155,7 +156,7 @@ func (o linkRow) edgeOffset() (schedule.Offset, error) { return offsetOf(o.Offse
 func offsetOf(o models.ScheduleLinkOffset) (schedule.Offset, error) {
 	out := schedule.Offset{Mode: schedule.OffsetMode(o.Mode), Days: o.Days, AllDay: o.AllDay, Zone: o.Zone}
 	const maxSecs = int64(300 * 366 * 86400)
-	if o.ElapsedSecs > maxSecs || o.ElapsedSecs < -maxSecs || o.ClockSecs < 0 || o.ClockSecs >= 86400 {
+	if o.Days > math.MaxInt32 || o.Days < math.MinInt32 || o.ElapsedSecs > maxSecs || o.ElapsedSecs < -maxSecs || o.ClockSecs < 0 || o.ClockSecs >= 86400 {
 		return out, &LinkRefusedError{Code: "link_invalid", Detail: "offset is out of range"}
 	}
 	out.Elapsed = time.Duration(o.ElapsedSecs) * time.Second
