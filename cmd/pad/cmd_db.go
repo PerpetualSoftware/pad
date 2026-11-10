@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -348,7 +349,7 @@ This reads each workspace from the SQLite database and imports it into
 the PostgreSQL database. Users, platform settings, and auth data are
 NOT migrated — only workspace content (collections, items, comments,
 links, versions, reminders, verifications, schedules, occurrence actuals,
-overrides and schedule changes). A schedule or change the import refuses is
+overrides, schedule changes, time links and commitment gates). A schedule or change the import refuses is
 reported, not migrated.
 
 Steps:
@@ -645,8 +646,8 @@ Steps:
 					return err
 				}
 
-				stats := fmt.Sprintf("%d collections, %d items, %d comments",
-					len(data.Collections), len(data.Items), len(data.Comments))
+				stats := fmt.Sprintf("%d collections, %d items, %d comments, %d schedule gates",
+					len(data.Collections), len(data.Items), len(data.Comments), len(data.ScheduleGates))
 
 				// Empty source: this is an operator-run copy of an existing
 				// workspace, not a creation surface, and inventing "cli"
@@ -1039,8 +1040,51 @@ func migrateImportWorkspaceReporting(dst *store.Store, data *models.WorkspaceExp
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(data.ScheduleGates) > 0 {
+		restored, err := dst.ExportWorkspace(ws.Slug)
+		if err != nil {
+			return nil, nil, fmt.Errorf("verify migrated schedule gates: %w", err)
+		}
+		if err := verifyMigratedGates(data, restored, rep.ItemIDs); err != nil {
+			return nil, nil, err
+		}
+		fmt.Fprintf(w, "  %d schedule gates verified\n", len(restored.ScheduleGates))
+	}
 	printImportScheduleDrops(w, rep.DroppedSchedules)
 	return ws, rep.DroppedSchedules, nil
+}
+
+// verifyMigratedGates compares the captured gate data after remapping source
+// item and schedule ids to the destination. Reading the bundle never opens gates.
+func verifyMigratedGates(source, restored *models.WorkspaceExport, items map[string]string) error {
+	if len(source.ScheduleGates) != len(restored.ScheduleGates) {
+		return fmt.Errorf("migrated schedule gate count differs: source %d, destination %d", len(source.ScheduleGates), len(restored.ScheduleGates))
+	}
+	scheduleItems := map[string]string{}
+	for _, sc := range source.Schedules {
+		scheduleItems[sc.ID] = sc.ItemID
+	}
+	destinationSchedules := map[string]string{}
+	for _, sc := range restored.Schedules {
+		destinationSchedules[sc.ItemID] = sc.ID
+	}
+	gates := map[[2]string]models.ScheduleGateExport{}
+	for _, g := range restored.ScheduleGates {
+		g.ID = ""
+		gates[[2]string{g.BlockedItemID, g.BlockerItemID}] = g
+	}
+	for _, g := range source.ScheduleGates {
+		g.ID = ""
+		g.BlockedItemID, g.BlockerItemID = items[g.BlockedItemID], items[g.BlockerItemID]
+		if g.BlockerScheduleID != nil {
+			id := destinationSchedules[items[scheduleItems[*g.BlockerScheduleID]]]
+			g.BlockerScheduleID = &id
+		}
+		if got, ok := gates[[2]string{g.BlockedItemID, g.BlockerItemID}]; !ok || !reflect.DeepEqual(g, got) {
+			return fmt.Errorf("migrated schedule gate differs from its source")
+		}
+	}
+	return nil
 }
 
 // printMigrateDropSummary closes the run, where an operator looks, saying how
