@@ -342,9 +342,12 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	// BUG-3072 gave the migration the transaction for exactly that reason, and
 	// BUG-3654 gave the two HTTP export doors a read-only one.
 	itemRows, err := q.Query(s.q(`
-		SELECT i.id, i.collection_id, i.title, i.slug, i.content, `+contentStateSQL+`, i.fields, i.tags, i.pinned, i.sort_order,
-		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at
-		FROM items i WHERE i.workspace_id = ? AND i.deleted_at IS NULL
+		SELECT i.id, i.collection_id, i.title, i.slug, i.content, CASE WHEN i.deleted_at IS NULL THEN `+contentStateSQL+` ELSE '' END, i.fields, i.tags, i.pinned, i.sort_order,
+		       COALESCE(i.parent_id, ''), i.created_by, i.last_modified_by, i.source, COALESCE(i.item_number, 0), i.created_at, i.updated_at, COALESCE(i.deleted_at, '')
+		FROM items i WHERE i.workspace_id = ? AND (i.deleted_at IS NULL OR EXISTS (
+		    SELECT 1 FROM schedule_gates g JOIN items blocked ON blocked.id=g.blocked_item_id
+		    WHERE g.blocker_item_id=i.id AND g.workspace_id=i.workspace_id
+		      AND blocked.workspace_id=i.workspace_id AND blocked.deleted_at IS NULL))
 		ORDER BY i.created_at, i.id`), ws.ID)
 	if err != nil {
 		return nil, fmt.Errorf("export items: %w", err)
@@ -353,7 +356,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	for itemRows.Next() {
 		var it models.ItemExport
 		var pinned bool
-		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.ContentState, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt); err != nil {
+		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.ContentState, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt); err != nil {
 			return nil, fmt.Errorf("scan item: %w", err)
 		}
 		it.Pinned = pinned
@@ -362,6 +365,9 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	if err := itemRows.Err(); err != nil {
 		return nil, err
 	}
+
+	// Only gate-referenced deleted blockers join the item rows above. Their
+	// schedules, comments, history and versions keep the live-item filters.
 
 	// Set-aside edits (BUG-3244), attached to their items. Read through the
 	// same executor as the items, so on the migration's transaction a row and
@@ -538,6 +544,10 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	if export.OmittedScheduleLinks > 0 {
 		slog.Warn("workspace export: left out schedule links with an end that is not in the bundle",
 			"workspace_id", ws.ID, "count", export.OmittedScheduleLinks)
+	}
+
+	if export.ScheduleGates, err = s.exportScheduleGatesQ(q, ws.ID); err != nil {
+		return nil, err
 	}
 
 	// Verifications (TASK-3617), for the items this bundle carries, on the
@@ -774,8 +784,16 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 	// Links are a version 3 member: an older bundle that carries them was not
 	// written by an exporter that knew them, and is refused rather than read
 	// with a member it would have to guess the meaning of.
-	if data.Version < models.WorkspaceExportVersion && data.HasV3ScheduleMembers() {
+	if data.Version < models.WorkspaceExportVersion3 && data.HasV3ScheduleMembers() {
 		return nil, invalidf("export version %d contains version 3 schedule members", data.Version)
+	}
+	if data.Version < models.WorkspaceExportVersion && data.HasV4ScheduleMembers() {
+		return nil, invalidf("export version %d contains version 4 schedule members", data.Version)
+	}
+	for _, it := range data.Items {
+		if it.DeletedAt != "" && !validLinkStamps(it.DeletedAt) {
+			return nil, invalidf("invalid deleted_at on item %q", it.ID)
+		}
 	}
 	if err := checkImportSourceIDs(data); err != nil {
 		return nil, err
@@ -1401,11 +1419,11 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// write enqueues it. Whether import should enqueue is an open policy
 		// question on TASK-3117, not something to change silently here.
 		_, err := tx.Exec(s.q(`
-			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, seq)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
+			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, deleted_at, seq)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
 			newItemID, ws.ID, newCollID, itemTitle, itemSlug, it.Content, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, itemNumber,
-			it.CreatedAt, it.UpdatedAt, ws.ID)
+			it.CreatedAt, it.UpdatedAt, nilIfEmpty(it.DeletedAt), ws.ID)
 		if err != nil {
 			return nil, fmt.Errorf("import item %s: %w", it.Title, err)
 		}
@@ -1810,6 +1828,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		return nil, err
 	}
 	report.DroppedSchedules = append(report.DroppedSchedules, linkDrops...)
+
+	if err := s.importScheduleGatesTx(tx, ws.ID, data.ScheduleGates, insertedItemMap, scheduleMap, sourceSchedules); err != nil {
+		return nil, err
+	}
 
 	changeDrops, err := s.restoreScheduleChangesTx(tx, ws.ID, data.ScheduleChanges, insertedItemMap, scheduleMap, sourceSchedules)
 	if err != nil {

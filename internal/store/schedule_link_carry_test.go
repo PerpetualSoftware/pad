@@ -94,11 +94,11 @@ func bundleScheduleIDs(t *testing.T, b *models.WorkspaceExport) map[string]strin
 	return out
 }
 
-func TestExportVersionIsThree(t *testing.T) {
+func TestExportVersionIsFour(t *testing.T) {
 	f := newSchedFixture(t)
 	f.create(t, dailyUTC)
-	if got := f.exportBundle(t).Version; got != 3 {
-		t.Fatalf("export version=%d, want 3: a reader that predates links must refuse the bundle, not drop them", got)
+	if got := f.exportBundle(t).Version; got != 4 {
+		t.Fatalf("export version=%d, want 4: a reader that predates gates must refuse the bundle, not drop them", got)
 	}
 }
 

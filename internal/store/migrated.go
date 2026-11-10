@@ -174,8 +174,8 @@ var migratedRefusalTables = []string{
 	// too (TASK-4353, bundle version 3; MigratedTables lists them as carried).
 	"schedule_links",
 	"schedule_link_overrides",
-	// Gates are the part of TASK-4353 the bundle does NOT carry yet: a write to
-	// the abandoned copy must refuse rather than be lost.
+	// Commitment gates travel through bundle version 4. A write to the
+	// abandoned copy must still refuse rather than be lost.
 	"schedule_gates",
 	"schedule_forecasts",
 	"schedule_forecast_events",

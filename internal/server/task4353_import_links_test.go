@@ -84,7 +84,7 @@ func TestTASK4353_ImportCarriesAndReportsLinks(t *testing.T) {
 			if exp.Code != http.StatusOK || json.Unmarshal(exp.Body.Bytes(), &out) != nil {
 				t.Fatalf("export: %d %s", exp.Code, exp.Body.String())
 			}
-			if out.Version != 3 || len(out.ScheduleLinks) != 1 || out.ScheduleLinks[0].Offset.ElapsedSecs != 3600 {
+			if out.Version != models.WorkspaceExportVersion || len(out.ScheduleLinks) != 1 || out.ScheduleLinks[0].Offset.ElapsedSecs != 3600 {
 				t.Fatalf("the restored workspace exports version %d with links %+v", out.Version, out.ScheduleLinks)
 			}
 

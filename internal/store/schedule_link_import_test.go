@@ -158,7 +158,7 @@ func TestBundleLinks_RoundTripIsLossless(t *testing.T) {
 	if !reflect.DeepEqual(linkJSON(t, src), linkJSON(t, jsonRoundTrip(t, again))) {
 		t.Fatalf("re-export differs:\n src %q\n dst %q", linkJSON(t, src), linkJSON(t, jsonRoundTrip(t, again)))
 	}
-	if again.Version != 3 {
+	if again.Version != models.WorkspaceExportVersion {
 		t.Fatalf("version=%d", again.Version)
 	}
 }
@@ -255,7 +255,7 @@ func TestBundleLinks_OlderBundlesCannotCarryLinks(t *testing.T) {
 		{"v2 with links", func(m map[string]any) { m["version"] = 2 }, "contains version 3 schedule members"},
 		{"v2 with an explicit empty member", func(m map[string]any) { m["version"] = 2; m["schedule_links"] = []any{} }, "contains version 3 schedule members"},
 		{"v2 with an explicit null member", func(m map[string]any) { m["version"] = 2; m["schedule_links"] = nil }, "contains version 3 schedule members"},
-		{"newer than supported", func(m map[string]any) { m["version"] = 4 }, "unsupported export version: 4"},
+		{"newer than supported", func(m map[string]any) { m["version"] = models.WorkspaceExportVersion + 1 }, fmt.Sprintf("unsupported export version: %d", models.WorkspaceExportVersion+1)},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			m := bundleObject(t, f.exportBundle(t))

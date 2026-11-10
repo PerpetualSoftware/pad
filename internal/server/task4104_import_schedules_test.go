@@ -104,7 +104,7 @@ func TestImportBundleV2NativeRoles(t *testing.T) {
 	}
 	var input map[string]any
 	_ = json.Unmarshal([]byte(body), &input)
-	input["version"] = 4
+	input["version"] = models.WorkspaceExportVersion + 1
 	raw, _ := json.Marshal(input)
 	unsupported := rawJSONRequest(srv, "POST", "/api/v1/workspaces/import", string(raw))
 	input["version"] = 1
