@@ -329,8 +329,8 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	if !actor.valid() {
 		return nil, ErrAppBadActor
 	}
-	if f.unusable() {
-		return nil, ErrFenceClosed
+	if err := f.LockWorkspaceSeq(); err != nil {
+		return nil, err
 	}
 	collectionID, err := f.requireCompanionItem(itemID)
 	if err != nil {
@@ -339,10 +339,6 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	if err := f.requireCreatedHere(itemID); err != nil {
 		return nil, err
 	}
-	if err := f.LockWorkspaceSeq(); err != nil {
-		return nil, err
-	}
-
 	if err := f.s.pinGateBlockerTx(f.tx, f.workspaceID, itemID); err != nil {
 		return nil, err
 	}

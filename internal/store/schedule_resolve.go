@@ -738,26 +738,6 @@ func reminderFireAt(sc *models.ItemSchedule, rec *time.Location, x time.Time, xW
 // armManagedReminderTx re-arms the schedule's managed reminder at remindAt, or
 // inserts it when the row is missing. The caller holds the schedule.
 func (s *Store) armManagedReminderTx(tx *sql.Tx, sc *models.ItemSchedule, remindAt string) error {
-	ev, err := s.evaluateGatesQ(tx, sc.WorkspaceID, sc.ItemID)
-	if err != nil {
-		return err
-	}
-	if ev.state != models.GateStateReleased {
-		// Keep an outstanding row available for release without clearing a fire
-		// already recorded for this occurrence.
-		if _, err := tx.Exec(s.q(`UPDATE item_reminders SET remind_at=?,updated_at=? WHERE schedule_id=? AND fired_at IS NULL`), remindAt, now(), sc.ID); err != nil {
-			return err
-		}
-		var n int
-		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM item_reminders WHERE schedule_id=?`), sc.ID).Scan(&n); err != nil {
-			return err
-		}
-		if n > 0 {
-			return nil
-		}
-		return s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, remindAt)
-	}
-
 	if ok, err := s.rearmManagedReminderTx(tx, sc.ID, remindAt); err != nil {
 		return err
 	} else if !ok {

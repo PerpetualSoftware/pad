@@ -127,6 +127,9 @@ func (s *Store) EnqueueLinkedDeadlineApprovalNotice(workspaceID string, in model
 	if role == "" || err != nil {
 		return nil
 	}
+	if in.ActorUserID != "" {
+		in.Actor = in.ActorUserID
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err

@@ -674,16 +674,19 @@ func (s *Store) EvaluateCommitmentGates(now string, limit int) error {
 	if err != nil {
 		return err
 	}
+	// A broken row does not stop the pass or hold the cursor, so it cannot
+	// starve the gates behind it.
+	var errs []error
 	for _, c := range page {
 		if _, err := s.evaluateAndOpenGates(c.ws, c.item); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("evaluate gate %s: %w", c.id, err))
 		}
 		s.gateSweepCursor = c.id
 	}
 	if len(page) < limit {
 		s.gateSweepCursor = ""
 	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // ---- carrying the gated item to another workspace ----

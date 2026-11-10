@@ -272,7 +272,7 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 		}
 		return nil, ErrCommitmentChanged
 	}
-	if err := s.applyLinkedPlanTx(tx, p, actor, actor, reason, "Moved with a linked date", nowT, budget); err != nil {
+	if err := s.applyLinkedPlanTx(tx, p, actor, linkNoticeActor(actor, in.ActorUserID), reason, "Moved with a linked date", nowT, budget); err != nil {
 		return nil, err
 	}
 	if err := budget.commit(tx); err != nil {

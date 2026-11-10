@@ -7,6 +7,45 @@ import (
 	"testing"
 )
 
+// An occurrence armed while its item is held must still fire once released,
+// even when the managed row last fired for an earlier occurrence.
+func TestTASK4423_R09HeldRowRearms(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.buildItem(t, "open")
+	f.gate(t, f.items[0].ID, blocker.ID, f.gateAccess(blocker))
+	f.exec(t, `UPDATE item_reminders SET fired_at=? WHERE schedule_id=?`, "2026-01-01T00:00:00Z", f.scheds[0].ID)
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if err := f.s.armManagedReminderTx(tx, f.reload(t, f.items[0].ID), "2026-01-02T00:00:00Z"); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+	const nowTS = "2030-06-01T00:00:00Z"
+	fired, err := f.s.FireDueReminders(nowTS, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fired) != 0 {
+		t.Fatalf("fired while held: %+v", fired)
+	}
+	fields := `{"status":"shipped"}`
+	if _, err := f.s.UpdateItem(blocker.ID, models.ItemUpdate{Fields: &fields}); err != nil {
+		t.Fatal(err)
+	}
+	fired, err = f.s.FireDueReminders(nowTS, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(fired) != 1 || fired[0].ItemID != f.items[0].ID {
+		t.Fatalf("after release: %+v", fired)
+	}
+}
+
 func TestTASK4423_R09GateLifecycle(t *testing.T) {
 	t.Run("fenced writer", graphFencedGateTest)
 	t.Run("done then reopened without read", func(t *testing.T) {

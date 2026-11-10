@@ -182,6 +182,18 @@ func graphRefusedNoticeTest(t *testing.T) {
 	if n := f.count(t, `SELECT COUNT(*) FROM user_notifications WHERE kind='deadline_approval_requested'`); n != 3 {
 		t.Fatalf("stale refusal notices=%d", n)
 	}
+	// The journal actor can be a kind. The person is what the refusal is
+	// recomputed for.
+	if _, err := f.s.db.Exec(f.s.q(`DELETE FROM item_grants WHERE item_id=? AND user_id=?`), f.items[1].ID, actor.ID); err != nil {
+		t.Fatal(err)
+	}
+	in.Actor, in.ActorUserID, in.To = "user", actor.ID, "2030-04-04T09:00:00Z"
+	if err := f.s.EnqueueLinkedDeadlineApprovalNotice(f.ws.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM user_notifications WHERE kind='deadline_approval_requested'`); n != 4 {
+		t.Fatalf("notice by user id=%d", n)
+	}
 }
 
 func TestTASK4423_R05Notices(t *testing.T) {
@@ -230,7 +242,7 @@ func TestTASK4423_R05History(t *testing.T) {
 }
 
 func graphNoticeRecipientTests(t *testing.T) {
-	for _, mode := range []string{"assignee", "owner", "no-access", "no-device", "self", "self-resolve", "self-resolve-no-comment", "preview", "rollback", "past-deadline"} {
+	for _, mode := range []string{"assignee", "owner", "no-access", "no-device", "self", "self-by-user-id", "agent-for-user", "self-resolve", "self-resolve-no-comment", "preview", "rollback", "past-deadline"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newLinkFix(t, 2)
 			recipient := notifyUser(t, f.s, "move-recipient@example.com")
@@ -274,6 +286,12 @@ func graphNoticeRecipientTests(t *testing.T) {
 					if mode == "self" {
 						in.Actor = recipient.ID
 					}
+					if mode == "self-by-user-id" {
+						in.Actor, in.ActorUserID = "user", recipient.ID
+					}
+					if mode == "agent-for-user" {
+						in.Actor, in.ActorUserID = "agent", recipient.ID
+					}
 					in.Preview = mode == "preview"
 					if mode == "past-deadline" {
 						delete(in.Access.Readable, f.items[1].ID)
@@ -288,7 +306,7 @@ func graphNoticeRecipientTests(t *testing.T) {
 				t.Fatal(err)
 			}
 			want := 0
-			if mode == "assignee" || mode == "owner" || mode == "past-deadline" {
+			if mode == "assignee" || mode == "owner" || mode == "past-deadline" || mode == "agent-for-user" {
 				want = 1
 			}
 			if n := f.count(t, `SELECT COUNT(*) FROM user_notifications WHERE kind IN ('commitment_moved','commitment_moved_past_deadline')`); n != want {

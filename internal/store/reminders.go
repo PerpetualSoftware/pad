@@ -519,6 +519,30 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	if limit <= 0 {
 		limit = defaultReminderFireLimit
 	}
+	// SOFT-DELETED ITEMS ARE EXCLUDED HERE, not merely skipped downstream
+	// fireOneReminder rolls back when it finds the item gone,
+	// which leaves the reminder ARMED and therefore a candidate again on the
+	// next pass — so a batch bounded at `limit` and ordered oldest-first can be
+	// filled entirely by archived items, and no live reminder ever fires. The
+	// starvation is permanent and silent: the tick reports zero fired and looks
+	// idle. Filtering in the candidate query means those rows never occupy a
+	// slot, while the reminders themselves are kept, so restoring the item
+	// restores its reminder with it.
+	// THE WORKSPACE IS CHECKED TOO, not only the item.
+	// Workspace soft-delete deliberately leaves items in place for the 30-day
+	// restore window, so a workspace-level filter on the ITEM finds nothing
+	// wrong — and the tick kept firing, emitting outbound webhook events for a
+	// workspace whose owner had deleted it, possibly as part of deleting their
+	// account. That is the one failure mode here that reaches outside the
+	// process, which is why it outranks the starvation cases even though the
+	// SQL change is the same size.
+	//
+	// A restored workspace resumes normally: nothing is destroyed, the
+	// reminders simply stop being candidates while it is gone.
+	//
+	// A row held by a commitment gate is skipped the same way and stays armed,
+	// so held rows take no slot and the row fires once its gates release. The
+	// pages keep reading past held rows until the batch is full.
 	var ids []string
 	cursorAt, cursorID := "", ""
 	for len(ids) < limit {
