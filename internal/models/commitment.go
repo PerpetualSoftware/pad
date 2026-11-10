@@ -191,6 +191,11 @@ type CommitmentDeadlineOffset struct {
 }
 
 type CommitmentRenegotiateInput struct {
+	Access CommitmentAccess `json:"-"`
+	// AcknowledgeViolations accepts that a dependent date lands outside one of
+	// its own bounds. The link and the bound both stay.
+	AcknowledgeViolations bool `json:"-"`
+
 	Reason           string                    `json:"reason"`
 	Scope            string                    `json:"scope"`
 	Deadline         *string                   `json:"deadline"`
@@ -218,6 +223,7 @@ type CommitmentRenegotiationPreview struct {
 }
 
 type CommitmentRenegotiation struct {
+	Cascade  *LinkedMoveResult              `json:"cascade,omitempty"`
 	Preview  CommitmentRenegotiationPreview `json:"preview"`
 	Revision string                         `json:"revision"`
 }

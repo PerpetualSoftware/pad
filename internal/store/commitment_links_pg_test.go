@@ -388,3 +388,70 @@ func TestLinkUpdateAndDeleteQueuedBehindAMoveOfTheChildAreNotFound(t *testing.T)
 		})
 	}
 }
+
+func TestLinkedResolveCrossingCascadeDoesNotDeadlock(t *testing.T) {
+	f := newLinkPG(t, 3)
+	f.link(t, 0, 1)
+	f.link(t, 1, 2)
+	errs := f.run(t, func() error {
+		_, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[0].ID, ResolveInput{State: "move", OccurrenceAt: rt(*f.scs[0].NextAt), Until: ptr(rt("2030-03-10T09:00:00Z")), Actor: "user"}, rt("2030-03-03T12:00:00Z"))
+		return err
+	}, func() error { return f.move(1, "2030-03-20T09:00:00Z") })
+	assertLinkedConcurrencyResults(t, errs)
+}
+
+func TestLinkedResolveCrossingPlainChildResolveDoesNotDeadlock(t *testing.T) {
+	f := newLinkPG(t, 2)
+	f.link(t, 0, 1)
+	errs := f.run(t, func() error {
+		_, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[0].ID, ResolveInput{State: "move", OccurrenceAt: rt(*f.scs[0].NextAt), Until: ptr(rt("2030-03-10T09:00:00Z")), Actor: "user"}, rt("2030-03-03T12:00:00Z"))
+		return err
+	}, func() error {
+		_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{State: "done", OccurrenceAt: rt(*f.scs[1].NextAt), Actor: "user"})
+		return err
+	})
+	assertLinkedConcurrencyResults(t, errs)
+}
+
+func TestLinkedRenegotiationCrossingCascadeDoesNotDeadlock(t *testing.T) {
+	f := newLinkPG(t, 3)
+	if _, err := f.s.db.Exec(`UPDATE item_schedules SET deadline_days=0,deadline_secs=3600,deadline_behavior='stays_owed' WHERE id=$1`, f.scs[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[0].ID, ParentRole: "deadline", ChildItemID: f.items[1].ID, ChildRole: "target", Offset: oneDay}, f.access()); err != nil {
+		t.Fatal(err)
+	}
+	f.link(t, 1, 2)
+	in := linkedRenegotiationInput()
+	in.Access = f.access()
+	p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.items[0].ID, "user", in, rt("2030-03-03T12:00:00Z"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Preview, in.Revision = false, p.Revision
+	errs := f.run(t, func() error {
+		_, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.items[0].ID, "user", in, rt("2030-03-03T12:00:00Z"), nil)
+		return err
+	}, func() error { return f.move(1, "2030-03-20T09:00:00Z") })
+	assertLinkedConcurrencyResults(t, errs)
+}
+
+func assertLinkedConcurrencyResults(t *testing.T, errs []error) {
+	t.Helper()
+	// IsDBBusy also answers true for a deadlock, which is the failure these
+	// tests exist to catch.
+	if deadlocked(errs) != 0 {
+		t.Fatalf("crossing linked transactions deadlocked: %v", errs)
+	}
+	busy := 0
+	for _, err := range errs {
+		if errors.Is(err, ErrLinkBudget) || IsDBBusy(err) {
+			busy++
+		} else if err != nil {
+			t.Fatalf("crossing linked transactions: %v", errs)
+		}
+	}
+	if busy > 1 {
+		t.Fatalf("neither crossing linked transaction completed: %v", errs)
+	}
+}

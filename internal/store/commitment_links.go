@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
@@ -155,7 +156,7 @@ func (o linkRow) edgeOffset() (schedule.Offset, error) { return offsetOf(o.Offse
 func offsetOf(o models.ScheduleLinkOffset) (schedule.Offset, error) {
 	out := schedule.Offset{Mode: schedule.OffsetMode(o.Mode), Days: o.Days, AllDay: o.AllDay, Zone: o.Zone}
 	const maxSecs = int64(300 * 366 * 86400)
-	if o.ElapsedSecs > maxSecs || o.ElapsedSecs < -maxSecs || o.ClockSecs < 0 || o.ClockSecs >= 86400 {
+	if o.Days > math.MaxInt32 || o.Days < math.MinInt32 || o.ElapsedSecs > maxSecs || o.ElapsedSecs < -maxSecs || o.ClockSecs < 0 || o.ClockSecs >= 86400 {
 		return out, &LinkRefusedError{Code: "link_invalid", Detail: "offset is out of range"}
 	}
 	out.Elapsed = time.Duration(o.ElapsedSecs) * time.Second
@@ -609,6 +610,15 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 	if in.Move.Preview {
 		return &models.ScheduleLinkResult{Moved: *moved}, nil
 	}
+	nowT := s.linkNow().UTC().Truncate(time.Second)
+	if lapsed, err := s.lapseDueInPlanTx(tx, p, nowT); err != nil {
+		return nil, err
+	} else if lapsed {
+		if err := budget.commit(tx); err != nil {
+			return nil, err
+		}
+		return nil, ErrCommitmentChanged
+	}
 	l.ID, l.CreatedAt, l.UpdatedAt = newID(), nowNano(), nowNano()
 	if err := s.insertLinkTx(tx, workspaceID, l); err != nil {
 		if isUniqueViolation(err) {
@@ -617,7 +627,7 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 		return nil, err
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}
@@ -778,6 +788,15 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if upd.Move.Preview {
 		return &models.ScheduleLinkResult{Moved: *moved}, nil
 	}
+	nowT := s.linkNow().UTC().Truncate(time.Second)
+	if lapsed, err := s.lapseDueInPlanTx(tx, p, nowT); err != nil {
+		return nil, err
+	} else if lapsed {
+		if err := budget.commit(tx); err != nil {
+			return nil, err
+		}
+		return nil, ErrCommitmentChanged
+	}
 	if upd.Offset != nil {
 		// The plan is nil when the parent has no outstanding occurrence; the child's
 		// own occurrence still takes the new offset, with nothing to move.
@@ -809,7 +828,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		return nil, ErrScheduleLinkNotFound
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}
@@ -912,6 +931,33 @@ func (s *Store) linkedRolesTx(tx *sql.Tx, scheduleID string) (map[string]bool, e
 		}
 	}
 	return used, rows.Err()
+}
+
+// cascadeLinkedTx extends a single-schedule pin only when a stored link uses
+// it. A link to an absent or terminal other end keeps the single-row path.
+// With role set, only links using that role on this end admit a cascade.
+func (s *Store) cascadeLinkedTx(tx *sql.Tx, sc *models.ItemSchedule, openFilter string, openArgs []any, role string) (*commitmentComponent, error) {
+	used, err := s.linkedRolesTx(tx, sc.ID)
+	if err != nil || len(used) == 0 || (role != "" && !used[role]) {
+		return nil, err
+	}
+	c, err := s.pinCommitmentTx(tx, sc.WorkspaceID, openFilter, openArgs, false, sc.ItemID)
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range c.links {
+		var other string
+		switch {
+		case l.ParentSchedule == sc.ID && (role == "" || l.ParentRole == role):
+			other = l.ChildSchedule
+		case l.ChildSchedule == sc.ID && (role == "" || l.ChildRole == role):
+			other = l.ParentSchedule
+		}
+		if c.live[other] && !c.terminal[other] {
+			return c, nil
+		}
+	}
+	return nil, nil
 }
 
 // roleOffsetsDiffer reports whether the offsets of the named role differ.

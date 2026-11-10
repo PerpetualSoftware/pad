@@ -212,6 +212,7 @@ type linkedOptions struct {
 	actor, reason, revision string
 	preview, acknowledge    bool
 	access                  models.CommitmentAccess
+	rootAuthorized          bool // occurrence renegotiation already checked root authority
 }
 
 // MoveLinkedDate moves one date of an item's outstanding occurrence and the
@@ -262,7 +263,16 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	if err != nil || !apply {
 		return res, err
 	}
-	if err := s.applyLinkedPlanTx(tx, p, actor, reason, "Moved with a linked date", s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
+	nowT := s.linkNow().UTC().Truncate(time.Second)
+	if lapsed, err := s.lapseDueInPlanTx(tx, p, nowT); err != nil {
+		return nil, err
+	} else if lapsed {
+		if err := budget.commit(tx); err != nil {
+			return nil, err
+		}
+		return nil, ErrCommitmentChanged
+	}
+	if err := s.applyLinkedPlanTx(tx, p, actor, reason, "Moved with a linked date", nowT, budget); err != nil {
 		return nil, err
 	}
 	if err := budget.commit(tx); err != nil {
@@ -290,6 +300,9 @@ func (s *Store) settleLinkedPlan(p *linkedPlan, budget *linkBudget, o linkedOpti
 	// Authority over each deadline the change makes. The same refusal for a
 	// deadline the caller cannot read, cannot edit, or one among many.
 	for _, ch := range p.impact.HardDeadlines {
+		if o.rootAuthorized && ch.Node.Schedule == p.root {
+			continue
+		}
 		if !o.access.Editable[p.c.itemOf(ch.Node.Schedule)] {
 			return nil, false, ErrDeadlineApprovalRequired
 		}
@@ -589,6 +602,46 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why 
 		}
 	}
 	return nil
+}
+
+// lapseDueInPlanTx closes due lapsing occurrences before any planned date or
+// link write. The component pin holds their schedules, never their item rows.
+// A stays-owed miss belongs to the normal apply path, not a refused plan.
+func (s *Store) lapseDueInPlanTx(tx *sql.Tx, p *linkedPlan, nowT time.Time) (bool, error) {
+	if p == nil {
+		return false, nil
+	}
+	ids := map[string]bool{}
+	for _, ch := range p.impact.Changes {
+		if !p.c.terminal[ch.Node.Schedule] {
+			ids[ch.Node.Schedule] = true
+		}
+	}
+	lapsed := false
+	for _, id := range keysOf(ids) {
+		d, state, err := s.deadlineStateTx(tx, id)
+		if err != nil {
+			return false, err
+		}
+		if d == nil || d.behavior != "lapses" || !d.dueAfterConversion(nowT, state) {
+			continue
+		}
+		if !state.recorded {
+			if err := s.recordDeadlineMissTx(tx, *d); err != nil {
+				return false, err
+			}
+		}
+		closed, err := s.lapseOccurrenceTx(tx, *d, nowT)
+		if err != nil {
+			return false, err
+		}
+		// A row that cannot be expanded keeps its miss and stays outstanding, so
+		// a refusal here would repeat on every retry.
+		if closed != nil {
+			lapsed = true
+		}
+	}
+	return lapsed, nil
 }
 
 func dateJSON(role string, at time.Time) string {

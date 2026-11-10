@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
 var ErrCommitmentChanged = errors.New("the commitment changed; re-preview before applying")
@@ -67,6 +68,10 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	if s.beforeCommitmentPin != nil {
 		s.beforeCommitmentPin()
 	}
+	var budget *linkBudget
+	if in.Scope == "occurrence" {
+		budget = s.newLinkBudget()
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, err
@@ -101,9 +106,46 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	if err := tx.QueryRow(s.q(`SELECT `+filter+` FROM items i WHERE i.id=?`), queryArgs...).Scan(&open); err != nil {
 		return nil, err
 	}
-	plan, err := s.planRenegotiationTx(tx, sc, in, nowT, open)
+	var component *commitmentComponent
+	planInput := in
+	if in.Scope == "occurrence" {
+		component, err = s.cascadeLinkedTx(tx, sc, filter, args, "deadline")
+		if err != nil {
+			return nil, err
+		}
+		if component != nil {
+			if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
+				return nil, err
+			}
+			planInput.Revision = ""
+		}
+	}
+	plan, err := s.planRenegotiationTx(tx, sc, planInput, nowT, open)
 	if err != nil {
 		return nil, err
+	}
+	var linked *linkedPlan
+	if component != nil {
+		linked, err = s.planLinkedTx(tx, component, workspaceID, itemID, schedule.RoleDeadline, plan.until, true)
+		if err != nil {
+			return nil, err
+		}
+		// Both inputs are fixed-length opaque revisions; their combined token
+		// invalidates the preview when either the root or its cascade changes.
+		hash := sha256.Sum256([]byte(plan.result.Revision + linked.revision))
+		plan.result.Revision = base64.RawURLEncoding.EncodeToString(hash[:])
+		if !in.Preview && in.Revision != plan.result.Revision {
+			return nil, ErrCommitmentChanged
+		}
+		cascade, _, err := s.settleLinkedPlan(linked, budget, linkedOptions{actor: actor, reason: in.Reason, revision: linked.revision, preview: in.Preview, acknowledge: in.AcknowledgeViolations, access: in.Access, rootAuthorized: true})
+		if err != nil {
+			return nil, err
+		}
+		// With nothing to show beyond the root, the answer is the unlinked one, so
+		// a dependent the caller cannot read does not change its shape.
+		if cascade != nil && cascadeNamesADependent(cascade, itemID) {
+			plan.result.Cascade = cascade
+		}
 	}
 	if in.Scope == "series" {
 		// A series change replaces the deadline role. Refuse it for a role a link
@@ -129,6 +171,7 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	if actor == "" {
 		actor = "user"
 	}
+	rootLapsed := false
 	if open {
 		d, state, err := s.deadlineStateTx(tx, sc.ID)
 		if err != nil {
@@ -145,14 +188,36 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 				return nil, err
 			}
 			if lapse != nil {
-				// The preview named an occurrence that just closed. Commit its
-				// lapse even when its miss was recorded before this request.
-				if err := tx.Commit(); err != nil {
-					return nil, fmt.Errorf("lapse before renegotiation: %w", err)
+				if linked != nil {
+					rootLapsed = true
+				} else {
+					// The preview named an occurrence that just closed. Commit its
+					// lapse even when its miss was recorded before this request.
+					if err := tx.Commit(); err != nil {
+						return nil, fmt.Errorf("lapse before renegotiation: %w", err)
+					}
+					return nil, ErrCommitmentChanged
 				}
-				return nil, ErrCommitmentChanged
 			}
 		}
+	}
+	if linked != nil {
+		lapsed, err := s.lapseDueInPlanTx(tx, linked, nowT)
+		if err != nil {
+			return nil, err
+		}
+		if !rootLapsed && !lapsed {
+			if err := s.applyLinkedPlanTx(tx, linked, actor, in.Reason, "Moved with a linked date", nowT, budget); err != nil {
+				return nil, err
+			}
+		}
+		if err := budget.commit(tx); err != nil {
+			return nil, err
+		}
+		if rootLapsed || lapsed {
+			return nil, ErrCommitmentChanged
+		}
+		return &plan.result, nil
 	}
 	if in.Scope == "occurrence" {
 		if err := s.upsertScheduleOverrideTx(tx, sc.ID, plan.result.Preview.OccurrenceKey, "deadline", plan.until, nil); err != nil {
@@ -179,6 +244,18 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		return nil, fmt.Errorf("renegotiate commitment: %w", err)
 	}
 	return &plan.result, nil
+}
+
+func cascadeNamesADependent(c *models.LinkedMoveResult, rootItemID string) bool {
+	if len(c.Violations) > 0 || len(c.LeftInPlace) > 0 {
+		return true
+	}
+	for _, ch := range c.Changes {
+		if ch.ItemID != rootItemID {
+			return true
+		}
+	}
+	return false
 }
 
 func deadlineRolesSnapshot(r scheduleRoles) string {
