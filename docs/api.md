@@ -368,9 +368,9 @@ A forecast is a hand-set estimate beside the commitment, not one of its roles; a
 
 ### Commitment deadline renegotiation (TASK-4351)
 
-`POST /workspaces/{ws}/items/{ref}/commitment/renegotiate` previews or applies a native deadline change. It uses the commitment mutators' visibility, archived-item, edit-permission and token-scope doors. An unknown or invisible item returns the same `404 not_found`. After those doors, the caller must be the item's assignee or a workspace owner; on an unassigned item, any caller with edit permission may act. This authority check runs before body decoding for every scope, including previews. The assignee used by a non-owner decision is rechecked under the transaction lock for renegotiation and native-deadline DELETE; a changed assignee returns `409 commitment_changed` without writes. Workspace owners do not depend on assignment. Refusal is `403 deadline_owner_required`, details `{field: "deadline", code: "authority"}`. DELETE through `/commitment` keeps the same authority restriction for a native deadline and names this route in its refusal: "to remove or change a hard deadline use POST .../commitment/renegotiate". Authorized callers may still delete directly; a schedule without a deadline uses the ordinary DELETE permission.
+`POST /workspaces/{ws}/items/{ref}/commitment/renegotiate` previews or applies a native deadline change. It uses the commitment mutators' visibility, archived-item, edit-permission and token-scope doors. An unknown or invisible item returns the same `404 not_found`. After those doors, the caller must be the item's assignee or a workspace owner; on an unassigned item, any caller with edit permission may act. This authority check runs before body decoding for every scope, including previews. The assignee used by a non-owner decision is rechecked under the transaction lock for renegotiation and native-deadline DELETE; a changed assignee returns `409 commitment_changed` without writes. Workspace owners do not depend on assignment. Refusal is `403 deadline_owner_required`, details `{field: "deadline", code: "authority"}`. DELETE through `/commitment` keeps the same authority restriction for a native deadline and names this route in its refusal: "to remove or change a hard deadline use POST .../commitment/renegotiate". Authorized callers may delete an unlinked schedule directly; a schedule without a deadline uses the ordinary DELETE permission.
 
-The body is strict like schedule bodies: unknown or repeated members, non-objects, wrong types and NULs are `400 invalid_body`. Members are `reason`, `scope`, `deadline`, `deadline_offset`, `deadline_behavior`, `remove_deadline`, `revision`, and `preview`.
+The body is strict like schedule bodies: unknown or repeated members, non-objects, wrong types and NULs are `400 invalid_body`. Members are `reason`, `scope`, `deadline`, `deadline_offset`, `deadline_behavior`, `remove_deadline`, `revision`, `preview`, and `acknowledge_violations`.
 
 - `reason` is required and must be non-blank after trimming, for preview and apply.
 - `scope` defaults to `occurrence`. This scope needs `deadline`, an RFC3339 instant after now and within 366 days (validated after the override writer's rounding up to a whole second). It moves only the outstanding occurrence's deadline via an override. `remove_deadline: true` needs scope `series` (`400 validation_error`, field `scope`, code `combination`); offsets and behavior also need `series`.
@@ -386,6 +386,35 @@ Apply requires the preview's opaque `revision` for both scopes (`400 validation_
 Success apply returns `200` with the commitment roles and journal, as `GET .../commitment` does, and records `schedule_updated` activity with names-only metadata. Each renegotiation adds one user journal row with role `deadline`, acting user and trimmed reason: `move` for occurrence with `{deadline}` before/after values, `update` for series with `{deadline_days, deadline_secs, deadline_behavior}` before/after snapshots (all three null on removal). These snapshots contain no roles-origin or conversion marker.
   History also includes target, earliest and occupied-until moves, with additive `before_json` values. Cross-item root and parent journal references are omitted when their item is unreadable. Dependent system reasons contain no parent text. The additive `conflicts` list reports the commitment own dates outside their bounds as `{role, bound, value, bound_value}`; it never names another item.
 
+
+### Commitment graph access and refusals (TASK-4423)
+
+Every commitment view, including GET and successful mutations, adds `links: []` and `gates: {state, gates: [], unresolved?}`. A link is `{id, parent_item_id, parent_role, child_item_id, child_role, offset, cancel_policy, created_at, updated_at}`. Roles are `target | earliest | deadline | occupied_until`; offsets are `{mode:"elapsed", elapsed_secs?}` or `{mode:"civil", days?, clock_secs?, all_day?, zone?}` (zero-valued members may be omitted). A gate is `{id, blocked_item_id, blocker_item_id, outcome, opened_at?, created_at}`; outcome is `pending | succeeded | cancelled | lapsed | skipped`. Gate state is `released | waiting | blocked_needs_decision`. A link or gate appears only when both items are live and readable. `unresolved` lists readable blockers only; gate state still reflects all blockers. `conflicts`, when present, lists only the item's own dates outside their bounds as `{role, bound, value, bound_value}`. No hidden item, title, identifier or hidden total is returned. Milestone children retain their separate including-trash visibility rule.
+
+Linked renegotiation previews may add `cascade: {revision, changes, violations?, left_in_place?, renegotiates_deadline?}`. Each change is `{item_id, role, from?, to, root?}`; lists contain only readable items, with no count of the rest. Revision tokens are opaque, 43-character base64url strings. Apply refreshes permissions under the transaction lock. Set `acknowledge_violations:true` with the fresh preview revision to accept a readable dependent date crossing its own bound; the bound and link remain. Resolve accepts neither revisions nor acknowledgements.
+
+Cross-workspace copy and copy-preflight use the same `warnings.schedule` report: `{carried, history_dropped, changes_dropped, forecast_dropped, children_dropped, links_dropped, gates_dropped, skipped?:{reason}}`. Both new counts are always present in a report and count only readable live link ends or blockers. A readable dropped gate produces this object with `carried:false` even without a schedule; a hidden-only gate produces no object. Links and gates remain workspace-local. A carried or imported journal row whose root or parent row stays behind masks its reason as `Date changed`, reason source and actor as `system`, matching an unreadable source lineage. Rows whose causal rows all travel retain their reason and actor.
+
+Schedule PATCH/DELETE, resolve and renegotiate share these graph errors. Graph refusals contain no path, impact, observed count or limit. Field validation retains `400 validation_error` with only `{field,code}` details, including `reason`, `revision`, `role`, `to` and `cancel_policy`.
+
+| HTTP | Code | Details |
+|---|---|---|
+| 409 | `schedule_linked` | None; unlink before changing linked timing/roles or deleting the schedule |
+| 409 | `deadline_approval_required` | None; `this change moves a hard deadline that needs its owner's approval` |
+| 409 | `link_violation_ack` | None |
+| 409 | `commitment_changed` | `{field:"revision",code:"stale"}` |
+| 503 | `link_budget` | None; `Retry-After: 1` |
+| 403 | `link_edit_required` | None |
+| 404 | `schedule_link_not_found` | None; literal message `Commitment link or gate not found` |
+| 409 | `link_cycle`, `link_self`, `link_duplicate_incoming`, `link_limit`, `gate_duplicate` | None |
+| 400 | `link_invalid` | None; fixed invalid-configuration message |
+| 409 | `commitment_preview_required` | `{preview:"POST /api/v1/workspaces/<slug>/items/<itemRef>/commitment/move-preview",commit:"POST /api/v1/workspaces/<slug>/items/<itemRef>/commitment/move"}` using the request's URL identifiers |
+
+When any linked partner is unreadable or soft-deleted, `schedule_linked` has exactly this message, for either direction and any number of partners: "This date is linked to something you can't view. Ask a workspace owner to change or remove the link." When all partners are live and readable, it uses "this schedule is linked; unlink it before changing its timing or a linked role".
+
+A linked resolve needing deadline review (revision or reason) or crossing a readable dependent bound returns `commitment_preview_required` after dependent deadline authority checks, with no date, comment or journal write. A caller without edit authority over a changed hard deadline instead gets `deadline_approval_required`. After a non-preview resolve or renegotiate receives that refusal and rolls back, the server recomputes and attempts a deduplicated approval notice for an eligible owner/assignee with a registered push device. Enqueue success, failure, dedupe and no recipient leave the refusal bytes identical. A skip leaves a dependent hard-deadline occurrence and its reminder untouched unless the caller can edit that dependent; its response reveals no such child.
+
+The move-preview, move, link and gate mutation routes arrive in the next change; this change registers none of them.
 
 ### Workspace agenda (TASK-4104)
 
