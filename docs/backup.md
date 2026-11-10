@@ -19,6 +19,16 @@ SQLite database path is resolved exactly as the server resolves it —
 `PAD_DB_PATH` > `PAD_DATA_DIR/pad.db` > `~/.pad/pad.db` — so it works inside the
 Docker image (which sets `PAD_DATA_DIR=/data`) without extra flags.
 
+## Encryption key and server identity
+
+Back up the deployment encryption key alongside the database, using secure
+backup storage. Preserve `encryption.key` in the data directory when the server
+generates its key, or the configured `PAD_ENCRYPTION_KEY` when supplied externally.
+Database backup files do not include this key. A restore with the same encryption key keeps the server
+identity; a restore without it does not. Losing or changing the encryption key
+changes server identity, and every pinned mobile connection refuses until it
+is removed and added again.
+
 ## SQLite Backups
 
 SQLite stores everything in a single file (default: `~/.pad/pad.db`). The
