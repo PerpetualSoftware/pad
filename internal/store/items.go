@@ -2951,10 +2951,6 @@ func (s *Store) updateItemWithParentLinkOnce(
 		return nil, err
 	}
 
-	if err := s.pinGateBlockerTx(tx, existing.WorkspaceID, id); err != nil {
-		return nil, err
-	}
-
 	// IDEA-1494: run the caller's invariant check (if any)
 	// AFTER the locks are held but BEFORE any mutation. Closing the
 	// guard-vs-write TOCTOU window relies on this ordering — the
@@ -6144,10 +6140,6 @@ func (s *Store) moveItemWithPreCheckOnce(
 	}
 
 	if err := s.acquireParentChildrenLocksForUpdate(tx, itemID); err != nil {
-		return nil, err
-	}
-
-	if err := s.pinGateBlockerTx(tx, existing.WorkspaceID, itemID); err != nil {
 		return nil, err
 	}
 

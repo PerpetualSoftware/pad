@@ -141,6 +141,9 @@ func (s *Store) CreateScheduleGate(workspaceID, blockedItemID, blockerItemID str
 	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
 		return nil, err
 	}
+	if err := s.lockGateEndsTx(tx, workspaceID, blockedItemID, blockerItemID); err != nil {
+		return nil, err
+	}
 	c, err := s.pinCommitmentRoot(tx, workspaceID, "", nil, false, false, true, blockedItemID, extra...)
 	if errors.Is(err, ErrScheduleItemGone) {
 		return nil, ErrScheduleLinkNotFound
@@ -603,8 +606,8 @@ func (s *Store) evaluateAndOpenGatesTx(tx *sql.Tx, workspaceID, itemID string) (
 }
 
 // openGatesForBlockerTx observes success on the writer connection before it can disappear.
-// The caller holds the workspace row, and never locks a child item. The fenced
-// app door does not call this: an app write stays inside its reviewed door, and
+// The caller holds the blocker's row, by its UPDATE or its pin, and this locks
+// no other item. The fenced app door does not call this: an app write stays inside its reviewed door, and
 // the tick opens the gates of a blocker an app finished.
 func (s *Store) openGatesForBlockerTx(tx *sql.Tx, workspaceID, blockerID string) error {
 	rows, err := tx.Query(s.q(`SELECT DISTINCT blocked_item_id FROM schedule_gates WHERE workspace_id=? AND blocker_item_id=? AND opened_at IS NULL ORDER BY blocked_item_id`), workspaceID, blockerID)
@@ -633,17 +636,28 @@ func (s *Store) openGatesForBlockerTx(tx *sql.Tx, workspaceID, blockerID string)
 	return nil
 }
 
-// pinGateBlockerTx takes the strongest item lock first, then the workspace row,
-// matching gate creation and commitment writes. It never locks child items.
-func (s *Store) pinGateBlockerTx(tx *sql.Tx, workspaceID, itemID string) error {
+// lockGateEndsTx locks both ends of a new gate, ascending by id so two gate
+// writes cannot wait on each other, and before the workspace row, as every item
+// lock in the commitment order is taken. Holding the blocker's row is what
+// serializes this gate with a write to that blocker: the writer's UPDATE holds
+// the same row, so either this waits and then reads the success, or the writer
+// waits and then finds the gate. An end that is gone is left for the pin to
+// answer.
+func (s *Store) lockGateEndsTx(tx *sql.Tx, workspaceID, a, b string) error {
 	if s.dialect.Driver() != DriverPostgres {
 		return nil
 	}
-	var id string
-	if err := tx.QueryRow(s.q(`SELECT id FROM items WHERE id=? AND workspace_id=? FOR NO KEY UPDATE`), itemID, workspaceID).Scan(&id); err != nil {
-		return err
+	if b < a {
+		a, b = b, a
 	}
-	return tx.QueryRow(s.q(`SELECT id FROM workspaces WHERE id=? FOR NO KEY UPDATE`), workspaceID).Scan(&id)
+	for _, itemID := range []string{a, b} {
+		var id string
+		err := tx.QueryRow(s.q(`SELECT id FROM items WHERE id=? AND workspace_id=? FOR NO KEY UPDATE`), itemID, workspaceID).Scan(&id)
+		if err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("lock gate end: %w", err)
+		}
+	}
+	return nil
 }
 
 // EvaluateCommitmentGates advances a deterministic cursor across pending gates.
