@@ -278,6 +278,8 @@ func (rl *ipRateLimiter) sweepLocked(now time.Time) {
 
 // RateLimiters holds all the rate limiters used by the server.
 type RateLimiters struct {
+	// ServerIdentity limits unauthenticated identity proofs per address.
+	ServerIdentity *ipRateLimiter
 	// TASK-4039: handler-level chat buckets, charged after principal admission.
 	ChatSend *ipRateLimiter
 	ChatDM   *ipRateLimiter
@@ -449,8 +451,9 @@ type RateLimiters struct {
 // NewRateLimiters creates rate limiters with sensible defaults.
 func NewRateLimiters() *RateLimiters {
 	return &RateLimiters{
-		ChatSend: newIPRateLimiter(rateLimitConfig{Rate: 20.0 / 60.0, Burst: 20}),
-		ChatDM:   newIPRateLimiter(rateLimitConfig{Rate: 30.0 / 3600.0, Burst: 30, Retention: 2 * time.Hour}),
+		ServerIdentity: newIPRateLimiter(rateLimitConfig{Rate: 10, Burst: 120}),
+		ChatSend:       newIPRateLimiter(rateLimitConfig{Rate: 20.0 / 60.0, Burst: 20}),
+		ChatDM:         newIPRateLimiter(rateLimitConfig{Rate: 30.0 / 3600.0, Burst: 30, Retention: 2 * time.Hour}),
 		// Login: 5 attempts per minute per IP (= 5/60 per second, burst 5)
 		Auth: newIPRateLimiter(rateLimitConfig{
 			Rate:  rate.Limit(5.0 / 60.0),
@@ -680,6 +683,7 @@ func (rls *RateLimiters) Stop() {
 		return
 	}
 	for _, rl := range []*ipRateLimiter{
+		rls.ServerIdentity,
 		rls.ChatSend,
 		rls.ChatDM,
 		rls.Auth,

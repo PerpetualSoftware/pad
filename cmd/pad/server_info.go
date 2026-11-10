@@ -67,8 +67,10 @@ type serverInfoDecision struct {
 }
 
 type serverInfoConnection struct {
-	Reachable bool   `json:"reachable"`
-	Error     string `json:"error,omitempty"`
+	Fingerprint   string `json:"fingerprint,omitempty"`
+	IdentityError string `json:"identity_error,omitempty"`
+	Reachable     bool   `json:"reachable"`
+	Error         string `json:"error,omitempty"`
 }
 
 type serverInfoAuth struct {
@@ -159,6 +161,10 @@ func describeDecisionProvider(cfg *config.Config) serverInfoDecision {
 }
 
 func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
+	return collectServerInfoWithClient(cfg, cli.NewClientFromURL(cfg.BaseURL()))
+}
+
+func collectServerInfoWithClient(cfg *config.Config, client *cli.Client) (*serverInfoReport, error) {
 	report := &serverInfoReport{
 		Config: serverInfoConfig{
 			Configured:         cfg.IsConfigured(),
@@ -204,7 +210,11 @@ func collectServerInfo(cfg *config.Config) (*serverInfoReport, error) {
 
 	report.Auth.EnvTokenOverride = cli.EnvTokenFor(cfg.BaseURL()) != ""
 
-	client := cli.NewClientFromURL(cfg.BaseURL())
+	if fingerprint, err := client.ServerIdentity(); err == nil {
+		report.Connection.Fingerprint = fingerprint
+	} else {
+		report.Connection.IdentityError = "Server identity could not be verified"
+	}
 	client.SetAuthToken("")
 
 	if err := client.Health(); err != nil {
@@ -312,6 +322,11 @@ func printServerInfo(report *serverInfoReport) {
 	fmt.Println()
 	fmt.Println("Connection")
 	fmt.Fprintf(w, "Reachable:\t%s\n", yesNo(report.Connection.Reachable))
+	if report.Connection.Fingerprint != "" {
+		fmt.Fprintf(w, "Server fingerprint:\t%s\n", report.Connection.Fingerprint)
+	} else {
+		fmt.Fprintf(w, "Server identity:\t%s\n", report.Connection.IdentityError)
+	}
 	if report.Connection.Error != "" {
 		fmt.Fprintf(w, "Last error:\t%s\n", report.Connection.Error)
 	}

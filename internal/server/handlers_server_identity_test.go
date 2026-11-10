@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -101,7 +102,21 @@ func TestServerIdentitySharedAcrossInstances(t *testing.T) {
 	var pubs []json.RawMessage
 	for _, offset := range []byte{0, 0, 1} {
 		s := identityTestServer(t, offset)
-		out := identityResponse(t, doRequest(s, "GET", "/api/v1/server/identity?challenge="+identityChallenge, nil))
+		var wg sync.WaitGroup
+		responses := make([]*httptest.ResponseRecorder, 16)
+		for i := range responses {
+			wg.Go(func() {
+				responses[i] = doRequest(s, "GET", "/api/v1/server/identity?challenge="+identityChallenge, nil)
+			})
+		}
+		wg.Wait()
+		out := identityResponse(t, responses[0])
+		for _, rr := range responses[1:] {
+			if !bytes.Equal(rr.Body.Bytes(), responses[0].Body.Bytes()) {
+				t.Fatal("concurrent proofs differ")
+			}
+			verifyIdentityTranscript(t, rr)
+		}
 		pubs = append(pubs, out["public_key"])
 	}
 	if !bytes.Equal(pubs[0], pubs[1]) || bytes.Equal(pubs[0], pubs[2]) {
@@ -189,6 +204,10 @@ func TestServerIdentityAnyHost(t *testing.T) {
 
 func TestServerIdentityRateLimited(t *testing.T) {
 	s := identityTestServer(t, 0)
+	if cfg := s.rateLimiters.ServerIdentity.config; cfg.Rate != 10 || cfg.Burst != 120 {
+		t.Fatalf("identity limiter config: %+v", cfg)
+	}
+	freezeRefill(t, s)
 	for i := 0; i < 120; i++ {
 		rr := doRequest(s, "GET", "/api/v1/server/identity?challenge="+identityChallenge, nil)
 		if rr.Code != 200 {
@@ -196,8 +215,8 @@ func TestServerIdentityRateLimited(t *testing.T) {
 		}
 	}
 	rr := doRequest(s, "GET", "/api/v1/server/identity", nil)
-	if rr.Code != 429 {
-		t.Fatalf("burst+1: %d", rr.Code)
+	if rr.Code != 429 || !strings.Contains(rr.Body.String(), `"rate_limited"`) || strings.Contains(rr.Body.String(), `"signature"`) {
+		t.Fatalf("burst+1: %d: %s", rr.Code, rr.Body.String())
 	}
 	verifyIdentityTranscript(t, doRequestFromRemoteAddr(s, "GET", "/api/v1/server/identity?challenge="+identityChallenge, nil, "192.0.2.2:1234"))
 }

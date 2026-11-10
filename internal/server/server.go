@@ -162,6 +162,8 @@ type Server struct {
 	itemDoorAfterRowsHook func()
 	// appstoreState holds the one appstore the app API uses (SPEC-6 U6a).
 	appstoreState appStoreState
+	// serverIdentityState caches the deployment identity key and derivation error.
+	serverIdentityState serverIdentityState
 	// appAfterHandler is a TEST-ONLY seam, nil in production: it runs after
 	// an app handler and before its response is re-validated and sent.
 	appAfterHandler func()
@@ -1829,6 +1831,9 @@ func (s *Server) setupRouter() {
 	// and its own limiters (AppRedeemAddr, AppRedeemInstall), and answers
 	// every refusal with one indistinguishable 400.
 	r.Post("/api/app/v1/install/redeem", s.handleRedeemAppInstallCode)
+
+	// Identity proofs precede credentials and bypass the auth and CORS stack.
+	r.Get("/api/v1/server/identity", s.handleServerIdentity)
 
 	// All other routes — full middleware stack
 	r.Group(func(r chi.Router) {
