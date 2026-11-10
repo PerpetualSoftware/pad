@@ -66,8 +66,10 @@ describe('agenda timezone presentation', () => {
  it.each([['created', 'Created'], ['completed', 'Completed']])('labels %s', (type, label) => {
   expect(entryChips(row({ type: type as AgendaEntry['type'] })).map(c => c.text)).toEqual([label]);
  });
- it('allows Move only for an outstanding schedule that is not hard', () => {
+ it('allows Move on native hard deadlines and fails closed for other hard rows', () => {
   expect(canMove(row({ kind: 'deadline_soft' }))).toBe(true);
+  expect(canMove(row({ kind: 'deadline_hard', roles_origin: 'native' }))).toBe(true);
+  expect(canMove(row({ kind: 'deadline_hard', roles_origin: 'legacy_backfill' }))).toBe(false);
   expect(canMove(row({ kind: 'deadline_hard' }))).toBe(false);
   expect(canMove(row({ state: 'scheduled' }))).toBe(false);
   expect(canMove(row({ type: 'date' }))).toBe(false);

@@ -3771,6 +3771,7 @@ export interface AgendaEntry {
 	floating?: boolean;
 	state?: 'outstanding' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'lapsed' | 'unrecorded';
 	kind?: string;
+	roles_origin?: 'native' | 'legacy_backfill';
 	audience?: 'human' | 'agent' | 'both';
 	schedule_id?: string;
 	field?: string;
@@ -3887,5 +3888,5 @@ export interface CommitmentChange {
 
 export interface CommitmentResolveResult {
 	commitment: ItemCommitmentView;
-	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number };
+	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline' };
 }

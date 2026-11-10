@@ -39,6 +39,7 @@ type agendaEntry struct {
 	ItemTitle   string `json:"item_title"`
 	Collection  string `json:"collection"`
 	Kind        string `json:"kind,omitempty"`
+	RolesOrigin string `json:"roles_origin,omitempty"`
 	Audience    string `json:"audience,omitempty"`
 	ScheduleID  string `json:"schedule_id,omitempty"`
 	Field       string `json:"field,omitempty"`
@@ -409,7 +410,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 				Type: "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
 				Wall: e.Wall.String(), AllDay: e.Wall.AllDay, Floating: &sc.Floating, State: e.State,
 				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Kind: sc.Kind, Audience: sc.Audience,
-				ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
+				RolesOrigin: as.RolesOrigin, ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
 				CommentID: e.CommentID, MissedCount: e.MissedCount, Stale: e.Stale, instant: e.At, subKey: sc.ID,
 			}
 			if e.Wall.AllDay {
