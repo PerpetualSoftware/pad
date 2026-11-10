@@ -1688,24 +1688,32 @@ func serverHintFor(bodyMsg, route string, status int) string {
 	return strings.Join(parts, " ")
 }
 
-// hint403For picks the hint for an allow-listed structured 403. The
-// plan-limit hint tells the caller to upgrade, which is wrong for an invitee
-// refused by someone else's member cap (BUG-3098).
+// hint403For picks the hint for an allow-listed structured 403. Only
+// plan_limit_exceeded gets the plan-limit hint: telling the caller to upgrade
+// is wrong for an invitee refused by someone else's member cap (BUG-3098) and
+// for a commitment refusal, which is about who is asking (TASK-4415).
 func hint403For(code, bodyMsg, route string) string {
-	if code == string(ErrAgentNameRequired) {
+	var lead string
+	switch code {
+	case string(ErrAgentNameRequired):
 		return "Declare your agent name in MCP clientInfo.name and reconnect before using pad_chat."
+	case string(ErrPlanLimitExceeded):
+		return planLimitHintFor(bodyMsg, route)
+	case string(ErrWorkspaceMemberLimit):
+		lead = "The workspace is at its member limit; only its owner can make room. Retry the accept after they do."
+	case "deadline_owner_required":
+		lead = "Only the item's assignee or a workspace owner can do this; ask one of them."
+	default:
+		lead = "The server refused this request."
 	}
-	if code == string(ErrWorkspaceMemberLimit) {
-		parts := []string{"The workspace is at its member limit; only its owner can make room. Retry the accept after they do."}
-		if route != "" {
-			parts = append(parts, fmt.Sprintf("Route: %s.", route))
-		}
-		if bodyMsg != "" {
-			parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
-		}
-		return strings.Join(parts, " ")
+	parts := []string{lead}
+	if route != "" {
+		parts = append(parts, fmt.Sprintf("Route: %s.", route))
 	}
-	return planLimitHintFor(bodyMsg, route)
+	if bodyMsg != "" {
+		parts = append(parts, fmt.Sprintf("Backend: %s", bodyMsg))
+	}
+	return strings.Join(parts, " ")
 }
 
 // planLimitHintFor generates the actionable hint for ErrPlanLimitExceeded.
