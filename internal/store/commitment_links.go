@@ -610,6 +610,15 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 	if in.Move.Preview {
 		return &models.ScheduleLinkResult{Moved: *moved}, nil
 	}
+	nowT := s.linkNow().UTC().Truncate(time.Second)
+	if lapsed, err := s.lapseDueInPlanTx(tx, p, nowT); err != nil {
+		return nil, err
+	} else if lapsed {
+		if err := budget.commit(tx); err != nil {
+			return nil, err
+		}
+		return nil, ErrCommitmentChanged
+	}
 	l.ID, l.CreatedAt, l.UpdatedAt = newID(), nowNano(), nowNano()
 	if err := s.insertLinkTx(tx, workspaceID, l); err != nil {
 		if isUniqueViolation(err) {
@@ -618,7 +627,7 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 		return nil, err
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}
@@ -779,6 +788,15 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if upd.Move.Preview {
 		return &models.ScheduleLinkResult{Moved: *moved}, nil
 	}
+	nowT := s.linkNow().UTC().Truncate(time.Second)
+	if lapsed, err := s.lapseDueInPlanTx(tx, p, nowT); err != nil {
+		return nil, err
+	} else if lapsed {
+		if err := budget.commit(tx); err != nil {
+			return nil, err
+		}
+		return nil, ErrCommitmentChanged
+	}
 	if upd.Offset != nil {
 		// The plan is nil when the parent has no outstanding occurrence; the child's
 		// own occurrence still takes the new offset, with nothing to move.
@@ -810,7 +828,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		return nil, ErrScheduleLinkNotFound
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, s.linkNow().UTC().Truncate(time.Second), budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}

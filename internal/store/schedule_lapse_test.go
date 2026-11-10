@@ -742,3 +742,149 @@ func TestLapseTerminalAfterDeadlinePage(t *testing.T) {
 		})
 	}
 }
+
+func dueLinkedFixture(t *testing.T, n int, behavior string) *linkFix {
+	t.Helper()
+	f := newLinkFix(t, n)
+	for i := 1; i < n; i++ {
+		f.exec(t, `UPDATE item_schedules SET deadline_days=0,deadline_secs=3600,deadline_behavior=? WHERE id=?`, behavior, f.scheds[i].ID)
+	}
+	f.s.SetLinkClockForTesting(func() time.Time { return rt("2030-03-06T12:00:00Z") })
+	return f
+}
+
+func TestLapseLinkedCascadeRefusesEveryDate(t *testing.T) {
+	for _, shape := range []string{"deadline", "target", "two", "root", "recorded", "mixed"} {
+		t.Run(shape, func(t *testing.T) {
+			f := dueLinkedFixture(t, 4, "lapses")
+			role := "target"
+			if shape == "deadline" {
+				role = "deadline"
+			}
+			f.linkRaw(t, 0, 1, "target", role, oneDay)
+			f.linkRaw(t, 0, 3, "target", "target", oneDay)
+			// A sibling that is not due must stay unchanged too.
+			f.exec(t, `UPDATE item_schedules SET deadline_days=NULL,deadline_secs=NULL,deadline_behavior=NULL WHERE id=?`, f.scheds[3].ID)
+			want := 1
+			if shape == "mixed" {
+				f.exec(t, `UPDATE item_schedules SET deadline_behavior='stays_owed' WHERE id=?`, f.scheds[2].ID)
+				f.linkRaw(t, 0, 2, "target", "target", oneDay)
+			}
+			if shape == "two" {
+				f.linkRaw(t, 0, 2, "target", "target", oneDay)
+				want = 2
+			}
+			if shape == "root" {
+				f.exec(t, `UPDATE item_schedules SET deadline_days=0,deadline_secs=3600,deadline_behavior='lapses' WHERE id=?`, f.scheds[0].ID)
+				want = 2
+			}
+			if shape == "recorded" {
+				tx, err := f.s.db.Begin()
+				if err != nil {
+					t.Fatal(err)
+				}
+				d, _, err := f.s.deadlineStateTx(tx, f.scheds[1].ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := f.s.recordDeadlineMissTx(tx, *d); err != nil {
+					t.Fatal(err)
+				}
+				if err := tx.Commit(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			beforeParent, beforeSibling := f.role(t, 0, "target"), f.role(t, 3, "target")
+			p, err := f.move(0, "target", "2030-03-10T09:00:00Z", func(in *models.LinkedMoveInput) { in.Preview, in.Reason = true, "Changed plans" })
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE state='lapsed'`) != 0 {
+				t.Fatal("preview lapsed a child")
+			}
+			apply := func() error {
+				_, err := f.move(0, "target", "2030-03-10T09:00:00Z", func(in *models.LinkedMoveInput) {
+					in.Revision, in.Reason, in.AcknowledgeViolations = p.Revision, "Changed plans", true
+				})
+				return err
+			}
+			if err := apply(); !errors.Is(err, ErrCommitmentChanged) {
+				t.Fatalf("cascade = %v, want commitment changed", err)
+			}
+			if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE state='lapsed'`) != want || f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND change_type='missed_recorded'`) != want {
+				t.Fatal("not every due occurrence lapsed once with one miss")
+			}
+			if (shape != "root" && f.role(t, 0, "target") != beforeParent) || f.role(t, 3, "target") != beforeSibling || f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides`) != 0 || f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides`) != 0 || f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE change_type='move'`) != 0 {
+				t.Fatal("refused cascade moved a date or wrote an override")
+			}
+			if err := apply(); shape == "root" {
+				var field *ScheduleFieldError
+				if !errors.As(err, &field) || field.Code != "ended" {
+					t.Fatalf("ended root retry = %v", err)
+				}
+			} else if !errors.Is(err, ErrCommitmentChanged) {
+				t.Fatalf("retry = %v", err)
+			}
+			if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE state='lapsed'`) != want {
+				t.Fatal("retry lapsed twice")
+			}
+		})
+	}
+}
+
+func TestLapseLinkedStaysOwedStillMoves(t *testing.T) {
+	f := dueLinkedFixture(t, 2, "stays_owed")
+	f.linkRaw(t, 0, 1, "target", "deadline", oneDay)
+	p, err := f.move(0, "target", "2030-03-10T09:00:00Z", func(in *models.LinkedMoveInput) { in.Preview, in.Reason = true, "Changed plans" })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.move(0, "target", "2030-03-10T09:00:00Z", func(in *models.LinkedMoveInput) { in.Revision, in.Reason = p.Revision, "Changed plans" }); err != nil {
+		t.Fatal(err)
+	}
+	if f.role(t, 1, "deadline") != "2030-03-11T09:00:00Z" || f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND change_type='missed_recorded'`) != 1 || f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE state='lapsed'`) != 0 {
+		t.Fatal("stays_owed did not record the miss and move")
+	}
+}
+
+func TestLapseLinkWriteCommitsLapseWithoutLinkChange(t *testing.T) {
+	for _, update := range []bool{false, true} {
+		t.Run(strconv.FormatBool(update), func(t *testing.T) {
+			f := dueLinkedFixture(t, 2, "lapses")
+			if update {
+				f.linkRaw(t, 0, 1, "target", "target", oneDay)
+			}
+			before := renegotiateRows(t, f.s, "schedule_links", "")
+			var id string
+			if update {
+				if err := f.s.db.QueryRow(`SELECT id FROM schedule_links`).Scan(&id); err != nil {
+					t.Fatal(err)
+				}
+			}
+			o := models.ScheduleLinkOffset{Mode: "elapsed", ElapsedSecs: 2 * 86400}
+			write := func(move models.LinkWriteOptions) (*models.ScheduleLinkResult, error) {
+				if update {
+					return f.s.UpdateScheduleLink(f.ws.ID, id, models.ScheduleLinkUpdate{Offset: &o, Move: move}, f.allEdit())
+				}
+				return f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[0].ID, ParentRole: "target", ChildItemID: f.items[1].ID, ChildRole: "target", Offset: o, Move: move}, f.allEdit())
+			}
+			preview, err := write(models.LinkWriteOptions{Preview: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE state='lapsed'`) != 0 || renegotiateRows(t, f.s, "schedule_links", "") != before {
+				t.Fatal("link preview wrote rows")
+			}
+			_, err = write(models.LinkWriteOptions{Revision: preview.Moved.Revision, AcknowledgeViolations: true})
+			if !errors.Is(err, ErrCommitmentChanged) {
+				t.Fatalf("link write = %v, want commitment changed", err)
+			}
+			if renegotiateRows(t, f.s, "schedule_links", "") != before || f.count(t, `SELECT COUNT(*) FROM schedule_link_overrides`) != 0 || f.count(t, `SELECT COUNT(*) FROM schedule_occurrence_overrides`) != 0 {
+				t.Fatal("refused link write changed links or dates")
+			}
+			if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE state='lapsed'`) != 1 || f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND change_type='missed_recorded'`) != 1 {
+				t.Fatal("link write lost lapse or miss")
+			}
+		})
+	}
+}
