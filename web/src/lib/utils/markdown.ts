@@ -949,6 +949,27 @@ export function toEditorMarkdown(stored: string, items: Item[], workspaceSlug: s
 	return items.length > 0 && stored.includes('[[') ? wikiLinksToMarkdown(stored, items, workspaceSlug, username) : stored;
 }
 
+// A markdown link's opening bracket through its closing one, capturing the text.
+// Only the link's own text may be captured (BUG-4449):
+//   - The label stops at an unescaped `[`, so an earlier literal bracket can
+//     never reach a later link. Serialized text escapes its brackets (`\[`).
+//   - The label stops at a blank line, which a link text cannot cross.
+//   - The opening bracket is not escaped (an even run of backslashes before it),
+//     because the serializer writes a literal bracket as `\[`.
+//   - The opening bracket does not directly follow a `[`. A stored `[[[REF]]`
+//     reads as a wiki link whose body starts with `[`, so that link stays a
+//     markdown link, which keeps its text and still works after a reload.
+const LINK_LABEL_SOURCE = String.raw`(?<=(?:^|[^\\[])(?:\\\\)*)\[((?:\\.|(?!\n[ \t]*\n)[^[\]\\])+)\]`;
+const CROSS_WORKSPACE_LINK = new RegExp(
+	LINK_LABEL_SOURCE + String.raw`\(\/-\/r\/([a-z0-9][a-z0-9-]*)\/([A-Za-z][A-Za-z0-9]*-\d+)\)`,
+	'g'
+);
+const INTERNAL_LINK = new RegExp(
+	LINK_LABEL_SOURCE + String.raw`\((\/(?:[^/]+\/){2,3}([^)]+?))(?: "((?:\\"|[^"])*)")?\)`,
+	'g'
+);
+const BROKEN_PLACEHOLDER_LINK = new RegExp(LINK_LABEL_SOURCE + String.raw`\(broken\)`, 'g');
+
 /**
  * Convert markdown links back to wiki-link storage syntax.
  * When the link's URL resolves to an item with a ref, emit [[REF]] (or
@@ -971,7 +992,7 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// which the next render would emit the default `other::TASK-1` and
 	// silently change the visible link text.
 	const withXwRefs = markdown.replace(
-		/\[((?:\\.|[^\]\\])+)\]\(\/-\/r\/([a-z0-9][a-z0-9-]*)\/([A-Za-z][A-Za-z0-9]*-\d+)\)/g,
+		CROSS_WORKSPACE_LINK,
 		(_match, rawText: string, ws: string, ref: string) => {
 			const displayText = unescapeMarkdownLinkText(rawText);
 			const renderDefault = `${ws}::${ref}`;
@@ -987,7 +1008,7 @@ export function markdownToWikiLinks(markdown: string, items: Item[]): string {
 	// when serializing link text. The capture allows `\.` sequences so we
 	// don't terminate on an escaped `]` that's really part of the display.
 	const code = withXwRefs.includes(FOLLOWS_TITLE_PREFIX) ? codeRanges(withXwRefs) : [];
-	return withXwRefs.replace(/\[((?:\\.|[^\]\\])+)\]\((\/(?:[^/]+\/){2,3}([^)]+?))(?: "((?:\\"|[^"])*)")?\)/g, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined, offset: number) => {
+	return withXwRefs.replace(INTERNAL_LINK, (_match, rawText: string, path: string, slugOrRef: string, rawMarker: string | undefined, offset: number) => {
 		const item = items.find(i => {
 			if (i.slug === slugOrRef) return true;
 			if (i.item_number && i.collection_prefix) {
@@ -1201,7 +1222,7 @@ function unescapeMarkdownLinkText(s: string): string {
  * the marker is load-time state and must never reach stored content.
  */
 export function cleanBrokenLinks(markdown: string): string {
-	const cleaned = markdown.replace(/\[([^\]]+)\]\(broken\)/g, '[[$1]]');
+	const cleaned = markdown.replace(BROKEN_PLACEHOLDER_LINK, '[[$1]]');
 	if (!cleaned.includes(FOLLOWS_TITLE_PREFIX)) return cleaned;
 	const code = codeRanges(cleaned);
 	return cleaned
