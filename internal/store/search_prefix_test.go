@@ -34,6 +34,9 @@ func TestSearchPrefix(t *testing.T) {
 		{"a:", []string{}},
 		{"task-f", []string{}},
 		{"the", []string{"thesis"}},
+		{"The", []string{"thesis"}},
+		{"THE", []string{"thesis"}},
+		{"Polis", []string{"polish", "polishing widget"}},
 		{"m²", []string{}},
 		{"mo", []string{"monkey"}},
 	} {
