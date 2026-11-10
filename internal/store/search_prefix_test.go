@@ -14,7 +14,7 @@ func TestSearchPrefix(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Prefix search")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	for _, title := range []string{"polishing widget", "polish", "studies", "thesis", "task forest", "alpha beta"} {
+	for _, title := range []string{"polishing widget", "polish", "studies", "thesis", "task forest", "alpha beta", "monkey"} {
 		createTestItem(t, s, ws.ID, col.ID, title, title)
 		createTestDoc(t, s, ws.ID, title, title)
 	}
@@ -34,6 +34,8 @@ func TestSearchPrefix(t *testing.T) {
 		{"a:", []string{}},
 		{"task-f", []string{}},
 		{"the", []string{"thesis"}},
+		{"m²", []string{}},
+		{"mo", []string{"monkey"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			want := tc.want
@@ -226,7 +228,8 @@ func TestPostgresFTSQuery(t *testing.T) {
 		{"polis", []interface{}{"polis", "polis", "", "polis", "polis"}},
 		{"the", []interface{}{"the", "the", "", "the", "the"}},
 		{"12", []interface{}{"12", "12", "", "12", "12"}},
-		{"a²", []interface{}{"a²", "a²", "", "a²", "a²"}},
+		{"a²", []interface{}{"a²", "a²"}},
+		{"a٣", []interface{}{"a٣", "a٣", "", "a٣", "a٣"}},
 		{" earlier\tfoo-bar:wi: ", []interface{}{" earlier\tfoo-bar:wi: ", " earlier\tfoo bar:wi: ", "earlier foo bar", "wi", "wi"}},
 		{`foo')|!bar:*`, []interface{}{`foo')|!bar:*`, `foo')|!bar:*`, "foo", "bar", "bar"}},
 	} {

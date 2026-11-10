@@ -768,15 +768,18 @@ func sanitizeFTSQuery(q string) string {
 const maxFTSPrefixBytes = 2047
 
 // splitFTSPrefix separates the final alphanumeric part from the whole-word
-// head. An empty part disables prefix matching. Only letters and numbers can
-// enter the prefix tsquery; punctuation in the head goes to plainto_tsquery.
+// head. An empty part disables prefix matching. Only letters and decimal
+// digits can enter the prefix tsquery; punctuation in the head goes to
+// plainto_tsquery. Other number runes (superscripts, fractions) split the
+// part, because the Postgres parser drops them and would otherwise stem "m²"
+// into a one-letter prefix.
 func splitFTSPrefix(q string) (head, part string) {
 	words := strings.Fields(q)
 	if len(words) == 0 {
 		return "", ""
 	}
 	parts := strings.FieldsFunc(words[len(words)-1], func(r rune) bool {
-		return !unicode.IsLetter(r) && !unicode.IsNumber(r)
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
 	})
 	if len(parts) == 0 {
 		return "", ""
