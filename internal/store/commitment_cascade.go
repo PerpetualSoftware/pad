@@ -568,7 +568,7 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, noticeActor,
 		before, after := dateJSON(name, ch.From), dateJSON(name, ch.To)
 		why, source := why, "system"
 		switch {
-		case ch.Role == schedule.RoleDeadline && ch.Root:
+		case ch.Role == schedule.RoleDeadline:
 			why, source = reason, "user"
 		case ch.Root:
 			why = "Rescheduled"

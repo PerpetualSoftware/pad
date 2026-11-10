@@ -603,7 +603,9 @@ func (s *Store) evaluateAndOpenGatesTx(tx *sql.Tx, workspaceID, itemID string) (
 }
 
 // openGatesForBlockerTx observes success on the writer connection before it can disappear.
-// The caller holds the workspace row, and never locks a child item.
+// The caller holds the workspace row, and never locks a child item. The fenced
+// app door does not call this: an app write stays inside its reviewed door, and
+// the tick opens the gates of a blocker an app finished.
 func (s *Store) openGatesForBlockerTx(tx *sql.Tx, workspaceID, blockerID string) error {
 	rows, err := tx.Query(s.q(`SELECT DISTINCT blocked_item_id FROM schedule_gates WHERE workspace_id=? AND blocker_item_id=? AND opened_at IS NULL ORDER BY blocked_item_id`), workspaceID, blockerID)
 	if err != nil {

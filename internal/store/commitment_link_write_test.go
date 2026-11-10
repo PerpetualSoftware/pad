@@ -129,8 +129,8 @@ func TestALinkToADeadlineIsARenegotiationAtWriteTime(t *testing.T) {
 	if got := f.role(t, 2, "deadline"); got != "2030-03-06T09:00:00Z" {
 		t.Fatalf("the deadline below it=%s, want it to follow", got)
 	}
-	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND reason_source='system' AND reason IN ('Moved with a linked date','Moved to follow its link')`); n != 2 {
-		t.Fatalf("%d renegotiation rows, want 2 with a content-free system reason", n)
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE role='deadline' AND reason='slip' AND reason_source='user'`); n != 2 {
+		t.Fatalf("%d renegotiation rows, want 2 under one reason", n)
 	}
 }
 

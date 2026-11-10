@@ -339,10 +339,6 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	if err := f.requireCreatedHere(itemID); err != nil {
 		return nil, err
 	}
-	if err := f.s.pinGateBlockerTx(f.tx, f.workspaceID, itemID); err != nil {
-		return nil, err
-	}
-
 	existing, err := f.s.getItemTx(f.tx, itemID)
 	if err != nil {
 		return nil, err
@@ -373,9 +369,6 @@ func (f *FencedTx) UpdateItemFields(itemID string, patch map[string]any, expecte
 	newStatus := extractFieldValue(merged, doneKey)
 	statusChanged := newStatus != statusBefore
 	if statusChanged {
-		if err := f.s.openGatesForBlockerTx(f.tx, f.workspaceID, itemID); err != nil {
-			return nil, err
-		}
 		if _, err := f.tx.Exec(f.s.q(`
 			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, `+nextTransitionSeqSubquery+`)

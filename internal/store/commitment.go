@@ -242,6 +242,7 @@ func (s *Store) GetCommitmentFor(workspaceID, itemID string, canRead func(childI
 				c.ParentChangeID = nil
 				c.Reason = "Date changed"
 				c.ReasonSource = "system"
+				c.Actor = "system"
 			}
 		}
 		out.Journal = append(out.Journal, models.CommitmentChange{ID: c.ID, ChangeType: c.ChangeType, OccurrenceKey: c.OccurrenceKey, Role: c.Role,

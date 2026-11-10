@@ -268,7 +268,16 @@ func graphFencedGateTest(t *testing.T) {
 	if err := f.s.db.QueryRow(f.s.q(`SELECT opened_at FROM schedule_gates WHERE id=?`), g.ID).Scan(&at); err != nil {
 		t.Fatal(err)
 	}
+	if at.Valid {
+		t.Fatal("fenced writer reached the gate tables from inside its door")
+	}
+	if err := f.s.EvaluateCommitmentGates("2030-06-01T00:00:00Z", 10); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.s.db.QueryRow(f.s.q(`SELECT opened_at FROM schedule_gates WHERE id=?`), g.ID).Scan(&at); err != nil {
+		t.Fatal(err)
+	}
 	if !at.Valid {
-		t.Fatal("fenced writer did not open gate")
+		t.Fatal("the tick did not open the gate of a blocker an app finished")
 	}
 }

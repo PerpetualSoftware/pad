@@ -574,11 +574,11 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 		for _, c := range page {
 			cursorAt, cursorID = c.at, c.id
 			if c.sc.Valid {
+				// A read that fails here stays a candidate: the fire path judges
+				// the gates again and reports that row alone, so one broken row
+				// does not stop the pass.
 				ev, err := s.evaluateGatesQ(s.db, c.workspace, c.item)
-				if err != nil {
-					return nil, err
-				}
-				if ev.state != models.GateStateReleased {
+				if err == nil && ev.state != models.GateStateReleased {
 					continue
 				}
 			}

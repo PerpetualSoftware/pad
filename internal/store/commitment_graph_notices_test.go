@@ -204,6 +204,41 @@ func TestTASK4423_R05Notices(t *testing.T) {
 
 func TestTASK4423_R05History(t *testing.T) {
 	t.Run("target", graphHistoryMoveTest)
+	t.Run("a dependent deadline keeps its reason and masks it from a reader of that item alone", func(t *testing.T) {
+		f := newLinkFix(t, 2)
+		f.deadline(t, 1, "stays_owed")
+		f.linkRaw(t, 0, 1, "target", "deadline", oneDay)
+		const to, why, who = "2030-04-01T09:00:00Z", "Private parent text", "private-actor"
+		prev, err := f.move(0, "target", to, func(in *models.LinkedMoveInput) {
+			in.Access, in.Reason, in.Preview = f.allEdit(), why, true
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.move(0, "target", to, func(in *models.LinkedMoveInput) {
+			in.Access, in.Reason, in.Revision, in.AcknowledgeViolations, in.Actor = f.allEdit(), why, prev.Revision, true, who
+		}); err != nil {
+			t.Fatal(err)
+		}
+		var stored int
+		if err := f.s.db.QueryRow(f.s.q(`SELECT COUNT(*) FROM schedule_changes WHERE item_id=? AND role='deadline' AND reason=? AND reason_source='user'`), f.items[1].ID, why).Scan(&stored); err != nil {
+			t.Fatal(err)
+		}
+		if stored != 1 {
+			t.Fatalf("stored reason rows=%d", stored)
+		}
+		c, err := f.s.GetCommitmentFor(f.ws.ID, f.items[1].ID, func(id string) bool { return id == f.items[1].ID })
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := json.Marshal(c)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(c.Journal) == 0 || strings.Contains(string(b), why) || strings.Contains(string(b), who) {
+			t.Fatalf("cross-item information: %s", b)
+		}
+	})
 	for _, role := range []string{"target", "earliest", "occupied_until"} {
 		t.Run(role+" dates and conflicts", func(t *testing.T) {
 			f := newLinkFix(t, 2)
