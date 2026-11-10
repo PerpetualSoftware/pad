@@ -77,10 +77,10 @@ func TestInterchangeGolden_RoundTrip(t *testing.T) {
 	want := flattenInterchange(t, "golden", golden)
 	got := flattenInterchange(t, "re-export", again)
 
-	// The golden archive is a version 1 bundle; every export is version 3.
+	// The golden archive is a version 1 bundle; every export is version 4.
 	// State that move on its own and compare everything else unchanged.
-	if want["version"] != "1" || got["version"] != "3" {
-		t.Fatalf("bundle version: golden %q, re-export %q, want 1 and 3", want["version"], got["version"])
+	if want["version"] != "1" || got["version"] != "4" {
+		t.Fatalf("bundle version: golden %q, re-export %q, want 1 and 4", want["version"], got["version"])
 	}
 	delete(want, "version")
 	delete(got, "version")

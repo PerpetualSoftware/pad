@@ -90,8 +90,8 @@ func TestTASK4353_MigrateCarriesLinks(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if data.Version != 3 || len(data.ScheduleLinks) != 2 {
-				t.Fatalf("the bundle is version %d with %d links, want version 3 with 2", data.Version, len(data.ScheduleLinks))
+			if data.Version != models.WorkspaceExportVersion || len(data.ScheduleLinks) != 2 {
+				t.Fatalf("the bundle is version %d with %d links, want current version with 2", data.Version, len(data.ScheduleLinks))
 			}
 			overrides := 0
 			for _, l := range data.ScheduleLinks {

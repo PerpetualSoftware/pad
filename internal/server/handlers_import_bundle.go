@@ -875,7 +875,13 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			// check. Read before the import, from the arrays the exporter wrote.
 			if bundled != nil {
 				bundled.Collections = len(export.Collections)
-				bundled.Items = len(export.Items)
+				// A soft-deleted blocker is a row of the bundle, not an item
+				// of the workspace the count check reads afterwards.
+				for _, it := range export.Items {
+					if it.DeletedAt == "" {
+						bundled.Items++
+					}
+				}
 				bundled.Comments = len(export.Comments)
 			}
 			var rep store.ImportReport

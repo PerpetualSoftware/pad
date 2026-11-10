@@ -8,10 +8,12 @@ package models
 // ignores an unknown key: a v2 reader would restore the schedules and quietly
 // lose every link, whereas a version it does not know is refused outright
 // ("unsupported export version").
+// Version 4 adds commitment gates and soft-deleted blocker item rows.
 const (
 	WorkspaceExportVersion1 = 1
 	WorkspaceExportVersion2 = 2
-	WorkspaceExportVersion  = 3
+	WorkspaceExportVersion3 = 3
+	WorkspaceExportVersion  = 4
 )
 
 // WorkspaceExport is the complete portable representation of a workspace.
@@ -45,12 +47,27 @@ type WorkspaceExport struct {
 	// its per-occurrence overrides (version 3). Both ends of a link name a
 	// ScheduleExport.ID of this bundle, remapped on import.
 	ScheduleLinks []ScheduleLinkExport `json:"schedule_links,omitempty"`
+	// ScheduleGates preserve item blockers and the occurrence captured by each gate (version 4).
+	ScheduleGates []ScheduleGateExport `json:"schedule_gates,omitempty"`
 	// OmittedScheduleLinks counts the links an export left out because an end
 	// is not in the bundle (its item is deleted). It names nothing about them,
 	// is not part of the bundle's wire form, and is 0 on a decoded bundle.
 	OmittedScheduleLinks int `json:"-"`
 	hasV2Members         bool
 	hasV3Members         bool
+	hasV4Members         bool
+}
+
+// ScheduleGateExport carries a gate with source ids for remapping on import.
+// A nil blocker schedule means the blocker is judged by its item status.
+type ScheduleGateExport struct {
+	ID                   string  `json:"id"`
+	BlockedItemID        string  `json:"blocked_item_id"`
+	BlockerItemID        string  `json:"blocker_item_id"`
+	BlockerScheduleID    *string `json:"blocker_schedule_id"`
+	BlockerOccurrenceKey string  `json:"blocker_occurrence_key"`
+	OpenedAt             *string `json:"opened_at"`
+	CreatedAt            string  `json:"created_at"`
 }
 
 // ScheduleExport is one item schedule in a workspace bundle. ID is a source
@@ -377,6 +394,8 @@ type CollectionExport struct {
 
 // ItemExport holds an item's data for export.
 type ItemExport struct {
+	// DeletedAt is set only for soft-deleted blockers carried by version 4.
+	DeletedAt    string `json:"deleted_at,omitempty"`
 	ID           string `json:"id"`
 	CollectionID string `json:"collection_id"`
 	Title        string `json:"title"`

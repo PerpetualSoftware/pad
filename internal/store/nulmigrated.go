@@ -58,8 +58,10 @@ func MigratedTables() map[string]bool {
 		// their overrides nested inside each link. Every column is machine
 		// written (ids, enums, a validated zone, server timestamps), so the
 		// preflight is not expected to find anything here; they are listed for
-		// COVERAGE, as item_reminders is. schedule_gates is not carried yet.
+		// COVERAGE, as item_reminders is.
 		"schedule_links":          true,
 		"schedule_link_overrides": true,
+		// Commitment gates joined the bundle in version 4.
+		"schedule_gates": true,
 	}
 }

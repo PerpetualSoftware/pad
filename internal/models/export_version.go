@@ -2,8 +2,8 @@ package models
 
 import "encoding/json"
 
-// UnmarshalJSON retains v2 member presence, including explicit null and empty
-// values, so a version 1 bundle cannot silently discard commitment data.
+// UnmarshalJSON retains versioned member presence, including explicit null
+// and empty values, so older bundles cannot silently discard commitment data.
 func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 	type plain WorkspaceExport
 	var decoded plain
@@ -12,8 +12,13 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 	}
 	*x = WorkspaceExport(decoded)
 	var raw struct {
-		Changes   json.RawMessage              `json:"schedule_changes"`
-		Links     json.RawMessage              `json:"schedule_links"`
+		Changes json.RawMessage `json:"schedule_changes"`
+		Links   json.RawMessage `json:"schedule_links"`
+		Gates   json.RawMessage `json:"schedule_gates"`
+		// Only the presence of deleted_at: a map here would hold every body twice.
+		Items []struct {
+			DeletedAt json.RawMessage `json:"deleted_at"`
+		} `json:"items"`
 		Schedules []map[string]json.RawMessage `json:"schedules"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
@@ -21,6 +26,12 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 	}
 	x.hasV2Members = raw.Changes != nil
 	x.hasV3Members = raw.Links != nil
+	x.hasV4Members = raw.Gates != nil
+	for _, it := range raw.Items {
+		if it.DeletedAt != nil {
+			x.hasV4Members = true
+		}
+	}
 	for _, sc := range raw.Schedules {
 		for _, key := range []string{"id", "roles", "overrides", "forecast", "forecast_events", "children", "completion_evidence"} {
 			if _, ok := sc[key]; ok {
@@ -66,4 +77,18 @@ func (x *WorkspaceExport) HasV2ScheduleMembers() bool {
 // value, and bundles built directly by Go callers.
 func (x *WorkspaceExport) HasV3ScheduleMembers() bool {
 	return x.hasV3Members || x.ScheduleLinks != nil
+}
+
+// HasV4ScheduleMembers sees gates and item tombstones, including explicit null
+// and empty JSON members and bundles built directly by Go callers.
+func (x *WorkspaceExport) HasV4ScheduleMembers() bool {
+	if x.hasV4Members || x.ScheduleGates != nil {
+		return true
+	}
+	for _, it := range x.Items {
+		if it.DeletedAt != "" {
+			return true
+		}
+	}
+	return false
 }

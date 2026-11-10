@@ -448,7 +448,7 @@ func TestBundleV1_WithV2MembersRefused(t *testing.T) {
 }
 
 func TestImportRefusesUnsupportedVersions(t *testing.T) {
-	for _, v := range []int{0, 4, -1, 99} {
+	for _, v := range []int{0, models.WorkspaceExportVersion + 1, -1, 99} {
 		t.Run(fmt.Sprint(v), func(t *testing.T) {
 			f := newSchedFixture(t)
 			b := f.exportBundle(t)

@@ -39,6 +39,7 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 		"ScheduleChanges": "schedule_changes",
 		// TASK-4353; its overrides ride inside it (nestedTables).
 		"ScheduleLinks": "schedule_links",
+		"ScheduleGates": "schedule_gates",
 	}
 	// Tables carried inside another section rather than a section of their own.
 	nestedTables := map[string]bool{"schedule_occurrences": true, "schedule_occurrence_overrides": true, "schedule_link_overrides": true}
@@ -92,8 +93,7 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 // A table the migration copies is also one whose writes the abandoned SQLite
 // file must refuse afterwards: copied rows live in PostgreSQL, so a later write
 // to the old file edits a copy that is gone. Time links joined the copy in
-// TASK-4353; schedule_gates is the part of that unit the bundle does not carry
-// yet, so it is refused (a write would be lost) and not listed as carried.
+// TASK-4353; commitment gates joined in bundle version 4.
 func TestMigratedCarriedTablesAreRefused(t *testing.T) {
 	t.Parallel()
 	refused := map[string]bool{}
@@ -106,12 +106,9 @@ func TestMigratedCarriedTablesAreRefused(t *testing.T) {
 			t.Errorf("MigratedTables lists %q, but migratedRefusalTables does not: a write to the abandoned file after the migration would be lost", table)
 		}
 	}
-	for _, table := range []string{"schedule_links", "schedule_link_overrides"} {
+	for _, table := range []string{"schedule_links", "schedule_link_overrides", "schedule_gates"} {
 		if !carried[table] || !refused[table] {
 			t.Errorf("%s: carried=%v refused=%v, want both", table, carried[table], refused[table])
 		}
-	}
-	if carried["schedule_gates"] || !refused["schedule_gates"] {
-		t.Errorf("schedule_gates: carried=%v refused=%v, want refused and not carried until the bundle carries gates", carried["schedule_gates"], refused["schedule_gates"])
 	}
 }
