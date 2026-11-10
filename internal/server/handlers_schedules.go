@@ -481,6 +481,7 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		in.ActualDoneAt = &actual
 	}
 	in.Actor, _ = actorFromRequest(r)
+	in.ActorUserID = currentUserID(r)
 	var commentInput models.CommentCreate
 	if body.Comment != nil && strings.TrimSpace(*body.Comment) != "" {
 		commentInput.Body = *body.Comment

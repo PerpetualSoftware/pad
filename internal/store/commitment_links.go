@@ -627,7 +627,7 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 		return nil, err
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}
@@ -828,7 +828,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		return nil, ErrScheduleLinkNotFound
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}

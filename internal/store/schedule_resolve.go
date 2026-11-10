@@ -72,6 +72,9 @@ type ResolveComment struct {
 
 // ResolveInput is what a caller resolves: the occurrence it saw and what to do.
 type ResolveInput struct {
+	// ActorUserID identifies the human separately from the journal actor kind.
+	// It is used only to exclude their own ordinary move notice.
+	ActorUserID  string
 	LinkAccess   models.CommitmentAccess
 	ActualDoneAt *time.Time
 	OccurrenceAt time.Time
@@ -341,7 +344,14 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			if in.Comment != nil {
 				reason = strings.TrimSpace(in.Comment.Input.Body)
 			}
-			if err := s.applyLinkedPlanTx(tx, linked, in.Actor, reason, "Moved with a linked date", nowT, budget); err != nil {
+			noticeActor := in.Actor
+			if in.Actor == "user" {
+				noticeActor = in.ActorUserID
+				if noticeActor == "" && in.Comment != nil {
+					noticeActor = in.Comment.UserID
+				}
+			}
+			if err := s.applyLinkedPlanTx(tx, linked, in.Actor, noticeActor, reason, "Moved with a linked date", nowT, budget); err != nil {
 				return nil, err
 			}
 			if commentID != "" {

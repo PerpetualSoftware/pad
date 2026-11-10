@@ -230,7 +230,7 @@ func TestTASK4423_R05History(t *testing.T) {
 }
 
 func graphNoticeRecipientTests(t *testing.T) {
-	for _, mode := range []string{"assignee", "owner", "no-access", "no-device", "self", "preview", "rollback", "past-deadline"} {
+	for _, mode := range []string{"assignee", "owner", "no-access", "no-device", "self", "self-resolve", "self-resolve-no-comment", "preview", "rollback", "past-deadline"} {
 		t.Run(mode, func(t *testing.T) {
 			f := newLinkFix(t, 2)
 			recipient := notifyUser(t, f.s, "move-recipient@example.com")
@@ -259,15 +259,27 @@ func graphNoticeRecipientTests(t *testing.T) {
 				f.s.linkClock = func() time.Time { return clock }
 				f.s.beforeLinkCommit = func() { clock = clock.Add(linkTxBudget + time.Second) }
 			}
-			_, err := f.move(0, "target", "2030-04-01T09:00:00Z", func(in *models.LinkedMoveInput) {
-				if mode == "self" {
-					in.Actor = recipient.ID
+			var err error
+			if mode == "self-resolve" || mode == "self-resolve-no-comment" {
+				until := rt("2030-04-01T09:00:00Z")
+				in := ResolveInput{OccurrenceAt: rt(*f.reload(t, f.items[0].ID).NextAt), State: "move", Until: &until, Actor: "user", LinkAccess: f.allEdit()}
+				if mode == "self-resolve" {
+					in.Comment = f.comment(f.items[0], recipient.ID, "Reschedule")
+				} else {
+					in.ActorUserID = recipient.ID
 				}
-				in.Preview = mode == "preview"
-				if mode == "past-deadline" {
-					delete(in.Access.Readable, f.items[1].ID)
-				}
-			})
+				_, err = f.s.resolveOccurrenceAt(f.ws.ID, f.items[0].ID, in, rt("2030-03-01T00:00:00Z"))
+			} else {
+				_, err = f.move(0, "target", "2030-04-01T09:00:00Z", func(in *models.LinkedMoveInput) {
+					if mode == "self" {
+						in.Actor = recipient.ID
+					}
+					in.Preview = mode == "preview"
+					if mode == "past-deadline" {
+						delete(in.Access.Readable, f.items[1].ID)
+					}
+				})
+			}
 			if mode == "rollback" {
 				if err == nil {
 					t.Fatal("rollback fault did not refuse")
