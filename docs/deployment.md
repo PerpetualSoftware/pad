@@ -1654,6 +1654,8 @@ sudo systemctl enable --now pad
 
 ## Reverse Proxy
 
+Pad needs a reverse proxy for TLS termination. SSE connections require specific proxy settings to avoid buffering.
+
 `GET /api/v1/server/identity` must be exempt from any authenticating proxy so
 clients can verify the server before sending a token. Configure
 `PAD_TRUSTED_PROXIES` with the proxy addresses: without a trusted proxy, every
@@ -1665,9 +1667,6 @@ Server identity is derived from the deployment encryption key. Losing or
 changing that key changes the server identity; every pinned mobile connection
 refuses until it is removed and added again. Preserve the key when migrating
 or restoring the server.
-
-
-Pad needs a reverse proxy for TLS termination. SSE connections require specific proxy settings to avoid buffering.
 
 ### Caddy (Recommended)
 
