@@ -205,6 +205,9 @@ func TestTASK4423_R05History(t *testing.T) {
 			}); err != nil {
 				t.Fatal(err)
 			}
+			if role == "earliest" {
+				f.exec(t, `UPDATE schedule_changes SET reason='Private parent text',reason_source='user' WHERE item_id=? AND change_type='move'`, f.items[1].ID)
+			}
 			c, err := f.s.GetCommitmentFor(f.ws.ID, f.items[1].ID, func(id string) bool { return id == f.items[1].ID })
 			if err != nil {
 				t.Fatal(err)
