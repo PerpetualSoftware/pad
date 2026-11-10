@@ -138,6 +138,18 @@ func (s *Server) notificationAccess(c *pushGateCache, n store.Notification) (ite
 		if item.AssignedUserID == nil || *item.AssignedUserID != n.UserID {
 			return nil, skipNoLongerAssign, nil
 		}
+	case notify.KindDeadlineApprovalRequested, notify.KindCommitmentMoved, notify.KindCommitmentMovedPastDeadline, notify.KindCommitmentGateOpened:
+		eligible := item.AssignedUserID != nil && *item.AssignedUserID == n.UserID
+		if item.AssignedUserID == nil || *item.AssignedUserID == "" {
+			ws, err := s.store.GetWorkspaceByID(n.WorkspaceID)
+			if err != nil {
+				return nil, "", err
+			}
+			eligible = ws != nil && ws.OwnerID == n.UserID
+		}
+		if !eligible {
+			return nil, skipNoLongerAssign, nil
+		}
 	case notify.KindUnassigned:
 		if item.AssignedUserID != nil && *item.AssignedUserID == n.UserID {
 			return nil, skipAssignedAgain, nil
@@ -164,7 +176,7 @@ func (s *Server) notificationAccess(c *pushGateCache, n store.Notification) (ite
 func kindEnabled(set models.NotificationSettings, n store.Notification) (reason string) {
 	var on bool
 	switch n.Kind {
-	case notify.KindAssigned, notify.KindUnassigned, notify.KindRenegotiationRefused:
+	case notify.KindAssigned, notify.KindUnassigned, notify.KindRenegotiationRefused, notify.KindDeadlineApprovalRequested, notify.KindCommitmentMoved, notify.KindCommitmentMovedPastDeadline, notify.KindCommitmentGateOpened:
 		on = set.NotifyAssigned
 	case notify.KindComment:
 		on = set.NotifyComments

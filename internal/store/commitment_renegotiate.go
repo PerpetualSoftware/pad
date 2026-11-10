@@ -207,7 +207,7 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 		if !rootLapsed && !lapsed {
-			if err := s.applyLinkedPlanTx(tx, linked, actor, in.Reason, "Moved with a linked date", nowT, budget); err != nil {
+			if err := s.applyLinkedPlanTx(tx, linked, actor, actor, in.Reason, "Moved with a linked date", nowT, budget); err != nil {
 				return nil, err
 			}
 		}

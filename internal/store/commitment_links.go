@@ -627,7 +627,7 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 		return nil, err
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), strings.TrimSpace(in.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(in.Move), linkNoticeActor(linkActor(in.Move), in.Move.ActorUserID), strings.TrimSpace(in.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}
@@ -644,6 +644,19 @@ func linkActor(o models.LinkWriteOptions) string {
 		return "user"
 	}
 	return o.Actor
+}
+
+// linkNoticeActor is who a committed move's notice leaves out: the acting
+// person, and nobody when an agent moved the date. actor is the journal's actor,
+// a kind or an id; userID, when set, is the person.
+func linkNoticeActor(actor, userID string) string {
+	if actor == "agent" {
+		return ""
+	}
+	if userID != "" {
+		return userID
+	}
+	return actor
 }
 
 // linkWritePlanTx plans the move a link write makes: with l in the component in
@@ -828,7 +841,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 		return nil, ErrScheduleLinkNotFound
 	}
 	if apply {
-		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
+		if err := s.applyLinkedPlanTx(tx, p, linkActor(upd.Move), linkNoticeActor(linkActor(upd.Move), upd.Move.ActorUserID), strings.TrimSpace(upd.Move.Reason), linkWriteWhy, nowT, budget); err != nil {
 			return nil, err
 		}
 	}

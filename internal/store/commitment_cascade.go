@@ -272,7 +272,7 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 		}
 		return nil, ErrCommitmentChanged
 	}
-	if err := s.applyLinkedPlanTx(tx, p, actor, reason, "Moved with a linked date", nowT, budget); err != nil {
+	if err := s.applyLinkedPlanTx(tx, p, actor, linkNoticeActor(actor, in.ActorUserID), reason, "Moved with a linked date", nowT, budget); err != nil {
 		return nil, err
 	}
 	if err := budget.commit(tx); err != nil {
@@ -550,7 +550,7 @@ func (s *Store) linkedResult(p *linkedPlan, acc models.CommitmentAccess, renegot
 // each with its journal row, and checks the budget between writes. The first
 // row is the root of the lineage the rest name. why is the journal reason of a
 // dependent date that moved with another.
-func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why string, nowT time.Time, budget *linkBudget) error {
+func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, noticeActor, reason, why string, nowT time.Time, budget *linkBudget) error {
 	ts := nowT.Format(time.RFC3339)
 	rootChange := newID()
 	if p.incoming != nil && len(p.impact.Changes) > 0 {
@@ -601,7 +601,7 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, reason, why 
 			return err
 		}
 	}
-	return nil
+	return s.enqueueLinkedMoveNoticesTx(tx, p, rootChange, noticeActor)
 }
 
 // lapseDueInPlanTx closes due lapsing occurrences before any planned date or

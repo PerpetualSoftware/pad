@@ -6,14 +6,18 @@ import "fmt"
 // per-event kinds are user_notifications.kind; KindSummary is the one push
 // that stands for several.
 const (
-	KindAssigned             = "assigned"
-	KindUnassigned           = "unassigned"
-	KindRenegotiationRefused = "renegotiation_refused"
-	KindComment              = "comment"
-	KindReply                = "reply"
-	KindReminder             = "reminder"
-	KindMention              = "mention"
-	KindSummary              = "summary"
+	KindAssigned                    = "assigned"
+	KindUnassigned                  = "unassigned"
+	KindRenegotiationRefused        = "renegotiation_refused"
+	KindComment                     = "comment"
+	KindReply                       = "reply"
+	KindReminder                    = "reminder"
+	KindMention                     = "mention"
+	KindSummary                     = "summary"
+	KindDeadlineApprovalRequested   = "deadline_approval_requested"
+	KindCommitmentMoved             = "commitment_moved"
+	KindCommitmentMovedPastDeadline = "commitment_moved_past_deadline"
+	KindCommitmentGateOpened        = "commitment_gate_opened"
 )
 
 // Title is the fixed title of every push.
@@ -34,6 +38,14 @@ type Data struct {
 // kind, which a caller must treat as a bug and not send.
 func Text(kind string, count int) (body string, ok bool) {
 	switch kind {
+	case KindDeadlineApprovalRequested:
+		return "A deadline change needs your approval", true
+	case KindCommitmentMoved:
+		return "A commitment date changed", true
+	case KindCommitmentMovedPastDeadline:
+		return "A commitment target is now past its deadline", true
+	case KindCommitmentGateOpened:
+		return "A blocker succeeded for your item", true
 	case KindAssigned:
 		return "You were assigned an item", true
 	case KindUnassigned:

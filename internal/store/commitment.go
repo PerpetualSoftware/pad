@@ -176,6 +176,7 @@ func (s *Store) GetCommitmentFor(workspaceID, itemID string, canRead func(childI
 		if err != nil {
 			return nil, err
 		}
+		dates := map[schedule.Role]time.Time{}
 		for _, role := range []struct {
 			name       string
 			days, secs *int
@@ -195,6 +196,14 @@ func (s *Store) GetCommitmentFor(workspaceID, itemID string, canRead func(childI
 			}
 			v := r.value
 			*role.into = &v
+			at, err := r.instant(loc)
+			if err != nil {
+				return nil, err
+			}
+			dates[linkRole(role.name)] = at
+		}
+		for _, conflict := range schedule.DateConflicts(dates) {
+			out.Conflicts = append(out.Conflicts, models.CommitmentDateConflict{Role: linkRoleName(conflict.Role), Bound: linkRoleName(conflict.Bound), Value: conflict.Value.UTC().Format(time.RFC3339Nano), BoundValue: conflict.BoundValue.UTC().Format(time.RFC3339Nano)})
 		}
 	}
 	changes, err := s.scheduleChangesQ(s.db, workspaceID, sc.ID)
@@ -209,11 +218,35 @@ func (s *Store) GetCommitmentFor(workspaceID, itemID string, canRead func(childI
 		renegotiation := (c.ChangeType == "move" || c.ChangeType == "update") && deadlineRow && c.ReasonSource == "user"
 		assignee := c.ChangeType == "update" && c.Role == nil && c.BeforeJSON == nil &&
 			c.ReasonSource == "system" && strings.HasPrefix(c.Reason, "Assignee changed from ") && strings.Contains(c.Reason, " to ")
-		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !renegotiation && !assignee {
+		dateMove := c.ChangeType == "move" && c.Role != nil && linkRole(*c.Role) != "" && (c.BeforeJSON != nil || c.AfterJSON != nil)
+		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !renegotiation && !assignee && !dateMove {
 			continue
 		}
+		if canRead != nil {
+			hidden := false
+			for _, id := range []string{c.RootChangeID, derefStr(c.ParentChangeID)} {
+				if id == "" {
+					continue
+				}
+				var referenced string
+				err := s.db.QueryRow(s.q(`SELECT item_id FROM schedule_changes WHERE id=?`), id).Scan(&referenced)
+				if err != nil && !errors.Is(err, sql.ErrNoRows) {
+					return nil, err
+				}
+				if errors.Is(err, sql.ErrNoRows) || (referenced != itemID && !canRead(referenced)) {
+					hidden = true
+				}
+			}
+			if hidden {
+				c.RootChangeID = ""
+				c.ParentChangeID = nil
+				c.Reason = "Date changed"
+				c.ReasonSource = "system"
+				c.Actor = "system"
+			}
+		}
 		out.Journal = append(out.Journal, models.CommitmentChange{ID: c.ID, ChangeType: c.ChangeType, OccurrenceKey: c.OccurrenceKey, Role: c.Role,
-			AfterJSON: c.AfterJSON, Actor: c.Actor, Reason: c.Reason, ReasonSource: c.ReasonSource, RootChangeID: c.RootChangeID,
+			BeforeJSON: c.BeforeJSON, AfterJSON: c.AfterJSON, Actor: c.Actor, Reason: c.Reason, ReasonSource: c.ReasonSource, RootChangeID: c.RootChangeID,
 			ParentChangeID: c.ParentChangeID, RecordedAt: c.RecordedAt})
 	}
 	if err := s.milestoneForRead(s.db, out, sc, canRead); err != nil {

@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/kernelevents"
@@ -539,28 +540,58 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	//
 	// A restored workspace resumes normally: nothing is destroyed, the
 	// reminders simply stop being candidates while it is gone.
-	rows, err := s.db.Query(s.q(`
-		SELECT id FROM item_reminders
-		WHERE fired_at IS NULL AND remind_at <= ?
-		  AND `+reminderFireable+`
-		ORDER BY remind_at, id
-		LIMIT ?
-	`), nowTS, limit)
-	if err != nil {
-		return nil, fmt.Errorf("due reminder candidates: %w", err)
-	}
-	defer rows.Close()
-
+	//
+	// A row held by a commitment gate is skipped the same way and stays armed,
+	// so held rows take no slot and the row fires once its gates release. The
+	// pages keep reading past held rows until the batch is full.
 	var ids []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan due reminder id: %w", err)
+	cursorAt, cursorID := "", ""
+	for len(ids) < limit {
+		size := limit - len(ids)
+		rows, err := s.db.Query(s.q(`SELECT id,workspace_id,item_id,schedule_id,remind_at FROM item_reminders
+ WHERE fired_at IS NULL AND remind_at<=? AND `+reminderFireable+`
+ AND (remind_at>? OR (remind_at=? AND id>?)) ORDER BY remind_at,id LIMIT ?`), nowTS, cursorAt, cursorAt, cursorID, size)
+		if err != nil {
+			return nil, err
 		}
-		ids = append(ids, id)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate due reminders: %w", err)
+		type candidate struct {
+			id, workspace, item, at string
+			sc                      sql.NullString
+		}
+		var page []candidate
+		for rows.Next() {
+			var c candidate
+			if err := rows.Scan(&c.id, &c.workspace, &c.item, &c.sc, &c.at); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			page = append(page, c)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range page {
+			cursorAt, cursorID = c.at, c.id
+			if c.sc.Valid {
+				// A read that fails leaves this row out of the batch and is logged,
+				// so one broken row neither stops the pass nor takes a slot from
+				// the rows behind it.
+				ev, err := s.evaluateGatesQ(s.db, c.workspace, c.item)
+				if err != nil {
+					slog.Error("reminder scan: commitment gate read failed", "reminder", c.id, "error", err)
+					continue
+				}
+				if ev.state != models.GateStateReleased {
+					continue
+				}
+			}
+			ids = append(ids, c.id)
+		}
+		if len(page) < size {
+			break
+		}
 	}
 	return ids, nil
 }
@@ -758,6 +789,22 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 			return nil, nil
 		case err != nil:
 			return nil, fmt.Errorf("pin reminder %s item and workspace: %w", id, err)
+		}
+	}
+
+	if managed {
+		sc, err := s.getScheduleByIDQ(tx, scheduleID.String)
+		if err != nil {
+			return nil, err
+		}
+		if sc != nil {
+			ev, err := s.evaluateGatesQ(tx, sc.WorkspaceID, sc.ItemID)
+			if err != nil {
+				return nil, err
+			}
+			if ev.state != models.GateStateReleased {
+				return nil, nil
+			}
 		}
 	}
 

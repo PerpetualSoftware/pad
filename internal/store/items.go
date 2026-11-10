@@ -3671,6 +3671,9 @@ func (s *Store) updateItemWithParentLinkOnce(
 			`), newID(), id, existing.WorkspaceID, existing.CollectionID, doneKey, statusBefore, newStatus, ts); err != nil {
 				return nil, fmt.Errorf("record status transition: %w", err)
 			}
+			if err := s.openGatesForBlockerTx(tx, existing.WorkspaceID, id); err != nil {
+				return nil, err
+			}
 			mutSignal.StatusChanged = true
 			mutSignal.StatusFieldKey = doneKey
 			mutSignal.FromStatus = statusBefore
@@ -6214,6 +6217,9 @@ func (s *Store) moveItemWithPreCheckOnce(
 		return nil, fmt.Errorf("move item: %w", err)
 	}
 
+	if err := s.openGatesForBlockerTx(tx, existing.WorkspaceID, itemID); err != nil {
+		return nil, err
+	}
 	// Re-index against the DESTINATION collection (PLAN-2857 U5). A move is
 	// the one write where the blob and the SCHEMA change together: the
 	// identical value indexes differently on the other side, because which

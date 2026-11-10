@@ -72,6 +72,9 @@ type ResolveComment struct {
 
 // ResolveInput is what a caller resolves: the occurrence it saw and what to do.
 type ResolveInput struct {
+	// ActorUserID identifies the human separately from the journal actor kind.
+	// It is used only to exclude their own ordinary move notice.
+	ActorUserID  string
 	LinkAccess   models.CommitmentAccess
 	ActualDoneAt *time.Time
 	OccurrenceAt time.Time
@@ -341,7 +344,14 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			if in.Comment != nil {
 				reason = strings.TrimSpace(in.Comment.Input.Body)
 			}
-			if err := s.applyLinkedPlanTx(tx, linked, in.Actor, reason, "Moved with a linked date", nowT, budget); err != nil {
+			noticeActor := in.Actor
+			if in.Actor == "user" {
+				noticeActor = in.ActorUserID
+				if noticeActor == "" && in.Comment != nil {
+					noticeActor = in.Comment.UserID
+				}
+			}
+			if err := s.applyLinkedPlanTx(tx, linked, in.Actor, noticeActor, reason, "Moved with a linked date", nowT, budget); err != nil {
 				return nil, err
 			}
 			if commentID != "" {
@@ -425,7 +435,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	if in.State == "skip" {
 		// A skip cancels the occurrence: a link under the cancel policy marks its
 		// paired child occurrence No longer needed, in this transaction.
-		if err := s.markChildrenNoLongerNeededTx(tx, sc, in.Actor, nowT, openFilter, openArgs); err != nil {
+		if err := s.markChildrenNoLongerNeededTx(tx, sc, in.Actor, nowT, openFilter, openArgs, in.LinkAccess); err != nil {
 			return nil, err
 		}
 	}
@@ -469,6 +479,9 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 		}
 	}
 	if _, err := tx.Exec(s.q(`UPDATE schedule_occurrences SET state='done',comment_id=?,actor=?,resolved_at=?,actual_done_at=?,actual_source=? WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`), nilIfEmpty(commentID), in.Actor, nowT.Format(time.RFC3339), NormalizeInstant(actual), actualSource, sc.ID, at); err != nil {
+		return nil, err
+	}
+	if err := s.openGatesForBlockerTx(tx, sc.WorkspaceID, sc.ItemID); err != nil {
 		return nil, err
 	}
 	key := OccurrenceKey(sc, at, wall)
@@ -552,6 +565,9 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		state = "lapsed"
 	}
 	if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, state, commentID, in.Actor, ts); err != nil {
+		return nil, err
+	}
+	if err := s.openGatesForBlockerTx(tx, sc.WorkspaceID, sc.ItemID); err != nil {
 		return nil, err
 	}
 

@@ -328,7 +328,8 @@ func TestTASK4423_R10Bundle(t *testing.T) {
 		f := newLinkFix(t, 1)
 		blocker := f.buildItem(t, "open")
 		f.gate(t, f.items[0].ID, blocker.ID, f.gateAccess(blocker))
-		f.setBlockerStatus(t, blocker, "shipped")
+		// Written behind the store, so the gate is still unopened when exported.
+		f.exec(t, `UPDATE items SET fields=? WHERE id=?`, `{"status":"shipped"}`, blocker.ID)
 		b := f.exportBundle(t)
 		before := f.count(t, `SELECT COUNT(*) FROM user_notifications`)
 		ws, _ := f.importBundle(t, b, "Succeeded blocker")

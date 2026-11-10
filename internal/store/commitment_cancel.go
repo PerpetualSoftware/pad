@@ -51,7 +51,7 @@ import (
 //
 // openFilter and openArgs are nonTerminalFilter's, loaded before Begin: the pool
 // can be one connection.
-func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSchedule, actor string, nowT time.Time, openFilter string, openArgs []any) error {
+func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSchedule, actor string, nowT time.Time, openFilter string, openArgs []any, access models.CommitmentAccess) error {
 	rows, err := tx.Query(s.q(`SELECT id, child_schedule_id FROM schedule_links WHERE parent_schedule_id=? AND workspace_id=? AND cancel_policy=? ORDER BY id`),
 		parent.ID, parent.WorkspaceID, models.LinkCancelChildOccurrence)
 	if err != nil {
@@ -79,6 +79,13 @@ func (s *Store) markChildrenNoLongerNeededTx(tx *sql.Tx, parent *models.ItemSche
 		}
 		if child == nil || child.WorkspaceID != parent.WorkspaceID || child.EndedAt != nil || child.NextAt == nil || child.NextWall == nil {
 			continue // no outstanding occurrence to mark
+		}
+		roles, err := s.scheduleRolesOf(tx, child)
+		if err != nil {
+			return err
+		}
+		if (roles.DeadlineDays != nil || roles.DeadlineSecs != nil) && !access.Editable[child.ItemID] {
+			continue
 		}
 		var open bool
 		err = tx.QueryRow(s.q(`SELECT `+openFilter+` FROM items i WHERE i.id=? AND i.deleted_at IS NULL`), append(append([]any{}, openArgs...), child.ItemID)...).Scan(&open)

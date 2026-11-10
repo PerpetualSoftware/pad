@@ -342,9 +342,13 @@ func (s *Store) RevokeAllUserGrants(workspaceID, userID string) error {
 // 1. Owner bypass → 2. Item grant → 3. Collection grant → 4. Membership → 5. Deny
 // Returns the permission string ("view", "edit", "admin", "owner") or "" if denied.
 func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID string) (string, error) {
+	return s.resolveUserPermissionQ(s.db, workspaceID, userID, itemID, collectionID)
+}
+
+func (s *Store) resolveUserPermissionQ(q Queryer, workspaceID, userID, itemID, collectionID string) (string, error) {
 	// 1. Is user the workspace owner?
 	var ownerID string
-	err := s.db.QueryRow(s.q("SELECT owner_id FROM workspaces WHERE id = ?"), workspaceID).Scan(&ownerID)
+	err := q.QueryRow(s.q("SELECT owner_id FROM workspaces WHERE id = ?"), workspaceID).Scan(&ownerID)
 	if err != nil {
 		return "", fmt.Errorf("check workspace owner: %w", err)
 	}
@@ -366,7 +370,7 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	// this closes it at the lookup so the next caller need not remember.
 	if itemID != "" {
 		var perm string
-		err := s.db.QueryRow(s.q(
+		err := q.QueryRow(s.q(
 			"SELECT permission FROM item_grants WHERE workspace_id = ? AND item_id = ? AND user_id = ?"),
 			workspaceID, itemID, userID).Scan(&perm)
 		if err == nil {
@@ -385,7 +389,7 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	// below the one DR-5 names.
 	if collectionID != "" {
 		var perm string
-		err := s.db.QueryRow(s.q(
+		err := q.QueryRow(s.q(
 			"SELECT permission FROM collection_grants WHERE workspace_id = ? AND collection_id = ? AND user_id = ?"),
 			workspaceID, collectionID, userID).Scan(&perm)
 		if err == nil {
@@ -397,7 +401,7 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 	}
 
 	// 4. Workspace membership?
-	member, err := s.GetWorkspaceMember(workspaceID, userID)
+	member, err := s.GetWorkspaceMemberQ(q, workspaceID, userID)
 	if err != nil {
 		return "", fmt.Errorf("check membership: %w", err)
 	}
@@ -410,7 +414,7 @@ func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID 
 		// the whole collection. Grants are resolved above with their own
 		// levels and are not reach for the role.
 		if collectionID != "" && member.CollectionAccess == "specific" {
-			listed, err := s.GetMemberCollectionAccess(workspaceID, userID)
+			listed, err := s.GetMemberCollectionAccessQ(q, workspaceID, userID)
 			if err != nil {
 				return "", err
 			}

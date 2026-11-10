@@ -12,14 +12,23 @@ type Commitment struct {
 	Roles      CommitmentRoles `json:"roles"`
 	// OccurrenceKey names the outstanding occurrence; empty once the schedule
 	// ended.
-	OccurrenceKey string             `json:"occurrence_key,omitempty"`
-	Journal       []CommitmentChange `json:"journal"`
+	OccurrenceKey string                   `json:"occurrence_key,omitempty"`
+	Journal       []CommitmentChange       `json:"journal"`
+	Conflicts     []CommitmentDateConflict `json:"conflicts,omitempty"`
 	// Forecast is the hand-set estimate, null when none. It is not a role: it
 	// arms nothing and passing it is never a missed deadline.
 	Forecast *CommitmentForecast `json:"forecast"`
 	// Milestone is the outcome derived from the selected children, read for
 	// the one reader asking.
 	Milestone CommitmentMilestone `json:"milestone"`
+}
+
+// CommitmentDateConflict reports only this commitment own dates.
+type CommitmentDateConflict struct {
+	Role       string `json:"role"`
+	Bound      string `json:"bound"`
+	Value      string `json:"value"`
+	BoundValue string `json:"bound_value"`
 }
 
 // CommitmentForecast is a forecast and who set it. Passed is derived for
@@ -129,6 +138,7 @@ type CommitmentChange struct {
 	ChangeType     string  `json:"change_type"` // missed_recorded | done | move | update (deadline or assignee)
 	OccurrenceKey  *string `json:"occurrence_key,omitempty"`
 	Role           *string `json:"role,omitempty"`
+	BeforeJSON     *string `json:"before_json,omitempty"`
 	AfterJSON      *string `json:"after_json,omitempty"`
 	Actor          string  `json:"actor"`
 	Reason         string  `json:"reason,omitempty"`
