@@ -27,14 +27,16 @@ import (
 // This is for commitment gates only. A plain blocks link between items means
 // what it always meant, and nothing here changes it.
 //
-// LOCK ORDER. A gate write is a link write: it runs the link pin with the gated
-// item as the root (whether or not it has a schedule) and the blocker as a second
-// seed when the blocker has a commitment. That is the root item (FOR NO KEY
-// UPDATE), the workspace, the component read after the workspace lock, the
-// component's schedules ascending by id, then their reminders, and then the same
-// re-validation under those locks. No child item row is locked, so a resolve of
-// the blocker (which holds the blocker item and waits for the workspace) never
-// needs anything a gate write holds. The gate rows themselves are only touched
+// LOCK ORDER. A gate write first locks both of its end items, ascending by id, so
+// it serializes with a write to the blocker on the blocker's row. It is then a
+// link write: it runs the link pin with the gated item as the root (whether or not
+// it has a schedule) and the blocker as a second seed when the blocker has a
+// commitment. That is the root item (FOR NO KEY UPDATE), the workspace, the
+// component read after the workspace lock, the component's schedules ascending by
+// id, then their reminders, and then the same re-validation under those locks.
+// Every item lock comes before the workspace, so a resolve of the blocker (which
+// holds the blocker item and waits for the workspace) queues with a gate write on
+// that one row and cannot wait in a cycle with it. The gate rows themselves are only touched
 // under the workspace lock, except the one-way write that records a gate opening
 // (opened_at), which is a single statement on one gate row and waits for nothing.
 //
