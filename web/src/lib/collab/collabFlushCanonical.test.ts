@@ -131,3 +131,42 @@ describe('collab flush: canonical-seed dedupe (BUG-3197)', () => {
 		expect(canonicalize).toHaveBeenCalledTimes(1);
 	});
 });
+
+
+describe('flat legacy replay dedupe (BUG-4447)', () => {
+	const options = { canonicalize: (md: string) => md, canonicalizeFlat: (md: string) => md.replaceAll('\n', ' ') };
+	it('recognizes a flat replay once, skips saving and stamps the stored baseline', async () => {
+		const { flusher, save, stampWatermark } = makeFlusher(options);
+		const c = ctx({ baseline: 'one\ntwo', seedMd: 'one\ntwo' });
+		flusher.noteReplayed(c, 'one two');
+		expect(c.legacyFlat).toBe(true);
+		flusher.noteReplayed(c, 'one\ntwo');
+		expect(c.legacyFlat).toBe(true);
+		expect(await flusher.flush(c, 'one two', false)).toBe('deduped');
+		expect(save).not.toHaveBeenCalled();
+		expect(stampWatermark).toHaveBeenCalledWith(expect.objectContaining({ content: 'one\ntwo' }));
+	});
+	it('a new-era document edited to seedFlat still saves', async () => {
+		const { flusher, save } = makeFlusher(options);
+		const c = ctx({ baseline: 'one\ntwo', seedMd: 'one\ntwo' });
+		flusher.noteReplayed(c, 'one\ntwo');
+		expect(c.legacyFlat).toBe(false);
+		flusher.noteReplayed(c, 'one two');
+		expect(c.legacyFlat).toBe(false);
+		expect(await flusher.flush(c, 'one two', false)).toBe('flushed');
+		expect(save).toHaveBeenCalledWith(expect.objectContaining({ toSave: 'one two' }));
+	});
+	it('control: no legacy arm saves the flat text', async () => {
+		const { flusher, save } = makeFlusher(options);
+		expect(await flusher.flush(ctx({ baseline: 'one\ntwo', seedMd: 'one\ntwo' }), 'one two', false)).toBe('flushed');
+		expect(save).toHaveBeenCalledWith(expect.objectContaining({ toSave: 'one two' }));
+	});
+	it('a real edit on a legacy document saves, including a later revert to flat', async () => {
+		const { flusher, save } = makeFlusher(options);
+		const c = ctx({ baseline: 'one\ntwo', seedMd: 'one\ntwo' });
+		flusher.noteReplayed(c, 'one two');
+		expect(await flusher.flush(c, 'one two edited', false)).toBe('flushed');
+		expect(await flusher.flush(c, 'one two', false)).toBe('flushed');
+		expect(save).toHaveBeenCalledTimes(2);
+	});
+});

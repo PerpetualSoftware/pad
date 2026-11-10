@@ -32,7 +32,7 @@ import type { Editor as TiptapEditor } from '@tiptap/core';
 import type { Item } from '$lib/types';
 import { unescapeDocLinks, markdownToWikiLinks, cleanBrokenLinks } from '$lib/utils/markdown';
 import { materialize, materializeWith, createHeadlessEditor, type LinkEntry, type MaterializeJob } from './entry';
-import { updateFrame, MESSAGE_SYNC } from './replay';
+import { replayFrames, updateFrame, MESSAGE_SYNC } from './replay';
 import { withUpstreamAtBlank } from './atBlank';
 
 vi.mock('$lib/stores/auth.svelte', () => ({
@@ -160,8 +160,7 @@ interface Tab {
 	target: HTMLElement;
 }
 
-function mountTab(): Tab {
-	const doc = new Y.Doc();
+function mountTab(doc = new Y.Doc()): Tab {
 	let editor: TiptapEditor | null = null;
 	const target = document.body.appendChild(document.createElement('div'));
 	const instance = mount(BodyEditor, {
@@ -422,7 +421,7 @@ describe('materializer parity with the live editor flush (TASK-2198)', () => {
 		console.info(`materializer parity: ${CASES} cases, ${cases.reduce((n, c) => n + c.rows.length, 0)} frames, ${relayThrows} relay throws`);
 		const all = cases.map((c) => c.expected).join('\n');
 		// The generator reaches the constructs it claims to (vantage point).
-		for (const probe of ['<table', '| --- |', '- [ ]', '```mermaid', '```go', '[[TASK-3]]', 'pad-attachment:', '/api/v1/workspaces/ws/attachments/', '# ', '> ', '<strong>Hello.</strong>World', '\\\n\\- not a list item']) {
+		for (const probe of ['<table', '| --- |', '- [ ]', '```mermaid', '```go', '[[TASK-3]]', 'pad-attachment:', '/api/v1/workspaces/ws/attachments/', '# ', '> ', '<strong>Hello.</strong>World', '\n\\- not a list item']) {
 			expect(all, probe).toContain(probe);
 		}
 		expect(cases.some((c) => c.expected.startsWith('---\n'))).toBe(true);
@@ -468,3 +467,43 @@ describe('materializer parity with the live editor flush (TASK-2198)', () => {
 		expect(diverged.length).toBeGreaterThan(0);
 	});
 });
+
+
+describe('line break materializer parity (BUG-4447)', () => {
+	for (const body of ['one\ntwo', '- one\n  two', '> one\n> two']) {
+		it(`a live whole-body setContent and bundle replay preserve ${JSON.stringify(body)}`, async () => {
+			const tab = mountTab();
+			try {
+				tab.editor.commands.setContent('old body');
+				tab.editor.commands.setContent(body);
+				await tick();
+				const live = liveFlush(tab.editor, []);
+				expect(live).toBe(body);
+				expect(materialize(JSON.stringify({
+					rows: [b64(updateFrame(Y.encodeStateAsUpdate(tab.doc)))], link_index: [], workspace_slug: WS,
+				}))).toBe(body);
+			} finally { unmountTab(tab); }
+		});
+	}
+});
+
+
+it('persisted corpus logs match the live editor and materializer', async () => {
+	const file = path.resolve(process.cwd(), '../internal/materialize/testdata/corpus.json');
+	const corpus = JSON.parse(fs.readFileSync(file, 'utf8')) as Case[];
+	for (const c of corpus) {
+		const doc = new Y.Doc();
+		replayFrames(doc, c.rows.map((row) => new Uint8Array(Buffer.from(row, 'base64'))));
+		const tab = mountTab(doc);
+		try {
+			await tick();
+			const live = liveFlush(tab.editor, c.link_index as unknown as Item[]);
+			expect(materialize(JSON.stringify(c)), c.name).toBe(live);
+			if (process.env.PAD_UPDATE_MATERIALIZE_EXPECTED === '1') c.expected = live;
+			expect(live, c.name).toBe(c.expected);
+		} finally { unmountTab(tab); }
+	}
+	if (process.env.PAD_UPDATE_MATERIALIZE_EXPECTED === '1') {
+		fs.writeFileSync(file, JSON.stringify(corpus, null, 1) + '\n');
+	}
+}, 120_000);

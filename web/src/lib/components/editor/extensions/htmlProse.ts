@@ -33,6 +33,7 @@
 
 import { Extension, type Editor } from '@tiptap/core';
 import Text from '@tiptap/extension-text';
+import { PadHardBreak } from './padHardBreak';
 import { flankingMarkExtensions } from './flankingMarks';
 import type MarkdownIt from 'markdown-it';
 import type { Schema } from '@tiptap/pm/model';
@@ -302,7 +303,25 @@ export const PadText = Text.extend({
 					// else stays with prosemirror-markdown's own escape, unchanged.
 					let text = escapeTagOpeners(node.text ?? '', node.type.schema, atLineStart);
 					if (atLineStart) {
-						const m = lineStartMarker(text, followingChar(parent, index));
+						const next = followingChar(parent, index);
+						let m = lineStartMarker(text, next);
+						if (!state.atBlockStart) {
+							// Only 1 with nonempty content can interrupt a paragraph.
+							const ordered = /^ {0,3}(\d{1,9})[.)](?:[ \t]|$)/.exec(text + next);
+							let line = text;
+							if (parent && index !== undefined) {
+								for (let i = index + 1; i < parent.childCount; i++) {
+									const child = parent.child(i);
+									if (child.type.name === 'hardBreak') break;
+									line += child.isText ? child.text ?? '' : 'x';
+								}
+							}
+							if ((ordered && (Number(ordered[1]) !== 1 || !/\S/.test(line.slice(ordered[0].length)))) || /^ {0,3}\+[ \t]*$/.test(line)) m = null;
+							// A delimiter row after a break must remain paragraph text.
+							if (!next && /^ {0,3}\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$/.test(text) && text.includes('|')) {
+								m = { raw: '\\' + text[0], length: 1, beyondBlockStartEscape: false };
+							}
+						}
 						// At a true block start prosemirror-markdown's own escape already
 						// covers most markers, and changing its output would rewrite
 						// stored bodies for nothing: take over there only for what it
@@ -349,11 +368,11 @@ export const HtmlProseGuard = Extension.create({
 
 /**
  * For the editor's and the materializer's extension lists alike. StarterKit
- * must be configured with `text: false, bold: false, code: false,
+ * must be configured with `hardBreak: false, text: false, bold: false, code: false,
  * italic: false, strike: false, underline: false` beside them: PadText
  * replaces Text, and flankingMarkExtensions() replaces the five marks
  * (BUG-3583, flankingMarks.ts).
  */
 export function htmlProseExtensions() {
-	return [PadText, HtmlProseGuard, ...flankingMarkExtensions()];
+	return [PadHardBreak, PadText, HtmlProseGuard, ...flankingMarkExtensions()];
 }

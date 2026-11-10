@@ -45,7 +45,7 @@ describe('BUG-3584: block markers after a hard break', () => {
 
 	it('the report case, with a control on the old serializer', () => {
 		const r = roundTrip(ed, para('- not a list item'));
-		expect(r.md).toBe('First line\\\n\\- not a list item');
+		expect(r.md).toBe('First line\n\\- not a list item');
 		const old = new Editor({ element: null, extensions: [StarterKit, Markdown.configure({ html: true })] });
 		expect(roundTrip(old, para('- not a list item')).same).toBe(false);
 	});
@@ -85,7 +85,7 @@ describe('BUG-3584: block markers after a hard break', () => {
 
 	it('mid-line markers are not escaped', () => {
 		const r = roundTrip(ed, para('see a - b and #1'));
-		expect(r.md).toBe('First line\\\nsee a - b and #1');
+		expect(r.md).toBe('First line\nsee a - b and #1');
 		expect(r.same).toBe(true);
 	});
 

@@ -619,7 +619,7 @@ export function renderMarkedWithAttachments(
 		urlBuilder: ctx.urlBuilder
 	};
 	try {
-		return marked(content) as string;
+		return marked(content, { breaks: true }) as string;
 	} finally {
 		currentAttachmentCtx = prev;
 	}

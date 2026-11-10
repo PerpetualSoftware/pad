@@ -3292,6 +3292,14 @@
 		// (BUG-3240): `synced` also flips on a peer's syncStep2, which can
 		// land while this connection's replay is still in flight.
 		if (!collabProvider.replayComplete) return;
+		if (ydoc.getXmlFragment('default').length > 0) {
+			untrack(() => {
+				const markdown = liveEditorMarkdown();
+				if (activeCollabContext && markdown !== null) {
+					collabFlusher.noteReplayed(activeCollabContext, markdown);
+				}
+			});
+		}
 		// The server elects ONE seeder per room (BUG-3240). Two tabs electing
 		// by awareness both seeded a fresh doc half the time and stored the
 		// body twice. Only when the post-replay cursor frame never arrived
@@ -3378,6 +3386,8 @@
 			if (ctx && activeCollabContext === ctx) {
 				ctx.seedMd = unescapeDocLinks(seedMd);
 				ctx.seedCanonical = undefined;
+				ctx.seedFlat = undefined;
+				ctx.legacyFlat = false;
 				collabFlusher.prime(ctx);
 			}
 		});
@@ -4625,6 +4635,14 @@
 			if (!editorInstance) return null;
 			try {
 				return canonicalEditorMarkdown(editorInstance, markdown);
+			} catch {
+				return null;
+			}
+		},
+		canonicalizeFlat: (markdown) => {
+			if (!editorInstance) return null;
+			try {
+				return canonicalEditorMarkdown(editorInstance, markdown, { flatSoftBreaks: true });
 			} catch {
 				return null;
 			}

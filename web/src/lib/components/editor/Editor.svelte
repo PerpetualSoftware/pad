@@ -1037,6 +1037,7 @@
 			StarterKit.configure({
 				codeBlock: false,
 				link: false, // We use our own SafeLink extension below
+				hardBreak: false, // PadHardBreak serializes body newlines
 				text: false, // PadText (htmlProse.ts, BUG-3557) replaces it
 				// htmlProseExtensions() re-adds these five in this order (BUG-3583)
 				bold: false,

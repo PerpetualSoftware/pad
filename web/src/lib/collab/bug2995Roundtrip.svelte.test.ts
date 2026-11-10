@@ -15,18 +15,12 @@
 //   2. `unescapeDocLinks(editor.storage.markdown.getMarkdown())` — what
 //      Editor.svelte's onUpdate reads back and feeds to collabFlush.
 //
-// VANTAGE POINT (CONVE-34), because it bounds what these results mean. Only
-// StarterKit (in Editor.svelte's configuration) and tiptap-markdown are loaded,
-// not the full production extension list, so every fixture is restricted to a
-// construct StarterKit itself owns and a divergence here is one production has
-// too. The error direction is one-way: this harness can only UNDERSTATE
-// divergence, and could never establish byte-identity for the product, since
-// the omitted extensions add transforms rather than remove them. Constructs
-// belonging to those extensions — tables, task lists, attachments, SafeLink —
-// are deliberately absent: they would measure the harness.
+// The live parser and serializer overrides are included; tables, task lists,
+// attachments and SafeLink are covered by the materializer parity tests.
 import { describe, it, expect } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import { htmlProseExtensions } from '$lib/components/editor/extensions/htmlProse';
 import { Markdown } from 'tiptap-markdown';
 import { unescapeDocLinks } from '$lib/utils/markdown';
 
@@ -35,7 +29,8 @@ function roundTrip(markdown: string): string {
 	const editor = new Editor({
 		element,
 		extensions: [
-			StarterKit.configure({ codeBlock: false, link: false }),
+			StarterKit.configure({ codeBlock: false, link: false, hardBreak: false, text: false, bold: false, code: false, italic: false, strike: false, underline: false }),
+			...htmlProseExtensions(),
 			Markdown.configure({ html: true, transformPastedText: true, transformCopiedText: true }),
 		],
 		content: '',
@@ -59,10 +54,10 @@ const normalising: Array<[string, string, string]> = [
 	['double-underscore bold becomes asterisks', 'a __bold__ word', 'a **bold** word'],
 	['lazy ordered list is renumbered', '1. one\n1. two\n1. three', '1. one\n2. two\n3. three'],
 	['blank-line runs collapse', 'para one\n\n\n\npara two', 'para one\n\npara two'],
-	['trailing-space break becomes a backslash', 'a line with trailing spaces   \nnext line', 'a line with trailing spaces\\\nnext line'],
+	['trailing-space break becomes a plain newline', 'a line with trailing spaces   \nnext line', 'a line with trailing spaces\nnext line'],
 	['asterisk rule becomes dashes', 'above\n\n***\n\nbelow', 'above\n\n---\n\nbelow'],
 	['nested list indent is re-spaced', '- a\n    - b', '- a\n  - b'],
-	['lazy blockquote continuation is joined', '> quoted line\ncontinued lazily', '> quoted line continued lazily'],
+	['lazy blockquote continuation gains a prefix', '> quoted line\ncontinued lazily', '> quoted line\n> continued lazily'],
 ];
 
 // Fixtures that survive unchanged. They are the reason every surface says the
