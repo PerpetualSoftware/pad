@@ -15,7 +15,10 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 		Changes   json.RawMessage              `json:"schedule_changes"`
 		Links     json.RawMessage              `json:"schedule_links"`
 		Gates     json.RawMessage              `json:"schedule_gates"`
-		Items     []map[string]json.RawMessage `json:"items"`
+		// Only the presence of deleted_at: a map here would hold every body twice.
+		Items []struct {
+			DeletedAt json.RawMessage `json:"deleted_at"`
+		} `json:"items"`
 		Schedules []map[string]json.RawMessage `json:"schedules"`
 	}
 	if err := json.Unmarshal(b, &raw); err != nil {
@@ -25,7 +28,7 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 	x.hasV3Members = raw.Links != nil
 	x.hasV4Members = raw.Gates != nil
 	for _, it := range raw.Items {
-		if _, ok := it["deleted_at"]; ok {
+		if it.DeletedAt != nil {
 			x.hasV4Members = true
 		}
 	}

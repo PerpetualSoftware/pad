@@ -17,6 +17,7 @@ func (s *Store) importScheduleGatesTx(tx *sql.Tx, workspaceID string, gates []mo
 	pairs := map[[2]string]bool{}
 	children := map[string][]string{}
 	incoming := map[string]int{}
+	blockers := map[string]int{}
 	for _, g := range gates {
 		if g.ID == "" || ids[g.ID] {
 			return invalidf("missing or duplicate schedule gate id %q", g.ID)
@@ -45,6 +46,10 @@ func (s *Store) importScheduleGatesTx(tx *sql.Tx, workspaceID string, gates []mo
 		}
 		if strings.ContainsRune(g.BlockerOccurrenceKey, 0) || !utf8.ValidString(g.BlockerOccurrenceKey) {
 			return invalidf("invalid occurrence key on schedule gate %q", g.ID)
+		}
+		blockers[g.BlockedItemID]++
+		if blockers[g.BlockedItemID] > maxGatesPerItem {
+			return invalidf("schedule gate %q exceeds the blockers one item can have", g.ID)
 		}
 		children[g.BlockerItemID] = append(children[g.BlockerItemID], g.BlockedItemID)
 		if _, ok := incoming[g.BlockerItemID]; !ok {

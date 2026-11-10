@@ -1421,10 +1421,16 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		// item has NO answers rather than stale ones until its next direct
 		// write enqueues it. Whether import should enqueue is an open policy
 		// question on TASK-3117, not something to change silently here.
+		// An exporter writes a soft-deleted row with no body, so a body here is
+		// not a restore of anything.
+		itemContent := it.Content
+		if it.DeletedAt != "" {
+			itemContent = ""
+		}
 		_, err := tx.Exec(s.q(`
 			INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags, pinned, sort_order, parent_id, created_by, last_modified_by, source, item_number, created_at, updated_at, deleted_at, seq)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`)`),
-			newItemID, ws.ID, newCollID, itemTitle, itemSlug, it.Content, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
+			newItemID, ws.ID, newCollID, itemTitle, itemSlug, itemContent, fieldsJSON, tagsJSON, s.dialect.BoolToInt(it.Pinned), it.SortOrder,
 			parentID, it.CreatedBy, it.LastModifiedBy, it.Source, itemNumber,
 			it.CreatedAt, it.UpdatedAt, nilIfEmpty(it.DeletedAt), ws.ID)
 		if err != nil {
