@@ -14,7 +14,7 @@ func TestSearchPrefix(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Prefix search")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	for _, title := range []string{"polishing widget", "polish", "studies", "thesis", "task forest", "alpha beta", "monkey"} {
+	for _, title := range []string{"polishing widget", "polish", "studies", "thesis", "task forest", "alpha beta", "monkey", "task-five-distinctive widget"} {
 		createTestItem(t, s, ws.ID, col.ID, title, title)
 		createTestDoc(t, s, ws.ID, title, title)
 	}
@@ -39,6 +39,7 @@ func TestSearchPrefix(t *testing.T) {
 		{"Polis", []string{"polish", "polishing widget"}},
 		{"m²", []string{}},
 		{"mo", []string{"monkey"}},
+		{"task-five wid", []string{"task-five-distinctive widget"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			want := tc.want
@@ -228,13 +229,14 @@ func TestPostgresFTSQuery(t *testing.T) {
 		{"polishing w", []interface{}{"polishing w", "polishing w"}},
 		{"polishing &", []interface{}{"polishing &", "polishing &"}},
 		{"界", []interface{}{"界", "界"}},
-		{"polis", []interface{}{"polis", "polis", "", "polis", "polis"}},
-		{"the", []interface{}{"the", "the", "", "the", "the"}},
-		{"12", []interface{}{"12", "12", "", "12", "12"}},
+		{"polis", []interface{}{"polis", "polis", "", "", "polis", "polis"}},
+		{"the", []interface{}{"the", "the", "", "", "the", "the"}},
+		{"12", []interface{}{"12", "12", "", "", "12", "12"}},
 		{"a²", []interface{}{"a²", "a²"}},
-		{"a٣", []interface{}{"a٣", "a٣", "", "a٣", "a٣"}},
-		{" earlier\tfoo-bar:wi: ", []interface{}{" earlier\tfoo-bar:wi: ", " earlier\tfoo bar:wi: ", "earlier foo bar", "wi", "wi"}},
-		{`foo')|!bar:*`, []interface{}{`foo')|!bar:*`, `foo')|!bar:*`, "foo", "bar", "bar"}},
+		{"a٣", []interface{}{"a٣", "a٣", "", "", "a٣", "a٣"}},
+		{" earlier\tfoo-bar:wi: ", []interface{}{" earlier\tfoo-bar:wi: ", " earlier\tfoo bar:wi: ", "earlier foo bar", "earlier foo bar", "wi", "wi"}},
+		{`foo')|!bar:*`, []interface{}{`foo')|!bar:*`, `foo')|!bar:*`, "foo", "foo", "bar", "bar"}},
+		{"task-five wid", []interface{}{"task-five wid", "task five wid", "task-five", "task five", "wid", "wid"}},
 	} {
 		t.Run(tc.query, func(t *testing.T) {
 			sql, args := postgresFTSQuery(tc.query)

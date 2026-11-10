@@ -325,9 +325,11 @@ func postgresFTSQuery(query string) (string, []interface{}) {
 		// Normalize the prefix through the English dictionary and also keep its
 		// literal lexeme, so stop words such as "the" can prefix-match "thesis".
 		// The tsquery cast does not fold case the way the parser does, so the
-		// literal leg lowercases first, or "The" would match nothing.
-		sql += " || (plainto_tsquery('english', ?) && (to_tsquery('english', quote_literal(?) || ':*') || (quote_literal(lower(?)) || ':*')::tsquery))"
-		args = append(args, head, part, part)
+		// literal leg lowercases first, or "The" would match nothing. The head
+		// gets the same two whole-word variants as the query itself, so a
+		// hyphenated earlier word ("task-five wid") still matches its parts.
+		sql += " || ((plainto_tsquery('english', ?) || plainto_tsquery('english', ?)) && (to_tsquery('english', quote_literal(?) || ':*') || (quote_literal(lower(?)) || ':*')::tsquery))"
+		args = append(args, head, sanitizePGFTSQuery(head), part, part)
 	}
 	return sql, args
 }
