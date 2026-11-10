@@ -72,6 +72,7 @@ type ResolveComment struct {
 
 // ResolveInput is what a caller resolves: the occurrence it saw and what to do.
 type ResolveInput struct {
+	LinkAccess   models.CommitmentAccess
 	ActualDoneAt *time.Time
 	OccurrenceAt time.Time
 	State        string     // done | skip | snooze | move
@@ -155,7 +156,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	// it is loaded before the transaction holds it (as renegotiation does).
 	var openFilter string
 	var openArgs []any
-	if in.State == "skip" {
+	if in.State == "skip" || in.State == "move" {
 		openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
 	}
 	moveChecksDeadline := false
@@ -163,6 +164,10 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		s.beforeCommitmentPin() // test seam: the item changes between the handler's read and the lock
 	}
 
+	var budget *linkBudget
+	if in.State == "move" {
+		budget = s.newLinkBudget()
+	}
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("resolve schedule: %w", err)
@@ -178,6 +183,18 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 	if sc == nil {
 		return nil, ErrScheduleNotFound
+	}
+	var component *commitmentComponent
+	if in.State == "move" {
+		component, err = s.cascadeLinkedTx(tx, sc, openFilter, openArgs, "")
+		if err != nil {
+			return nil, err
+		}
+		if component != nil {
+			if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
+				return nil, err
+			}
+		}
 	}
 
 	if in.ActualDoneAt != nil {
@@ -273,6 +290,31 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		}
 	}
 
+	// Settle and close due lapsing occurrences before the optional comment: a
+	// refused move must not commit a comment alongside its lapse.
+	var linked *linkedPlan
+	if component != nil {
+		until, _ := time.Parse(time.RFC3339, NormalizeInstant(*in.Until))
+		linked, err = s.planLinkedTx(tx, component, workspaceID, itemID, schedule.RoleTarget, until, true)
+		if err != nil {
+			return nil, err
+		}
+		reason := ""
+		if in.Comment != nil {
+			reason = strings.TrimSpace(in.Comment.Input.Body)
+		}
+		if _, _, err := s.settleLinkedPlan(linked, budget, linkedOptions{actor: in.Actor, reason: reason, access: in.LinkAccess}); err != nil {
+			return nil, err
+		}
+		if lapsed, err := s.lapseDueInPlanTx(tx, linked, nowT); err != nil {
+			return nil, err
+		} else if lapsed {
+			if err := budget.commit(tx); err != nil {
+				return nil, err
+			}
+			return nil, ErrCommitmentChanged
+		}
+	}
 	before, err := s.scheduleSnapshotTx(tx, sc.ID)
 	if err != nil {
 		return nil, err
@@ -294,6 +336,25 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	xAt, xWall := x.Format(time.RFC3339), *sc.NextWall
 
 	if in.State == "snooze" || in.State == "move" {
+		if linked != nil {
+			reason := ""
+			if in.Comment != nil {
+				reason = strings.TrimSpace(in.Comment.Input.Body)
+			}
+			if err := s.applyLinkedPlanTx(tx, linked, in.Actor, reason, "Moved with a linked date", nowT, budget); err != nil {
+				return nil, err
+			}
+			if commentID != "" {
+				if err := s.upsertOccurrenceTx(tx, sc.ID, xAt, xWall, "moved", commentID, in.Actor, ts); err != nil {
+					return nil, err
+				}
+			}
+			if err := budget.commit(tx); err != nil {
+				return nil, err
+			}
+			res.Schedule, err = s.GetSchedule(workspaceID, itemID)
+			return res, err
+		}
 		until := time.Time{}
 		if p, err := time.Parse(time.RFC3339, NormalizeInstant(*in.Until)); err == nil {
 			until = p

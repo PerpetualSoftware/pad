@@ -933,6 +933,33 @@ func (s *Store) linkedRolesTx(tx *sql.Tx, scheduleID string) (map[string]bool, e
 	return used, rows.Err()
 }
 
+// cascadeLinkedTx extends a single-schedule pin only when a stored link uses
+// it. A link to an absent or terminal other end keeps the single-row path.
+// With role set, only links using that role on this end admit a cascade.
+func (s *Store) cascadeLinkedTx(tx *sql.Tx, sc *models.ItemSchedule, openFilter string, openArgs []any, role string) (*commitmentComponent, error) {
+	used, err := s.linkedRolesTx(tx, sc.ID)
+	if err != nil || len(used) == 0 || (role != "" && !used[role]) {
+		return nil, err
+	}
+	c, err := s.pinCommitmentTx(tx, sc.WorkspaceID, openFilter, openArgs, false, sc.ItemID)
+	if err != nil {
+		return nil, err
+	}
+	for _, l := range c.links {
+		var other string
+		switch {
+		case l.ParentSchedule == sc.ID && (role == "" || l.ParentRole == role):
+			other = l.ChildSchedule
+		case l.ChildSchedule == sc.ID && (role == "" || l.ChildRole == role):
+			other = l.ParentSchedule
+		}
+		if c.live[other] && !c.terminal[other] {
+			return c, nil
+		}
+	}
+	return nil, nil
+}
+
 // roleOffsetsDiffer reports whether the offsets of the named role differ.
 func roleOffsetsDiffer(role string, a, b scheduleRoles) bool {
 	same := func(x, y *int) bool { return (x == nil) == (y == nil) && (x == nil || *x == *y) }

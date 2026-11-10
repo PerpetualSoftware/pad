@@ -191,6 +191,7 @@ type CommitmentDeadlineOffset struct {
 }
 
 type CommitmentRenegotiateInput struct {
+	Access           CommitmentAccess          `json:"-"`
 	Reason           string                    `json:"reason"`
 	Scope            string                    `json:"scope"`
 	Deadline         *string                   `json:"deadline"`
@@ -218,6 +219,7 @@ type CommitmentRenegotiationPreview struct {
 }
 
 type CommitmentRenegotiation struct {
+	Cascade  *LinkedMoveResult              `json:"cascade,omitempty"`
 	Preview  CommitmentRenegotiationPreview `json:"preview"`
 	Revision string                         `json:"revision"`
 }

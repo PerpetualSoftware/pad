@@ -212,6 +212,7 @@ type linkedOptions struct {
 	actor, reason, revision string
 	preview, acknowledge    bool
 	access                  models.CommitmentAccess
+	rootAuthorized          bool // occurrence renegotiation already checked root authority
 }
 
 // MoveLinkedDate moves one date of an item's outstanding occurrence and the
@@ -299,6 +300,9 @@ func (s *Store) settleLinkedPlan(p *linkedPlan, budget *linkBudget, o linkedOpti
 	// Authority over each deadline the change makes. The same refusal for a
 	// deadline the caller cannot read, cannot edit, or one among many.
 	for _, ch := range p.impact.HardDeadlines {
+		if o.rootAuthorized && ch.Node.Schedule == p.root {
+			continue
+		}
 		if !o.access.Editable[p.c.itemOf(ch.Node.Schedule)] {
 			return nil, false, ErrDeadlineApprovalRequired
 		}
