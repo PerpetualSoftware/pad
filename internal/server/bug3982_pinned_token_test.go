@@ -256,6 +256,7 @@ var pinnedAllowedGlobalRoutes = map[string]bool{
 	"GET /api/v1/s/{token}/attachments/{attachmentID}": true,
 	"GET /api/v1/search":                               true,
 	"GET /api/v1/server/capabilities":                  true,
+	"GET /api/v1/server/identity":                      true,
 	"GET /api/v1/templates":                            true,
 	"GET /api/v1/workspaces":                           true,
 	"POST /api/v1/auth/2fa/login-verify":               true,

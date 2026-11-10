@@ -241,3 +241,30 @@ func TestServerInfoReportsIdentityFingerprint(t *testing.T) {
 		})
 	}
 }
+
+func TestServerInfoSkipsIdentityProbeWhenUnhealthy(t *testing.T) {
+	probes := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/server/identity" {
+			probes++
+		}
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer srv.Close()
+	cfg := config.DefaultConfig()
+	cfg.Mode = config.ModeRemote
+	cfg.URL = srv.URL
+	cfg.LoadedFromFile = true
+	client := cli.NewClientFromURLWithAgentName(srv.URL, "")
+	client.SetHTTPClient(srv.Client())
+	report, err := collectServerInfoWithClient(cfg, client)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Connection.Reachable || probes != 0 {
+		t.Fatalf("reachable=%v probes=%d", report.Connection.Reachable, probes)
+	}
+	if report.Connection.Fingerprint != "" || !strings.Contains(report.Connection.IdentityError, "could not be verified") {
+		t.Fatalf("identity report: %+v", report.Connection)
+	}
+}

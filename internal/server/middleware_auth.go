@@ -431,7 +431,10 @@ func isPublicAPIPath(path string) bool {
 		// handler is intentionally read-only (no DB writes, no
 		// per-user state). Keeping it public matches the route's
 		// register-time intent in server.go.
-		path == "/api/v1/server/capabilities"
+		path == "/api/v1/server/capabilities" ||
+		// Server identity proof. A client calls it before sending any
+		// credential, and its route is mounted ahead of this stack.
+		path == "/api/v1/server/identity"
 }
 
 // legacyTokenRoutes are the global routes a user-less legacy workspace token

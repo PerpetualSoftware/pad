@@ -210,17 +210,19 @@ func collectServerInfoWithClient(cfg *config.Config, client *cli.Client) (*serve
 
 	report.Auth.EnvTokenOverride = cli.EnvTokenFor(cfg.BaseURL()) != ""
 
-	if fingerprint, err := client.ServerIdentity(); err == nil {
-		report.Connection.Fingerprint = fingerprint
-	} else {
-		report.Connection.IdentityError = "Server identity could not be verified"
-	}
 	client.SetAuthToken("")
 
+	const identityUnverified = "Server identity could not be verified"
 	if err := client.Health(); err != nil {
 		report.Connection.Error = err.Error()
+		report.Connection.IdentityError = identityUnverified
 	} else {
 		report.Connection.Reachable = true
+		if fingerprint, err := client.ServerIdentity(); err == nil {
+			report.Connection.Fingerprint = fingerprint
+		} else {
+			report.Connection.IdentityError = identityUnverified
+		}
 		// Probe with the token every other command would use: the
 		// PAD_TOKEN override when set (#879), else the stored
 		// credential for this server.

@@ -74,6 +74,7 @@ skip /api/v1/s/{token}
 skip /api/v1/s/{token}/attachments/{attachmentID}
 compress /api/v1/search
 compress /api/v1/server/capabilities
+compress /api/v1/server/identity
 compress /api/v1/sessions
 compress /api/v1/templates
 compress /api/v1/tutorials

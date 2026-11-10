@@ -498,7 +498,9 @@ previously trusted key or fingerprint to identify a particular server.
 | 503 | `server_identity_unavailable` | Server key derivation failed, including a missing encryption key. No signature is returned. |
 
 Errors use the usual JSON error envelope. This endpoint is exempt from the
-main API middleware and has its own limiter.
+main API middleware and has its own limiter. The server-wide request checks
+still run first: a query string that is not valid UTF-8 or contains a NUL gets
+`400 invalid_query` from them, before this limiter and with their CORS headers.
 
 Known-answer vector (all values below are hexadecimal except the fingerprint):
 
