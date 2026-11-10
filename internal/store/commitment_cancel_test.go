@@ -363,7 +363,7 @@ func (f *linkFix) reminderCounts(t *testing.T, i int) (total, fired int) {
 func (f *linkFix) skipAt(t *testing.T, i int, nowT string) {
 	t.Helper()
 	sc := f.reload(t, f.items[i].ID)
-	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true}, rt(nowT)); err != nil {
+	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, LinkAccess: f.allEdit()}, rt(nowT)); err != nil {
 		t.Fatalf("skip: %v", err)
 	}
 }
