@@ -42,6 +42,24 @@ import (
 type ErrorCode string
 
 const (
+	ErrScheduleLinked            ErrorCode = "schedule_linked"
+	ErrDeadlineApprovalRequired  ErrorCode = "deadline_approval_required"
+	ErrLinkViolationAck          ErrorCode = "link_violation_ack"
+	ErrCommitmentChanged         ErrorCode = "commitment_changed"
+	ErrLinkBudget                ErrorCode = "link_budget"
+	ErrLinkEditRequired          ErrorCode = "link_edit_required"
+	ErrScheduleLinkNotFound      ErrorCode = "schedule_link_not_found"
+	ErrLinkCycle                 ErrorCode = "link_cycle"
+	ErrLinkSelf                  ErrorCode = "link_self"
+	ErrLinkDuplicateIncoming     ErrorCode = "link_duplicate_incoming"
+	ErrLinkLimit                 ErrorCode = "link_limit"
+	ErrLinkInvalid               ErrorCode = "link_invalid"
+	ErrGateDuplicate             ErrorCode = "gate_duplicate"
+	ErrCommitmentPreviewRequired ErrorCode = "commitment_preview_required"
+	ErrValidationError           ErrorCode = "validation_error"
+)
+
+const (
 	// ErrNoWorkspace fires when no workspace context resolves
 	// (no explicit param, no session default, no CWD .pad.toml).
 	// Populates available_workspaces from `pad workspace list`.
@@ -498,6 +516,21 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
+	"schedule_linked":             {},
+	"deadline_approval_required":  {},
+	"link_violation_ack":          {},
+	"link_budget":                 {},
+	"link_edit_required":          {},
+	"schedule_link_not_found":     {},
+	"link_cycle":                  {},
+	"link_self":                   {},
+	"link_duplicate_incoming":     {},
+	"link_limit":                  {},
+	"link_invalid":                {},
+	"gate_duplicate":              {},
+	"commitment_preview_required": {},
+	"validation_error":            {},
+
 	"hard_deadline":           {},
 	"deadline_owner_required": {},
 	"commitment_changed":      {},
@@ -608,6 +641,9 @@ func extractStructuredCLIError(stderr string) *CallToolResult {
 	if env.Error.Code == "" {
 		return nil
 	}
+	if env.Error.Code == "validation_error" && !commitmentValidationDetails(env.Error.Details) {
+		return nil
+	}
 	if _, ok := allowedStructuredErrorCodes[env.Error.Code]; !ok {
 		// Unknown code. Don't forward — regex classifier handles it.
 		return nil
@@ -657,6 +693,9 @@ func classifyExecError(ctx context.Context, cmdPath []string, runErr error, stde
 	stderr = stripCobraUsageBlock(stderr)
 	stderr = strings.TrimSpace(stderr)
 	lower := strings.ToLower(stderr)
+	if code, message, details, ok := classifyCommitmentStderr(stripErrorPrefix(stderr)); ok {
+		return NewErrorResult(ErrorPayload{Code: code, Message: message, Details: details})
+	}
 
 	switch {
 	case execStderrMatchesNoWorkspace(lower):
@@ -1018,6 +1057,16 @@ func classifyHTTPStatusKind(
 		bodyText = http.StatusText(status)
 	}
 
+	if status == 400 || status == 403 || status == 404 || status == 409 || status == 503 {
+		up := extractUpstreamErrorEnvelope(bodyText)
+		if commitmentGraphCode(up.Code) || (up.Code == "validation_error" && commitmentValidationDetails(up.Details)) {
+			hint := ""
+			if up.Code == string(ErrCommitmentChanged) {
+				hint = conflictHintFor(up.Message, route)
+			}
+			return NewErrorResult(ErrorPayload{Code: ErrorCode(up.Code), Message: up.Message, Details: up.Details, Hint: hint})
+		}
+	}
 	switch status {
 	case http.StatusUnauthorized:
 		return NewErrorResult(ErrorPayload{
@@ -1836,4 +1885,78 @@ func upstreamHTTPErrorResult(
 		env.Error.Message = fmt.Sprintf("%s (%s)", env.Error.Message, op)
 	}
 	return NewErrorResult(env.Error)
+}
+
+// commitmentGraphCode preserves graph refusals across both MCP transports.
+func commitmentGraphCode(code string) bool {
+	switch ErrorCode(code) {
+	case ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired:
+		return true
+	}
+	return false
+}
+func commitmentValidationDetails(raw json.RawMessage) bool {
+	var d struct {
+		Field string `json:"field"`
+		Code  string `json:"code"`
+	}
+	if json.Unmarshal(raw, &d) != nil || d.Code == "" {
+		return false
+	}
+	switch d.Field {
+	case "reason", "revision", "role", "to", "cancel_policy":
+		return true
+	}
+	return false
+}
+
+func classifyCommitmentStderr(message string) (ErrorCode, string, json.RawMessage, bool) {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	messages := map[string]ErrorCode{
+		"this schedule is linked; unlink it before changing its timing or a linked role":                       ErrScheduleLinked,
+		"this date is linked to something you can't view. ask a workspace owner to change or remove the link.": ErrScheduleLinked,
+		"this change moves a hard deadline that needs its owner's approval":                                    ErrDeadlineApprovalRequired,
+		"a linked date lands outside one of its own bounds; acknowledge to apply":                              ErrLinkViolationAck,
+		"the commitment changed; re-preview before applying":                                                   ErrCommitmentChanged,
+		"the linked change took too long and was not applied":                                                  ErrLinkBudget,
+		"linking commitments needs edit on both items":                                                         ErrLinkEditRequired,
+		"commitment link or gate not found":                                                                    ErrScheduleLinkNotFound,
+		"schedule link not found":                                                                              ErrScheduleLinkNotFound,
+		"this linked change needs a commitment move preview before applying":                                   ErrCommitmentPreviewRequired,
+		"invalid commitment link configuration":                                                                ErrLinkInvalid,
+	}
+	if code, ok := messages[lower]; ok {
+		var details json.RawMessage
+		if code == ErrCommitmentChanged {
+			details = json.RawMessage(`{"field":"revision","code":"stale"}`)
+		}
+		return code, message, details, true
+	}
+	for _, code := range []ErrorCode{ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate} {
+		if lower == string(code) || strings.HasPrefix(lower, string(code)+":") {
+			return code, string(code), nil, true
+		}
+	}
+
+	fields := map[string]struct{ field, code string }{
+		"schedule reason: renegotiating a deadline needs a reason":                                                                    {"reason", "required"},
+		"schedule reason: moving a hard deadline needs a reason":                                                                      {"reason", "required"},
+		"schedule revision: an apply needs the preview revision":                                                                      {"revision", "required"},
+		"schedule revision: this change needs the preview revision":                                                                   {"revision", "required"},
+		"schedule role: role must be earliest, target, deadline or occupied_until":                                                    {"role", "enum"},
+		"schedule role: a legacy hard deadline cannot be linked; patch .../commitment naming a role converts the row to native roles": {"role", "combination"},
+		"schedule to: to must be an rfc3339 instant":                                                                                  {"to", "format"},
+		"schedule to: to must be after now on a schedule with a hard deadline":                                                        {"to", "range"},
+		"schedule cancel_policy: cancel_policy must be waiting_on or cancel_child_occurrence":                                         {"cancel_policy", "enum"},
+	}
+	for _, role := range []string{"target", "earliest", "deadline", "occupied_until"} {
+		for _, verb := range []string{"link", "move"} {
+			fields["schedule role: the commitment has no "+role+" date to "+verb] = struct{ field, code string }{"role", "combination"}
+		}
+	}
+	if f, ok := fields[lower]; ok {
+		details, _ := json.Marshal(map[string]string{"field": f.field, "code": f.code})
+		return ErrValidationError, message, details, true
+	}
+	return "", "", nil, false
 }

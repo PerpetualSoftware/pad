@@ -48,16 +48,33 @@ func writeCommitmentChanged(w http.ResponseWriter) {
 type commitmentView struct {
 	*models.Commitment
 	scheduleView
+	Links []models.ScheduleLink    `json:"links"`
+	Gates *models.ScheduleGateView `json:"gates"`
 }
 
 func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *models.Item, sc *models.ItemSchedule, note string) (*commitmentView, error) {
-	c, err := s.store.GetCommitmentFor(workspaceID, item.ID, s.itemVisibleForIncludingTrashed(r, workspaceID))
+	access, err := s.buildCommitmentAccess(r, s.store.Q(), workspaceID, commitmentAccessLive)
+	if err != nil {
+		return nil, err
+	}
+	c, err := s.store.GetCommitmentForReaders(workspaceID, item.ID, func(id string) bool { return access.Readable[id] }, s.itemVisibleForIncludingTrashed(r, workspaceID))
 	if err != nil {
 		return nil, err
 	}
 	v := s.buildScheduleView(r, item, sc)
 	v.TimezoneNote = note
-	return &commitmentView{Commitment: c, scheduleView: v}, nil
+	out := &commitmentView{Commitment: c, scheduleView: v, Links: []models.ScheduleLink{}, Gates: &models.ScheduleGateView{State: models.GateStateReleased, Gates: []models.ScheduleGate{}}}
+	if access.Readable[item.ID] {
+		out.Links, err = s.store.ListScheduleLinks(workspaceID, item.ID, access)
+		if err != nil {
+			return nil, err
+		}
+		out.Gates, err = s.store.ScheduleGates(workspaceID, item.ID, access)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
 func (s *Server) writeItemCommitment(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item, status int, note string) {
@@ -173,7 +190,7 @@ func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Reque
 		req.Tz, note = defaultScheduleZone(r)
 	}
 	sc, err := s.store.CreateCommitmentSchedule(workspaceID, item.ID, req, *body.Roles)
-	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeScheduleError(w, err) {
+	if s.writeScheduleItemGone(w, r, workspaceID, err) || s.writeScheduleError(w, r, err) {
 		return
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_created", scheduleActivityMeta(sc.Kind, nil))
@@ -269,7 +286,7 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 		writeScheduleNotFound(w)
 		return
 	}
-	if writeScheduleError(w, err) {
+	if s.writeScheduleError(w, r, err) {
 		return
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, fields))
@@ -308,6 +325,19 @@ func writeSkipDeadlineOwnerRequired(w http.ResponseWriter) {
 		map[string]interface{}{"field": "deadline", "code": "authority"})
 }
 
+// commitmentRenegotiateBody declares only client-settable members.
+type commitmentRenegotiateBody struct {
+	Reason                string                           `json:"reason"`
+	Scope                 string                           `json:"scope"`
+	Deadline              *string                          `json:"deadline"`
+	DeadlineOffset        *models.CommitmentDeadlineOffset `json:"deadline_offset"`
+	DeadlineBehavior      *string                          `json:"deadline_behavior"`
+	RemoveDeadline        bool                             `json:"remove_deadline"`
+	Revision              string                           `json:"revision"`
+	Preview               bool                             `json:"preview"`
+	AcknowledgeViolations bool                             `json:"acknowledge_violations"`
+}
+
 func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -333,12 +363,26 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		writeDeadlineOwnerRequired(w)
 		return
 	}
-	body, err := strictScheduleBody[models.CommitmentRenegotiateInput](r)
+	request, err := strictScheduleBody[commitmentRenegotiateBody](r)
 	if err != nil {
 		writeScheduleBodyError(w)
 		return
 	}
+	body := models.CommitmentRenegotiateInput{Reason: request.Reason, Scope: request.Scope, Deadline: request.Deadline, DeadlineOffset: request.DeadlineOffset, DeadlineBehavior: request.DeadlineBehavior, RemoveDeadline: request.RemoveDeadline, Revision: request.Revision, Preview: request.Preview, AcknowledgeViolations: request.AcknowledgeViolations}
+	body.Access, err = s.buildCommitmentAccess(r, s.store.Q(), workspaceID, commitmentAccessLive)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	body.ActorUserID = currentUserID(r)
+	body.CommitmentAccessLoader = func(q store.Queryer) (models.CommitmentAccess, error) {
+		return s.buildCommitmentAccess(r, q, workspaceID, commitmentAccessLive)
+	}
 	result, err := s.store.RenegotiateCommitment(workspaceID, item.ID, currentUserID(r), body, commitmentAssigneeGuard(r, item))
+	if errors.Is(err, store.ErrDeadlineApprovalRequired) && !body.Preview && body.Deadline != nil {
+		actor, _ := actorFromRequest(r)
+		s.afterCommitmentRefusal(r, workspaceID, models.LinkedMoveInput{ItemID: item.ID, Role: "deadline", To: *body.Deadline, Reason: body.Reason, Actor: actor, ActorUserID: body.ActorUserID})
+	}
 	if errors.Is(err, store.ErrCommitmentChanged) {
 		writeCommitmentChanged(w)
 		return
@@ -350,7 +394,7 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		writeScheduleNotFound(w)
 		return
 	}
-	if writeScheduleError(w, err) {
+	if s.writeScheduleError(w, r, err) {
 		return
 	}
 	if body.Preview {

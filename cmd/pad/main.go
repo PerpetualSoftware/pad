@@ -84,8 +84,25 @@ func writeRootStructuredError(w io.Writer, err error) {
 	defer writeOpKeyHint(w, err)
 	var commitmentErr *cli.APIError
 	if errors.As(err, &commitmentErr) {
+		structured := false
 		switch commitmentErr.Code {
-		case "hard_deadline", "deadline_owner_required", "commitment_changed":
+		case "hard_deadline", "deadline_owner_required", "commitment_changed",
+			"schedule_linked", "deadline_approval_required", "link_violation_ack", "link_budget", "link_edit_required", "schedule_link_not_found",
+			"link_cycle", "link_self", "link_duplicate_incoming", "link_limit", "link_invalid", "gate_duplicate", "commitment_preview_required":
+			structured = true
+		case "validation_error":
+			var detail struct {
+				Field string `json:"field"`
+				Code  string `json:"code"`
+			}
+			if json.Unmarshal(commitmentErr.Details, &detail) == nil && detail.Code != "" {
+				switch detail.Field {
+				case "reason", "revision", "role", "to", "cancel_policy":
+					structured = true
+				}
+			}
+		}
+		if structured {
 			if data, encodeErr := json.Marshal(map[string]any{"error": commitmentErr}); encodeErr == nil {
 				fmt.Fprintln(w, cli.StructuredErrorMarker+string(data))
 			}
