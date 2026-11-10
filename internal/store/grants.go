@@ -342,7 +342,12 @@ func (s *Store) RevokeAllUserGrants(workspaceID, userID string) error {
 // 1. Owner bypass → 2. Item grant → 3. Collection grant → 4. Membership → 5. Deny
 // Returns the permission string ("view", "edit", "admin", "owner") or "" if denied.
 func (s *Store) ResolveUserPermission(workspaceID, userID, itemID, collectionID string) (string, error) {
-	return s.resolveUserPermissionQ(s.db, workspaceID, userID, itemID, collectionID)
+	return s.ResolveUserPermissionQ(s.db, workspaceID, userID, itemID, collectionID)
+}
+
+// ResolveUserPermissionQ resolves grants and membership on the supplied executor.
+func (s *Store) ResolveUserPermissionQ(q Queryer, workspaceID, userID, itemID, collectionID string) (string, error) {
+	return s.resolveUserPermissionQ(q, workspaceID, userID, itemID, collectionID)
 }
 
 func (s *Store) resolveUserPermissionQ(q Queryer, workspaceID, userID, itemID, collectionID string) (string, error) {

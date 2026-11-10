@@ -36,6 +36,8 @@ const maxResolveUntil = 366 * 24 * time.Hour
 var (
 	// ErrScheduleNotFound is the answer when the item has no schedule.
 	ErrScheduleNotFound = errors.New("item has no schedule")
+	// ErrCommitmentPreviewRequired redirects linked resolves that need review.
+	ErrCommitmentPreviewRequired = errors.New("this linked change needs a commitment move preview before applying")
 )
 
 // ErrStaleOccurrence is the answer when the occurrence_at a caller names is not
@@ -72,6 +74,7 @@ type ResolveComment struct {
 
 // ResolveInput is what a caller resolves: the occurrence it saw and what to do.
 type ResolveInput struct {
+	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
 	// ActorUserID identifies the human separately from the journal actor kind.
 	// It is used only to exclude their own ordinary move notice.
 	ActorUserID  string
@@ -186,6 +189,18 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 	if sc == nil {
 		return nil, ErrScheduleNotFound
+	}
+	if in.CommitmentAccessLoader != nil {
+		in.LinkAccess, err = in.CommitmentAccessLoader(tx)
+		if err != nil {
+			return nil, err
+		}
+		if !in.LinkAccess.Readable[itemID] {
+			return nil, ErrScheduleLinkNotFound
+		}
+		if !in.LinkAccess.Editable[itemID] {
+			return nil, ErrLinkEditRequired
+		}
 	}
 	var component *commitmentComponent
 	if in.State == "move" {
@@ -306,7 +321,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if in.Comment != nil {
 			reason = strings.TrimSpace(in.Comment.Input.Body)
 		}
-		if _, _, err := s.settleLinkedPlan(linked, budget, linkedOptions{actor: in.Actor, reason: reason, access: in.LinkAccess}); err != nil {
+		if _, _, err := s.settleLinkedPlan(linked, budget, linkedOptions{actor: in.Actor, reason: reason, access: in.LinkAccess, resolve: true}); err != nil {
 			return nil, err
 		}
 		if lapsed, err := s.lapseDueInPlanTx(tx, linked, nowT); err != nil {

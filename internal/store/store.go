@@ -968,10 +968,7 @@ type sqlExecer interface {
 // Exported because the callback boundary crosses packages: the copy
 // planner hands ITS executor to the server-side AttachmentAuthorizer, so
 // the server's authorization reads run wherever the planner runs.
-type Queryer interface {
-	Query(query string, args ...any) (*sql.Rows, error)
-	QueryRow(query string, args ...any) *sql.Row
-}
+type Queryer = models.CommitmentQueryer
 
 // Q returns the store's pool as a Queryer — the executor for reads that run
 // outside any transaction. Server code uses it to call the *Q read variants

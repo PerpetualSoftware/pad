@@ -92,6 +92,18 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	if sc == nil {
 		return nil, ErrScheduleNotFound
 	}
+	if in.CommitmentAccessLoader != nil {
+		in.Access, err = in.CommitmentAccessLoader(tx)
+		if err != nil {
+			return nil, err
+		}
+		if !in.Access.Readable[itemID] {
+			return nil, ErrScheduleLinkNotFound
+		}
+		if !in.Access.Editable[itemID] {
+			return nil, ErrLinkEditRequired
+		}
+	}
 	// An ended schedule has no outstanding occurrence to move. Refuse it here,
 	// under the pin, before the plan or the revision comparison, so every scope
 	// and both modes answer the same code and nothing is stored.
@@ -207,7 +219,11 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 		if !rootLapsed && !lapsed {
-			if err := s.applyLinkedPlanTx(tx, linked, actor, actor, in.Reason, "Moved with a linked date", nowT, budget); err != nil {
+			noticeActor := in.ActorUserID
+			if noticeActor == "" {
+				noticeActor = actor
+			}
+			if err := s.applyLinkedPlanTx(tx, linked, actor, noticeActor, in.Reason, "Moved with a linked date", nowT, budget); err != nil {
 				return nil, err
 			}
 		}

@@ -201,10 +201,12 @@ type CommitmentDeadlineOffset struct {
 }
 
 type CommitmentRenegotiateInput struct {
-	Access CommitmentAccess `json:"-"`
+	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
+	ActorUserID            string                 `json:"-"`
+	Access                 CommitmentAccess       `json:"-"`
 	// AcknowledgeViolations accepts that a dependent date lands outside one of
 	// its own bounds. The link and the bound both stay.
-	AcknowledgeViolations bool `json:"-"`
+	AcknowledgeViolations bool `json:"acknowledge_violations"`
 
 	Reason           string                    `json:"reason"`
 	Scope            string                    `json:"scope"`
