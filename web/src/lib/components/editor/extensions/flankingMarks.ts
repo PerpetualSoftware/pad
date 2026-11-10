@@ -47,7 +47,7 @@ import Strike from '@tiptap/extension-strike';
 import Underline from '@tiptap/extension-underline';
 import MarkdownIt from 'markdown-it';
 import { MarkdownSerializerState } from 'prosemirror-markdown';
-import type { Mark, Node as PMNode } from '@tiptap/pm/model';
+import { Fragment, type Mark, type Node as PMNode } from '@tiptap/pm/model';
 
 const md = new MarkdownIt();
 
@@ -296,6 +296,10 @@ function installVerification() {
 	if (proto.__padFlankingVerify) return;
 	const base = proto.renderInline;
 	proto.renderInline = function (parent, fromBlockStart) {
+		// Yjs drops marks on hard breaks; serialize the same form before replay.
+		const children: PMNode[] = [];
+		parent.forEach((child) => children.push(child.type.name === 'hardBreak' ? child.mark([]) : child));
+		parent = parent.copy(Fragment.fromArray(children));
 		if (this.__padForceHtml || !this.marks?.bold?.padFlanking || !hasOurMarks(parent)) {
 			base.call(this, parent, fromBlockStart);
 			return;

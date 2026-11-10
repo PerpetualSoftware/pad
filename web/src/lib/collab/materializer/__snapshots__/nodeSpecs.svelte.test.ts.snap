@@ -1,0 +1,834 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`preserves every node spec from the frozen schema at 4c45ec71a 1`] = `
+{
+  "attachmentChip": {
+    "atom": true,
+    "attrs": {
+      "filename": {
+        "default": "",
+      },
+      "uuid": {
+        "default": null,
+      },
+    },
+    "draggable": true,
+    "group": "inline",
+    "inline": true,
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "priority": 1000,
+        "tag": "a[href^="pad-attachment:"]",
+      },
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "priority": 1000,
+        "tag": "a[data-attachment-id]",
+      },
+    ],
+    "selectable": true,
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "attachmentImage": {
+    "atom": true,
+    "attrs": {
+      "alt": {
+        "default": null,
+      },
+      "uuid": {
+        "default": null,
+      },
+    },
+    "draggable": true,
+    "group": "inline",
+    "inline": true,
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "img[data-attachment-id]",
+      },
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "img[src^="pad-attachment:"]",
+      },
+    ],
+    "selectable": true,
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "blockquote": {
+    "content": "block+",
+    "defining": true,
+    "group": "block",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "blockquote",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "bulletList": {
+    "attrs": {
+      "tight": {
+        "default": true,
+      },
+    },
+    "content": "listItem+",
+    "group": "block list",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "ul",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "codeBlock": {
+    "attrs": {
+      "language": {
+        "default": null,
+      },
+    },
+    "code": true,
+    "content": "text*",
+    "defining": true,
+    "group": "block",
+    "marks": "",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "preserveWhitespace": "full",
+        "tag": "pre",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "doc": {
+    "content": "block+",
+  },
+  "hardBreak": {
+    "group": "inline",
+    "inline": true,
+    "linebreakReplacement": true,
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "br",
+      },
+    ],
+    "selectable": false,
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+    "toText": "function () { [native code] }",
+  },
+  "heading": {
+    "attrs": {
+      "level": {
+        "default": 1,
+      },
+    },
+    "content": "inline*",
+    "defining": true,
+    "group": "block",
+    "parseDOM": [
+      {
+        "attrs": {
+          "level": 1,
+        },
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "h1",
+      },
+      {
+        "attrs": {
+          "level": 2,
+        },
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "h2",
+      },
+      {
+        "attrs": {
+          "level": 3,
+        },
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "h3",
+      },
+      {
+        "attrs": {
+          "level": 4,
+        },
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "h4",
+      },
+      {
+        "attrs": {
+          "level": 5,
+        },
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "h5",
+      },
+      {
+        "attrs": {
+          "level": 6,
+        },
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "h6",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "horizontalRule": {
+    "group": "block",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "hr",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "htmlBlock": {
+    "atom": true,
+    "attrs": {
+      "html": {
+        "default": "",
+      },
+    },
+    "defining": true,
+    "draggable": true,
+    "group": "block",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "div[data-pad-html-block]",
+      },
+    ],
+    "selectable": true,
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "listItem": {
+    "content": "paragraph block*",
+    "defining": true,
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "li",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "orderedList": {
+    "attrs": {
+      "start": {
+        "default": 1,
+      },
+      "tight": {
+        "default": true,
+      },
+      "type": {
+        "default": null,
+      },
+    },
+    "content": "listItem+",
+    "group": "block list",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "ol",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "paragraph": {
+    "content": "inline*",
+    "group": "block",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "p",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "table": {
+    "content": "tableRow+",
+    "group": "block",
+    "isolating": true,
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "table",
+      },
+    ],
+    "tableRole": "table",
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "tableCell": {
+    "attrs": {
+      "align": {
+        "default": null,
+      },
+      "colspan": {
+        "default": 1,
+      },
+      "colwidth": {
+        "default": null,
+      },
+      "rowspan": {
+        "default": 1,
+      },
+    },
+    "content": "block+",
+    "isolating": true,
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "getContent": "(_node, schema) => fillEmptyCellContent(schema.nodes[this.name])",
+        "tag": "td",
+      },
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "td",
+      },
+    ],
+    "tableRole": "cell",
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "tableHeader": {
+    "attrs": {
+      "align": {
+        "default": null,
+      },
+      "colspan": {
+        "default": 1,
+      },
+      "colwidth": {
+        "default": null,
+      },
+      "rowspan": {
+        "default": 1,
+      },
+    },
+    "content": "block+",
+    "isolating": true,
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "getContent": "(_node, schema) => fillEmptyCellContent(schema.nodes[this.name])",
+        "tag": "th",
+      },
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "th",
+      },
+    ],
+    "tableRole": "header_cell",
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "tableRow": {
+    "content": "(tableCell | tableHeader)*",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "tag": "tr",
+      },
+    ],
+    "tableRole": "row",
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "taskItem": {
+    "attrs": {
+      "checked": {
+        "default": false,
+      },
+    },
+    "content": "paragraph block*",
+    "defining": true,
+    "parseDOM": [
+      {
+        "contentElement": "(element) => {
+				var _element$querySelecto;
+				return (_element$querySelecto = element.querySelector("div")) !== null && _element$querySelecto !== void 0 ? _element$querySelecto : element;
+			}",
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "priority": 51,
+        "tag": "li[data-type="taskItem"]",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "taskList": {
+    "content": "taskItem+",
+    "group": "block list",
+    "parseDOM": [
+      {
+        "getAttrs": "(node) => {
+			const oldAttributes = parseRule.getAttrs ? parseRule.getAttrs(node) : parseRule.attrs;
+			if (oldAttributes === false) return false;
+			const newAttributes = extensionAttributes.reduce((items, item) => {
+				const value = item.attribute.parseHTML ? item.attribute.parseHTML(node) : fromString(node.getAttribute(item.name));
+				if (value === null || value === void 0) return items;
+				return {
+					...items,
+					[item.name]: value
+				};
+			}, {});
+			return {
+				...oldAttributes,
+				...newAttributes
+			};
+		}",
+        "priority": 51,
+        "tag": "ul[data-type="taskList"]",
+      },
+    ],
+    "toDOM": "(node) => renderHTML({
+				node,
+				HTMLAttributes: getRenderedAttributes(node, extensionAttributes)
+			})",
+  },
+  "text": {
+    "group": "inline",
+  },
+}
+`;

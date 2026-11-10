@@ -25,6 +25,7 @@
 // and the deletion lost. A refused replace answers null, and
 // the flush then compares against the seed alone, as it did before.
 import { createDocument, type Editor } from '@tiptap/core';
+import { withFlatSoftBreaks } from '$lib/components/editor/extensions/padHardBreak';
 import { EditorState, type Plugin } from '@tiptap/pm/state';
 
 interface MarkdownStorage {
@@ -39,9 +40,10 @@ function isExcluded(plugin: Plugin): boolean {
 	return EXCLUDED_PLUGIN_KEY.test((plugin as unknown as { key: string }).key);
 }
 
-export function canonicalEditorMarkdown(editor: Editor, markdown: string): string | null {
+export function canonicalEditorMarkdown(editor: Editor, markdown: string, options: { flatSoftBreaks?: boolean } = {}): string | null {
 	const storage = (editor.storage as unknown as { markdown: MarkdownStorage }).markdown;
-	const parsed = createDocument(storage.parser.parse(markdown), editor.schema, {}, { errorOnInvalidContent: false });
+	const parse = () => storage.parser.parse(markdown);
+	const parsed = createDocument(options.flatSoftBreaks ? withFlatSoftBreaks(parse) : parse(), editor.schema, {}, { errorOnInvalidContent: false });
 	const plugins = editor.state.plugins.filter((p) => !isExcluded(p));
 	const empty = EditorState.create({ schema: editor.schema, plugins });
 	// setContent's own step: replace the whole document in one transaction.

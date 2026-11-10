@@ -158,6 +158,8 @@ describe('BUG-3568: no marks on inline atoms', () => {
 				editor.commands.setContent(md);
 				await tick();
 				const once = markdownOf(editor);
+				expect(once).toContain('\n');
+				expect(once).not.toContain('\\\n');
 				const { pm, y } = pmAndY(editor, doc);
 				expect(pm, 'the loading tab equals its Y.Doc').toBe(y);
 				editor.commands.setContent(once);

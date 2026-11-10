@@ -59,7 +59,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "```frontmatter\ntitl<b>e: \"Synthetic\"\ntags: [a, b]\n```\n\n- g [[TASK-3]] inline.\n\nAutolink https://example.com/path here\n\nnon# breaking spraph linkng [[BUG-12|a dup]] inliemoji 🎉ne.\n\naces ~~h~~ere\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n# Heading one\n\n<input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n- [ ] Hello.World, Hello.World, a(x)b and plain bold\n  \\- not a list item\n  \\# not a heading\n  \\> not a[[TASK-3| qu\\]ote]]\n\nLine one\\\nline two"
+  "expected": "```frontmatter\ntitl<b>e: \"Synthetic\"\ntags: [a, b]\n```\n\n- g [[TASK-3]] inline.\n\nAutolink https://example.com/path here\n\nnon# breaking spraph linkng [[BUG-12|a dup]] inliemoji 🎉ne.\n\naces ~~h~~ere\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n# Heading one\n\n<input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n- [ ] Hello.World, Hello.World, a(x)b and plain bold\n  \\- not a list item\n  \\# not a heading\n  \\> not a[[TASK-3| qu\\]ote]]\n\nLine one\nline two"
  },
  {
   "name": "seed-15838",
@@ -124,7 +124,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "---\ntitle: \"Synthetic\"\n---\n\n```frontmatter\n#\ntags: \n```\n\n```frontmatter\n[a, b]\n```\n\n```frontmatter\nParagraph linking unknown inline.\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>[wide</p></td><td><p>naemoji 🎉rro</p><p>w</p></td></tr></tbody>\n</table>\n\n- <strong>Hello.</strong>World, #Hello<em>.W</em>mma<strong>plain</strong> bold\\\n  \\- not a lδeltaist item\\\n  \\# not a \\]heading\\\n  \\> no\n\n  t a quote\n\n| a | b |\n| --- | --- |\n| 1 | emoji 🎉2 |\n| x | y |\n\n> quoted  line\n\n- one\n- wo\n  - nested\n- three\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p><strong>p</strong></p></td><td><p>x</p></td></tr></tbody>\n</table>\n\nParagraph linking [[BUG-12|a dup]] inline."
+  "expected": "---\ntitle: \"Synthetic\"\n---\n\n```frontmatter\n#\ntags: \n```\n\n```frontmatter\n[a, b]\n```\n\n```frontmatter\nParagraph linking unknown inline.\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>[[BUG-12|wide</p></td><td><p>naemoji 🎉rro</p><p>w</p></td></tr></tbody>\n</table>\n\n- <strong>Hello.</strong>World, #Hello<em>.W</em>mma<strong>plain</strong> bold\n  - not a lδeltaist item\n  # not a \\]heading\n  > no\n\n  t a quote\n\n\\| a \\| b \\|\n\\| --- \\| --- \\|\n\\| 1 \\| emoji 🎉2 \\|\n\\| x \\| y \\|\n\n> quoted  line\n\n- one\n- wo\n  - nested\n- three\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p><strong>p</strong></p></td><td><p>x</p></td></tr></tbody>\n</table>\n\nParagraph linking [a dup]] inline."
  },
  {
   "name": "seed-23757",
@@ -191,7 +191,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "title: \"Synthetic\"\\\ntags: \\[a, b\\]\n\n1. first\n\n   d\n2. third\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><blockquote><p>para two</p></blockquote></td><td><p>x</p></td></tr></tbody>\n</table>\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\nL#ine on\n\ne\\\n\\\nline tw\n\nPara\n\n- gra~~ph i~~nline.\n\no\n\nParagraph linkin[rnal](https://example.com/a?b=c) inline.\n\n> Pa\\`https://x.test[[/p l]]inking \n>\n> - [ ] [[Legacy doc]] inline.\n\nParagraph [[li]]nking [[other::TASK-9|shown]] inline.\n\nParagraph linking [[PLAN-7|custom text]] inline."
+  "expected": "title: \"Synthetic\"\ntags: \\[a, b\\]\n\n1. first\n\n   d\n2. third\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><blockquote><p>para two</p></blockquote></td><td><p>x</p></td></tr></tbody>\n</table>\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\nL#ine on\n\ne\n\\\nline tw\n\nPara\n\n- gra~~ph i~~nline.\n\no\n\nParagraph linkin[rnal](https://example.com/a?b=c) inline.\n\n> Pa\\`https://x.test[[/p l]]inking \n>\n> - [ ] [[Legacy doc]] inline.\n\nParagraph [[li]]nking [[other::TASK-9|shown]] inline.\n\nParagraph linking [[PLAN-7|custom text]] inline."
  },
  {
   "name": "seed-31676",
@@ -257,7 +257,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "- one\n- two\n  |\n\n# nested\n\n- three\n\n\\_See \\[\\[TASK-3\\]\n\n1. \\] *and* \\[\\[Roa\\\n   dmragraph linking [external](https://example.com/a?b=c) inline.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\nAutolink https://ee.com/path here\n\nParagraphbeta  linking\n\n#  &lt;b>[external](https://example.com/a?b=c) inline.\n\nParagraph linking [external](https://example.com/a?b=c)\n\nParagraph linking [unkno](/alice/ws/tasks/TASK-999)\n\n[wn](/alice/ws/tasks/TASK-999) inline.\n\nParagraph linking [[TASK-3|esc [[]]\n\n[[TASK-3| text]] inline.\n\n "
+  "expected": "- one\n- two\n  |\n\n# nested\n\n- three\n\n\\_See \\[\\[TASK-3\\]\n\n1. \\] *and* \\[\\[Roa\n   dmragraph linking [external](https://example.com/a?b=c) inline.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\nAutolink https://ee.com/path here\n\nParagraphbeta  linking\n\n#  &lt;b>[external](https://example.com/a?b=c) inline.\n\nParagraph linking [external](https://example.com/a?b=c)\n\nParagraph linking [unkno](/alice/ws/tasks/TASK-999)\n\n[wn](/alice/ws/tasks/TASK-999) inline.\n\nParagraph linking [[TASK-3|esc [[]]\n\n[[TASK-3| text]] inline.\n\n "
  },
  {
   "name": "seed-39595",
@@ -320,7 +320,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "- tit\\\n  le: \"Synthetic\"\n  \\\n  tags: \\[a,\\\n   b\\]\n\n\n- one\n- two\n  \n  - nested\n- three\n\n---\n\nParagraph linking\\\n [[ge]] inline.\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\n>  l\n>\n> ine second line\n\n- one\n- two\n  \n  - nested\n- three\n\n**Hello.**Wor\n\n1. ld, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\\\n   \\-\\\n    no\n\nt a list item\\\n\\# not a heading\\\n\\> not a quote\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\ng [[other::TASK-9]] inline.\n\n- one\n- two\n  \n  - nest|ed\n- three\n\n## Sub *heading*"
+  "expected": "- tit\n  le: \"Synthetic\"\n  \n  tags: \\[a,\n   b\\]\n\n\n- one\n- two\n  \n  - nested\n- three\n\n---\n\nParagraph linking\n [[ge]] inline.\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\n>  l\n>\n> ine second line\n\n- one\n- two\n  \n  - nested\n- three\n\n**Hello.**Wor\n\n1. ld, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\n   \\-\n    no\n\nt a list item\n\\# not a heading\n\\> not a quote\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\ng [[other::TASK-9]] inline.\n\n- one\n- two\n  \n  - nest|ed\n- three\n\n## Sub *heading*"
  },
  {
   "name": "seed-47514",
@@ -380,7 +380,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Paragraph\\\n linking [[other::TASK-9|shown]] inline.\n\n---\n\n```go\nfunc main() {\n\t\")\n}\n```\n\n---\n\nParagrap[[TASK-3|h]] l&lt;b>i gamma\\\nnk|i[[other::TASK-9|:TASK-9]] inli\n\nne.\n\nParagraph linking [[other::TASK-9]] ifirst\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>"
+  "expected": "Paragraph\n linking [[other::TASK-9|shown]] inline.\n\n---\n\n```go\nfunc main() {\n\t\")\n}\n```\n\n---\n\nParagrap[[TASK-3|h]] l&lt;b>i gamma\nnk|i[[other::TASK-9|:TASK-9]] inli\n\nne.\n\nParagraph linking [[other::TASK-9]] ifirst\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>"
  },
  {
   "name": "seed-55433",
@@ -449,7 +449,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Paragrap~~h~~ linking gamma [unknown](/alice/ws/tasks/TASK-999) iaragraph linking [[other::TASK-9|~~oth~~er::TASK-9]] inli\\\nne.\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><h2>n[a<br>r`row</h2></td></tr></tbody>\n</table>\n\nP\\\nara\n\ngr`aph`\n\nParagraph linking [[other::TASK-9|shown]] inline.\n\n##  \n\n inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wideδelta</p></td><td><p>n<code>arr]ow</code><br></p></td></tr></tbody>\n</table>\n\nParagraph l[[other::TASK-9|inking]] [[PLAN-7|custom text]] inline.\n\n1. first\n2. second\n3. third"
+  "expected": "Paragrap~~h~~ linking gamma [unknown](/alice/ws/tasks/TASK-999) iaragraph linking [[other::TASK-9|~~oth~~er::TASK-9]] inli\nne.\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><h2>n[[other::TASK-9|a<br>r`row</h2></td></tr></tbody>\n</table>\n\nP\nara\n\ngr`aph`\n\nParagraph linking [shown]] inline.\n\n##  \n\n inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wideδelta</p></td><td><p>n<code>arr]ow</code><br></p></td></tr></tbody>\n</table>\n\nParagraph l[[other::TASK-9|inking]] [[PLAN-7|custom text]] inline.\n\n1. first\n2. second\n3. third"
  },
  {
   "name": "seed-63352",
@@ -518,7 +518,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n1. title: \"Synthetic\"\\\n   tags: \\[a, b\\]\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n- non breaking spaces\n\n|  | b |\n| --- | --- |\n| 2emoji 🎉 |  |\n| x | y |\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para </p><p>o</p><p>ne</p></td></tr></tbody>\n</table>\n\n- Par linkin\\[[other::TASK-9|g [shownhttps://x.test/]]\n\n  [[other::TASK-9|p]] i\\]n\\\\line.\n- `See [[T`ASK-3\n\n\\]\\] and [[Roadma&lt;b>p]]"
+  "expected": "```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n1. title: \"Synthetic\"\n   tags: \\[a, b\\]\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n- non breaking spaces\n\n|  | b |\n| --- | --- |\n| 2emoji 🎉 |  |\n| x | y |\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para </p><p>o</p><p>ne</p></td></tr></tbody>\n</table>\n\n- Par linkin\\[[other::TASK-9|g [shownhttps://x.test/]]\n\n  [[other::TASK-9|p]] i\\]n\\\\line.\n- `See [[T`ASK-3\n\n\\]\\] and [[Roadma&lt;b>p]]"
  },
  {
   "name": "seed-71271",
@@ -549,7 +549,7 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "Paragraph linking [[Missing p]]`aghttp`[[s://x.test/pe]] inline.\n\n```go\nfu#nc main() {\n\tprintln(\"hi\")\n}\n```\n\nParagraph linking [Legacy doc](/alice/ws/docs/legacy-doc)line.\n\n1. first\n2. second\n3. third\n\n\n1) first\n2) cond\n3) third\n\nParagra**ph linki**ng [show](/-/r/other/TASK-9)\\\n[n](/-/r/other/TASK-9) inliquoted lline\\*\n\nParagraph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inli\\\nne.\n\n- Paragraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n```\nplain fence\n```\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
+  "expected": "Paragraph linking [[Missing p]]`aghttp`[[s://x.test/pe]] inline.\n\n```go\nfu#nc main() {\n\tprintln(\"hi\")\n}\n```\n\nParagraph linking [Legacy doc](/alice/ws/docs/legacy-doc)line.\n\n1. first\n2. second\n3. third\n\n\n1) first\n2) cond\n3) third\n\nParagra**ph linki**ng [show](/-/r/other/TASK-9)\n[n](/-/r/other/TASK-9) inliquoted lline\\*\n\nParagraph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inli\nne.\n\n- Paragraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n```\nplain fence\n```\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
  },
  {
   "name": "seed-79190",
@@ -604,7 +604,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "- Paragraph linking\\\n   [[other::TASK-9|othe\\]r::TASK-9emoji 🎉]] inline.\n\nParagraph linking [external](https://example.com/a?b=c) inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n```frontmatter\ntitle: \"Synthetic\"\ntags: [a, b]\n```\n\nw\\\no\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nParagraph linking [extern](https://example.com/a?b=c)\n\n[al](https://example.com/a?b=c) inline.\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)"
+  "expected": "- Paragraph linking\n   [[other::TASK-9|othe\\]r::TASK-9emoji 🎉]] inline.\n\nParagraph linking [external](https://example.com/a?b=c) inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n```frontmatter\ntitle: \"Synthetic\"\ntags: [a, b]\n```\n\nw\no\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nParagraph linking [extern](https://example.com/a?b=c)\n\n[al](https://example.com/a?b=c) inline.\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)"
  },
  {
   "name": "seed-87109",
@@ -671,7 +671,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "1. firs*t*\n2. se`cond`\n\nParag_rap\\\nh linking [[PLAN-7|cus]]`tlin`e.\n\nthird\n\n| He~~ad~~ |\n| --- |\n| list in a cel[[other::TASK-9|l]]\n\n |\n\nfunc main() {\n\tpri\n\n- [ ] nt[[other::TASK-9|ln(\"hi]]\")\n  }\n\n```\nplain\n```\n\n- \n  1. ne\n\n     s\\\n     ted&lt;b>\n- three\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>wi</p><p>th image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n# Line one\\\nline two\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)"
+  "expected": "1. firs*t*\n2. se`cond`\n\nParag_rap\nh linking [[PLAN-7|cus]]`tlin`e.\n\nthird\n\n| He~~ad~~ |\n| --- |\n| list in a cel[[other::TASK-9|l]]\n\n |\n\nfunc main() {\n\tpri\n\n- [ ] nt[[other::TASK-9|ln(\"hi]]\")\n  }\n\n```\nplain\n```\n\n- \n  1. ne\n\n     s\n     ted&lt;b>\n- three\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>wi</p><p>th image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n# Line one\\\nline two\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)"
  },
  {
   "name": "seed-95028",
@@ -730,7 +730,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "- Paragraph linking [[Legacy doc]] inline.\n\n```mermaid\nr::TASK-9 inline.\n```\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n---\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\nPlain par\n\nagraph with **bold**\n\n, *italic*, ~~strike~~ and `code`.\n\nParagraph linking [[Missing page]] inline.\n\nParagraph linking [[TASK-3|Fix log]]\\\n[[TASK-3|in]] inline.\n\n> quoted line\\\n>  second line\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)"
+  "expected": "- Paragraph linking [[Legacy doc]] inline.\n\n```mermaid\nr::TASK-9 inline.\n```\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n---\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\nPlain par\n\nagraph with **bold**\n\n, *italic*, ~~strike~~ and `code`.\n\nParagraph linking [[Missing page]] inline.\n\nParagraph linking [[TASK-3|Fix log]]\n[[TASK-3|in]] inline.\n\n> quoted line\n>  second line\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)"
  },
  {
   "name": "seed-102947",
@@ -787,7 +787,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "P[[other::TASK-9|aragrap]]h linking [[other::TASK-9|other:]]\\\n[[other::TASK-9|:TASK-9]] inline.\n\n---\n\nParagraph linking [[other::TASK-9]] inline.\n\n- one\n- two\n  \n  - nested\n- three\n\n### See [[TAS\\\nK-3]] and [[Roadmap]]\n\nPar\n\nagraph linking [[TASK-3]] inline.\n\nAutolink https://example.com/path here\n\n- **Hello.**`World`, Hell*ld*, a<s>(x)</s>b and **plain** bold\\\n  \\- not a list item\\\n  \\# not a heading\n\n  \\> not a quote\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n```\nplain fence\n```"
+  "expected": "P[[other::TASK-9|aragrap]]h linking [[other::TASK-9|other:]]\n[[other::TASK-9|:TASK-9]] inline.\n\n---\n\nParagraph linking [[other::TASK-9]] inline.\n\n- one\n- two\n  \n  - nested\n- three\n\n### See [[TAS\\\nK-3]] and [[Roadmap]]\n\nPar\n\nagraph linking [[TASK-3]] inline.\n\nAutolink https://example.com/path here\n\n- **Hello.**`World`, Hell*ld*, a<s>(x)</s>b and **plain** bold\n  \\- not a list item\n  \\# not a heading\n\n  \\> not a quote\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n```\nplain fence\n```"
  },
  {
   "name": "seed-110866",
@@ -920,7 +920,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Line o~~ne~~two\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>[para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\n1. <strong>Hello.</strong>Wδeltaorld, Hello<em>.World\\\\</em>, a<s>(x)</s>b an<strong>lain</strong> bold\\\n   \\- not a list ialphhttps://x.test/patem\\\n   \\# not a head\\`ing\\\n   \\> not a quote\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\n- one\n- two\n  \n  - nested\n- three\n\nParagraph link\\\ning [[TASK-3]] *inline*.\n\n| Head |\n| --- |\n| list `in a ce`ll\n\n |\n\n~~Pwith~~ **bold**, *italic*, ~~strike~~ and `co`\\\n`de`.\n\n> quoted line second line\n\n```\nplain fence\n```\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline."
+  "expected": "Line o~~ne~~two\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>[[TASK-3|para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\n1. <strong>Hello.</strong>Wδeltaorld, Hello<em>.World\\\\</em>, a<s>(x)</s>b an<strong>lain</strong> bold\n   - not a list ialphhttps://x.test/patem\n   # not a head`ing\n   > not a quote\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\n- one\n- two\n  \n  - nested\n- three\n\nParagraph link\ning [Fix login]] *inline*.\n\n| Head |\n| --- |\n| list `in a ce`ll\n\n |\n\n~~Pwith~~ **bold**, *italic*, ~~strike~~ and `co`\n`de`.\n\n> quoted line second line\n\n```\nplain fence\n```\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline."
  },
  {
   "name": "seed-126704",
@@ -964,7 +964,7 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "---\ntitle: \"Synthetic\"\ntags: [a, b]\n---\n\nParagraph linking [[Missing page]] inline.\n\n### H3 wi`cod]e`\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" \\`type=\"checkbox\"> open task\n\n- [ ] <input class=eckbox\" checked=\"\" disabled=\"\"\\` type=\"check[b](/alice/ws/tasks/TASK-3)ox\"> done task\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbotask\n\n> quoted line second line gamma\n\nParagraph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inline.\n\nPa[custom text](/alice/ws/plans/PLAN-7) inline.\n\n- [ ] <input c\\\n  sk\\\n  lass=\"task-list-item-checkbox\" disabled=\"\" typ\\]e=\"checkbox\"> open task\n\n- [ ] <input class=t-beta item-checkbox\" c\n\n  h_ecked=\"\" disabled=\"\" type=\"checkbo`x\"> d`one tinput class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\nParagra\\]ph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inline<em>.</em>\n\n# Heading one\n\nTyped literal [[not a link]] stays text\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\nnon breaking spaces here"
+  "expected": "---\ntitle: \"Synthetic\"\ntags: [a, b]\n---\n\nParagraph linking [[Missing page]] inline.\n\n### H3 wi`cod]e`\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" \\`type=\"checkbox\"> open task\n\n- [ ] <input class=eckbox\" checked=\"\" disabled=\"\"\\` type=\"check[b](/alice/ws/tasks/TASK-3)ox\"> done task\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbotask\n\n> quoted line second line gamma\n\nParagraph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inline.\n\nPa[custom text](/alice/ws/plans/PLAN-7) inline.\n\n- [ ] <input c\n  sk\n  lass=\"task-list-item-checkbox\" disabled=\"\" typ\\]e=\"checkbox\"> open task\n\n- [ ] <input class=t-beta item-checkbox\" c\n\n  h_ecked=\"\" disabled=\"\" type=\"checkbo`x\"> d`one tinput class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\nParagra\\]ph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inline<em>.</em>\n\n# Heading one\n\nTyped literal [[not a link]] stays text\n\n```mermaid\ngraph TD\n  A-->B\n```\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\nnon breaking spaces here"
  },
  {
   "name": "seed-134623",
@@ -1030,7 +1030,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "| a | b |\n| --- | --- |\n| 1 | 2 |\n| **x** |  |\n\n> <strong>ll\\\\o.</strong>World, He<em>ld</em>, a<s>(x)b an</s>d <strong>plain</strong> ld\n\n```mermaid\ngrap*h TD\n δelta A-->B\n```\n\n```\nplain fence\n```\n\n\\- not\n\n-  [[other::TASK-9|a]] list item\\\n  \\# n\\\n  ot a he_ading\\\n  \\>\n\n *ading*\n\n> quote**d line\n> s**econd line"
+  "expected": "| a | b |\n| --- | --- |\n| 1 | 2 |\n| **x** |  |\n\n> <strong>ll\\\\o.</strong>World, He<em>ld</em>, a<s>(x)b an</s>d <strong>plain</strong> ld\n\n```mermaid\ngrap*h TD\n δelta A-->B\n```\n\n```\nplain fence\n```\n\n\\- not\n\n-  [[other::TASK-9|a]] list item\n  \\# n\n  ot a he_ading\n  \\>\n\n *ading*\n\n> quote**d line\n> s**econd line"
  },
  {
   "name": "seed-142542",
@@ -1091,7 +1091,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Paragraph linking [[other::TASK-9|other::TAS\\\\K-9]] inline.\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\n---\n\n```mermaid\nParagraph linking un_known inline.\n```\n\n**Hello.**World, **H**ello<em>.Wor</em>**n** bold\\\n\\- not a *list it*em\\\n\\# not a heading\\\n\\> not a quote\n\nParagr|ah linking gamma [exte\\\\rnal](https://example.com/a?b=c) inline.\n\nParagraph linking [[BUG-12|a dup]] i\\\nn|line."
+  "expected": "Paragraph linking [[other::TASK-9|other::TAS\\\\K-9]] inline.\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\n---\n\n```mermaid\nParagraph linking un_known inline.\n```\n\n**Hello.**World, **H**ello<em>.Wor</em>**n** bold\n\\- not a *list it*em\n\\# not a heading\n\\> not a quote\n\nParagr|ah linking gamma [exte\\\\rnal](https://example.com/a?b=c) inline.\n\nParagraph linking [[BUG-12|a dup]] i\nn|line."
  },
  {
   "name": "seed-150461",
@@ -1158,7 +1158,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "```frontmatter\ntitle: \"Synthetic\"\ntagss\\pa\n```\n\n```frontmatter\nces here\n```\n\nParagraph linking Missing page inlon\n\ne\n\nAutolink e.com/path here\n\n> Par\n>\n> agraph linking [[other::TASK-9|other::TASK<strong>-9</strong>]] **inl**ine.\n\n## Sub *h*\n\n## *eading*\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n- [ ] H3\\] wit`h cod`\\\n  `e`\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
+  "expected": "```frontmatter\ntitle: \"Synthetic\"\ntagss\\pa\n```\n\n```frontmatter\nces here\n```\n\nParagraph linking Missing page inlon\n\ne\n\nAutolink e.com/path here\n\n> Par\n>\n> agraph linking [[other::TASK-9|other::TASK<strong>-9</strong>]] **inl**ine.\n\n## Sub *h*\n\n## *eading*\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n- [ ] H3\\] wit`h cod`\n  `e`\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
  },
  {
   "name": "seed-158380",
@@ -1311,7 +1311,7 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "Paragraph linking [custom text](/alice/ws/plans/PLAN-7) inline.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\nParagraph linking [external](https://example.com/a?b=c) inline.\n\n- one\n- two\n  \n\n- [ ] nested\n\n- three\n\nParagraph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inline.\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"che\n\n- [ ] <input class=\"task-listchecked=\"\" disabled=\"\" type=\"checkbox\"> done task\n\n  - [ ] <input class=\"taskist-item-checkbaalphalphaox\" dδeltaisabled=\"\" type=\"checkbox\"> nest`ed task`\n\n---\n\nnon breaking spaces here\n\n# Heading one\n\n---\n\nLine one\\\nline two\n\n<input class=\"task-listem-checkbox\" disabled\"checkbox\"> open task\n\n- [ ] <inpubeta t class=\"task-list-item-che\\`ckbox\" checked=\"\" disa\\\n  bled=~~\"\" typ~~e=\"checkbox\"> done task\n\n  - [ ] <input class=\"t\n\n    ask-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\n> quoted line second line\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline."
+  "expected": "Paragraph linking [custom text](/alice/ws/plans/PLAN-7) inline.\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\nParagraph linking [external](https://example.com/a?b=c) inline.\n\n- one\n- two\n  \n\n- [ ] nested\n\n- three\n\nParagraph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inline.\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"che\n\n- [ ] <input class=\"task-listchecked=\"\" disabled=\"\" type=\"checkbox\"> done task\n\n  - [ ] <input class=\"taskist-item-checkbaalphalphaox\" dδeltaisabled=\"\" type=\"checkbox\"> nest`ed task`\n\n---\n\nnon breaking spaces here\n\n# Heading one\n\n---\n\nLine one\nline two\n\n<input class=\"task-listem-checkbox\" disabled\"checkbox\"> open task\n\n- [ ] <inpubeta t class=\"task-list-item-che\\`ckbox\" checked=\"\" disa\n  bled=~~\"\" typ~~e=\"checkbox\"> done task\n\n  - [ ] <input class=\"t\n\n    ask-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\n> quoted line second line\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline."
  },
  {
   "name": "seed-182137",
@@ -1376,7 +1376,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Paragraph linking [[TASK-3]] inline.\n\nParagraph\n\n \n\nlin\n\nking \\\n[[BUG-12|a d]]\n\n[[BUG-12|upbeta]]  inline.\n\n# Plain [[TASK-3|par]]*ag*r[[TASK-3|a]]ph with **bold**, *italichttps://x.tbeta est/p*, ~~stri~~with `c\\ode`\n\n> quoted\n>\n>  lin line\n\nnon&nbsp;breaking&nbsp;spac&lt;b>es here\n\n## Sub *hea\\[ding*\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nParagraph linking [external](https://example.com/a?b=c) inline."
+  "expected": "Paragraph linking [[TASK-3]] inline.\n\nParagraph\n\n \n\nlin\n\nking \n[[BUG-12|a d]]\n\n[[BUG-12|upbeta]]  inline.\n\n# Plain [[TASK-3|par]]*ag*r[[TASK-3|a]]ph with **bold**, *italichttps://x.tbeta est/p*, ~~stri~~with `c\\ode`\n\n> quoted\n>\n>  lin line\n\nnon&nbsp;breaking&nbsp;spac&lt;b>es here\n\n## Sub *hea\\[ding*\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nParagraph linking [external](https://example.com/a?b=c) inline."
  },
  {
   "name": "seed-190056",
@@ -1444,7 +1444,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "```frontmatter\ntitle: \"Synthetic\"\ntags[a, bbet\n```\n\n```frontmatter\na ]\n```\n\nLin\\*e one\\\nline two\n\nPlain` parag`raph wi**th bold**, *ita***~~ke~~** and `code`.\n\nnon breaking spaces https://x.test/phere\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>p</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\nParagra\n\nph linking [[other::TASK-9|other::T]]in~~li~~ne.\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n---\n\n## Paragraph [li**nkin**](https://example.com)**g** [[PLAN-7|custom text]] inline.\n\n### Pamma [[other::TASK-9|shown]] inline."
+  "expected": "```frontmatter\ntitle: \"Synthetic\"\ntags[a, bbet\n```\n\n```frontmatter\na ]\n```\n\nLin\\*e one\nline two\n\nPlain` parag`raph wi**th bold**, *ita***~~ke~~** and `code`.\n\nnon breaking spaces https://x.test/phere\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>p</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\nParagra\n\nph linking [[other::TASK-9|other::T]]in~~li~~ne.\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n---\n\n## Paragraph [li**nkin**](https://example.com)**g** [[PLAN-7|custom text]] inline.\n\n### Pamma [[other::TASK-9|shown]] inline."
  },
  {
   "name": "seed-197975",
@@ -1521,7 +1521,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "| Head |\n| --- |\n| list in a cell\n\n |\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\nParagraph linking [[BUG-12|a dup]] inline.\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\\\n\\- not a list item\\\n\\# not a heading\\\n\\> not a quote\n\n- [ ] <strong>Hello.</strong>World, Hello<em>.<strong>Worl</strong>d</em>, a<s>(x)</s>b and <strong>plain</strong> bold\\\n  \\- not a list item\\\n  \\# not a heading\\\n  \\> not a quote\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n- [ ] <input class=\"task-list-item-checkb\\\\ox\" disabled=\"\" type=\n\n  \"checkbox\"> open task\n\n- [ ] <input class=\"task-list-italphaem-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" dδeltaisabled=\"\" type=\"checkbox\"> nested task\n\nParagr gammaaph linking [[Missing page]] inline.\n\n1. <strong>Hello.</strong>World, He<em>l</em>lo<em>.World</em>, a<s>(x)</s>b and <strong>plain</strong> bold\\\n   \\- not a list item\\\n   \\# not a heading\\\n   \\> not a quote\n\n# <input class=\"[t](https://example.com)ask-list-item-checkbox\" disabled=\"\" type=\"\\]che[ckbox\">](https://example.com) open task\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"ta#sk-list-item-checkbox\" checked=\"\" disabled=\"\n\n  \" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n\n- [ ] <input class=\"task-list-item-checkbox#\" checked\n\n  =\"\" disabled=\"\" type gamma=\"checkbox\"> done\\\n   |task\n\n```go\n<input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n```\n\n---\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b a\\*nd **plain** bold\\\n\\- not a list item\\\n\\# not a he~~a~~ding\\\n\\> not a quo|te\n\n| Head |\n| --- |\n| list in cell\n\n |\n"
+  "expected": "| Head |\n| --- |\n| list in a cell\n\n |\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\nParagraph linking [[BUG-12|a dup]] inline.\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\n\\- not a list item\n\\# not a heading\n\\> not a quote\n\n- [ ] <strong>Hello.</strong>World, Hello<em>.<strong>Worl</strong>d</em>, a<s>(x)</s>b and <strong>plain</strong> bold\n  \\- not a list item\n  \\# not a heading\n  \\> not a quote\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n- [ ] <input class=\"task-list-item-checkb\\\\ox\" disabled=\"\" type=\n\n  \"checkbox\"> open task\n\n- [ ] <input class=\"task-list-italphaem-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" dδeltaisabled=\"\" type=\"checkbox\"> nested task\n\nParagr gammaaph linking [[Missing page]] inline.\n\n1. <strong>Hello.</strong>World, He<em>l</em>lo<em>.World</em>, a<s>(x)</s>b and <strong>plain</strong> bold\n   \\- not a list item\n   \\# not a heading\n   \\> not a quote\n\n# <input class=\"[t](https://example.com)ask-list-item-checkbox\" disabled=\"\" type=\"\\]che[ckbox\">](https://example.com) open task\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"ta#sk-list-item-checkbox\" checked=\"\" disabled=\"\n\n  \" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n\n- [ ] <input class=\"task-list-item-checkbox#\" checked\n\n  =\"\" disabled=\"\" type gamma=\"checkbox\"> done\n   |task\n\n```go\n<input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n```\n\n---\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b a\\*nd **plain** bold\n\\- not a list item\n\\# not a he~~a~~ding\n\\> not a quo|te\n\n| Head |\n| --- |\n| list in cell\n\n |\n"
  },
  {
   "name": "seed-205894",
@@ -1588,7 +1588,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Paragraph linking [external](https://example.com/a?b=c) inlin\\\\e.\n\nP\n\n> aragraph linking [[TASK-3]] inline.\n\n- Para`graph link`ing [[TASK-3]] \\\n  inline.\n\n1. raph linkinbeta g [[TASK-3|F\\|ix login]] inline.\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n- Paragr#aph linking [[TASK-3|esc [[ text]] inline.\n\n# Headi\n\n# ng one\n\nParagraph linkin\n\ng [[other::TASK-9|shown]]aragraph\\\n #li&lt;b>nking [[other::TASK-9|shown]] inline."
+  "expected": "Paragraph linking [external](https://example.com/a?b=c) inlin\\\\e.\n\nP\n\n> aragraph linking [[TASK-3]] inline.\n\n- Para`graph link`ing [[TASK-3]] \\\n  inline.\n\n1. raph linkinbeta g [[TASK-3|F\\|ix login]] inline.\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n- Paragr#aph linking [[TASK-3|esc [[ text]] inline.\n\n# Headi\n\n# ng one\n\nParagraph linkin\n\ng [[other::TASK-9|shown]]aragraph\n #li&lt;b>nking [[other::TASK-9|shown]] inline."
  },
  {
   "name": "seed-213813",
@@ -1663,7 +1663,7 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "Paragraph\n\n#  ~~link~~ing [Fi\\`x login](/alice/ws/tasks/TASK-3) inline.\n\n## Sub\\\n *headinalphag*\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nTyped liδeemoji 🎉ltateral \\[\\[n\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\noxt\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n1. Paragraph li\\\n   nking [<strong>Fix</strong> l\\[in](/alice/ws/tasks/TASK-3) in`l`ineemoj<strong>i <em>🎉</em></strong><em>.</em>"
+  "expected": "Paragraph\n\n#  ~~link~~ing [Fi\\`x login](/alice/ws/tasks/TASK-3) inline.\n\n## Sub\\\n *headinalphag*\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nTyped liδeemoji 🎉ltateral \\[\\[n\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\noxt\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n1. Paragraph li\n   nking [<strong>Fix</strong> l\\[in](/alice/ws/tasks/TASK-3) in`l`ineemoj<strong>i <em>🎉</em></strong><em>.</em>"
  },
  {
   "name": "seed-229651",
@@ -1719,7 +1719,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "<input c[lass=\"t](https://example.com)ask-list\\\n disabled=\"\" tyalphape=\"checkbo\n\nx\"> open task\n\n- [ ] <input class=\"task-list\\\n  -item-checkbox\" checked=\"\" =\"checkbox\"> done task\n\n1. <input class=\"\\*task-list-item-checkbox\" disabled=\"\" type=\\\n   \"checkbox\"> nested task\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}[[TASK-3|\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\nParagraph linking [esc [[ text]] inline.\n\nParagraph linking [[Missing page]] inl\n\nine."
+  "expected": "<input c[lass=\"t](https://example.com)ask-list\n disabled=\"\" tyalphape=\"checkbo\n\nx\"> open task\n\n- [ ] <input class=\"task-list\n  -item-checkbox\" checked=\"\" =\"checkbox\"> done task\n\n1. <input class=\"\\*task-list-item-checkbox\" disabled=\"\" type=\n   \"checkbox\"> nested task\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}[[TASK-3|\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\nParagraph linking [esc [[ text]] inline.\n\nParagraph linking [[Missing page]] inl\n\nine."
  },
  {
   "name": "seed-237570",
@@ -1788,7 +1788,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "- [ ] <input\\[ class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input classbeta =\"task-listem-checkbox\" checked=\"\" di\n\n  sabled=\"\" type=\"checkbox\"> done task\n\n1. <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested tas~~k~~\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-it\\\n    em-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n- [ ] <input class=\"task-lissabled=\"\" tyalphape=\"checkbox\"> open task\n\n- [ ] <in\\\\put class=\"task-list-item-checkbox\" chec\\\n  ked=\"**\" dis~~a~~**~~bled=~~\"\" type=\"checkbox<strong>\"> don</strong>e task\n\n  - [ ] <alphainput class=\"task<s>-s</s>t-item-\n\n    checkbox\" disabled=\"\" type=\"checkbox\"> n|ested task\n\n- one\n- two\n  - nested\n- three\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\nParagraph linking [[Legacy doc]] inline.\n\nAutolink https://example.com/path here\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>"
+  "expected": "- [ ] <input\\[ class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input classbeta =\"task-listem-checkbox\" checked=\"\" di\n\n  sabled=\"\" type=\"checkbox\"> done task\n\n1. <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> nested tas~~k~~\n\n- [ ] <input class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n  \n\n  - [ ] <input class=\"task-list-it\n    em-checkbox\" disabled=\"\" type=\"checkbox\"> nested task\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n- [ ] <input class=\"task-lissabled=\"\" tyalphape=\"checkbox\"> open task\n\n- [ ] <in\\\\put class=\"task-list-item-checkbox\" chec\n  ked=\"**\" dis~~a~~**~~bled=~~\"\" type=\"checkbox<strong>\"> don</strong>e task\n\n  - [ ] <alphainput class=\"task<s>-s</s>t-item-\n\n    checkbox\" disabled=\"\" type=\"checkbox\"> n|ested task\n\n- one\n- two\n  - nested\n- three\n\n<table class=\"table-wrapper\" style=\"min-width: 145px;\">\n<colgroup><col style=\"width: 120px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>wide</p></td><td><p>narrow</p></td></tr></tbody>\n</table>\n\nParagraph linking [[Legacy doc]] inline.\n\nAutolink https://example.com/path here\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>"
  },
  {
   "name": "seed-245489",
@@ -1851,7 +1851,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "```frontmatter\ngraph TD\n  A-->B\n```\n\n- one\n- two\n  \n  - neste\n\n    d\n- t~~hree~~\n\nPla\n\nin p\n\n- [ ] aragraph with **bo\\`ld**, *italic*, ~~strike~~ and `code`\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n> - [ ] quoted e\n>   second line\n\n---\n\n> Typed literal [[\\\n> not a link]] stays t#ext\n\nParagr[xterna](https://example.com/a?b=c)"
+  "expected": "```frontmatter\ngraph TD\n  A-->B\n```\n\n- one\n- two\n  \n  - neste\n\n    d\n- t~~hree~~\n\nPla\n\nin p\n\n- [ ] aragraph with **bo\\`ld**, *italic*, ~~strike~~ and `code`\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n> - [ ] quoted e\n>   second line\n\n---\n\n> Typed literal [[\n> not a link]] stays t#ext\n\nParagr[xterna](https://example.com/a?b=c)"
  },
  {
   "name": "seed-253408",
@@ -1977,7 +1977,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "See [[TASK-3]] and [[Roa#dmap]]\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}\n```\n\n- [ ] <input class=\"task#-list-item-checkbox\" disabled=\"\" t\n\n  ype=\"checkbox\"> open t\n\n  ask\n\n- [ ] <input class=\"task-emoji 🎉list-item-checkbox\" checked=\"\" disabled=\"\" type=\"check&lt;b>box\"> done task\n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled gamma=\"\" type=\"checkbox\"> nested task\n\nLine o\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\\\n\\- not a list item\\\n\\# not a heading\\\n\\> not a quote\n\n1. first\n2. second\n3. third\n\nine two\n\nPara\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\ngalpharaph linking [[BUG-12|a dup]] inline.\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\\\n\\- not a list item\\\n\\# not a heading\\\n\\> not aHeading \n\nSee [[TASK-3]] and [[Roadmap]]\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}δelta\n```\n\nParagraph linking [[BUG-12|a dup]] inline.\n\nAutolink https://example.com"
+  "expected": "See [[TASK-3]] and [[Roa#dmap]]\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}\n```\n\n- [ ] <input class=\"task#-list-item-checkbox\" disabled=\"\" t\n\n  ype=\"checkbox\"> open t\n\n  ask\n\n- [ ] <input class=\"task-emoji 🎉list-item-checkbox\" checked=\"\" disabled=\"\" type=\"check&lt;b>box\"> done task\n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled gamma=\"\" type=\"checkbox\"> nested task\n\nLine o\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\n\\- not a list item\n\\# not a heading\n\\> not a quote\n\n1. first\n2. second\n3. third\n\nine two\n\nPara\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\ngalpharaph linking [[BUG-12|a dup]] inline.\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b and **plain** bold\n\\- not a list item\n\\# not a heading\n\\> not aHeading \n\nSee [[TASK-3]] and [[Roadmap]]\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}δelta\n```\n\nParagraph linking [[BUG-12|a dup]] inline.\n\nAutolink https://example.com"
  },
  {
   "name": "seed-269246",
@@ -2048,7 +2048,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Line one\\\nline two\n\nParagr[[doc]][[other::TASK-9| inlin]]e.\n\nta raph linking \\\n[[TASK-3|Fix ]]\n\n[[TASK-3|**login**]] inlin`e.`\n\n- one\n- two\n  \n  - nested\n- three\n\nnon breaking spaces here\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><pre class=\"code-block\"><code class=\"language-frontmatter\">para one</code></pre><p></p><p>para two</p></td><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n- one\n- two\n  \n  - nestbeta ed\n- three\n\n> **Hell**o and **plai**\\\n> **n** bold\\\n> \\- \\\n> not a\n>\n>  li\n>\n> st item\\\n> \\# not a heading\\\n> \\> not \n>\n> a q\\\n> uote\n\n```\nplain fence\n```\n\n# Heading one"
+  "expected": "Line one\nline two\n\nParagr[[doc]][[other::TASK-9| inlin]]e.\n\nta raph linking \n[[TASK-3|Fix ]]\n\n[[TASK-3|**login**]] inlin`e.`\n\n- one\n- two\n  \n  - nested\n- three\n\nnon breaking spaces here\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><pre class=\"code-block\"><code class=\"language-frontmatter\">para one</code></pre><p></p><p>para two</p></td><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n- one\n- two\n  \n  - nestbeta ed\n- three\n\n> **Hell**o and **plai**\n> **n** bold\n> \\- \n> not a\n>\n>  li\n>\n> st item\n> \\# not a heading\n> \\> not \n>\n> a q\n> uote\n\n```\nplain fence\n```\n\n# Heading one"
  },
  {
   "name": "seed-277165",
@@ -2090,7 +2090,7 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "Autolink h\\\nttpalphas://example.com/path here\n\n> 1. quoted line secoemoji 🎉nd line\\\\\n\nP\\\na\\*ragraph linking [[Missing page]] inline.\n\n```\nplain fence\n```\n\nParagraph linki|ng [external](https://example.com/a?b=c) inline.\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\nPa\n\n> ragra\n\nph  [custom te\\\\xt](/alice/ws/plans/PLAN-7) inline.\n\nParag\\\n[custom](/alice/ws/plans/PLAN-7)\\\n[ text](/alice/ws/plans/PLAN-7) inlin*e.*\n\nTyped literal \\[\\[not `a link]`\\] stays thttps://x.test/pext\\*\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>xing <a class=\"editor-link\" data-href=\"/alice/ws/plans/PLAN-7\">custom text</a> inline.</p></td></tr></tbody>\n</table>"
+  "expected": "Autolink h\nttpalphas://example.com/path here\n\n> 1. quoted line secoemoji 🎉nd line\\\\\n\nP\na\\*ragraph linking [[Missing page]] inline.\n\n```\nplain fence\n```\n\nParagraph linki|ng [external](https://example.com/a?b=c) inline.\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\nPa\n\n> ragra\n\nph  [custom te\\\\xt](/alice/ws/plans/PLAN-7) inline.\n\nParag\n[custom](/alice/ws/plans/PLAN-7)\n[ text](/alice/ws/plans/PLAN-7) inlin*e.*\n\nTyped literal \\[\\[not `a link]`\\] stays thttps://x.test/pext\\*\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>xing <a class=\"editor-link\" data-href=\"/alice/ws/plans/PLAN-7\">custom text</a> inline.</p></td></tr></tbody>\n</table>"
  },
  {
   "name": "seed-285084",
@@ -2149,7 +2149,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b &lt;b>and **plain** bold\\\n\\- not a list item\\\n\\# not a heading\\\n\\> not anput class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- <input class=\"task-list-item-check\\\n  box\" checked=\"\" disabled\n\n=\"\\`\" typ=\"checkbox\"> done task\n\n- [ ] <inask-list-item-checkbox\" disabled=\"\"kbox\"> neste\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n---\n\nSee [[TASK-3]] and [[Roadmap]]\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
+  "expected": "<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\nParagraph linking [unknown](/alice/ws/tasks/TASK-999) inline.\n\n**Hello.**World, Hello<em>.World</em>, a<s>(x)</s>b &lt;b>and **plain** bold\n\\- not a list item\n\\# not a heading\n\\> not anput class=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n- <input class=\"task-list-item-check\n  box\" checked=\"\" disabled\n\n=\"\\`\" typ=\"checkbox\"> done task\n\n- [ ] <inask-list-item-checkbox\" disabled=\"\"kbox\"> neste\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n| x | y |\n\n---\n\nSee [[TASK-3]] and [[Roadmap]]\n\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)"
  },
  {
   "name": "seed-293003",
@@ -2215,7 +2215,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "non breaking spaces here\n\nParagraph linking [[BUG-12|a dup]] inline.\n\nParagraph lin#king [[TASK-3|Fix]]` lo`[[TASK-3|gin]] inn\\]put class\\*=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n> <input clahttps://x.test/pss=\"tas\\\n> k-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n\n- [ ] <input c\\*lass=\"t\\\n  ckbox\" disabled=\"\" type=\"\\\n  checkbox\"> nested task\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n# Heading one\n\nParagraph linking [[other::TASK-9]] inli [[TASK-3]] and \\[\\[Road\n\n```\nplain fence\n```\n\n### H3 with `code`"
+  "expected": "non breaking spaces here\n\nParagraph linking [[BUG-12|a dup]] inline.\n\nParagraph lin#king [[TASK-3|Fix]]` lo`[[TASK-3|gin]] inn\\]put class\\*=\"task-list-item-checkbox\" disabled=\"\" type=\"checkbox\"> open task\n\n> <input clahttps://x.test/pss=\"tas\n> k-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n\n- [ ] <input c\\*lass=\"t\n  ckbox\" disabled=\"\" type=\"\n  checkbox\"> nested task\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n# Heading one\n\nParagraph linking [[other::TASK-9]] inli [[TASK-3]] and \\[\\[Road\n\n```\nplain fence\n```\n\n### H3 with `code`"
  },
  {
   "name": "seed-300922",
@@ -2281,7 +2281,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "1. \n\n   `fi*rsealpha]`\\\n   `moji 🎉`t\n\nAuto**link** https://example.com/path here\n\n## second\n\n1. t\n\n   hird\n\n\\\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\n- [ ] p~~la~~in fence\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th><p>H</p><p>ead</p></th></tr><tr><td><ul class=\"tight\" data-tight=\"true\"><li><p>list in a cell</p></li></ul></td></tr></tbody>\n</table>\n\nParagrap|h **l[n\\[](/alice/ws/tasks/TASK-999) in**line[.](https://example.com)\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><blockquote><p>with <br>image</p></blockquote><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>"
+  "expected": "1. \n\n   `fi*rsealpha]`\n   `moji 🎉`t\n\nAuto**link** https://example.com/path here\n\n## second\n\n1. t\n\n   hird\n\n\\\n[report.pdf](pad-attachment:a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d)\n\n- [ ] p~~la~~in fence\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th><p>H</p><p>ead</p></th></tr><tr><td><ul class=\"tight\" data-tight=\"true\"><li><p>list in a cell</p></li></ul></td></tr></tbody>\n</table>\n\nParagrap|h **l[n\\[](/alice/ws/tasks/TASK-999) in**line[.](https://example.com)\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><blockquote><p>with <br>image</p></blockquote><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>"
  },
  {
   "name": "seed-308841",
@@ -2333,7 +2333,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "---\ntitle: \"Synthetic\"\ntags: [a, b]\n---\n\nPlain paremoji 🎉agraph with , *italic*, ~~st#rike~~ and `code`.\n\n## Sub *headinbeta g*\n\n## Sub *heading*\n\nfunc main() {\\\n\tprint_l\\\n}\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n```\nplain f\n```"
+  "expected": "---\ntitle: \"Synthetic\"\ntags: [a, b]\n---\n\nPlain paremoji 🎉agraph with , *italic*, ~~st#rike~~ and `code`.\n\n## Sub *headinbeta g*\n\n## Sub *heading*\n\nfunc main() {\n\tprint_l\n}\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n```\nplain f\n```"
  },
  {
   "name": "seed-316760",
@@ -2472,7 +2472,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "```go\nfunc i\")}\n```\n\n<table class=\"table-wrapper\" style=\"width: 120px;\">\n<colgroup><col style=\"width: 120px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>row</p></td></tr></tbody>\n</table>\n\nPar[[BUG-12|p]] inlinebeta .\\\\\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\nar\n\nParagraph l*inkin*g [[other::TASK-9|shown]] inline.\n\n- agraph lin\\\n  king [[Missing p\\_]]\\\n  [[age]] i gamman<bemoji 🎉\n\n  \\>line.\n\n1. Paragraph linking [[TASK-3|esc [[ te]]aragr**ht**tps:\\\\//x.test/paph \\\n   linking [[TASK-3|Fihttps://x.test/px login]] inline."
+  "expected": "```go\nfunc i\")}\n```\n\n<table class=\"table-wrapper\" style=\"width: 120px;\">\n<colgroup><col style=\"width: 120px;\"></colgroup><tbody><tr><td colwidth=\"120\"><p>row</p></td></tr></tbody>\n</table>\n\nPar[[BUG-12|p]] inlinebeta .\\\\\n\n| Head |\n| --- |\n| list in a cell\n\n |\n\nar\n\nParagraph l*inkin*g [[other::TASK-9|shown]] inline.\n\n- agraph lin\n  king [[Missing p\\_]]\n  [[age]] i gamman<bemoji 🎉\n\n  \\>line.\n\n1. Paragraph linking [[TASK-3|esc [[ te]]aragr**ht**tps:\\\\//x.test/paph \n   linking [[TASK-3|Fihttps://x.test/px login]] inline."
  },
  {
   "name": "seed-332598",
@@ -2530,7 +2530,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "- [ ] <input cla\\\n  ss=\"task-list-it&lt;b>em-checkbox\" disabled=\"\" type=\"checkbox\"> open\\\n  sabled=\"\" type=\"checkbox\"> open\n\n   task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\n\n    \" type=\"chkbox\"> nested task\n\n> quoted lnd line\n\nParagraph linking [[Missing page]] inline.\n\nParagraph linking [[TASK-3|es\\]c [[ text]] inline.\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n# Headiemoji 🎉ng one\n\n### H3 with `co`\\\n`de`\n\nfunc m|ain() {\\\n\tprintln(\"hi\")\\\n}\n\n# Paragraph linking [[other::TASK-9|shown]] inline."
+  "expected": "- [ ] <input cla\n  ss=\"task-list-it&lt;b>em-checkbox\" disabled=\"\" type=\"checkbox\"> open\n  sabled=\"\" type=\"checkbox\"> open\n\n   task\n\n- [ ] <input class=\"task-list-item-checkbox\" checked=\"\" disabled=\"\" type=\"checkbox\"> done task\n\n  - [ ] <input class=\"task-list-item-checkbox\" disabled=\"\n\n    \" type=\"chkbox\"> nested task\n\n> quoted lnd line\n\nParagraph linking [[Missing page]] inline.\n\nParagraph linking [[TASK-3|es\\]c [[ text]] inline.\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n# Headiemoji 🎉ng one\n\n### H3 with `co`\\\n`de`\n\nfunc m|ain() {\n\tprintln(\"hi\")\n}\n\n# Paragraph linking [[other::TASK-9|shown]] inline."
  },
  {
   "name": "seed-340517",
@@ -2562,7 +2562,7 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "# plain wide\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>narrow</p></td></tr></tbody>\n</table>\n\n- one\n- two\n  \n  - nested\n- thre\n\n  e\n\n- [ ] e [[T\\\n  A#SK-3]] and [[Roadmap]]\n\nPar&lt;b>ag_raph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inlinδeltae.\n\nParag\\]r\n\nSee [[TASK-3]] and [[Roadmap]]\n\naph lline.\n\n---\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```"
+  "expected": "# plain wide\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>narrow</p></td></tr></tbody>\n</table>\n\n- one\n- two\n  \n  - nested\n- thre\n\n  e\n\n- [ ] e [[T\n  A#SK-3]] and [[Roadmap]]\n\nPar&lt;b>ag_raph linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) inlinδeltae.\n\nParag\\]r\n\nSee [[TASK-3]] and [[Roadmap]]\n\naph lline.\n\n---\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```"
  },
  {
   "name": "seed-348436",
@@ -2629,7 +2629,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "```mermaid\ngraph TD\n  A-->B\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th><p>H</p><p>ead</p></th></tr><tr><td><p>list in<br> a cell</p></td></tr></tbody>\n</table>\n\nParagraph linemoji 🎉king [[PLAN-7|custom text]] inline.\n\n## Salphaub\\[[ *heading*\n\n> Paragraph linking [Legacy]]\n\n[[ doc]] inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n- Pa\\\n  ragraph l**i**nk\n\n  ing [[BUG-12|a]] *headingading*\n- graph TD\n    A-->B\n- Pa\\\n  ragraph linki"
+  "expected": "```mermaid\ngraph TD\n  A-->B\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><th><p>H</p><p>ead</p></th></tr><tr><td><p>list in<br> a cell</p></td></tr></tbody>\n</table>\n\nParagraph linemoji 🎉king [[PLAN-7|custom text]] inline.\n\n## Salphaub\\[[ *heading*\n\n> Paragraph linking [Legacy]]\n\n[[ doc]] inline.\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n- Pa\n  ragraph l**i**nk\n\n  ing [[BUG-12|a]] *headingading*\n- graph TD\n    A-->B\n- Pa\n  ragraph linki"
  },
  {
   "name": "seed-356355",
@@ -2743,7 +2743,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "Line one\\\nline two\n\n```frontmatter\ntitle: \"Synthetic\"https://x.test/p\ntags: [a, b]\n```\n\n```\nplain fence\n```\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n1. first\n2. seco\\`nd\n3. third\n\n---\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n# Pah link[[TASK-3|in]] i\\\nnl"
+  "expected": "Line one\nline two\n\n```frontmatter\ntitle: \"Synthetic\"https://x.test/p\ntags: [a, b]\n```\n\n```\nplain fence\n```\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n1. first\n2. seco\\`nd\n3. third\n\n---\n\nParagraph linking [[PLAN-7|custom text]] inline.\n\n# Pah link[[TASK-3|in]] i\\\nnl"
  },
  {
   "name": "seed-372193",
@@ -2842,7 +2842,7 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\nParagrap*h l*`i`*nk*ing [*Leg*acy doc](/alice/ws/docs/legacy-doc) inline.\n\n- [ ] Line one\\\n  line t#wo\n\n### H3alpha&lt;b> with ng spaces here\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nPlain paragraph with **bo**\\\n**ld**, *italic*, ~~strik~~\\\n~~e~~ and `code`.\n\nParagrap#\\\nh linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) \n\nin~~li~~n\\\ne\\\n.\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\n| a | b |\n| --- | --- |\n| 1 | y |\n\nPlain paragraph with **bold**, *italic*, ~~strike~~ \n\nand `code`.\n\nAutolink https://example.com/path here\n\nAutolink https://example.com/path here"
+  "expected": "```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\nParagrap*h l*`i`*nk*ing [*Leg*acy doc](/alice/ws/docs/legacy-doc) inline.\n\n- [ ] Line one\n  line t#wo\n\n### H3alpha&lt;b> with ng spaces here\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\nPlain paragraph with **bo**\n**ld**, *italic*, ~~strik~~\n~~e~~ and `code`.\n\nParagrap#\nh linking [esc \\[\\[ text](/alice/ws/tasks/TASK-3) \n\nin~~li~~n\ne\n.\n\n<table class=\"table-wrapper\" style=\"min-width: 50px;\">\n<colgroup><col style=\"min-width: 25px;\"><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>para one</p><p>para two</p></td><td><p>x</p></td></tr></tbody>\n</table>\n\n| a | b |\n| --- | --- |\n| 1 | y |\n\nPlain paragraph with **bold**, *italic*, ~~strike~~ \n\nand `code`.\n\nAutolink https://example.com/path here\n\nAutolink https://example.com/path here"
  },
  {
   "name": "seed-388031",
@@ -2896,7 +2896,7 @@
    }
   ],
   "workspace_slug": "ws",
-  "expected": "- one\n- two\n  - nested\n\n---\n\n- [ ] three\n\nPa\\*ragraph linking [[Legacy do]]\\\n[[c]] inline.\n\nLine one\\\n\\\nline two\n\n*See [[T*ASK-3]] and [[Roadmap]]\n\n### alphaH3 with `code`\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n1. \n2. thbeta ird\n\nParagraph linking [[Missing page]] inline."
+  "expected": "- one\n- two\n  - nested\n\n---\n\n- [ ] three\n\nPa\\*ragraph linking [[Legacy do]]\n[[c]] inline.\n\nLine one\n\\\nline two\n\n*See [[T*ASK-3]] and [[Roadmap]]\n\n### alphaH3 with `code`\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\n```html\n<div class=\"note\">raw <b>html</b> block</div>\n```\n\n1. \n2. thbeta ird\n\nParagraph linking [[Missing page]] inline."
  },
  {
   "name": "seed-395950",
@@ -2925,6 +2925,6 @@
   ],
   "link_index": [],
   "workspace_slug": "ws",
-  "expected": "Paragraph linking [[Missing page]]\\\n inline.\n\n- title: \"Synthetic#\"\n  tags: \\[a, b\\]\n\n| Head |\n| --- |\n| list in a ce<br>ll\n\n |\n\n1. Typed literal [[not a link]] stays tt\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}\n```\n\nnon&nbsp;*breaki*ng&nbsp;spaces here\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with `image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\nParagraph lin\\]king [Legacy doc](/alice/ws/docs/legacy-doc) \n\ninline.\n\n- o\\\n  ne\n- two\n  \n  - nested\n- three"
+  "expected": "Paragraph linking [[Missing page]]\n inline.\n\n- title: \"Synthetic#\"\n  tags: \\[a, b\\]\n\n| Head |\n| --- |\n| list in a ce<br>ll\n\n |\n\n1. Typed literal [[not a link]] stays tt\n\n```go\nfunc main() {\n\tprintln(\"hi\")\n}\n```\n\nnon&nbsp;*breaki*ng&nbsp;spaces here\n\n<table class=\"table-wrapper\" style=\"min-width: 25px;\">\n<colgroup><col style=\"min-width: 25px;\"></colgroup><tbody><tr><td><p>with `image</p><p><img data-attachment-id=\"0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b\" alt=\"shot\" src=\"/api/v1/workspaces/ws/attachments/0b1f3c9e-1d2a-4e5f-8a9b-0c1d2e3f4a5b?variant=thumb-md\" loading=\"lazy\" class=\"attachment-image\"></p></td></tr></tbody>\n</table>\n\n![diagram](pad-attachment:5c6d7e8f-9a0b-4c1d-8e2f-3a4b5c6d7e8f)\n\nParagraph lin\\]king [Legacy doc](/alice/ws/docs/legacy-doc) \n\ninline.\n\n- o\n  ne\n- two\n  \n  - nested\n- three"
  }
 ]

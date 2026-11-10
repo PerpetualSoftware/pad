@@ -54,6 +54,6 @@ describe('ItemDetail primes the canonical seed while the editor is alive (BUG-31
 		const at = SCRIPT.indexOf('ctx.seedMd = unescapeDocLinks(seedMd);');
 		expect(at, 'the lazy seed no longer replaces seedMd — re-point this pin').toBeGreaterThan(-1);
 		const after = SCRIPT.slice(at, at + 200);
-		expect(after).toMatch(/ctx\.seedMd = unescapeDocLinks\(seedMd\);\s*ctx\.seedCanonical = undefined;\s*collabFlusher\.prime\(ctx\);/);
+		expect(after).toMatch(/ctx\.seedMd = unescapeDocLinks\(seedMd\);\s*ctx\.seedCanonical = undefined;\s*ctx\.seedFlat = undefined;\s*ctx\.legacyFlat = false;\s*collabFlusher\.prime\(ctx\);/);
 	});
 });

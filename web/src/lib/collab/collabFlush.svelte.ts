@@ -56,6 +56,9 @@ export interface CollabFlushContext {
 	 *  Computed on the first flush that needs it and memoized here; undefined
 	 *  until then. Whoever replaces `seedMd` must reset this to undefined. */
 	seedCanonical?: string;
+	/** Pre-upgrade parsing of the seed, used only for confirmed flat replays. */
+	seedFlat?: string;
+	legacyFlat?: boolean;
 }
 
 // CollabFlushResult discriminates the four outcomes a flush can produce:
@@ -116,6 +119,7 @@ export interface CollabFlusherConfig {
 	 *  when the editor is unavailable or either step throws, and the flush then
 	 *  compares against the seed alone, as it did before. Optional. */
 	canonicalize?: (markdown: string) => string | null;
+	canonicalizeFlat?: (markdown: string) => string | null;
 }
 
 export interface CollabFlusher {
@@ -153,6 +157,8 @@ export interface CollabFlusher {
 	 *  canonicalize against a destroyed editor. No-op when already memoized,
 	 *  when there is no seed, or when canonicalization is unavailable. */
 	prime(ctx: CollabFlushContext): void;
+	/** Classify the replay once, before local edits can resemble a flat seed. */
+	noteReplayed(ctx: CollabFlushContext, markdown: string): void;
 	/** Cancel the pending debounce without flushing. Leaves dedupe state intact. */
 	cancel(): void;
 	/** Reset the per-item dedupe baseline (`lastFlushedContent`). Call on item
@@ -186,9 +192,22 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 	// Memoize the editor's canonical form of the seed on the context (BUG-3197).
 	// A failed canonicalization is not memoized, so a later call retries.
 	function prime(ctx: CollabFlushContext): void {
-		if (ctx.seedMd === null || ctx.seedCanonical !== undefined || !config.canonicalize) return;
-		const canonical = config.canonicalize(ctx.seedMd);
-		if (canonical !== null) ctx.seedCanonical = config.normalize(canonical);
+		if (ctx.seedMd === null) return;
+		if (ctx.seedCanonical === undefined && config.canonicalize) {
+			const canonical = config.canonicalize(ctx.seedMd);
+			if (canonical !== null) ctx.seedCanonical = config.normalize(canonical);
+		}
+		if (ctx.seedFlat === undefined && config.canonicalizeFlat) {
+			const flat = config.canonicalizeFlat(ctx.seedMd);
+			if (flat !== null) ctx.seedFlat = config.normalize(flat);
+		}
+	}
+
+	function noteReplayed(ctx: CollabFlushContext, markdown: string): void {
+		if (ctx.legacyFlat !== undefined) return;
+		prime(ctx);
+		if (ctx.seedFlat === undefined || ctx.seedCanonical === undefined) return;
+		ctx.legacyFlat = config.normalize(markdown) === ctx.seedFlat && ctx.seedFlat !== ctx.seedCanonical;
 	}
 
 	function cancel(): void {
@@ -235,7 +254,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		// was alive (see prime); computed here otherwise, only when the exact
 		// compare misses.
 		if (lastFlushedContent === null && normalizedMarkdown !== ctx.seedMd) prime(ctx);
-		if (shouldDedupeEditorSpace(lastFlushedContent, ctx.seedMd, normalizedMarkdown, ctx.seedCanonical ?? null)) {
+		if (shouldDedupeEditorSpace(lastFlushedContent, ctx.seedMd, normalizedMarkdown, ctx.seedCanonical ?? null, ctx.legacyFlat ? ctx.seedFlat ?? null : null)) {
 			// This arm fires only before the session's first flush, so the
 			// server holds the baseline.
 			config.stampWatermark?.({ ws: ctx.wsSlug, itemId: ctx.itemId, content: ctx.baseline, keepalive });
@@ -338,6 +357,7 @@ export function createCollabFlusher(config: CollabFlusherConfig): CollabFlusher 
 		schedule,
 		flush,
 		prime,
+		noteReplayed,
 		flushNow,
 		snapshot,
 		flushAndWait,

@@ -35,10 +35,13 @@ export function shouldDedupeEditorSpace(
 	seedMarkdown: string | null,
 	normalizedMarkdown: string,
 	seedCanonical: string | null = null,
+	seedFlat: string | null = null,
 ): boolean {
 	return (
 		lastFlushedContent === null &&
 		seedMarkdown !== null &&
-		(normalizedMarkdown === seedMarkdown || (seedCanonical !== null && normalizedMarkdown === seedCanonical))
+		(normalizedMarkdown === seedMarkdown ||
+			(seedCanonical !== null && normalizedMarkdown === seedCanonical) ||
+			(seedFlat !== null && normalizedMarkdown === seedFlat))
 	);
 }

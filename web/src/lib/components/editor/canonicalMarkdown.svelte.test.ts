@@ -141,6 +141,13 @@ describe('canonicalEditorMarkdown agrees with the editor round trip (BUG-3197)',
 		});
 	}
 
+	it('keeps soft breaks, canonicalizes explicit breaks and scopes flat parsing', () => {
+		expect(canonicalEditorMarkdown(editor(), 'a\nb')).toBe('a\nb');
+		expect(canonicalEditorMarkdown(editor(), 'a\\\nb')).toBe('a\nb');
+		expect(canonicalEditorMarkdown(editor(), 'a\nb', { flatSoftBreaks: true })).toBe('a b');
+		expect(canonicalEditorMarkdown(editor(), 'a\nb')).toBe('a\nb');
+	});
+
 	// TASK-3421: the default spans are output only. The body with them and the
 	// body without them parse to the same document, so they share one canonical
 	// form, and that form carries no default span.

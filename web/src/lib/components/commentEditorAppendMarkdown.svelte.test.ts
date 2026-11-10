@@ -202,3 +202,16 @@ describe('CommentEditor.appendMarkdown', () => {
 		expect(submitButton().disabled).toBe(true);
 	});
 });
+
+
+it('submits a marked hard break with separate marks on either side', () => {
+	const onSubmit = vi.fn();
+	target = document.body.appendChild(document.createElement('div'));
+	app = mount(CommentEditor, { target, props: {
+		wsSlug: 'ws', itemId: 'item-A', content: '**one\\\ntwo**', onSubmit,
+	} }) as unknown as Handle;
+	flushSync();
+	expect(surface().querySelector('strong br')).not.toBeNull();
+	submitButton().click();
+	expect(onSubmit).toHaveBeenCalledWith('**one**\\\n**two**');
+});
