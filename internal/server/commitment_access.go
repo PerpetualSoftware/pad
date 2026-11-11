@@ -45,6 +45,7 @@ func (s *Server) buildCommitmentAccess(r *http.Request, q store.Queryer, workspa
 			role = "owner"
 		}
 	}
+	var memberCollections map[string]bool
 	writes := tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPatch, "")
 	for _, it := range items {
 		if it.DeletedAt != nil && !(owner && mode == commitmentAccessRemove) {
@@ -75,16 +76,18 @@ func (s *Server) buildCommitmentAccess(r *http.Request, q store.Queryer, workspa
 		if !reaches && member != nil && (member.Role == "editor" || member.Role == "owner") {
 			reaches = member.Role == "owner" || member.CollectionAccess == "" || member.CollectionAccess == "all"
 			if !reaches {
-				ids, err := s.store.GetMemberCollectionAccessQ(q, workspaceID, user.ID)
-				if err != nil {
-					return models.CommitmentAccess{}, err
-				}
-				for _, id := range ids {
-					if id == it.CollectionID {
-						reaches = true
-						break
+				// The member's collection list depends only on the member: read it once.
+				if memberCollections == nil {
+					ids, err := s.store.GetMemberCollectionAccessQ(q, workspaceID, user.ID)
+					if err != nil {
+						return models.CommitmentAccess{}, err
+					}
+					memberCollections = make(map[string]bool, len(ids))
+					for _, id := range ids {
+						memberCollections[id] = true
 					}
 				}
+				reaches = memberCollections[it.CollectionID]
 			}
 		}
 		if reaches {
