@@ -73,8 +73,15 @@ describe('inputMode', () => {
 		expect(localStorage.getItem('pad-chat-enter-sends')).toBe('on');
 		inputMode.enterByTouch();
 		expect(inputMode.hardware).toBe(false);
-		inputMode.setHardware(true);
+		inputMode.softKeyboardDown();
 		expect(inputMode.hardware).toBe(true);
+	});
+
+	it('with nothing stored, touch mode outlasts the soft keyboard going down', () => {
+		setPointer(true);
+		inputMode.softKeyboardUp();
+		inputMode.softKeyboardDown();
+		expect(inputMode.hardware).toBe(false);
 	});
 
 	it('offers a stored choice even on a fine pointer so it can be turned off', () => {

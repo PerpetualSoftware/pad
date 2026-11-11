@@ -4,7 +4,8 @@ import { browser } from '$app/env';
 // The preference lives on the preferences page and is kept per device.
 // With no stored choice, the primary pointer decides: fine means Enter sends,
 // coarse means Enter adds a line. Touch on the box overrides the fine default,
-// but preserves a stored choice. A soft keyboard overrides both for this page.
+// but preserves a stored choice. While a soft keyboard is up, Enter adds a line
+// whatever is stored; when it goes down, a stored choice applies again.
 // Nothing here ever sends by itself.
 const STORAGE_KEY = 'pad-chat-enter-sends';
 
@@ -46,10 +47,15 @@ class InputMode {
 		if (!this.#stored) this.#touched = true;
 	}
 
-	/** A soft keyboard stops Enter sending for this page, without changing the saved choice. */
+	/** A soft keyboard stops Enter sending while it is up, without changing the saved choice. */
 	softKeyboardUp(): void {
 		this.#touched = true;
 		this.#softKeyboard = true;
+	}
+
+	/** The soft keyboard went down: a stored choice applies again. With none stored, touch mode stays. */
+	softKeyboardDown(): void {
+		this.#softKeyboard = false;
 	}
 
 	/** The person's explicit choice. Off is a choice too: it holds even on a fine pointer. */

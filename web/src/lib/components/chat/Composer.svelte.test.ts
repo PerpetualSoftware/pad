@@ -568,7 +568,7 @@ describe('Enter sends (TASK-4099)', () => {
 			expect(localStorage.getItem('pad-chat-enter-sends')).toBe('on');
 		});
 
-		it('a soft keyboard drops a stored-on choice to touch for the tab and keeps storage', async () => {
+		it('a soft keyboard drops a stored-on choice to touch while it is up and keeps storage', async () => {
 			setPointer(false);
 			inputMode.setHardware(true);
 			const { box, onSend } = mount();
@@ -581,6 +581,20 @@ describe('Enter sends (TASK-4099)', () => {
 			expect(localStorage.getItem('pad-chat-enter-sends')).toBe('on');
 			kb.visible = false;
 			flushSync();
+			await tick();
+			key(box, {});
+			expect(onSend).toHaveBeenCalledTimes(1);
+		});
+
+		it('with nothing stored, a soft keyboard going down leaves touch mode in force', async () => {
+			setPointer(true);
+			const { box, onSend } = mount();
+			await type(box, 'hello');
+			kb.visible = true;
+			flushSync();
+			kb.visible = false;
+			flushSync();
+			await tick();
 			key(box, {});
 			expect(onSend).not.toHaveBeenCalled();
 		});

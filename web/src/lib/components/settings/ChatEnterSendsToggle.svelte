@@ -16,8 +16,8 @@
 		<div>
 			<label for={id}>Chat: Enter sends (for a hardware keyboard)</label>
 			<p id="{id}-desc" class="desc">
-				For a tablet or phone with a keyboard attached. A soft keyboard coming up switches back for
-				that page. Saved on this device.
+				For a tablet or phone with a keyboard attached. While the on-screen keyboard
+				is up, Enter adds a line. Saved on this device.
 			</p>
 		</div>
 	</div>

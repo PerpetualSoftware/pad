@@ -29,7 +29,7 @@ describe('ChatEnterSendsToggle', () => {
 		const { getByLabelText, getByText } = render(ChatEnterSendsToggle);
 		const toggle = getByLabelText(label);
 		expect(toggle).not.toBeChecked();
-		const description = getByText('For a tablet or phone with a keyboard attached. A soft keyboard coming up switches back for that page. Saved on this device.');
+		const description = getByText('For a tablet or phone with a keyboard attached. While the on-screen keyboard is up, Enter adds a line. Saved on this device.');
 		expect(toggle).toHaveAttribute('aria-describedby', description.id);
 	});
 
