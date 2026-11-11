@@ -19,6 +19,7 @@ import (
 const (
 	bootstrapAgendaCarriedCap = 10 // carried rows listed, oldest first
 	bootstrapAgendaTodayCap   = 10
+	bootstrapAgendaWorkCap    = 10
 	bootstrapAgendaStalePage  = 50 // rows of `agenda --stale` per page
 
 	// bootstrapAgendaStaleHint is the command the "stale" line points at.
@@ -47,12 +48,15 @@ type BootstrapAgendaRow struct {
 // BootstrapAgenda is the bootstrap's `agenda` section; the key is absent when
 // there is nothing to show.
 type BootstrapAgenda struct {
-	PriorityList         []agendaEntry `json:"priority_list"`
-	PriorityListComplete bool          `json:"priority_list_complete"`
-	WaitingOn            []agendaEntry `json:"waiting_on"`
-	WaitingOnComplete    bool          `json:"waiting_on_complete"`
-	NoDate               []agendaEntry `json:"no_date"`
-	NoDateComplete       bool          `json:"no_date_complete"`
+	PriorityList          []agendaEntry `json:"priority_list"`
+	PriorityListComplete  bool          `json:"priority_list_complete"`
+	PriorityListMoreCount int           `json:"priority_list_more_count,omitempty"`
+	WaitingOn             []agendaEntry `json:"waiting_on"`
+	WaitingOnComplete     bool          `json:"waiting_on_complete"`
+	WaitingOnMoreCount    int           `json:"waiting_on_more_count,omitempty"`
+	NoDate                []agendaEntry `json:"no_date"`
+	NoDateComplete        bool          `json:"no_date_complete"`
+	NoDateMoreCount       int           `json:"no_date_more_count,omitempty"`
 
 	Tz    string `json:"tz"`
 	Today string `json:"today"` // the caller's date
@@ -119,6 +123,9 @@ func (s *Server) buildBootstrapAgenda(workspaceID string, user *models.User, r *
 	if err := s.appendAgendaWork(run, workspaceID, scope); err != nil {
 		return nil, err
 	}
+	// Count before the full agenda's 500-row projection; counts are floors
+	// when the candidate scan was incomplete.
+	priorityCount, waitingCount, noDateCount := len(run.response.PriorityList), len(run.response.WaitingOn), len(run.response.NoDate)
 	finishAgendaWork(&run.response)
 	if out == nil {
 		if len(run.response.PriorityList)+len(run.response.WaitingOn)+len(run.response.NoDate) == 0 && run.response.PriorityListComplete && run.response.WaitingOnComplete && run.response.NoDateComplete {
@@ -126,10 +133,15 @@ func (s *Server) buildBootstrapAgenda(workspaceID string, user *models.User, r *
 		}
 		out = &BootstrapAgenda{Tz: zone.Name, Today: now.In(zone.Loc).Format("2006-01-02"), Note: bootstrapAgendaNote, DueTodayComplete: true, CarriedComplete: true, StaleComplete: true}
 	}
-	out.PriorityList, out.PriorityListComplete = run.response.PriorityList, run.response.PriorityListComplete
-	out.WaitingOn, out.WaitingOnComplete = run.response.WaitingOn, run.response.WaitingOnComplete
-	out.NoDate, out.NoDateComplete = run.response.NoDate, run.response.NoDateComplete
+	out.PriorityList, out.PriorityListMoreCount, out.PriorityListComplete = compactBootstrapAgendaGroup(run.response.PriorityList, priorityCount, run.response.PriorityListComplete)
+	out.WaitingOn, out.WaitingOnMoreCount, out.WaitingOnComplete = compactBootstrapAgendaGroup(run.response.WaitingOn, waitingCount, run.response.WaitingOnComplete)
+	out.NoDate, out.NoDateMoreCount, out.NoDateComplete = compactBootstrapAgendaGroup(run.response.NoDate, noDateCount, run.response.NoDateComplete)
 	return out, nil
+}
+
+func compactBootstrapAgendaGroup(rows []agendaEntry, count int, complete bool) ([]agendaEntry, int, bool) {
+	more := max(0, count-bootstrapAgendaWorkCap)
+	return rows[:min(len(rows), bootstrapAgendaWorkCap)], more, complete && more == 0
 }
 
 func bootstrapAgendaRows(rows []store.BootstrapAgendaRow, loc *time.Location, now time.Time) []BootstrapAgendaRow {
