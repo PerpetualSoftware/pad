@@ -458,6 +458,10 @@ func TestAgendaWaitingGateScopeAndCommitmentRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	guest := f.guest(1, 2)
+	// Both agenda doors must exercise gate redaction on the guest's own work.
+	if _, err := f.srv.store.DB().Exec(`UPDATE items SET assigned_user_id=? WHERE id=?`, guest.ID, f.items[2].ID); err != nil {
+		t.Fatal(err)
+	}
 	// A collection-grant guest reads the children, while the parent's
 	// collection stays restricted.
 	secret, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Secret", Schema: agendaSchema})
