@@ -1944,7 +1944,6 @@ export interface CalendarEntry {
 	all_day?: boolean;
 	state?: string;
 	overdue?: boolean;
-	effective_at?: string;
 	missed_count?: number;
 	stale?: boolean;
 	[key: string]: unknown;
