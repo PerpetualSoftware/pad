@@ -355,6 +355,18 @@ describe('agenda Week and priority', () => {
   expect(within(marker).queryByRole('button')).toBeNull(); expect(marker.getAttribute('draggable')).not.toBe('true');
   expect(within(daySection('2026-11-08')).getByText('Nothing on this day.')).toBeTruthy();
  });
+ it('deadline markers come only from live occurrences, never history rows', async () => {
+  const roles = { ...row().roles!, deadline: '2026-11-08T14:00:00Z', deadline_behavior: 'lapses' as const };
+  h.agenda.mockResolvedValue(response([
+   row({ item_ref: 'EX-31', item_title: 'Another item', roles }),
+   row({ item_ref: 'EX-31', item_title: 'Another item', roles, state: 'moved', at: '2026-11-04T14:00:00Z', day: '2026-11-04', wall: '2026-11-04T09:00:00' }),
+   row({ item_ref: 'EX-32', item_title: 'Finished item', roles, state: 'done', at: '2026-11-06T14:00:00Z', day: '2026-11-06', wall: '2026-11-06T09:00:00' })
+  ]));
+  render(Agenda); await screen.findAllByText('Another item');
+  const day = within(daySection('2026-11-08'));
+  expect(day.getAllByText('Deadline · Another item')).toHaveLength(1);
+  expect(day.queryByText('Deadline · Finished item')).toBeNull();
+ });
  it.each([false, true])('Bring to today uses the shared target flow, all-day=%s', async all_day => {
   h.agenda.mockResolvedValue(response([row({ all_day, day: '2026-11-06' })])); await mount(); await menu();
   await fireEvent.click(screen.getByRole('menuitem', { name: 'Bring to today' }));

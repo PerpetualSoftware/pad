@@ -202,6 +202,7 @@
 	async function enterDay(date: string) {
 		const entry = dragging;
 		if (!entry) return;
+		if (date === hoverDay) return; // dragenter also fires on children inside the same day
 		const serial = dragSerial;
 		const sameIdentity = authStore.identityFence();
 		hoverDay = date; dragImpact = null;

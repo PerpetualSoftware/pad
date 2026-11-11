@@ -29,7 +29,7 @@
 				{#each rows as entry (entryKey(entry))}
 					<AgendaRow {entry} {zone} week pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} {ondragstart} {ondragend} />
 				{/each}
-				{#each entries.filter(entry => entry.type === 'schedule' && entry.roles?.deadline && localDay(entry.roles.deadline) === day && entry.day !== day) as entry, index (index)}
+				{#each entries.filter(entry => entry.type === 'schedule' && (entry.state === 'outstanding' || entry.state === 'scheduled') && entry.roles?.deadline && localDay(entry.roles.deadline) === day && entry.day !== day) as entry, index (index)}
 					<li class="marker">
 						<span>Deadline · {entry.item_title}</span>
 						<div class="meta">{entry.workspace_name} / {entry.collection} / {entry.item_ref}</div>
