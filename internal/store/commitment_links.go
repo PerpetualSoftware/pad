@@ -562,6 +562,10 @@ func (s *Store) CreateScheduleLink(workspaceID string, in models.ScheduleLinkCre
 	if err != nil {
 		return nil, err
 	}
+	access, err = reloadGraphAccess(tx, access, []CommitmentAccessLoader{in.Move.CommitmentAccessLoader}, in.ParentItemID, in.ChildItemID)
+	if err != nil {
+		return nil, err
+	}
 	var parent, child *models.ItemSchedule
 	for _, sc := range c.scheds {
 		switch sc.ItemID {
@@ -751,6 +755,10 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if err != nil {
 		return nil, err
 	}
+	access, err = reloadGraphAccess(tx, access, []CommitmentAccessLoader{upd.Move.CommitmentAccessLoader}, parentItem, childItem)
+	if err != nil {
+		return nil, err
+	}
 	var cur *linkRow
 	for i := range c.links {
 		if c.links[i].ID == linkID {
@@ -852,7 +860,7 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 }
 
 // DeleteScheduleLink removes a link. It needs edit on both ends.
-func (s *Store) DeleteScheduleLink(workspaceID, linkID string, access models.CommitmentAccess) error {
+func (s *Store) DeleteScheduleLink(workspaceID, linkID string, access models.CommitmentAccess, loaders ...CommitmentAccessLoader) error {
 	parentItem, childItem, err := s.linkEndsOf(workspaceID, linkID)
 	if err != nil {
 		return err
@@ -876,6 +884,9 @@ func (s *Store) DeleteScheduleLink(workspaceID, linkID string, access models.Com
 	// pinned by id, first, then the workspace, as for a live link. A deleted end
 	// is read as part of the component but is never live in it.
 	if _, err := s.pinCommitmentOpt(tx, workspaceID, "", nil, true, true, parentItem, childItem); err != nil {
+		return err
+	}
+	if _, err = reloadGraphAccess(tx, access, loaders, parentItem, childItem); err != nil {
 		return err
 	}
 	res, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE id=? AND workspace_id=?`), linkID, workspaceID)
@@ -998,4 +1009,22 @@ func guardLinkedRoles(used map[string]bool, before, after scheduleRoles) error {
 		}
 	}
 	return nil
+}
+
+// ValidateScheduleLinkOffset shares the storage bounds and pure offset validator
+// with HTTP, retaining the field-only validation envelope.
+func ValidateScheduleLinkOffset(o models.ScheduleLinkOffset) error {
+	if _, err := offsetOf(o); err == nil {
+		return nil
+	}
+	code := "format"
+	switch {
+	case o.Mode != "elapsed" && o.Mode != "civil":
+		code = "enum"
+	case o.Days > math.MaxInt32 || o.Days < math.MinInt32 || o.ElapsedSecs > 300*366*86400 || o.ElapsedSecs < -300*366*86400 || o.ClockSecs < 0 || o.ClockSecs >= 86400:
+		code = "range"
+	case o.AllDay && o.ClockSecs != 0:
+		code = "combination"
+	}
+	return fieldErr("offset", code, "invalid commitment offset")
 }

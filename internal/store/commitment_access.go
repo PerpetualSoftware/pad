@@ -73,3 +73,26 @@ func (s *Store) CommitmentLinkPartnersQ(q Queryer, workspaceID, itemID string) (
 	}
 	return ids, rows.Err()
 }
+
+// reloadGraphAccess checks both ends after the pin. Direct store callers may
+// keep their supplied snapshot; HTTP always supplies a transaction loader.
+func reloadGraphAccess(q Queryer, access models.CommitmentAccess, loaders []CommitmentAccessLoader, ends ...string) (models.CommitmentAccess, error) {
+	if len(loaders) > 0 && loaders[0] != nil {
+		var err error
+		access, err = loaders[0](q)
+		if err != nil {
+			return models.CommitmentAccess{}, err
+		}
+	}
+	for _, id := range ends {
+		if !access.Readable[id] {
+			return access, ErrScheduleLinkNotFound
+		}
+	}
+	for _, id := range ends {
+		if !access.Editable[id] {
+			return access, ErrLinkEditRequired
+		}
+	}
+	return access, nil
+}

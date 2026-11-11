@@ -115,7 +115,7 @@ const (
 // readable, or that is missing, soft-deleted or in another workspace, is
 // ErrScheduleLinkNotFound. Neither end needs a commitment. The blocker's
 // outstanding occurrence, if it has one, is fixed here.
-func (s *Store) CreateScheduleGate(workspaceID, blockedItemID, blockerItemID string, access models.CommitmentAccess) (*models.ScheduleGate, error) {
+func (s *Store) CreateScheduleGate(workspaceID, blockedItemID, blockerItemID string, access models.CommitmentAccess, loaders ...CommitmentAccessLoader) (*models.ScheduleGate, error) {
 	if !access.Readable[blockedItemID] || !access.Readable[blockerItemID] {
 		return nil, ErrScheduleLinkNotFound
 	}
@@ -150,6 +150,10 @@ func (s *Store) CreateScheduleGate(workspaceID, blockedItemID, blockerItemID str
 	if errors.Is(err, ErrScheduleItemGone) {
 		return nil, ErrScheduleLinkNotFound
 	}
+	if err != nil {
+		return nil, err
+	}
+	access, err = reloadGraphAccess(tx, access, loaders, blockedItemID, blockerItemID)
 	if err != nil {
 		return nil, err
 	}
@@ -275,7 +279,7 @@ func (s *Store) gateClosureTx(tx *sql.Tx, workspaceID, from string) ([]schedule.
 // DeleteScheduleGate removes a gate. It needs edit on both ends, as a link does,
 // and works whether or not either end is soft-deleted: an end absent from
 // access.Readable, or a gate that does not exist, is ErrScheduleLinkNotFound.
-func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.CommitmentAccess) error {
+func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.CommitmentAccess, loaders ...CommitmentAccessLoader) error {
 	var blocked, blocker string
 	var blockerSchedule sql.NullString
 	err := s.db.QueryRow(s.q(`SELECT g.blocked_item_id, g.blocker_item_id, g.blocker_schedule_id FROM schedule_gates g
@@ -308,6 +312,9 @@ func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.Com
 	if _, err := s.pinCommitmentRoot(tx, workspaceID, "", nil, true, true, true, blocked, extra...); errors.Is(err, ErrScheduleItemGone) || errors.Is(err, ErrScheduleNotFound) {
 		return ErrScheduleLinkNotFound
 	} else if err != nil {
+		return err
+	}
+	if _, err = reloadGraphAccess(tx, access, loaders, blocked, blocker); err != nil {
 		return err
 	}
 	res, err := tx.Exec(s.q(`DELETE FROM schedule_gates WHERE id=? AND workspace_id=?`), gateID, workspaceID)
