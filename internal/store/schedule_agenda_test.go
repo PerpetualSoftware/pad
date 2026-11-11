@@ -343,7 +343,7 @@ func TestAgendaFourRolesOneOccurrenceAndRoleOnlyWindows(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, win := range [][2]string{{"2026-10-25T00:00:00Z", "2026-10-26T00:00:00Z"}, {"2026-10-27T09:30:00Z", "2026-10-27T11:00:00Z"}, {"2026-10-25T00:00:00Z", "2026-10-31T00:00:00Z"}} {
-		x, err := f.s.ExpandAgendaCut(sc, time.UTC, rt(win[0]), rt(win[1]), rt("2026-10-26T00:00:00Z"))
+		x, err := f.s.ExpandAgendaCut(sc, time.UTC, rt(win[0]), rt(win[1]), rt("2026-10-26T00:00:00Z"), time.Now().Add(1500*time.Millisecond), time.Now)
 		if err != nil || x.Unavailable != "" || len(x.Entries) != 1 {
 			t.Fatalf("window %v: %+v %v", win, x, err)
 		}
@@ -362,7 +362,7 @@ func TestAgendaFourRolesOneOccurrenceAndRoleOnlyWindows(t *testing.T) {
 	if err != nil || more || len(rows) != 1 {
 		t.Fatalf("terminal role admission: %+v %v %v", rows, more, err)
 	}
-	x, err := f.s.ExpandAgendaCut(rows[0].Schedule, time.UTC, rt("2026-10-30T00:00:00Z"), rt("2026-10-31T00:00:00Z"), rt("2026-11-01T00:00:00Z"))
+	x, err := f.s.ExpandAgendaCut(rows[0].Schedule, time.UTC, rt("2026-10-30T00:00:00Z"), rt("2026-10-31T00:00:00Z"), rt("2026-11-01T00:00:00Z"), time.Now().Add(1500*time.Millisecond), time.Now)
 	if err != nil || len(x.Entries) != 1 || x.Entries[0].State != "done" || x.Entries[0].Overdue {
 		t.Fatalf("terminal deadline history: %+v %v", x, err)
 	}

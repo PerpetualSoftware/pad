@@ -428,7 +428,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 			break
 		}
 		sc := as.Schedule
-		x, err := st.ExpandAgendaCut(sc, loc, from, to, now)
+		x, err := st.ExpandAgendaCut(sc, loc, from, to, now, deadline, clock)
 		if err != nil {
 			return res, err
 		}

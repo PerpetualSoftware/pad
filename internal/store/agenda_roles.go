@@ -129,7 +129,11 @@ func (s *Store) AgendaOutstanding(sc *models.ItemSchedule, view *time.Location, 
 
 // ExpandAgendaCut uses the existing bounded seed expansion for each role's
 // inverse window, then resolves and deduplicates by immutable occurrence key.
-func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
+// Every window and the recurrence engine share the request deadline and clock.
+func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, from, to, now, deadline time.Time, clock func() time.Time) (AgendaExpansion, error) {
+	if !clock().Before(deadline) {
+		return AgendaExpansion{Truncated: true, Unexpanded: true, Unpromised: true}, nil
+	}
 	if view == nil {
 		view = time.UTC
 	}
@@ -170,7 +174,6 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 		byKey[o.OccurrenceKey][o.Role] = o.ValueAt
 	}
 	var x AgendaExpansion
-	budget := time.Now().Add(1500 * time.Millisecond)
 	candidates := map[string]AgendaEntry{}
 	add := func(es []AgendaEntry) {
 		for _, e := range es {
@@ -182,6 +185,10 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 	if terminal {
 		var rows []agendaRow
 		for _, window := range agendaSeedWindows(roles, loc, from, to) {
+			if !clock().Before(deadline) {
+				x.Truncated, x.Unexpanded, x.Unpromised = true, true, true
+				break
+			}
 			part, err := s.agendaOccurrences(sc.ID, window[0], window[1])
 			if err != nil {
 				return x, err
@@ -189,6 +196,10 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 			rows = append(rows, part...)
 		}
 		for _, r := range rows {
+			if !clock().Before(deadline) {
+				x.Truncated, x.Unexpanded, x.Unpromised = true, true, true
+				break
+			}
 			w, err := schedule.ParseWall(r.wall)
 			if err != nil {
 				continue
@@ -204,11 +215,11 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 		}
 	} else {
 		for _, window := range agendaSeedWindows(roles, loc, from, to) {
-			if time.Now().After(budget) {
-				x.Truncated, x.Unpromised = true, true
+			if !clock().Before(deadline) {
+				x.Truncated, x.Unexpanded, x.Unpromised = true, true, true
 				break
 			}
-			part, err := s.expandAgendaSeedsCut(sc, view, window[0], window[1], now)
+			part, err := s.expandAgendaSeedsCut(sc, view, window[0], window[1], now, deadline, clock)
 			if err != nil {
 				return x, err
 			}
@@ -227,8 +238,8 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 		// Sparse exceptions can move from anywhere into the window. They are
 		// candidates only; role membership is checked below.
 		for _, o := range overrides[sc.ID] {
-			if time.Now().After(budget) {
-				x.Truncated, x.Unpromised = true, true
+			if !clock().Before(deadline) {
+				x.Truncated, x.Unexpanded, x.Unpromised = true, true, true
 				break
 			}
 			parts := strings.Split(o.OccurrenceKey, "|")
@@ -267,8 +278,8 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 	sort.Strings(keys)
 	for _, key := range keys {
 		seed := candidates[key]
-		if time.Now().After(budget) {
-			x.Truncated, x.Unpromised = true, true
+		if !clock().Before(deadline) {
+			x.Truncated, x.Unexpanded, x.Unpromised = true, true, true
 			break
 		}
 		e, err := resolveAgendaRoles(sc, seed, loc, roles, byKey[key])

@@ -251,7 +251,7 @@ func (s *Store) agendaOccurrences(scheduleID string, from, to time.Time) ([]agen
 // in the caller's zone) and by the INSTANT for a pinned timed one, whose elapsed
 // rules can repeat a wall.
 func (s *Store) ExpandAgenda(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (entries []AgendaEntry, truncated bool, unavailable string, err error) {
-	x, err := s.ExpandAgendaCut(sc, view, from, to, now)
+	x, err := s.ExpandAgendaCut(sc, view, from, to, now, time.Now().Add(1500*time.Millisecond), time.Now)
 	return x.Entries, x.Truncated, x.Unavailable, err
 }
 
@@ -276,7 +276,7 @@ type AgendaExpansion struct {
 
 // ExpandAgendaCut is ExpandAgenda with the resume instant of any time-ordered
 // cut: the per-schedule entry cut, the instance cap, CapTime and CapStall.
-func (s *Store) expandAgendaSeedsCut(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
+func (s *Store) expandAgendaSeedsCut(sc *models.ItemSchedule, view *time.Location, from, to, now, deadline time.Time, clock func() time.Time) (AgendaExpansion, error) {
 	if sc.ErrorCode != nil {
 		return AgendaExpansion{Unavailable: *sc.ErrorCode}, nil
 	}
@@ -291,10 +291,10 @@ func (s *Store) expandAgendaSeedsCut(sc *models.ItemSchedule, view *time.Locatio
 	var x AgendaExpansion
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	if err == nil {
-		x, err = s.expandCompiled(c, sc, rows, view, from, to, now)
+		x, err = s.expandCompiled(c, sc, rows, view, from, to, now, deadline, clock)
 	}
 	if x.Unexpanded {
-		return AgendaExpansion{Truncated: true, Unexpanded: true}, nil
+		return AgendaExpansion{Truncated: true, Unexpanded: true, Unpromised: x.Unpromised}, nil
 	}
 	if code := ScheduleErrorCode(err); code != "" {
 		if code == "cap_time" || code == "cap_stall" {
@@ -323,7 +323,7 @@ func earlier(a, b time.Time) time.Time {
 	return a
 }
 
-func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, rows []agendaRow, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
+func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, rows []agendaRow, view *time.Location, from, to, now, deadline time.Time, clock func() time.Time) (AgendaExpansion, error) {
 	loc := view
 	if !sc.Floating {
 		var err error
@@ -336,7 +336,13 @@ func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, ro
 		lo = floor // nothing before the walk's own start
 	}
 	var x AgendaExpansion
-	occs, err := c.Between(lo, to, view, schedule.DefaultLimits)
+	remaining := deadline.Sub(clock())
+	if remaining <= 0 {
+		return AgendaExpansion{Truncated: true, Unexpanded: true, Unpromised: true}, nil
+	}
+	limits := schedule.DefaultLimits
+	limits.MaxDuration = min(limits.MaxDuration, remaining)
+	occs, err := c.Between(lo, to, view, limits)
 	var capErr *schedule.CapError
 	if errors.As(err, &capErr) {
 		switch {
