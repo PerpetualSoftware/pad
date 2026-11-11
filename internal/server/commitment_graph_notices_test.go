@@ -1,8 +1,13 @@
 package server
 
 import (
+	"bytes"
+	"errors"
+	"log/slog"
 	"net/http"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -67,6 +72,77 @@ func TestTASK4423_R05Notices(t *testing.T) {
 					})
 				}
 			})
+		})
+	}
+}
+
+func TestTASK4423_R15RefusalNotice(t *testing.T) {
+	for _, door := range []string{"resolve", "renegotiate"} {
+		t.Run(door, func(t *testing.T) {
+			roles := models.CommitmentRolesInput{}
+			if door == "renegotiate" {
+				roles = graphHard()
+			}
+			f := newGraphHTTP(t, roles, graphHard())
+			pr := "target"
+			if door == "renegotiate" {
+				pr = "deadline"
+			}
+			f.link(0, 1, pr, "deadline", "")
+			g := f.guest(0)
+			tok := f.token(g, "")
+			if _, err := f.srv.store.CreateSession(f.owner.ID, "ios", "", "", time.Hour); err != nil {
+				t.Fatal(err)
+			}
+			var sid string
+			if err := f.srv.store.DB().QueryRow(`SELECT id FROM sessions WHERE user_id=? LIMIT 1`, f.owner.ID).Scan(&sid); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.srv.store.RegisterPushDevice(f.owner.ID, sid, "graph-notice", "ios", "graph-device", ""); err != nil {
+				t.Fatal(err)
+			}
+			to := time.Now().UTC().Truncate(time.Second).Add(25 * 24 * time.Hour).Format(time.RFC3339)
+			body := map[string]any{"state": "move", "occurrence_at": f.dates[0], "until": to}
+			if door == "renegotiate" {
+				preview := f.as(f.token(f.owner, ""), "POST", f.path(f.item)+"/renegotiate", map[string]any{"deadline": to, "reason": "Replan", "preview": true})
+				if preview.Code != 200 {
+					t.Fatalf("owner preview: %d %s", preview.Code, preview.Body.String())
+				}
+				revision, _ := schedMap(t, preview)["revision"].(string)
+				body = map[string]any{"deadline": to, "reason": "Replan", "revision": revision}
+			}
+			var response string
+			for n := 0; n < 2; n++ {
+				rr := f.as(tok, "POST", f.path(f.item)+"/"+door, body)
+				f.expectErr(rr, 409, "deadline_approval_required", "")
+				if n == 0 {
+					response = rr.Body.String()
+				} else if rr.Body.String() != response {
+					t.Fatal("dedupe changed refusal")
+				}
+			}
+			if n := f.count(`SELECT COUNT(*) FROM user_notifications WHERE user_id=? AND kind='deadline_approval_requested'`, f.owner.ID); n != 1 {
+				t.Fatalf("approval notices=%d, want 1", n)
+			}
+			if _, err := f.srv.store.DB().Exec(`DELETE FROM push_devices WHERE user_id=?`, f.owner.ID); err != nil {
+				t.Fatal(err)
+			}
+			rr := f.as(tok, "POST", f.path(f.item)+"/"+door, body)
+			if rr.Body.String() != response {
+				t.Fatal("no recipient changed refusal")
+			}
+			var logs bytes.Buffer
+			previousLogger := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
+			defer slog.SetDefault(previousLogger)
+			f.srv.enqueueCommitmentRefusal = func(string, models.LinkedMoveInput) error { return errors.New("hidden-sentinel-id") }
+			rr = f.as(tok, "POST", f.path(f.item)+"/"+door, body)
+			if rr.Body.String() != response {
+				t.Fatal("enqueue failure changed refusal")
+			}
+			if strings.Contains(logs.String(), "hidden-sentinel-id") {
+				t.Fatal("notice failure logged private error text")
+			}
 		})
 	}
 }

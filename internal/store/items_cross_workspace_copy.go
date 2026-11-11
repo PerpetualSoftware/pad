@@ -237,6 +237,8 @@ type CrossWorkspaceCopyRequest struct {
 	// includes one they cannot. Decided before the transaction opens; nil
 	// counts every child (internal callers only).
 	SourceChildReadable func(childID string) bool
+	// LinkEndReadable governs link and gate disclosure, independently of milestone children.
+	LinkEndReadable func(itemID string) bool
 
 	// Actor is the user performing the copy. It becomes every cloned
 	// attachment's uploaded_by (DR-11: never the source uploader, who may not
@@ -980,7 +982,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	if scheduleNow.IsZero() {
 		scheduleNow = time.Now()
 	}
-	scheduleReport, err := s.carrySourceScheduleTx(tx, sourceWorkspaceID, req.SourceItemID, req.TargetWorkspaceID, item.ID, derefStr(assignedUserID), req.ActorUserID, req.ArchiveSource, scheduleNow, req.SourceChildReadable)
+	scheduleReport, err := s.carrySourceScheduleTx(tx, sourceWorkspaceID, req.SourceItemID, req.TargetWorkspaceID, item.ID, derefStr(assignedUserID), req.ActorUserID, req.ArchiveSource, scheduleNow, req.SourceChildReadable, req.LinkEndReadable)
 	if err != nil {
 		return nil, err
 	}
@@ -989,7 +991,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 	}
 	// Commitment gates hold the item, with or without a schedule, and stay in one
 	// workspace.
-	gatesDropped, err := s.carryGatesTx(tx, sourceWorkspaceID, req.SourceItemID, req.ArchiveSource, req.SourceChildReadable)
+	gatesDropped, err := s.carryGatesTx(tx, sourceWorkspaceID, req.SourceItemID, req.ArchiveSource, req.LinkEndReadable)
 	if err != nil {
 		return nil, err
 	}
@@ -1014,6 +1016,7 @@ func (s *Store) copyItemAcrossWorkspacesTx(req CrossWorkspaceCopyRequest, source
 		return nil, err
 	}
 
+	scheduleReport.GatesDropped = gatesDropped
 	res := &CrossWorkspaceCopyResult{
 		Item:              item,
 		Source:            source,

@@ -723,7 +723,7 @@ func (s *Store) gatesDropped(q Queryer, workspaceID, itemID string, canRead func
 		if err := rows.Scan(&blocker); err != nil {
 			return 0, err
 		}
-		if canRead == nil || canRead(blocker) {
+		if canRead != nil && canRead(blocker) {
 			n++
 		}
 	}
@@ -731,7 +731,7 @@ func (s *Store) gatesDropped(q Queryer, workspaceID, itemID string, canRead func
 }
 
 // ItemGatesDropped is what a cross-workspace copy or move of itemID would leave
-// out: how many gates hold it whose blocker the mover can read (nil: all). Gates
+// out: how many gates hold it whose blocker the mover can read (nil: none). Gates
 // stay within one workspace, so none is carried, with or without a commitment.
 func (s *Store) ItemGatesDropped(workspaceID, itemID string, canRead func(string) bool) (int, error) {
 	return s.gatesDropped(s.db, workspaceID, itemID, canRead)

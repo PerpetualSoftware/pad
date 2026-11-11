@@ -48,6 +48,8 @@ import (
 )
 
 type Server struct {
+	// enqueueCommitmentRefusal is a test-only replacement for notice delivery.
+	enqueueCommitmentRefusal func(string, models.LinkedMoveInput) error
 	// calendarPageOverride, when non-zero, replaces calendarPageSize for this
 	// server's calendar reads. Tests only.
 	calendarPageOverride int

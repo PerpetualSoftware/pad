@@ -363,8 +363,7 @@ func (s *Server) handleDeleteItemCommitment(w http.ResponseWriter, r *http.Reque
 		writeDeadlineOwnerRequired(w)
 		return
 	}
-	if err != nil {
-		writeInternalError(w, err)
+	if s.writeScheduleError(w, r, err) {
 		return
 	}
 	if !removed {
@@ -506,7 +505,22 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		in.ExpectedAssignee = commitmentAssigneeGuard(r, item)
 	}
 
+	in.LinkAccess, err = s.buildCommitmentAccess(r, s.store.Q(), workspaceID, item.ID, commitmentAccessLive)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	in.CommitmentAccessLoader = func(q store.Queryer) (models.CommitmentAccess, error) {
+		return s.buildCommitmentAccess(r, q, workspaceID, item.ID, commitmentAccessLive)
+	}
 	res, err := s.store.ResolveOccurrence(workspaceID, item.ID, in)
+	if errors.Is(err, store.ErrDeadlineApprovalRequired) && in.State == "move" && in.Until != nil {
+		reason := ""
+		if in.Comment != nil {
+			reason = in.Comment.Input.Body
+		}
+		s.afterCommitmentRefusal(r, workspaceID, models.LinkedMoveInput{ItemID: item.ID, Role: "target", To: in.Until.UTC().Format(time.RFC3339), Actor: in.Actor, ActorUserID: in.ActorUserID, Reason: reason})
+	}
 	if errors.Is(err, store.ErrSkipDeadlineAuthority) {
 		writeSkipDeadlineOwnerRequired(w)
 		return
@@ -515,7 +529,7 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		writeSkipCommitmentChanged(w)
 		return
 	}
-	if s.writeScheduleItemGone(w, r, workspaceID, err) || writeResolveError(w, r, err) {
+	if s.writeScheduleItemGone(w, r, workspaceID, err) || s.writeResolveError(w, r, err) {
 		return
 	}
 

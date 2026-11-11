@@ -47,7 +47,7 @@ import (
 // refuses a copy as well as a move, as a *schedule.CapError (503 schedule_busy).
 
 // ScheduleCarryReport says what a cross-workspace copy or move did with the
-// source item's schedule. The zero value is "the source had none".
+// source schedule and gates. A gate count can exist without a schedule.
 type ScheduleCarryReport struct {
 	// HasSchedule is true when the source item has a schedule at all.
 	HasSchedule bool
@@ -72,6 +72,7 @@ type ScheduleCarryReport struct {
 	// source's, the ones to hidden items too, which are not counted. A count
 	// only, so it names no item.
 	LinksDropped int
+	GatesDropped int
 	// Skipped is the reason a source schedule was not carried: "ended", a
 	// timing code (timing:syntax, timing:cap_scan, ...), "exhausted" (the rule
 	// has no occurrence after now) or another carry reason. "" when carried.
@@ -191,7 +192,7 @@ func liveOverride(sc *models.ItemSchedule, nowT time.Time) string {
 }
 
 // carryLinkCount is how many links touch scheduleID whose other end's item
-// canRead accepts (nil accepts every end).
+// canRead accepts. A nil predicate grants nothing.
 func (s *Store) carryLinkCount(q Queryer, scheduleID string, canRead func(string) bool) (int, error) {
 	rows, err := q.Query(s.q(`SELECT CASE WHEN l.parent_schedule_id = ? THEN c.item_id ELSE p.item_id END
  FROM schedule_links l JOIN item_schedules p ON p.id = l.parent_schedule_id JOIN item_schedules c ON c.id = l.child_schedule_id
@@ -206,7 +207,7 @@ func (s *Store) carryLinkCount(q Queryer, scheduleID string, canRead func(string
 		if err := rows.Scan(&other); err != nil {
 			return 0, err
 		}
-		if canRead == nil || canRead(other) {
+		if canRead != nil && canRead(other) {
 			n++
 		}
 	}
@@ -217,7 +218,7 @@ func (s *Store) carryLinkCount(q Queryer, scheduleID string, canRead func(string
 // Postgres) and decides what the copy does with it, validating the destination
 // schedule without writing. It returns nil when the item has no schedule.
 // who is the destination item's recipient, whose zone reads a floating schedule.
-func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who scheduleRecipient, move, lock bool, nowT time.Time, canRead func(string) bool) (*scheduleCarryPlan, error) {
+func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who scheduleRecipient, move, lock bool, nowT time.Time, canRead, linkEndReadable func(string) bool) (*scheduleCarryPlan, error) {
 	sc, err := s.getScheduleQ(q, workspaceID, itemID, lock)
 	if err != nil || sc == nil {
 		return nil, err
@@ -249,7 +250,7 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 	// reported, and only of the links whose other end the mover can read, as
 	// ChildrenDropped counts only readable children: a link to a hidden item is
 	// deleted with a moved schedule all the same but shows in no report.
-	if p.report.LinksDropped, err = s.carryLinkCount(q, sc.ID, canRead); err != nil {
+	if p.report.LinksDropped, err = s.carryLinkCount(q, sc.ID, linkEndReadable); err != nil {
 		return nil, err
 	}
 	var view *time.Location
@@ -322,30 +323,36 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 // assignee is the assignee the copy would carry ("" when it is dropped or the
 // source has none) and creator the copier: the destination item's recipient.
 func (s *Store) PreviewScheduleCarry(q Queryer, workspaceID, itemID, assignee, creator string, move bool, nowT time.Time) (ScheduleCarryReport, error) {
-	return s.PreviewScheduleCarryFor(q, workspaceID, itemID, assignee, creator, move, nowT, nil)
+	return s.PreviewScheduleCarryFor(q, workspaceID, itemID, assignee, creator, move, nowT, nil, nil)
 }
 
 // PreviewScheduleCarryFor is PreviewScheduleCarry for a reader who may see only
-// some of the selected children (nil: all).
-func (s *Store) PreviewScheduleCarryFor(q Queryer, workspaceID, itemID, assignee, creator string, move bool, nowT time.Time, canRead func(string) bool) (ScheduleCarryReport, error) {
-	p, err := s.planScheduleCarry(q, workspaceID, itemID, scheduleRecipient{assignee, creator}, move, false, nowT, canRead)
-	if err != nil || p == nil {
+// some selected children (canRead nil: all) and link ends or gate blockers
+// (linkEndReadable nil: none).
+func (s *Store) PreviewScheduleCarryFor(q Queryer, workspaceID, itemID, assignee, creator string, move bool, nowT time.Time, canRead, linkEndReadable func(string) bool) (ScheduleCarryReport, error) {
+	p, err := s.planScheduleCarry(q, workspaceID, itemID, scheduleRecipient{assignee, creator}, move, false, nowT, canRead, linkEndReadable)
+	if err != nil {
 		return ScheduleCarryReport{}, err
 	}
-	return p.report, nil
+	var report ScheduleCarryReport
+	if p != nil {
+		report = p.report
+	}
+	report.GatesDropped, err = s.gatesDropped(q, workspaceID, itemID, linkEndReadable)
+	return report, err
 }
 
 // PreviewItemScheduleCarry is PreviewScheduleCarry on the store's own connection
 // at the current time, for the preflight handler.
-func (s *Store) PreviewItemScheduleCarry(workspaceID, itemID, assignee, creator string, move bool, canRead func(string) bool) (ScheduleCarryReport, error) {
-	return s.PreviewScheduleCarryFor(s.db, workspaceID, itemID, assignee, creator, move, time.Now(), canRead)
+func (s *Store) PreviewItemScheduleCarry(workspaceID, itemID, assignee, creator string, move bool, canRead, linkEndReadable func(string) bool) (ScheduleCarryReport, error) {
+	return s.PreviewScheduleCarryFor(s.db, workspaceID, itemID, assignee, creator, move, time.Now(), canRead, linkEndReadable)
 }
 
 // carrySourceScheduleTx runs inside the copy transaction after the destination
 // item exists and, on a move, after the source was archived (so the item row is
 // already held and the FOR UPDATE read below sees any committed edit).
-func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemID, targetWorkspaceID, targetItemID, assignee, creator string, move bool, nowT time.Time, canRead func(string) bool) (ScheduleCarryReport, error) {
-	p, err := s.planScheduleCarry(tx, sourceWorkspaceID, sourceItemID, scheduleRecipient{assignee, creator}, move, move, nowT, canRead)
+func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemID, targetWorkspaceID, targetItemID, assignee, creator string, move bool, nowT time.Time, canRead, linkEndReadable func(string) bool) (ScheduleCarryReport, error) {
+	p, err := s.planScheduleCarry(tx, sourceWorkspaceID, sourceItemID, scheduleRecipient{assignee, creator}, move, move, nowT, canRead, linkEndReadable)
 	if err != nil || p == nil {
 		return ScheduleCarryReport{}, err
 	}

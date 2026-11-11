@@ -61,7 +61,7 @@ func (s *Server) milestoneWriteDone(w http.ResponseWriter, r *http.Request, work
 	case errors.Is(err, store.ErrMilestoneChildNotFound):
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
-	case writeScheduleError(w, err):
+	case s.writeScheduleError(w, r, err):
 		return
 	case err != nil:
 		writeInternalError(w, err)

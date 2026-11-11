@@ -52,7 +52,7 @@ func TestACrossWorkspaceMoveOfAGatedItemDropsItsGatesAndCountsTheReadableOnes(t 
 				t.Fatalf("preview: %d %v, want only the readable blocker counted", n, err)
 			}
 			req := c.req()
-			req.SourceItemID, req.ArchiveSource, req.scheduleNow, req.SourceChildReadable = c.src.ID, true, copyNow, canRead
+			req.SourceItemID, req.ArchiveSource, req.scheduleNow, req.LinkEndReadable = c.src.ID, true, copyNow, canRead
 			res := c.copy(t, req)
 			if res.GatesDropped != 1 {
 				t.Fatalf("GatesDropped=%d, want 1: the hidden blocker is deleted and not counted", res.GatesDropped)

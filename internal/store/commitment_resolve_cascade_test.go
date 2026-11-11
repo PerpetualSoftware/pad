@@ -64,9 +64,8 @@ func TestLinkedResolveHardDeadlineRefusalIsAtomic(t *testing.T) {
 		t.Fatalf("nil access = %v, want deadline approval required", err)
 	}
 	_, err = f.resolveMove(t, 0, "2030-03-10T09:00:00Z", f.allEdit(), comment)
-	var field *ScheduleFieldError
-	if !errors.As(err, &field) || field.Field != "revision" {
-		t.Fatalf("editable access = %v, want revision required", err)
+	if !errors.Is(err, ErrCommitmentPreviewRequired) {
+		t.Fatalf("editable access = %v, want commitment preview required", err)
 	}
 	if !reflect.DeepEqual(before, renegotiateState(t, f.s)) || f.count(t, `SELECT COUNT(*) FROM comments`) != 0 || f.count(t, `SELECT COUNT(*) FROM activities WHERE action='commented'`) != 0 {
 		t.Fatal("refused move wrote a date or comment")

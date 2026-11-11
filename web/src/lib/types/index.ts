@@ -1181,6 +1181,7 @@ export interface ItemCopyPreflightFields {
  * is entitled to know before agreeing (DR-17: "none of this may be silent").
  */
 export interface ItemCopyPreflightWarnings {
+	schedule?: ItemCopySchedule;
 	/** Live children of the source. Never copied (DR-4). */
 	child_count: number;
 	/** `child_count > 0 && archive_source` — the move path orphans them. */
@@ -1332,6 +1333,7 @@ export interface ItemCopyResultDestination {
  * agreeing.
  */
 export interface ItemCopyResultWarnings {
+	schedule?: ItemCopySchedule;
 	/** Destination-schema keys migration could not carry. Never null. */
 	dropped_fields: string[];
 	/** Which of those were dropped for colliding on a unique field, and why (BUG-2367). */
@@ -3843,6 +3845,9 @@ export interface CommitmentRoles {
 }
 
 export interface ItemCommitmentView {
+ links: CommitmentLink[];
+ gates: CommitmentGateView;
+ conflicts?: CommitmentDateConflict[];
  schedule_id: string;
  item_id: string;
  item_ref: string;
@@ -3877,6 +3882,7 @@ export interface CommitmentChange {
  change_type: string;
  occurrence_key?: string;
  role?: string;
+ before_json?: string;
  after_json?: string;
  actor: string;
  reason?: string;
@@ -3889,4 +3895,62 @@ export interface CommitmentChange {
 export interface CommitmentResolveResult {
 	commitment: ItemCommitmentView;
 	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline' };
+}
+
+export interface ItemCopySchedule {
+ carried: boolean;
+ history_dropped: number;
+ changes_dropped: number;
+ forecast_dropped: number;
+ children_dropped: number;
+ links_dropped: number;
+ gates_dropped: number;
+ skipped?: { reason: string };
+}
+
+export type CommitmentLinkRole = 'target' | 'earliest' | 'deadline' | 'occupied_until';
+export type CommitmentLinkOffset =
+ | { mode: 'elapsed'; elapsed_secs?: number }
+ | { mode: 'civil'; days?: number; clock_secs?: number; all_day?: boolean; zone?: string };
+
+export interface CommitmentLink {
+ id: string;
+ parent_item_id: string;
+ parent_role: CommitmentLinkRole;
+ child_item_id: string;
+ child_role: CommitmentLinkRole;
+ offset: CommitmentLinkOffset;
+ cancel_policy: 'waiting_on' | 'cancel_child_occurrence';
+ created_at: string;
+ updated_at: string;
+}
+export interface CommitmentGate {
+ id: string;
+ blocked_item_id: string;
+ blocker_item_id: string;
+ outcome: 'pending' | 'succeeded' | 'cancelled' | 'lapsed' | 'skipped';
+ opened_at?: string;
+ created_at: string;
+}
+export interface CommitmentGateView {
+ state: 'released' | 'waiting' | 'blocked_needs_decision';
+ gates: CommitmentGate[];
+ unresolved?: string[];
+}
+export interface CommitmentDateConflict {
+ role: CommitmentLinkRole;
+ bound: CommitmentLinkRole;
+ value: string;
+ bound_value: string;
+}
+export interface CommitmentRenegotiateRequest {
+ reason: string;
+ scope?: 'occurrence' | 'series';
+ deadline?: string;
+ deadline_offset?: { deadline_days: number; deadline_secs: number };
+ deadline_behavior?: 'lapses' | 'stays_owed';
+ remove_deadline?: boolean;
+ revision?: string;
+ preview?: boolean;
+ acknowledge_violations?: boolean;
 }

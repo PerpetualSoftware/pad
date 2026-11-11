@@ -1,8 +1,20 @@
 package models
 
+import "database/sql"
+
+// CommitmentQueryer is the read surface shared by authorization callbacks and
+// store transactions. Store.Queryer aliases it to keep models independent of stores.
+type CommitmentQueryer interface {
+	Query(string, ...any) (*sql.Rows, error)
+	QueryRow(string, ...any) *sql.Row
+}
+
+// CommitmentAccessLoader refreshes the request's permissions under the write lock.
+type CommitmentAccessLoader func(CommitmentQueryer) (CommitmentAccess, error)
+
 // Time links and commitment gates (TASK-4353, DOC-4348 unit 5). These are store
-// DTOs: nothing here is a wire shape yet (the routes land in 5c), and none of
-// them may carry data the reader could not read on its own.
+// DTOs; the commitment view also exposes the filtered link and gate shapes.
+// None may carry data the reader could not read on its own.
 
 // LinkCancelPolicy values.
 const (

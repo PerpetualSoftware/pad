@@ -1,6 +1,7 @@
 package store
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -47,7 +48,7 @@ func TestAMoveAcrossWorkspacesDropsTheLinksAndReportsTheCount(t *testing.T) {
 	t.Parallel()
 	c := newSchedCopy(t)
 	src, _ := c.linkedSource(t)
-	prev, err := c.s.PreviewScheduleCarry(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, true, copyNow)
+	prev, err := c.s.PreviewScheduleCarryFor(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, true, copyNow, nil, func(string) bool { return true })
 	if err != nil || prev.LinksDropped != 2 {
 		t.Fatalf("preview %+v %v", prev, err)
 	}
@@ -115,6 +116,19 @@ func TestDeletingAScheduleLeavesNoLinkRows(t *testing.T) {
 	t.Parallel()
 	c := newSchedCopy(t)
 	_, others := c.linkedSource(t)
+	if _, err := c.s.DeleteSchedule(c.wsA.ID, c.src.ID); !errors.Is(err, ErrScheduleLinked) {
+		t.Fatalf("linked delete: %v", err)
+	}
+	access := models.CommitmentAccess{Readable: map[string]bool{c.src.ID: true, others[0].ID: true, others[1].ID: true}, Editable: map[string]bool{c.src.ID: true, others[0].ID: true, others[1].ID: true}}
+	links, err := c.s.ListScheduleLinks(c.wsA.ID, c.src.ID, access)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, link := range links {
+		if err := c.s.DeleteScheduleLink(c.wsA.ID, link.ID, access); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if _, err := c.s.DeleteSchedule(c.wsA.ID, c.src.ID); err != nil {
 		t.Fatal(err)
 	}
@@ -142,12 +156,12 @@ func TestLinksDroppedCountsOnlyLinksToItemsTheMoverCanRead(t *testing.T) {
 			c := newSchedCopy(t)
 			_, others := c.linkedSource(t)
 			canRead := func(id string) bool { return id != others[1].ID }
-			preview, err := c.s.PreviewScheduleCarryFor(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, move, copyNow, canRead)
+			preview, err := c.s.PreviewScheduleCarryFor(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, move, copyNow, canRead, canRead)
 			if err != nil || preview.LinksDropped != 1 {
 				t.Fatalf("preview %+v %v", preview, err)
 			}
 			req := c.req()
-			req.SourceItemID, req.ArchiveSource, req.scheduleNow, req.SourceChildReadable = c.src.ID, move, copyNow, canRead
+			req.SourceItemID, req.ArchiveSource, req.scheduleNow, req.LinkEndReadable = c.src.ID, move, copyNow, canRead
 			res := c.copy(t, req)
 			if res.Schedule.LinksDropped != 1 {
 				t.Fatalf("report %+v, want the hidden end uncounted", res.Schedule)

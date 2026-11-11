@@ -106,6 +106,10 @@ These examples and reasons accompany the rules kept in the agent-facing tool des
 - **Relation reads — enrichment:** `relation_targets` accompanies `fields` “so you can render a relation without a request per value”.
 - **Relation reads — stored_as_text:** “the stored value is not UUID-shaped, so it was never an id” (an imported title or legacy text); render it as text, not as unavailable.
 
+## Commitment graph error contract
+
+Stdio and remote MCP preserve the API's graph codes: `schedule_linked`, `deadline_approval_required`, `link_violation_ack`, `commitment_changed`, `link_budget`, `link_edit_required`, `schedule_link_not_found`, `link_cycle`, `link_self`, `link_duplicate_incoming`, `link_limit`, `link_invalid`, `gate_duplicate`, and `commitment_preview_required`. These remain graph codes on HTTP 400, 403, 404, 409 and 503 rather than becoming generic validation, permission, not-found or upstream errors. Structured `validation_error` for `reason`, `revision`, `role`, `to` and `cancel_policy` keeps its `{field,code}` details on both transports. Plain stderr recognizes the fixed graph messages before generic permission and validation matching, including both schedule-linked sentences. Hidden partners and deleted partners share the same refusal; errors expose no hidden identifiers, titles, paths, counts or limits. `deadline_approval_required` always has the fixed approval sentence and no details. This error contract changes no MCP catalog, schema or instructions.
+
 ## Text trimmed for the prompt budget (TASK-4105)
 
 Moved here word for word when schedules and the agenda were added to `pad_item` (v0.107), so the tools/list and initialize payloads stay under the ceilings in `internal/mcp/prompt_budget_test.go`. Each entry gives the words as they were before the trim (surrounding text included, so the cut can be placed; for `ref` and `remind_at` that already includes this change's own schedule wording) and what stands there now. The rules in them still hold; every trimmed description kept its action names, required parameters and safety sentences.

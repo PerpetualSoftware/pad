@@ -332,6 +332,8 @@ type ItemCopySchedule struct {
 	// leave the forecast, the selected children and their evidence behind.
 	ForecastDropped int                      `json:"forecast_dropped"`
 	ChildrenDropped int                      `json:"children_dropped"`
+	LinksDropped    int                      `json:"links_dropped"`
+	GatesDropped    int                      `json:"gates_dropped"`
 	Skipped         *ItemCopyScheduleSkipped `json:"skipped,omitempty"`
 }
 
@@ -345,11 +347,11 @@ type ItemCopyScheduleSkipped struct {
 // itemCopyScheduleView is the one conversion from the store's report, shared by
 // the copy and the preflight.
 func itemCopyScheduleView(r store.ScheduleCarryReport) *ItemCopySchedule {
-	if !r.HasSchedule {
+	if !r.HasSchedule && r.GatesDropped == 0 {
 		return nil
 	}
 	v := &ItemCopySchedule{Carried: r.Carried, HistoryDropped: r.HistoryDropped, ChangesDropped: r.ChangesDropped,
-		ForecastDropped: r.ForecastDropped, ChildrenDropped: r.ChildrenDropped}
+		ForecastDropped: r.ForecastDropped, ChildrenDropped: r.ChildrenDropped, LinksDropped: r.LinksDropped, GatesDropped: r.GatesDropped}
 	if r.Skipped != "" {
 		v.Skipped = &ItemCopyScheduleSkipped{Reason: r.Skipped}
 	}
@@ -462,6 +464,12 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	access, err := s.buildCommitmentAccess(r, s.store.Q(), sourceWorkspaceID, item.ID, commitmentAccessLive)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	linkEndReadable := func(id string) bool { return access.Readable[id] }
 	hold, ok := s.claimKey(w, r, sourceWorkspaceID, idempotencyRouteCopy, item.ID, canon, key, func(status int, stored string) {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
@@ -481,6 +489,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 	// ---- The copy. ONE call, no automatic server-side retry (DR-13). -----
 	res, err := s.copyItemAcrossWorkspaces(store.CrossWorkspaceCopyRequest{
 		SourceChildReadable: readableChildren,
+		LinkEndReadable:     linkEndReadable,
 		AfterWriteTx:        afterWrite,
 		SourceItemID:        item.ID,
 		TargetWorkspaceID:   dst.WorkspaceID(),

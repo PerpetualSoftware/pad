@@ -178,7 +178,7 @@ func TestMilestoneCopyAndMoveDropForecastAndChildren(t *testing.T) {
 				t.Fatal(err)
 			}
 			canRead := func(id string) bool { return id != hidden.ID }
-			preview, err := c.s.PreviewScheduleCarryFor(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, move, copyNow, canRead)
+			preview, err := c.s.PreviewScheduleCarryFor(c.s.db, c.wsA.ID, c.src.ID, "", c.actor, move, copyNow, canRead, canRead)
 			if err != nil {
 				t.Fatal(err)
 			}

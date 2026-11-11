@@ -151,6 +151,12 @@ func (s *Store) GetCommitment(workspaceID, itemID string) (*models.Commitment, e
 // reader may read a given child item (nil: every child). The milestone half of
 // the answer covers only what the reader can see; see loadMilestoneRows.
 func (s *Store) GetCommitmentFor(workspaceID, itemID string, canRead func(childID string) bool) (*models.Commitment, error) {
+	return s.GetCommitmentForReaders(workspaceID, itemID, canRead, canRead)
+}
+
+// GetCommitmentForReaders keeps milestone trash visibility separate from live
+// graph lineage visibility.
+func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, milestoneRead func(string) bool) (*models.Commitment, error) {
 	sc, err := s.GetSchedule(workspaceID, itemID)
 	if err != nil {
 		return nil, err
@@ -249,7 +255,7 @@ func (s *Store) GetCommitmentFor(workspaceID, itemID string, canRead func(childI
 			BeforeJSON: c.BeforeJSON, AfterJSON: c.AfterJSON, Actor: c.Actor, Reason: c.Reason, ReasonSource: c.ReasonSource, RootChangeID: c.RootChangeID,
 			ParentChangeID: c.ParentChangeID, RecordedAt: c.RecordedAt})
 	}
-	if err := s.milestoneForRead(s.db, out, sc, canRead); err != nil {
+	if err := s.milestoneForRead(s.db, out, sc, milestoneRead); err != nil {
 		return nil, err
 	}
 	return out, nil

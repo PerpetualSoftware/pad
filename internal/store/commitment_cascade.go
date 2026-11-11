@@ -212,6 +212,7 @@ type linkedOptions struct {
 	actor, reason, revision string
 	preview, acknowledge    bool
 	access                  models.CommitmentAccess
+	resolve                 bool // resolve cannot submit a preview revision or acknowledgement
 	rootAuthorized          bool // occurrence renegotiation already checked root authority
 }
 
@@ -318,6 +319,9 @@ func (s *Store) settleLinkedPlan(p *linkedPlan, budget *linkBudget, o linkedOpti
 		if v.Node.Schedule != p.root && o.access.Readable[p.c.itemOf(v.Node.Schedule)] {
 			violations = append(violations, v)
 		}
+	}
+	if o.resolve && (renegotiates || len(violations) > 0) {
+		return nil, false, ErrCommitmentPreviewRequired
 	}
 	if renegotiates && o.reason == "" {
 		return nil, false, fieldErr("reason", "required", "moving a hard deadline needs a reason")

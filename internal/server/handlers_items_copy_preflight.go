@@ -1561,7 +1561,13 @@ func (s *Server) handleCopyItemPreflight(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, err)
 		return
 	}
-	sched, err := s.store.PreviewItemScheduleCarry(sourceWorkspaceID, item.ID, carriedAssignee, currentUserID(r), input.ArchiveSource, readable)
+	access, err := s.buildCommitmentAccess(r, s.store.Q(), sourceWorkspaceID, item.ID, commitmentAccessLive)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	linkEndReadable := func(id string) bool { return access.Readable[id] }
+	sched, err := s.store.PreviewItemScheduleCarry(sourceWorkspaceID, item.ID, carriedAssignee, currentUserID(r), input.ArchiveSource, readable, linkEndReadable)
 	if err != nil {
 		s.writeCopyError(w, r, err)
 		return
