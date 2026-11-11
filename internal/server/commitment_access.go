@@ -52,7 +52,7 @@ func (s *Server) buildCommitmentAccess(r *http.Request, q store.Queryer, workspa
 		}
 		if owner {
 			access.Readable[it.ID] = true
-			access.Editable[it.ID] = true
+			access.Editable[it.ID] = writes && appWriteAllows(r, it.CollectionID)
 			continue
 		}
 		visible, err := s.checkItemVisibleQ(q, workspaceID, &models.Item{ID: it.ID, WorkspaceID: workspaceID, CollectionID: it.CollectionID}, user, role, isBearerAuth(r))
