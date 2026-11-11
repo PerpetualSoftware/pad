@@ -1,6 +1,6 @@
 <script lang="ts">
 	import AgendaRow from './AgendaRow.svelte';
-	import { dayLabel, entryKey, groupEntries, roleDay, todayIn, shiftDay, type AgendaAction } from '$lib/calendar/presentation';
+	import { dayLabel, entryKey, groupEntries, forecastSetter, roleDay, todayIn, shiftDay, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, CommitmentMoveResult } from '$lib/types';
 	let { start, entries, zone, complete = true, pending, saved, dragging, impact, titles, onaction, ondragstart, ondragend, onenter, ondrop }: {
 		start: string; entries: AgendaEntry[]; zone: string; complete?: boolean; pending: Record<string, boolean>; saved: Record<string, boolean>;
@@ -9,6 +9,15 @@
 		ondragstart: (entry: AgendaEntry, event: DragEvent) => void; ondragend: () => void;
 		onenter: (day: string) => void; ondrop: (day: string) => void;
 	} = $props();
+ const forecasts = $derived.by(() => {
+  const seen = new Set<string>();
+  return entries.filter(entry => {
+   if (!entry.forecast || roleDay(entry.forecast.value, zone) === entry.day) return false;
+   const key = JSON.stringify([entry.workspace, entry.owner_username, entry.schedule_id]);
+   if (seen.has(key)) return false;
+   seen.add(key); return true;
+  });
+ });
 	const days = $derived(Array.from({ length: 7 }, (_, index) => shiftDay(start, index)));
 	const groups = $derived(groupEntries(entries));
 	const localDay = (at: string) => roleDay(at, zone);
@@ -30,11 +39,17 @@
 					<AgendaRow {entry} {zone} week pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} {ondragstart} {ondragend} />
 				{/each}
 				{#each entries.filter(entry => entry.type === 'schedule' && (entry.state === 'outstanding' || entry.state === 'scheduled') && entry.roles?.deadline && localDay(entry.roles.deadline) === day && entry.day !== day) as entry, index (index)}
-					<li class="marker">
+					<li class="marker" data-role="deadline">
 						<span>Deadline · {entry.item_title}</span>
 						<div class="meta">{entry.workspace_name} / {entry.collection} / {entry.item_ref}</div>
 					</li>
 				{/each}
+    {#each forecasts.filter(entry => roleDay(entry.forecast!.value, zone) === day) as entry, index (index)}
+     <li class="forecast-marker" data-role="forecast">
+      <span>Forecast · {entry.item_title} · set by {forecastSetter(entry.forecast!)}</span>
+      <div class="meta">{entry.workspace_name} / {entry.collection} / {entry.item_ref}</div>
+     </li>
+    {/each}
 				{#each impact?.changes.filter(change => !change.root && localDay(change.to) === day) ?? [] as change, index (index)}
 					<li class="ghost" aria-hidden="true">
 						<span>{titles[change.item_id] ?? 'Linked item'} (linked) · proposed</span>
@@ -54,6 +69,8 @@
 	section:last-child { border-right: 0; }
 	h2 { font-size: 0.9rem; padding: var(--space-3); margin: 0; border-bottom: 1px solid var(--border); }
 	ul { list-style: none; padding: 0; margin: 0; }
+	.forecast-marker { border: 1px dashed var(--border-strong); margin: var(--space-2); padding: var(--space-3); font-size: 0.85rem; overflow-wrap: anywhere; }
+ .marker { border: 1px solid var(--border-strong); }
 	.marker, .ghost { padding: var(--space-3); font-size: 0.85rem; overflow-wrap: anywhere; }
 	.meta, .empty { color: var(--text-muted); font-size: 0.8rem; }
 	.empty, .pinned { padding: 0 var(--space-3); }

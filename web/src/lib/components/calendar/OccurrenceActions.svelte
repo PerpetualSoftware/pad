@@ -23,6 +23,7 @@
 	<Button size="sm" aria-label={`Actions ${entry.item_ref}`} data-agenda-actions={entry.item_ref} data-workspace={entry.workspace} data-owner={entry.owner_username} aria-haspopup="menu" aria-expanded={open} disabled={pending || disabled}
 		onclick={(event) => { trigger = event.currentTarget; open = !open; }}>Actions</Button>
 	<Menu {open} {trigger} mode="portal" ariaLabel={`Actions ${entry.item_ref}`} onclose={() => open = false}>
+		<MenuItem disabled={pending || disabled} onclick={() => pick('forecast')}>{entry.forecast ? 'Forecast…' : 'Set forecast…'}</MenuItem>
 		<MenuItem disabled={pending || disabled} onclick={() => pick('skip')}>Skip</MenuItem>
 		<MenuItem disabled={pending || disabled} onclick={() => pick('snooze')}>Snooze…</MenuItem>
 		{#if canMove(entry)}

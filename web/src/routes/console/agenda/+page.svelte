@@ -10,6 +10,7 @@
 	import AgendaDayList from '$lib/components/calendar/AgendaDayList.svelte';
 	import AgendaWeek from '$lib/components/calendar/AgendaWeek.svelte';
 	import CommitmentList from '$lib/components/calendar/CommitmentList.svelte';
+	import ForecastDialog from '$lib/components/calendar/ForecastDialog.svelte';
 	import MoveImpactDialog from '$lib/components/calendar/MoveImpactDialog.svelte';
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
 	import type { AgendaEntry, AgendaResponse, ScheduleResolveState, CommitmentMoveResult } from '$lib/types';
@@ -35,6 +36,7 @@
 	let announcement = $state('');
 	let pending = $state<Record<string, boolean>>({});
 	let saved = $state<Record<string, boolean>>({});
+	let forecastEntry = $state<AgendaEntry | null>(null);
 	let dialogEntry = $state<AgendaEntry | null>(null);
 	let dialogMode = $state<'snooze' | 'move'>('snooze');
 	let dragging = $state<AgendaEntry | null>(null);
@@ -96,7 +98,7 @@
 		await Promise.resolve();
 		if (!current()) return;
 		if (loadedUser !== userId) {
-			data = null; pending = {}; saved = {}; dialogEntry = null; actionError = ''; announcement = '';
+			data = null; pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; actionError = ''; announcement = '';
 			review = null; committing = false; linkedTitles = {}; clearDrag(); loadedUser = userId;
 		}
 		if (!userId) { data = null; loading = false; updating = false; return; }
@@ -131,6 +133,7 @@
 	function action(entry: AgendaEntry, state: AgendaAction) {
 		if (pending[entryKey(entry)] || saved[entryKey(entry)] || !canResolve(entry)) return;
 		actionError = '';
+		if (state === 'forecast') { forecastEntry = entry; return; }
 		if (state === 'today') { if (canMove(entry)) void moveTarget(entry, targetOnDay(entry, todayIn(zone), zone)); return; }
 		if (state === 'move' && !canMove(entry)) return;
 		if (state === 'move' || state === 'snooze') { dialogMode = state; dialogEntry = entry; }
@@ -362,6 +365,9 @@
 		{:else}<p>No entries on this day.</p>{/if}
 	{/if}
 {/if}
+<ForecastDialog open={!!forecastEntry} entry={forecastEntry} {zone} {permissionCopy}
+ onclose={() => forecastEntry = null}
+ onsaved={() => { forecastEntry = null; void load(day, zone, true); }} />
 <ResolveOccurrenceDialog open={!!dialogEntry} mode={dialogMode} {zone}
 	pending={dialogEntry ? !!pending[entryKey(dialogEntry)] : false} error={actionError}
 	onclose={() => dialogEntry = null}

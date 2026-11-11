@@ -32,3 +32,9 @@ it('keeps the delivered tone for an unrecognised delivered status', () => {
  show({ terminal: 'shipped', abandoned: false });
  expect(chipColor('Shipped')).toBe('var(--accent-green)');
 });
+
+it.each([undefined,'forecast'] as const)('renders forecast on occurrence or marker kind=%s without a forecast chip', kind=>{
+ const {container}=show({kind,forecast:{value:'2026-03-12',set_by:'u1',set_by_name:'Alex',set_by_kind:'agent',set_at:'now',source:''}});
+ const f=container.querySelector('[data-role="forecast"]');expect(f?.textContent).toContain('Forecast');expect(f?.textContent).toContain('Alex (agent)');expect(f?.closest('.chip')).toBeNull();
+ expect(container.textContent).not.toMatch(/Overdue|Missed|passed/i);
+});

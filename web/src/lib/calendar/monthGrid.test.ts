@@ -84,3 +84,14 @@ describe('abandoned terminal status', () => {
   expect(make({ terminal_options: ['done', 'shelved'], abandoned_options: ['shelved'] }, 'shelved').abandoned).toBe(true);
  });
 });
+
+it('carries forecasts and emits only admitted forecast markers before the calendar cut',()=>{
+ const data=response('2026-03-08');data.items=[];
+ const forecast={value:'2026-03-12',set_by:'u1',set_by_name:'Alex',set_by_kind:'agent' as const,set_at:'now',source:''};
+ data.entries=[{type:'schedule',schedule_id:'s1',at:'2026-03-10T09:00:00Z',day:'2026-03-10',state:'outstanding',item_ref:'TASK-1',item_title:'Work',collection:'tasks',forecast}];
+ let rows=calendarRows(data,collection,'due','2026-03');
+ expect(rows).toHaveLength(2);expect(rows[0].forecast).toEqual(forecast);expect(rows[1]).toMatchObject({kind:'forecast',day:'2026-03-12',forecast});expect(rows[1].state).toBeUndefined();
+ data.next_from='2026-03-12';expect(calendarRows(data,collection,'due','2026-03')).toHaveLength(1);
+ data.next_from=undefined;forecast.value='2026-03-10';expect(calendarRows(data,collection,'due','2026-03')).toHaveLength(1);
+ forecast.value='2026-04-12';expect(calendarRows(data,collection,'due','2026-03')).toHaveLength(1);
+});

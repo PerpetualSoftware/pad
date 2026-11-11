@@ -2,6 +2,7 @@
  import { dayLabel, timeLabel, type CalendarRow } from '$lib/calendar/monthGrid';
  import { shouldOpenInPane } from '../collections/itemCardClick';
  import { canonicalValueColor, formatFieldLabel } from '$lib/utils/fieldColors';
+ import { forecastText } from '$lib/calendar/presentation';
  import Chip from '../common/Chip.svelte';
  let {row, zone, basePath, onopen, preview = false, keyboard = true}: {row:CalendarRow;zone:string;basePath:string;onopen:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
  const states: Record<string,[string,string]> = {done:['Done','green'],skipped:['Skipped','gray'],moved:['Moved','purple'],missed:['Missed','amber'],lapsed:['Lapsed','gray'],outstanding:['Outstanding','amber'],scheduled:['Scheduled','blue'],unrecorded:['No recorded state','gray']};
@@ -9,7 +10,7 @@
  let done = $derived((!!row.terminal && !row.abandoned) || row.state === 'done');
  let closed = $derived(done || !!row.abandoned);
 </script>
-<a class="entry" class:preview class:done={closed} href="{basePath}/{encodeURIComponent(row.target)}" tabindex={keyboard ? 0 : -1} onclick={(e) => { if (shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }}>
+<a class="entry" class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:preview class:done={closed} href="{basePath}/{encodeURIComponent(row.target)}" tabindex={keyboard ? 0 : -1} onclick={(e) => { if (shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }}>
  <span class="title">{#if done}<span aria-label="Done">✓ </span>{:else if row.abandoned}<span aria-hidden="true">– </span>{/if}<span class="ref">{row.ref}</span> <span class="name">{row.continues && preview ? 'Continues' : row.title}</span></span>
  <span class="meta">
   {#if row.allDay}<span>All day</span>{:else if row.at}<span>{timeLabel(row.at,zone)}</span>{/if}
@@ -21,9 +22,13 @@
  </span>
  {#if row.start && row.end}<span class="range">{row.continues ? '‹ ' : ''}{dayLabel(row.start)} – {dayLabel(row.end)}{row.day < row.end ? ' ›' : ''}</span>{/if}
 
+ {#if row.forecast}<span class="forecast" data-role={row.kind === 'forecast' ? undefined : 'forecast'}>{forecastText(row.forecast, zone)}</span>{/if}
  {#if row.missedCount}<span class="range">{row.missedCount} missed occurrences</span>{/if}
 </a>
 <style>
+ .forecast, .forecast-marker { border: 1px dashed var(--border-strong); }
+ .forecast { display: block; padding: var(--space-1); font-size: 0.85rem; }
+ .forecast-marker .forecast { border: 0; }
  .entry { display:block; padding:var(--space-2); border-radius:var(--radius-sm); color:var(--text-primary); text-decoration:none; min-width:0; overflow-wrap:anywhere; }
  .entry:hover { background:var(--bg-hover); }
  .entry:focus-visible { outline:2px solid var(--accent-primary); outline-offset:-2px; }
