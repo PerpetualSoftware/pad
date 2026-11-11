@@ -130,6 +130,109 @@ func TestTASK4412_MCPTransportParity(t *testing.T) {
 	}
 }
 
+func TestTASK4412_ScheduleOwnedInputs(t *testing.T) {
+	const occurrence = "2099-01-01T09:00:00Z"
+	const until = "2099-01-02T09:00:00Z"
+	cases := []struct {
+		name, action       string
+		input, stray       map[string]any
+		method, path, body string
+	}{
+		{"link add", "schedule-link", map[string]any{"ref": "TASK-5", "child": "TASK-6", "parent_role": "target", "child_role": "earliest", "link_offset": map[string]any{"mode": "elapsed", "elapsed_secs": -43200}}, map[string]any{"offset": 20, "days": 3, "comment": "unrelated", "until": until, "role": "implementer"}, "POST", schedPath + "/links", `{"child":"TASK-6","parent_role":"target","child_role":"earliest","offset":{"mode":"elapsed","elapsed_secs":-43200},"preview":true}`},
+		{"link edit", "schedule-link", map[string]any{"link_id": "lid", "link_offset": map[string]any{"mode": "elapsed", "elapsed_secs": 0}}, map[string]any{"offset": 20, "days": 3, "comment": "unrelated", "until": until}, "PATCH", "/workspaces/test/commitment-links/lid", `{"offset":{"mode":"elapsed","elapsed_secs":0},"preview":true}`},
+		{"move preview", "schedule-move", map[string]any{"ref": "TASK-5", "role": "target", "to": until}, map[string]any{"until": until, "comment": "unrelated", "offset": 20, "days": 3}, "POST", schedPath + "/move-preview", `{"role":"target","to":"2099-01-02T09:00:00Z"}`},
+		{"move apply", "schedule-move", map[string]any{"ref": "TASK-5", "role": "target", "to": until, "apply": true, "revision": "X"}, map[string]any{"until": until}, "POST", schedPath + "/move", `{"role":"target","to":"2099-01-02T09:00:00Z","revision":"X"}`},
+		{"unlink", "schedule-unlink", map[string]any{"link_id": "lid"}, map[string]any{"apply": "unrelated", "reason": 20}, "DELETE", "/workspaces/test/commitment-links/lid", ""},
+		{"gate add", "schedule-gate", map[string]any{"ref": "TASK-5", "blocker": "TASK-6"}, map[string]any{"apply": "unrelated", "reason": 20}, "POST", schedPath + "/gates", `{"blocker":"TASK-6"}`},
+		{"gate remove", "schedule-gate", map[string]any{"gate_id": "gid"}, map[string]any{"apply": "unrelated", "reason": 20}, "DELETE", "/workspaces/test/commitment-gates/gid", ""},
+	}
+	for _, state := range []string{"done", "skip", "snooze", "move"} {
+		input := map[string]any{"ref": "TASK-5", "state": state, "occurrence_at": occurrence, "comment": "resolve comment"}
+		body := map[string]any{"state": state, "occurrence_at": occurrence, "comment": "resolve comment"}
+		if state == "snooze" || state == "move" {
+			input["until"], body["until"] = until, until
+		}
+		if state == "done" {
+			input["actual_done_at"], body["actual_done_at"] = occurrence, occurrence
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, key := range []string{"role", "to"} {
+			cases = append(cases, struct {
+				name, action       string
+				input, stray       map[string]any
+				method, path, body string
+			}{"resolve " + state + " with " + key, "schedule-resolve", input, map[string]any{key: map[string]string{"role": "implementer", "to": until}[key]}, "POST", schedPath + "/resolve", string(raw)})
+		}
+	}
+	for _, tc := range cases {
+		for _, transport := range []string{"stdio", "remote"} {
+			t.Run(tc.name+"/"+transport, func(t *testing.T) {
+				h, calls := recordingStub(func(recordedCall) (int, string) {
+					if tc.method == "DELETE" {
+						return 204, ""
+					}
+					return 200, `{}`
+				})
+				root := tzCLIWithLocal(t, h, time.UTC)
+				t.Setenv(padHelperEnv, "1")
+				bin, err := os.Executable()
+				if err != nil {
+					t.Fatal(err)
+				}
+				env := mcp.ActionEnv{Doc: cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", MaxDepth: -1}), Workspace: mcp.NewWorkspaceState("test"), Dispatcher: &mcp.ExecDispatcher{Binary: bin}}
+				if transport == "remote" {
+					env.Dispatcher = &mcp.HTTPHandlerDispatcher{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.Body == nil {
+							r.Body = http.NoBody
+						}
+						h(w, r)
+					}), UserResolver: func(context.Context) *models.User { return &models.User{ID: "u"} }}
+				}
+				var action mcp.ActionFn
+				for _, def := range mcp.Catalog {
+					if def.Name == "pad_item" {
+						action = def.Actions[tc.action]
+					}
+				}
+				if action == nil {
+					t.Fatalf("missing action %s", tc.action)
+				}
+				// Both the clean and padded inputs must produce the pinned request.
+				for _, padded := range []bool{false, true} {
+					input := map[string]any{"workspace": "test"}
+					for k, v := range tc.input {
+						input[k] = v
+					}
+					if padded {
+						for k, v := range tc.stray {
+							input[k] = v
+						}
+					}
+					before := len(calls())
+					res, err := action(context.Background(), input, env)
+					if err != nil || res == nil || res.IsError {
+						t.Errorf("padded=%t: err=%v result=%+v", padded, err, res)
+					}
+					got := calls()[before:]
+					if len(got) != 1 {
+						t.Errorf("padded=%t: calls=%+v; want exactly one %s %s", padded, got, tc.method, tc.path)
+						continue
+					}
+					var body, want any
+					_ = json.Unmarshal([]byte(got[0].body), &body)
+					_ = json.Unmarshal([]byte(tc.body), &want)
+					if got[0].method != tc.method || got[0].path != tc.path || got[0].query != "" || !reflect.DeepEqual(body, want) {
+						t.Errorf("padded=%t: got %+v; want %s %s %s", padded, got[0], tc.method, tc.path, tc.body)
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestTASK4412_GraphBodyErrors(t *testing.T) {
 	setTempHomeMain(t)
 	for _, code := range []string{"invalid_body", "validation_error"} {

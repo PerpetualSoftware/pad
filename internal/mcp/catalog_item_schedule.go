@@ -199,16 +199,17 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 			return errStructured(name, err), nil
 		}
 	}
-	out := make(map[string]any, len(input)+1)
-	for k, v := range input {
-		if k != "state" && k != "occurrence_at" && k != "until" {
+	// Only resolve's own members may reach dispatch. Tool-wide keys such as
+	// role and to must never select the linked move on either transport.
+	out := make(map[string]any)
+	for _, k := range []string{"workspace", "ref", "comment"} {
+		if v, ok := input[k]; ok {
 			out[k] = v
 		}
 	}
 	out["occurrence"] = occ
 	// A blank actual_done_at is not given: leave it out for the route, and give
 	// the CLI its --at only when there is a value.
-	delete(out, "actual_done_at")
 	if actual != "" {
 		out["actual_done_at"], out["at"] = actual, actual
 	}
@@ -402,7 +403,25 @@ func actionItemScheduleRenegotiate(ctx context.Context, input map[string]any, en
 func actionItemScheduleGraph(action string) ActionFn {
 	return func(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 		name := "pad_item." + action
-		out := copyInputMap(input)
+		// pad_item shares parameters across actions. Forward only this action's
+		// members, before validation or CLI flag aliases can interpret them.
+		keys := []string{"workspace"}
+		switch action {
+		case "schedule-link":
+			keys = append(keys, "ref", "child", "parent_role", "child_role", "link_id", "link_offset", "cancel_policy", "reason", "revision", "apply", "preview", "acknowledge_violations")
+		case "schedule-unlink":
+			keys = append(keys, "link_id")
+		case "schedule-move":
+			keys = append(keys, "ref", "role", "to", "reason", "revision", "apply", "preview", "acknowledge_violations")
+		case "schedule-gate":
+			keys = append(keys, "ref", "blocker", "gate_id")
+		}
+		out := make(map[string]any, len(keys))
+		for _, k := range keys {
+			if v, ok := input[k]; ok {
+				out[k] = v
+			}
+		}
 		fail := func(err error) (*CallToolResult, error) { return errStructured(name, err), nil }
 		for _, k := range []string{"ref", "child", "parent_role", "child_role", "link_id", "gate_id", "blocker", "cancel_policy", "reason", "revision"} {
 			v, ok := out[k]
