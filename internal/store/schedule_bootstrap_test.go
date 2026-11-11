@@ -122,6 +122,26 @@ func TestBootstrapAgendaFarFutureMovedIntoToday(t *testing.T) {
 	}
 }
 
+// A deadline overridden into today, with the target still far ahead, must
+// reach the role membership check: next_at alone does not bound it.
+func TestBootstrapAgendaDeadlineOverrideIntoToday(t *testing.T) {
+	t.Parallel()
+	f := newBootFixture(t)
+	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "deadline_hard", Dtstart: "2026-12-20T09:00", Tz: "UTC"}, "2026-10-20T00:00:00Z")
+	sc, err := f.s.GetSchedule(f.ws.ID, item.ID)
+	if err != nil || sc == nil || sc.NextAt == nil || sc.NextWall == nil {
+		t.Fatalf("GetSchedule: %v %+v", err, sc)
+	}
+	key := OccurrenceKey(sc, *sc.NextAt, *sc.NextWall)
+	f.exec(t, `INSERT INTO schedule_occurrence_overrides (id, schedule_id, occurrence_key, role, value_at, created_at, updated_at) VALUES (?, ?, ?, 'deadline', ?, ?, ?)`,
+		"ovr-deadline-today", sc.ID, key, "2026-10-29T17:00:00Z", "2026-10-29T07:00:00Z", "2026-10-29T07:00:00Z")
+
+	set := f.read(t, false, time.UTC, "2026-10-29T08:00:00Z")
+	if len(set.DueToday)+len(set.Carried) != 1 {
+		t.Fatalf("deadline overridden into today: due today %v, carried %v", refsOf(set.DueToday), refsOf(set.Carried))
+	}
+}
+
 // Past 14 days an occurrence leaves the list and is only counted.
 func TestBootstrapAgendaStaleAfterFourteenDays(t *testing.T) {
 	t.Parallel()
