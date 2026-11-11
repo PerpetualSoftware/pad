@@ -1,10 +1,10 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-import type { AgendaEntry, AgendaResponse } from '$lib/types';
+import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult } from '$lib/types';
 
-const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
-vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getCommitment: h.view, resolveCommitment: h.resolve } }));
+const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getCommitment: h.view, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, items: { get: h.item } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/auth.svelte', async () => {
  const { SvelteMap } = await import('svelte/reactivity');
@@ -26,21 +26,33 @@ async function mount() { render(Agenda); await screen.findByText('First item'); 
 async function menu(ref = 'EX-30') { await fireEvent.click(screen.getByRole('button', { name: `Actions ${ref}` })); }
 async function dialog(kind: 'Move' | 'Snooze') {
  await menu();
- await fireEvent.click(screen.getByRole('menuitem', { name: `${kind}…` }));
- return screen.getByRole('dialog', { name: `${kind} occurrence` });
+ await fireEvent.click(screen.getByRole('menuitem', { name: kind === 'Move' ? 'Move target…' : 'Snooze…' }));
+ return screen.getByRole('dialog', { name: kind === 'Move' ? 'Move target' : 'Snooze occurrence' });
 }
 async function fillTime(d: HTMLElement, value = '2026-11-06T09:30') { await fireEvent.input(within(d).getByLabelText(/New date and time|Remind me again at/), { target: { value } }); }
+
+const preview = (to = '2026-11-06T14:00:00.000Z', extra: Partial<CommitmentMoveResult> = {}): CommitmentMoveResult => ({ revision: 'revision-1', changes: [{ item_id: 'root', role: 'target', from: row().at, to, root: true }], ...extra });
+const workRow = (extra: Partial<AgendaWorkEntry> = {}): AgendaWorkEntry => ({ ...row(), type: 'schedule', rank: 'normal', reason: 'outstanding', ...extra });
+const card = (ref = 'EX-30') => document.querySelector(`[data-ref="${ref}"][draggable="true"]`) as HTMLElement;
+const daySection = (day = '2026-11-06') => document.querySelector(`[data-day="${day}"]`) as HTMLElement;
+async function drag(day = '2026-11-06', ref = 'EX-30') {
+ await fireEvent.dragStart(card(ref)); await fireEvent.dragEnter(daySection(day));
+}
+async function drop(day = '2026-11-06', ref = 'EX-30') { await drag(day, ref); await fireEvent.drop(daySection(day)); }
 
 beforeEach(() => {
  vi.resetAllMocks(); localStorage.clear(); h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch = 0; h.browserZone = 'Europe/London';
  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-05T12:00:00Z'));
  h.agenda.mockResolvedValue(response());
  h.view.mockResolvedValue({ item_ref: 'EX-30', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, floating: true, next_occurrence: { at: frozenAt, wall: row().wall } });
+ h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to)));
+ h.move.mockResolvedValue(preview()); h.item.mockResolvedValue({ title: 'Linked child' });
  h.resolve.mockResolvedValue({ schedule: {}, resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0 } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('agenda Day page', () => {
+ beforeEach(() => localStorage.setItem('pad-agenda-mode:user-a', 'day'));
  it('renders two workspaces, routes, time, checkbox and one polite status', async () => {
   h.agenda.mockResolvedValue(response([row(), row({ workspace: 'other', owner_username: 'bob', workspace_name: 'Second workspace', item_ref: 'EX-31', item_title: 'Second item', schedule_id: 'schedule-2', all_day: true })]));
   await mount();
@@ -133,12 +145,13 @@ describe('agenda Day page', () => {
  it('offers Move for a native hard deadline without a legacy note', async () => {
   h.agenda.mockResolvedValue(response([row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, roles_origin: 'native' })]));
   await mount(); await menu();
-  expect((screen.getByRole('menuitem', { name: 'Move…' }) as HTMLButtonElement).disabled).toBe(false);
+  expect((screen.getByRole('menuitem', { name: 'Move target…' }) as HTMLButtonElement).disabled).toBe(false);
   expect(screen.queryByRole('menuitem', { name: 'Legacy hard deadlines cannot be moved.' })).toBeNull();
  });
 });
 
 describe('resolve identity and dialogs', () => {
+ beforeEach(() => localStorage.setItem('pad-agenda-mode:user-a', 'day'));
  it('Done fetches the view at submit and uses the frozen instant, exactly once', async () => {
   await mount(); expect(h.view).not.toHaveBeenCalled(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done' }));
@@ -161,26 +174,20 @@ describe('resolve identity and dialogs', () => {
   await fireEvent.click(within(d).getByRole('button', { name: 'Cancel' })); await settle();
   expect(document.activeElement).toBe(trigger); expect(h.view).not.toHaveBeenCalled();
  });
- it('opens Move without fetching and rejects a whitespace-only reason', async () => {
-  await mount(); const d = await dialog('Move'); await fillTime(d); await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: '  ' } });
-  await fireEvent.click(within(d).getByRole('button', { name: 'Move occurrence' })); expect(within(d).getByText('Enter a reason.')).toBeTruthy();
-  expect(within(d).getByLabelText('Reason').getAttribute('aria-invalid')).toBe('true'); expect(within(d).getByLabelText('Reason').getAttribute('aria-describedby')).toBeTruthy();
+ it('Move target accepts an optional reason and uses the preview revision', async () => {
+  await mount(); const d = await dialog('Move'); await fillTime(d);
+  expect(within(d).getByText(/Will be.*09:30.*GMT-05:00/)).toBeTruthy();
+  expect(within(d).getByText('The reminder follows the target.')).toBeTruthy();
+  expect(within(d).getByLabelText('Reason (optional)').hasAttribute('required')).toBe(false);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'revision-1' }));
   expect(h.view).not.toHaveBeenCalled(); expect(h.resolve).not.toHaveBeenCalled();
  });
- it('Move sends the shown zone instant and reason with the frozen identity', async () => {
-  await mount(); const d = await dialog('Move'); expect(h.view).not.toHaveBeenCalled(); await fillTime(d);
-  expect(within(d).getByText(/Will be.*09:30.*GMT-05:00/)).toBeTruthy();
-  await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: 'Waiting for review' } });
-  await fireEvent.click(within(d).getByRole('button', { name: 'Move occurrence' }));
-  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'move', until: '2026-11-06T14:30:00.000Z', comment: 'Waiting for review' })); await screen.findByText('Occurrence moved.');
- });
- it('Move says when the new target is after the deadline', async () => {
-  h.agenda.mockResolvedValue(response([row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, roles_origin: 'native' })]));
-  h.resolve.mockResolvedValue({ commitment: {}, resolution: { occurrence_at: frozenAt, state: 'move', missed_recorded: 0, warning: 'target_after_deadline' } });
+ it('Move target sends a trimmed optional reason', async () => {
   await mount(); const d = await dialog('Move'); await fillTime(d);
-  await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: 'Slipped' } });
-  await fireEvent.click(within(d).getByRole('button', { name: 'Move occurrence' }));
-  await screen.findByText('Occurrence moved. The new date is after its deadline.');
+  await fireEvent.input(within(d).getByLabelText('Reason (optional)'), { target: { value: ' Waiting for review ' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'revision-1', reason: 'Waiting for review' }));
  });
  it('Snooze sends until with no comment and retains input on failure', async () => {
   h.resolve.mockRejectedValue(new Error('offline')); await mount(); const d = await dialog('Snooze'); expect(h.view).not.toHaveBeenCalled(); await fillTime(d);
@@ -221,5 +228,226 @@ describe('resolve identity and dialogs', () => {
  it('does not resolve after identity changes during the schedule read', async () => {
   const view = deferred<unknown>(); h.view.mockReturnValueOnce(view.promise); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
   h.epoch++; view.resolve({ next_occurrence: { at: frozenAt, wall: row().wall } }); await settle(); expect(h.resolve).not.toHaveBeenCalled();
+ });
+});
+
+describe('agenda Week and priority', () => {
+ it('an incomplete week never says a day is empty', async () => {
+  h.agenda.mockResolvedValue(response([], { window_complete: false, truncated: true }));
+  render(Agenda);
+  await screen.findByText('Agenda is incomplete.');
+  expect(document.querySelectorAll('[data-day]')).toHaveLength(7);
+  expect(screen.queryByText('Nothing on this day.')).toBeNull();
+ });
+ it('defaults to one seven-local-day DST window, renders seven days and shifts by civil weeks', async () => {
+  vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-30T16:00:00Z'));
+  h.agenda.mockResolvedValue(response([])); render(Agenda);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York']);
+  expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
+  expect(document.querySelectorAll('[data-day]')).toHaveLength(7);
+  expect(within(daySection('2026-10-30')).getByRole('heading')).toHaveTextContent(/Friday.*30.*Today/);
+  expect(await screen.findAllByText('Nothing on this day.')).toHaveLength(7);
+  await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York']);
+  expect(screen.getByRole('heading', { name: '6–12 November 2026' })).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: 'Previous week' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
+  expect(h.agenda.mock.calls[2]).toEqual(h.agenda.mock.calls[0]);
+ });
+ it('honours saved Day mode, persists the mode per user and keeps the selected date when switching', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'day'); await mount();
+  expect(screen.getByRole('button', { name: 'Day' })).toHaveAttribute('aria-pressed', 'true');
+  await fireEvent.click(screen.getByRole('button', { name: 'Next day' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Week' }));
+  expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('week');
+  await waitFor(() => expect(h.agenda.mock.lastCall?.[0]).toBe('2026-11-06T05:00:00.000Z'));
+  expect(screen.getByRole('heading', { name: '6–12 November 2026' })).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+  expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('day');
+  h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1);
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true'));
+  expect(localStorage.getItem('pad-agenda-mode:user-b')).toBeNull();
+ });
+ it('cheap drag keeps the wall clock, uses the preview revision once and keeps the week', async () => {
+  await mount(); await drop();
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1' }));
+  expect(h.preview).toHaveBeenCalledTimes(1); expect(h.move).toHaveBeenCalledTimes(1);
+  expect(h.preview).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z' });
+  expect(screen.queryByRole('dialog')).toBeNull(); await screen.findByText('Occurrence moved to November 6, 2026, 09:00. Its reminder follows the target.');
+  expect(h.agenda.mock.calls[1]).toEqual(h.agenda.mock.calls[0]);
+  expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
+  expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Actions EX-30' }));
+ });
+ it('previews a linked child once per day and renders linked ghosts at their proposed day', async () => {
+  const child = row({ item_ref: 'CH-2', item_title: 'Child item' });
+  h.agenda.mockResolvedValue(response([child]));
+  const change = { item_id: 'linked', role: 'deadline' as const, to: '2026-11-07T15:00:00Z' };
+  h.preview.mockResolvedValue(preview(undefined, { changes: [...preview().changes, change], violations: [change] }));
+  render(Agenda); await screen.findByText('Child item'); await drag('2026-11-06', 'CH-2');
+  await waitFor(() => expect(within(daySection('2026-11-07')).getByText('Linked child (linked) · proposed').closest('[aria-hidden="true"]')).toBeTruthy());
+  expect(within(daySection('2026-11-07')).getByText('Outside its bound')).toBeTruthy();
+  await fireEvent.dragEnter(daySection()); expect(h.preview).toHaveBeenCalledTimes(1);
+  await fireEvent.drop(daySection());
+  const d = await screen.findByRole('dialog'); await fireEvent.click(within(d).getByRole('checkbox')); await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'CH-2', expect.objectContaining({ role: 'target', acknowledge_violations: true })));
+ });
+ it.each(['different', 'missing'])('rejects a %s preview root and reloads without a write', async kind => {
+  h.preview.mockResolvedValue(preview(undefined, { changes: kind === 'missing' ? [] : [{ ...preview().changes[0], from: '2026-11-04T14:00:00Z' }] }));
+  await mount(); await drop(); await screen.findByText('This occurrence changed. Review the updated entry and try again.');
+  expect(h.move).not.toHaveBeenCalled(); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+ });
+ it.each(['preview', 'move'])('handles commitment_changed from %s without retry', async source => {
+  h[source].mockRejectedValue({ code: 'commitment_changed' }); await mount(); await drop();
+  await screen.findByText('This occurrence changed. Review the updated entry and try again.');
+  expect(h.move).toHaveBeenCalledTimes(source === 'move' ? 1 : 0); expect(h.preview).toHaveBeenCalledTimes(1);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+ });
+ it('reviews every change, requires a deadline reason and lists finished dates and role labels', async () => {
+  const linked = { item_id: 'linked', role: 'earliest' as const, to: '2026-11-07T15:00:00Z' };
+  h.preview.mockResolvedValue(preview(undefined, { renegotiates_deadline: true, changes: [linked, ...preview().changes], left_in_place: [{ ...linked, role: 'occupied_until' }] }));
+  await mount(); await drag(); await screen.findByText('Review needed: this move changes a hard deadline.'); await fireEvent.drop(daySection());
+  const d = await screen.findByRole('dialog', { name: 'Review deadline change' });
+  expect(within(d).getByText('This move changes a hard deadline.')).toBeTruthy();
+  expect(within(d).getByText(/First item → November 6/)).toBeTruthy();
+  expect(within(d).getByText(/Linked child \(linked\).*Available from/)).toBeTruthy();
+  expect(within(d).getByText('Not moved (finished)')).toBeTruthy();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  expect(within(d).getByText('Enter a reason.')).toBeTruthy(); expect(h.move).not.toHaveBeenCalled();
+  await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: ' Agreed later ' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1', reason: 'Agreed later' }));
+ });
+ it.each(['Cancel', 'Escape'])('%s closes review with no write', async method => {
+  h.preview.mockResolvedValue(preview(undefined, { renegotiates_deadline: true })); await mount(); await drop(); const d = await screen.findByRole('dialog');
+  if (method === 'Cancel') await fireEvent.click(within(d).getByRole('button', { name: 'Cancel' }));
+  else await fireEvent(d, new Event('cancel', { cancelable: true }));
+  expect(screen.queryByRole('dialog')).toBeNull(); expect(h.move).not.toHaveBeenCalled();
+ });
+ it('requires bounds acceptance and falls back to Linked item for unavailable titles', async () => {
+  const change = { item_id: 'linked', role: 'deadline' as const, to: '2026-11-07T15:00:00Z' };
+  h.item.mockRejectedValue(new Error('offline')); h.preview.mockResolvedValue(preview(undefined, { changes: [...preview().changes, change], violations: [change] }));
+  await mount(); await drop(); const d = await screen.findByRole('dialog');
+  expect(await within(d).findByText(/Linked item \(linked\)/)).toBeTruthy();
+  expect(within(d).getByText('Outside its bound')).toBeTruthy();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true })); expect(h.move).not.toHaveBeenCalled();
+  await fireEvent.click(within(d).getByLabelText('Accept dates outside their bounds'));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1', acknowledge_violations: true }));
+ });
+ it('pins available and deadline days while dragging and clears drag decorations on Escape', async () => {
+  const roles = { ...row().roles!, target: row().at, earliest: '2026-11-06T14:00:00Z', deadline: '2026-11-08T14:00:00Z' };
+  h.agenda.mockResolvedValue(response([row({ roles, roles_origin: 'native' })])); await mount(); await drag();
+  expect(within(daySection()).getByText('Available from', { exact: true })).toBeTruthy();
+  expect(within(daySection('2026-11-08')).getByText('Deadline', { exact: true })).toBeTruthy();
+  await fireEvent.keyDown(window, { key: 'Escape' });
+  expect(screen.queryByText('Available from', { exact: true })).toBeNull(); expect(h.move).not.toHaveBeenCalled();
+  await fireEvent.drop(daySection()); expect(h.move).not.toHaveBeenCalled();
+ });
+ it('labels target and all date roles, with noninteractive separate-day deadline markers', async () => {
+  h.agenda.mockResolvedValue(response([row({ roles: { ...row().roles!, target: row().at, earliest: '2026-11-05T13:00:00Z', deadline: '2026-11-05T16:00:00Z', deadline_behavior: 'stays_owed', occupied_until: '2026-11-05T15:00:00Z' } }), row({ item_ref: 'EX-31', item_title: 'Another item', roles: { ...row().roles!, deadline: '2026-11-08T14:00:00Z', deadline_behavior: 'lapses' } })]));
+  await mount(); const day = within(daySection('2026-11-05'));
+  expect(day.getAllByText(/Target.*09:00/).length).toBeGreaterThan(0);
+  expect(day.getByText(/Deadline.*11:00.*Still owed/)).toBeTruthy();
+  expect(day.getByText(/Available from.*08:00/)).toBeTruthy(); expect(day.getByText('Until 10:00')).toBeTruthy();
+  const marker = within(daySection('2026-11-08')).getByText('Deadline · Another item').closest('li')!;
+  expect(within(marker).queryByRole('button')).toBeNull(); expect(marker.getAttribute('draggable')).not.toBe('true');
+  expect(within(daySection('2026-11-08')).getByText('Nothing on this day.')).toBeTruthy();
+ });
+ it.each([false, true])('Bring to today uses the shared target flow, all-day=%s', async all_day => {
+  h.agenda.mockResolvedValue(response([row({ all_day, day: '2026-11-06' })])); await mount(); await menu();
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Bring to today' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: all_day ? '2026-11-05T05:00:00.000Z' : '2026-11-05T14:00:00.000Z', revision: 'revision-1' }));
+  expect(h.resolve).not.toHaveBeenCalled();
+ });
+ it('has only one draggable occurrence with a moved history row and no extra quantitative fields', async () => {
+  h.agenda.mockResolvedValue(response([row({ state: 'moved' }), row({ at: '2026-11-06T14:00:00Z', day: '2026-11-06' })])); render(Agenda);
+  await waitFor(() => expect(document.querySelectorAll('[draggable="true"]')).toHaveLength(1));
+  expect(screen.getByText('Moved')).toBeTruthy();
+  expect(screen.queryByText(/size|effort|capacity/i)).toBeNull(); expect(screen.queryByLabelText(/size|effort|capacity/i)).toBeNull();
+ });
+ it('renders ranks in server order, reason chips, group completeness and target/deadline text', async () => {
+  h.agenda.mockResolvedValue(response([], { priority_list: [workRow({ item_title: 'High B', rank: 'high', reason: 'target_passed' }), workRow({ item_ref: 'EX-31', item_title: 'High A', rank: 'high', reason: 'deadline_still_owed' }), workRow({ item_ref: 'EX-32', item_title: 'Normal row', roles: { ...row().roles!, target: row().at, deadline: '2026-11-06T14:00:00Z' } }), workRow({ item_ref: 'EX-33', item_title: 'Low row', rank: 'low' }), workRow({ item_ref: 'EX-34', item_title: 'Unranked row', rank: undefined })], waiting_on: [workRow({ type: 'item', item_ref: 'W-1', item_title: 'Blocked work', reason: 'blocked_needs_decision' }), workRow({ type: 'item', item_ref: 'W-2', item_title: 'Waiting work', reason: 'waiting' })], no_date_complete: false })); render(Agenda);
+  const list = await screen.findByRole('region', { name: 'Priority' });
+  expect(within(list).getAllByRole('heading').map(el => el.textContent)).toEqual(['Priority', 'High', 'Normal', 'Low', 'Unranked', 'Waiting on', 'No date']);
+  expect(within(list).getAllByRole('link').slice(0, 2).map(el => el.textContent)).toEqual(['High B', 'High A']);
+  for (const text of ['Showing all outstanding', 'Target passed', 'Missed deadline · Still owed', 'Needs a decision', 'This list is incomplete.']) expect(within(list).getByText(text)).toBeTruthy();
+  expect(within(list).getByText(/Target November 5.*09:00/)).toBeTruthy(); expect(within(list).getByText(/Deadline November 6.*09:00/)).toBeTruthy();
+  expect(within(list).queryByText('No undated work.')).toBeNull(); expect(within(list).queryByRole('button', { name: /^Done/ })).toBeNull();
+  expect(screen.queryByText('Agenda is incomplete.')).toBeNull();
+ });
+ it('renders complete empty groups and keeps window incompleteness independent', async () => {
+  h.agenda.mockResolvedValue(response([], { window_complete: false })); render(Agenda);
+  for (const text of ['Nothing outstanding.', 'Nothing waiting.', 'No undated work.', 'Agenda is incomplete.']) expect(await screen.findByText(text)).toBeTruthy();
+ });
+ it('never calls an incomplete empty group empty', async () => {
+  h.agenda.mockResolvedValue(response([], { priority_list_complete: false, waiting_on_complete: false, no_date_complete: false })); render(Agenda);
+  await waitFor(() => expect(screen.getAllByText('This list is incomplete.')).toHaveLength(3));
+  for (const text of ['Nothing outstanding.', 'Nothing waiting.', 'No undated work.']) expect(screen.queryByText(text)).toBeNull();
+ });
+ it('moves list schedules through their own target and ref, without Done', async () => {
+  h.agenda.mockResolvedValue(response([], { priority_list: [workRow({ day: undefined, at: undefined, roles: { ...row().roles!, target: row().at } })] })); render(Agenda);
+  await screen.findByRole('region', { name: 'Priority' });
+  await fireEvent.click(screen.getByRole('button', { name: 'Move target…' }));
+  const d = screen.getByRole('dialog', { name: 'Move target' }); await fillTime(d, '2026-11-06T09:00');
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1' }));
+ });
+ it('switches between Agenda and List in place at mobile widths without fetching', async () => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  await mount();
+  expect(screen.getByRole('button', { name: 'Agenda', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await fireEvent.click(screen.getByRole('button', { name: 'List', exact: true }));
+  expect(screen.getByRole('region', { name: 'Priority' })).toBeVisible(); expect(screen.queryByText('First item')).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Agenda', exact: true })); await screen.findByText('First item'); expect(h.agenda).toHaveBeenCalledTimes(1);
+ });
+});
+
+describe('target move failure and drag fences', () => {
+ it.each([
+  ['forbidden', 'You can no longer change this item.', true],
+  ['permission_denied', 'You can no longer change this item.', true],
+  ['link_edit_required', 'You can no longer change this item.', true],
+  ['stale', 'This occurrence changed. Review the updated entry and try again.', true],
+  ['deadline_approval_required', 'Server explanation', false],
+  ['deadline_owner_required', 'Server explanation', false],
+  ['schedule_linked', 'Server explanation', false],
+  ['internal', 'Could not update this occurrence. Try again.', false]
+ ])('handles %s without reissuing the move', async (code, copy, reload) => {
+  h.move.mockRejectedValue({ code, message: 'Server explanation' }); await mount(); await drop(); await screen.findByText(copy);
+  expect(h.move).toHaveBeenCalledTimes(1); expect(h.preview).toHaveBeenCalledTimes(1);
+  expect(h.agenda).toHaveBeenCalledTimes(reload ? 2 : 1);
+ });
+ it('keeps saved rows disabled when refresh fails and retries only the read', async () => {
+  await mount(); h.agenda.mockRejectedValueOnce(new Error('offline')); await drop();
+  await screen.findByText('Saved. Could not refresh the view.');
+  expect(screen.getByRole('button', { name: 'Actions EX-30' })).toBeDisabled();
+  h.agenda.mockResolvedValue(response()); await fireEvent.click(screen.getByRole('button', { name: 'Try again' })); await settle(); expect(h.move).toHaveBeenCalledTimes(1);
+ });
+ it('returns focus to the period heading when the moved card leaves the view', async () => {
+  await mount(); h.agenda.mockResolvedValue(response([])); await drop();
+  await screen.findByText(/Occurrence moved to/);
+  expect(document.activeElement).toBe(screen.getByRole('heading', { name: '5–11 November 2026' }));
+ });
+ it('compares the root source to roles.target as an instant, with different RFC3339 offsets', async () => {
+  h.agenda.mockResolvedValue(response([row({ roles: { ...row().roles!, target: '2026-11-05T15:00:00Z' } })]));
+  h.preview.mockResolvedValue(preview(undefined, { changes: [{ ...preview().changes[0], from: '2026-11-05T10:00:00-05:00' }] }));
+  await mount(); await drop(); await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
+ });
+ it('does not offer Bring to today on today and does not drag history or legacy hard deadlines', async () => {
+  h.agenda.mockResolvedValue(response([row(), row({ item_ref: 'EX-31', item_title: 'Lapsed item', state: 'lapsed' }), row({ item_ref: 'EX-32', item_title: 'Legacy item', roles: { ...row().roles!, deadline: '2026-11-06T14:00:00Z' }, roles_origin: 'legacy_backfill' })]));
+  await mount(); await menu(); expect(screen.queryByRole('menuitem', { name: 'Bring to today' })).toBeNull();
+  expect(card('EX-31')).toBeNull(); expect(card('EX-32')).toBeNull();
+ });
+ it('keeps a pending preview from committing after identity changes', async () => {
+  const p = deferred<CommitmentMoveResult>(); h.preview.mockReturnValue(p.promise); await mount(); await drop();
+  h.epoch++; p.resolve(preview()); await settle(); expect(h.move).not.toHaveBeenCalled();
+ });
+ it('clears dragend and ignores late ghost previews; a new drag gets a fresh preview', async () => {
+  const p = deferred<CommitmentMoveResult>(); h.preview.mockReturnValueOnce(p.promise); await mount(); const source = card(); await drag();
+  await fireEvent.dragEnd(source); p.resolve(preview(undefined, { changes: [...preview().changes, { item_id: 'linked', role: 'target', to: '2026-11-07T14:00:00Z' }] }));
+  await settle(); expect(screen.queryByText(/proposed/)).toBeNull(); expect(h.move).not.toHaveBeenCalled();
+  await drop(); await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1)); expect(h.preview).toHaveBeenCalledTimes(2);
  });
 });

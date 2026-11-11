@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgendaEntry } from '$lib/types';
-import { dayWindow, shiftDay, todayIn, wallToInstant, groupEntries, filterEntries, entryChips, canMove, entryHref, isAllDay } from './presentation';
+import { weekWindow, weekLabel, targetOnDay, dayWindow, shiftDay, todayIn, wallToInstant, groupEntries, filterEntries, entryChips, canMove, entryHref, isAllDay } from './presentation';
 
 const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-03-08T04:00:00Z', day: '2026-03-07', item_ref: 'EX-30', item_title: 'Example', collection: 'tasks', workspace: 'work', workspace_name: 'Work', owner_username: 'alice', state: 'outstanding', ...extra });
 
@@ -83,4 +83,18 @@ describe('agenda timezone presentation', () => {
 it('uses roles for the hard-deadline move guard without kind', () => {
  const roles = { target: '2026-03-08T04:00:00Z', deadline: '2026-03-09T04:00:00Z', earliest: null, occupied_until: null, deadline_behavior: 'stays_owed' as const, outcome: '', roles_origin: 'legacy_backfill' as const };
  expect(canMove(row({ roles, roles_origin: 'legacy_backfill' } as Partial<AgendaEntry>))).toBe(false);
+});
+
+
+describe('week presentation', () => {
+ it('spans seven civil days through the November DST fold', () => {
+  expect(weekWindow('2026-10-30', 'America/New_York')).toEqual({ from: '2026-10-30T04:00:00.000Z', to: '2026-11-06T05:00:00.000Z' });
+ });
+ it.each([['2026-11-06', '6–12 November 2026'], ['2026-11-28', '28 November – 4 December 2026'], ['2026-12-28', '28 December 2026 – 3 January 2027']])('labels week starting %s', (day, label) => {
+  expect(weekLabel(day)).toBe(label);
+ });
+ it('keeps wall clock on a target move and uses midnight for all-day entries', () => {
+  expect(targetOnDay(row(), '2026-11-02', 'America/New_York')).toBe('2026-11-03T04:00:00.000Z');
+  expect(targetOnDay(row({ all_day: true }), '2026-11-02', 'America/New_York')).toBe('2026-11-02T05:00:00.000Z');
+ });
 });

@@ -12,9 +12,8 @@
 	let wall = $state('');
 	let reason = $state('');
 	let timeError = $state('');
-	let reasonError = $state('');
 	let heading: HTMLHeadingElement | undefined;
-	const title = $derived(mode === 'move' ? 'Move occurrence' : 'Snooze occurrence');
+	const title = $derived(mode === 'move' ? 'Move target' : 'Snooze occurrence');
 	const preview = $derived.by(() => {
 		try { return wall ? instantPreview(wallToInstant(wall, zone), zone) : ''; }
 		catch { return ''; }
@@ -24,7 +23,7 @@
 		const visible = open;
 		untrack(() => {
 			if (!visible) return;
-			wall = ''; reason = ''; timeError = ''; reasonError = '';
+			wall = ''; reason = ''; timeError = '';
 			void tick().then(() => heading?.focus());
 		});
 	});
@@ -32,13 +31,12 @@
 	function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (pending) return;
-		reasonError = mode === 'move' && !reason.trim() ? 'Enter a reason.' : '';
 		let until = '';
 		try { until = wallToInstant(wall, zone); } catch { /* Invalid or empty input has no instant. */ }
 		const ahead = Date.parse(until) - Date.now();
 		timeError = !Number.isFinite(ahead) || ahead <= 0 ? 'Choose a time in the future.' : ahead > 366 * 86_400_000 ? 'Choose a time within a year.' : '';
-		if (timeError || reasonError) return;
-		onsubmit(until, mode === 'move' ? reason.trim() : undefined);
+		if (timeError) return;
+		onsubmit(until, mode === 'move' ? reason.trim() || undefined : undefined);
 	}
 </script>
 
@@ -53,14 +51,14 @@
 		{#if timeError}<p class="field-error" id={`${id}-time-error`}>{timeError}</p>{/if}
 		{#if preview}<p class="preview">{preview}</p>{/if}
 		{#if mode === 'move'}
-			<label for={`${id}-reason`}>Reason</label>
-			<textarea id={`${id}-reason`} bind:value={reason} required disabled={pending} aria-invalid={!!reasonError} aria-describedby={reasonError ? `${id}-reason-error` : undefined}></textarea>
-			{#if reasonError}<p class="field-error" id={`${id}-reason-error`}>{reasonError}</p>{/if}
+			<p>The reminder follows the target.</p>
+			<label for={`${id}-reason`}>Reason (optional)</label>
+			<textarea id={`${id}-reason`} bind:value={reason} disabled={pending}></textarea>
 		{/if}
 		{#if error}<p role="alert">{error}</p>{/if}
 		<div class="footer">
 			<Button disabled={pending} onclick={onclose}>Cancel</Button>
-			<Button type="submit" disabled={pending}>{mode === 'move' ? 'Move occurrence' : 'Snooze'}</Button>
+			<Button type="submit" disabled={pending}>{mode === 'move' ? 'Move target' : 'Snooze'}</Button>
 		</div>
 	</form>
 </Modal>

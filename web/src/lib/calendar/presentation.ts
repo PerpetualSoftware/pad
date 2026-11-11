@@ -136,3 +136,27 @@ export function entryChips(entry: AgendaEntry): { text: string; color: string }[
 	}
 	return chips;
 }
+
+export type AgendaAction = 'done' | 'skip' | 'snooze' | 'move' | 'today';
+
+export function weekWindow(start: string, zone: string): { from: string; to: string } {
+	return { from: dayWindow(start, zone).from, to: dayWindow(shiftDay(start, 7), zone).from };
+}
+
+export function weekLabel(start: string): string {
+	const end = shiftDay(start, 6);
+	const [year, month, date] = start.split('-');
+	const [endYear, endMonth, endDate] = end.split('-');
+	const monthName = (day: string) => new Intl.DateTimeFormat('en-GB', { month: 'long', timeZone: 'UTC' }).format(new Date(`${day}T12:00Z`));
+	if (year !== endYear) return `${+date} ${monthName(start)} ${year} – ${+endDate} ${monthName(end)} ${endYear}`;
+	if (month !== endMonth) return `${+date} ${monthName(start)} – ${+endDate} ${monthName(end)} ${year}`;
+	return `${+date}–${+endDate} ${monthName(end)} ${year}`;
+}
+
+export function dateTime(at: string, zone: string, allDay = false): string {
+	return `${localDate(at, zone)}${allDay ? '' : `, ${localTime(at, zone)}`}`;
+}
+
+export function targetOnDay(entry: AgendaEntry, day: string, zone: string): string {
+	return wallToInstant(`${day}T${isAllDay(entry) ? '00:00' : localTime(entry.at, zone)}`, zone);
+}

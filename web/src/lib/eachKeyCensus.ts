@@ -23,6 +23,8 @@ export const EACH_KEY_REASONS = {
 export type EachKeyReason = keyof typeof EACH_KEY_REASONS;
 
 export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: string }> = {
+ "lib/components/calendar/AgendaWeek.svelte :: each days as day (day)": { reason: 'strictly-increasing', note: 'Seven consecutive civil dates generated from the selected start day.' },
+ "lib/components/calendar/AgendaWeek.svelte :: each rows as entry (entryKey(entry))": { reason: 'db-primary-key', note: 'groupEntries partitions one agenda response by authoritative day; entryKey includes type, workspace, owner, ref, schedule or field, and instant.' },
  "lib/components/calendar/CalendarDayDialog.svelte :: each rows as row (row.key)": { reason: 'db-primary-key', note: 'calendarRows uses an item primary key plus day for each span segment; schedule rows use a separate prefix and response position. One response replaces the rows.' },
  "lib/components/collections/CalendarView.svelte :: each (byDay.get(day) ?? []).slice(0,3) as row (row.key)": { reason: 'db-primary-key', note: 'calendarRows uses item primary key plus day, or a separately prefixed schedule response position; grouping and slicing preserve uniqueness.' },
  "lib/components/calendar/CalendarFieldPicker.svelte :: each fields as field (field.key)": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
