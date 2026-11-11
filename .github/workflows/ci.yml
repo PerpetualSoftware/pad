@@ -110,7 +110,7 @@ jobs:
         # floor.
         #
         # Load-bearing for the govulncheck step below as of BUG-2565: go.mod
-        # also carries `toolchain go1.26.10`, which is what actually gets
+        # also carries `toolchain go1.26.11`, which is what actually gets
         # stamped into the scanned binary and clears 8 reachable stdlib
         # advisories. `auto` is what honours that line — under `local` the
         # build silently falls back to whatever patch setup-go installed and
@@ -367,7 +367,7 @@ jobs:
         # file, and the reason is worth stating because the asymmetry looks
         # like an oversight: `go-version-file` makes setup-go PARSE go.mod
         # itself, and v7's parser prefers the `toolchain` directive over the
-        # `go` directive, so it installs go1.26.10 (BUG-2565, raised 2026-10-08) directly. The
+        # `go` directive, so it installs go1.26.11 (BUG-2565, raised 2026-10-08) directly. The
         # GOTOOLCHAIN=local it then exports is satisfied by that install —
         # nothing left to fetch. The other jobs pass `go-version: "1.26"`,
         # which never reads go.mod at all, so they genuinely need `auto` to
@@ -378,7 +378,7 @@ jobs:
         # environment at parse time (installer.ts parseGoVersionFile). So if
         # a job- or workflow-level `env: GOTOOLCHAIN: local` is ever added
         # above this step, these smoke binaries drop to the 1.26.5 floor
-        # while everything else ships 1.26.10 — no red, just coverage that
+        # while everything else ships 1.26.11 — no red, just coverage that
         # quietly stops matching the artifact.
         with:
           go-version-file: go.mod
@@ -568,7 +568,7 @@ jobs:
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
         # GOTOOLCHAIN=local, blocking the toolchain fetch go.mod requires
-        # (`go 1.26.5` floor, `toolchain go1.26.10` per BUG-2565).
+        # (`go 1.26.5` floor, `toolchain go1.26.11` per BUG-2565).
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Create web build placeholder for embed
@@ -863,7 +863,7 @@ jobs:
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
         # GOTOOLCHAIN=local, blocking the toolchain fetch go.mod requires
-        # (`go 1.26.5` floor, `toolchain go1.26.10` per BUG-2565; the
+        # (`go 1.26.5` floor, `toolchain go1.26.11` per BUG-2565; the
         # "Build pad binary" step below fails without this).
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
@@ -1098,7 +1098,7 @@ jobs:
 
       - name: Scan Nix-built binary with govulncheck
         # CI's main govulncheck job scans a `go build` binary, which honours
-        # go.mod's `toolchain go1.26.10` line — but nixpkgs pins
+        # go.mod's `toolchain go1.26.11` line — but nixpkgs pins
         # GOTOOLCHAIN=local, so the Nix artifact is built with whatever Go
         # patch the nixos-26.05 channel ships and can carry stdlib advisories
         # the main gate can no longer see (BUG-2567). This scans the artifact

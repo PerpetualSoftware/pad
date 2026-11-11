@@ -563,6 +563,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { uiStore } from '$lib/stores/ui.svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -702,7 +703,8 @@
 	let editorFocused = $state(false);
 	let editorTick = $state(0);
 	let toolbarBottom = $state(0);
-	let keyboardVisible = $state(false);
+	let keyboardOverlap = $state(false);
+	let keyboardVisible = $derived(keyboardOverlap || uiStore.keyboardVisible);
 	let suppressUpdate = false;
 	let lastMarkdown = '';
 	// The coalesced serialization (TASK-2232). `pendingSerialize` is set by a
@@ -1390,14 +1392,15 @@
 			});
 		}
 
-		// Track keyboard height via visualViewport for mobile toolbar positioning
+		// The toolbar sits on the keyboard's overlap of the layout viewport. Overlap alone
+		// misses an embedding view that shrinks for the keyboard (innerHeight and the
+		// visual viewport fall together), so visibility also reads uiStore (BUG-4461).
 		if (window.visualViewport) {
 			const updateToolbarPos = () => {
 				const vv = window.visualViewport!;
 				const kbHeight = window.innerHeight - vv.height - vv.offsetTop;
 				toolbarBottom = kbHeight;
-				// Hide toolbar when keyboard is dismissed (viewport matches window)
-				keyboardVisible = kbHeight > 50;
+				keyboardOverlap = kbHeight > 50;
 			};
 			visualViewportHandler = updateToolbarPos;
 			window.visualViewport.addEventListener('resize', updateToolbarPos);
@@ -1613,16 +1616,11 @@
 </script>
 
 <!--
-	Gate on editorFocused, not just keyboardVisible (TASK-1124 follow-up).
-	`keyboardVisible` flips true whenever the on-screen keyboard appears
-	for ANY input — including the global CommandPalette's search input
-	and any other input on the page. Without the editorFocused gate this
-	mobile toolbar (z-index 100) would float over the search palette
-	(z-index 50) whenever the user typed in search on a page that has a
-	tiptap editor mounted. The component already tracks editorFocused via
-	the editor's own focus/blur events (declared at line 308, wired at
-	lines 658-659) — this just makes the toolbar visibility actually
-	consult it.
+	Keyboard up = an overlap, or uiStore.keyboardVisible for an embedding view
+	that shrinks for the keyboard and so leaves no overlap (BUG-4461).
+	Also gated on editorFocused (TASK-1124 follow-up): the keyboard opens for
+	any input, such as the CommandPalette's search, and this toolbar
+	(z-index 100) would otherwise float over it.
 -->
 {#if editable && viewport.isMobile && keyboardVisible && editor && editorFocused}
 	{@const _tick = editorTick}
