@@ -3920,7 +3920,7 @@ export interface CommitmentLink {
  child_item_id: string;
  child_role: CommitmentLinkRole;
  offset: CommitmentLinkOffset;
- cancel_policy: 'waiting_on' | 'cancel_child_occurrence';
+ cancel_policy: CommitmentCancelPolicy;
  created_at: string;
  updated_at: string;
 }
@@ -3953,4 +3953,74 @@ export interface CommitmentRenegotiateRequest {
  revision?: string;
  preview?: boolean;
  acknowledge_violations?: boolean;
+}
+
+export type CommitmentCancelPolicy = 'waiting_on' | 'cancel_child_occurrence';
+export interface CommitmentLinkCreateRequest {
+ child: string;
+ parent_role: CommitmentLinkRole;
+ child_role: CommitmentLinkRole;
+ offset: Required<CommitmentLinkOffset>;
+ cancel_policy?: CommitmentCancelPolicy;
+ preview?: boolean;
+ reason?: string;
+ revision?: string;
+ acknowledge_violations?: boolean;
+}
+export interface CommitmentLinkUpdateRequest {
+ offset?: Required<CommitmentLinkOffset>;
+ cancel_policy?: CommitmentCancelPolicy;
+ preview?: boolean;
+ reason?: string;
+ revision?: string;
+ acknowledge_violations?: boolean;
+}
+export interface CommitmentMovePreviewRequest {
+ role: CommitmentLinkRole;
+ to: string;
+ reason?: string;
+}
+export interface CommitmentMoveRequest extends CommitmentMovePreviewRequest {
+ revision?: string;
+ acknowledge_violations?: boolean;
+}
+export interface CommitmentMoveChange {
+ item_id: string;
+ role: CommitmentLinkRole;
+ from?: string;
+ to: string;
+ root?: boolean;
+}
+export interface CommitmentMoveResult {
+ revision: string;
+ changes: CommitmentMoveChange[];
+ violations?: CommitmentMoveChange[];
+ left_in_place?: CommitmentMoveChange[];
+ renegotiates_deadline?: boolean;
+}
+export interface CommitmentLinkWriteResult {
+ link: CommitmentLink | null;
+ moved: CommitmentMoveResult;
+}
+export interface CommitmentGateCreateRequest { blocker: string }
+
+export interface CommitmentRenegotiationPreview {
+ scope: 'occurrence' | 'series';
+ occurrence_key: string;
+ applies_from: string;
+ current_deadline: string | null;
+ new_deadline: string | null;
+ current_deadline_behavior: 'lapses' | 'stays_owed' | null;
+ new_deadline_behavior: 'lapses' | 'stays_owed' | null;
+ current_offset: { deadline_days: number; deadline_secs: number } | null;
+ new_offset: { deadline_days: number; deadline_secs: number } | null;
+ miss_recorded_first: boolean;
+ miss_occurrence_key: string | null;
+ keeps_deadline_override: boolean;
+ clears_deadline_overrides: boolean;
+}
+export interface CommitmentRenegotiationResult {
+ preview: CommitmentRenegotiationPreview;
+ revision: string;
+ cascade?: CommitmentMoveResult;
 }

@@ -1,4 +1,16 @@
 import type {
+ CommitmentLink,
+ CommitmentLinkCreateRequest,
+ CommitmentLinkUpdateRequest,
+ CommitmentLinkWriteResult,
+ CommitmentMovePreviewRequest,
+ CommitmentMoveRequest,
+ CommitmentMoveResult,
+ CommitmentGate,
+ CommitmentGateView,
+ CommitmentGateCreateRequest,
+ CommitmentRenegotiateRequest,
+ CommitmentRenegotiationResult,
 	ItemCommitmentView,
 	CommitmentResolveRequest,
 	CommitmentResolveResult,
@@ -3763,6 +3775,27 @@ export const api = {
 		request<CommitmentResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/resolve`, {
 			method: 'POST', body: JSON.stringify(body)
 		}),
+
+ listCommitmentLinks: (ws: string, ref: string) =>
+  request<{ links: CommitmentLink[] }>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/links`),
+ createCommitmentLink: (ws: string, ref: string, body: CommitmentLinkCreateRequest) =>
+  request<CommitmentLinkWriteResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/links`, { method: 'POST', body: JSON.stringify(body) }),
+ updateCommitmentLink: (ws: string, id: string, body: CommitmentLinkUpdateRequest) =>
+  request<CommitmentLinkWriteResult>(`/workspaces/${encodeURIComponent(ws)}/commitment-links/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(body) }),
+ deleteCommitmentLink: (ws: string, id: string) =>
+  request<void>(`/workspaces/${encodeURIComponent(ws)}/commitment-links/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+ previewCommitmentMove: (ws: string, ref: string, body: CommitmentMovePreviewRequest) =>
+  request<CommitmentMoveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/move-preview`, { method: 'POST', body: JSON.stringify(body) }),
+ moveCommitment: (ws: string, ref: string, body: CommitmentMoveRequest) =>
+  request<CommitmentMoveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/move`, { method: 'POST', body: JSON.stringify(body) }),
+ createCommitmentGate: (ws: string, ref: string, body: CommitmentGateCreateRequest) =>
+  request<CommitmentGate>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/gates`, { method: 'POST', body: JSON.stringify(body) }),
+ deleteCommitmentGate: (ws: string, id: string) =>
+  request<void>(`/workspaces/${encodeURIComponent(ws)}/commitment-gates/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+ getCommitmentGates: (ws: string, ref: string) =>
+  request<CommitmentGateView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/gates`),
+ renegotiateCommitment: (ws: string, ref: string, body: CommitmentRenegotiateRequest) =>
+  request<ItemCommitmentView | CommitmentRenegotiationResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/renegotiate`, { method: 'POST', body: JSON.stringify(body) }),
 
 	getMyAgenda: (from: string, to: string, tz?: string, group?: string) => {
 		const query = new URLSearchParams({ from, to });
