@@ -3804,6 +3804,8 @@ export type AgendaWorkEntry = Omit<AgendaEntry, 'type' | 'at' | 'day'> & {
 };
 
 export interface AgendaResponse {
+ /** Present when workspace no_date is not listed without a recipient filter. */
+ no_date_scope?: 'personal_only';
  window_complete: boolean;
  priority_list: AgendaWorkEntry[];
  priority_list_complete: boolean;
