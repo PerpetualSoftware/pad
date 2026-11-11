@@ -16,9 +16,9 @@ const (
 
 // buildCommitmentAccess runs only for an already admitted workspace. All reads
 // use q, including when a mutation reloads permissions inside its transaction.
-func (s *Server) buildCommitmentAccess(r *http.Request, q store.Queryer, workspaceID string, mode commitmentAccessMode) (models.CommitmentAccess, error) {
+func (s *Server) buildCommitmentAccess(r *http.Request, q store.Queryer, workspaceID, itemID string, mode commitmentAccessMode) (models.CommitmentAccess, error) {
 	access := models.CommitmentAccess{Readable: map[string]bool{}, Editable: map[string]bool{}}
-	items, err := s.store.CommitmentAccessItemsQ(q, workspaceID)
+	items, err := s.store.CommitmentAccessItemsQ(q, workspaceID, itemID)
 	if err != nil {
 		return access, err
 	}

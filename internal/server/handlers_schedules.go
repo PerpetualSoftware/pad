@@ -505,13 +505,13 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		in.ExpectedAssignee = commitmentAssigneeGuard(r, item)
 	}
 
-	in.LinkAccess, err = s.buildCommitmentAccess(r, s.store.Q(), workspaceID, commitmentAccessLive)
+	in.LinkAccess, err = s.buildCommitmentAccess(r, s.store.Q(), workspaceID, item.ID, commitmentAccessLive)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	in.CommitmentAccessLoader = func(q store.Queryer) (models.CommitmentAccess, error) {
-		return s.buildCommitmentAccess(r, q, workspaceID, commitmentAccessLive)
+		return s.buildCommitmentAccess(r, q, workspaceID, item.ID, commitmentAccessLive)
 	}
 	res, err := s.store.ResolveOccurrence(workspaceID, item.ID, in)
 	if errors.Is(err, store.ErrDeadlineApprovalRequired) && in.State == "move" && in.Until != nil {

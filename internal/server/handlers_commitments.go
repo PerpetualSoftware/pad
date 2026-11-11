@@ -53,7 +53,7 @@ type commitmentView struct {
 }
 
 func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *models.Item, sc *models.ItemSchedule, note string) (*commitmentView, error) {
-	access, err := s.buildCommitmentAccess(r, s.store.Q(), workspaceID, commitmentAccessLive)
+	access, err := s.buildCommitmentAccess(r, s.store.Q(), workspaceID, item.ID, commitmentAccessLive)
 	if err != nil {
 		return nil, err
 	}
@@ -369,14 +369,14 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		return
 	}
 	body := models.CommitmentRenegotiateInput{Reason: request.Reason, Scope: request.Scope, Deadline: request.Deadline, DeadlineOffset: request.DeadlineOffset, DeadlineBehavior: request.DeadlineBehavior, RemoveDeadline: request.RemoveDeadline, Revision: request.Revision, Preview: request.Preview, AcknowledgeViolations: request.AcknowledgeViolations}
-	body.Access, err = s.buildCommitmentAccess(r, s.store.Q(), workspaceID, commitmentAccessLive)
+	body.Access, err = s.buildCommitmentAccess(r, s.store.Q(), workspaceID, item.ID, commitmentAccessLive)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	body.ActorUserID = currentUserID(r)
 	body.CommitmentAccessLoader = func(q store.Queryer) (models.CommitmentAccess, error) {
-		return s.buildCommitmentAccess(r, q, workspaceID, commitmentAccessLive)
+		return s.buildCommitmentAccess(r, q, workspaceID, item.ID, commitmentAccessLive)
 	}
 	result, err := s.store.RenegotiateCommitment(workspaceID, item.ID, currentUserID(r), body, commitmentAssigneeGuard(r, item))
 	if errors.Is(err, store.ErrDeadlineApprovalRequired) && !body.Preview && body.Deadline != nil {

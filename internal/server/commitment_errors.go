@@ -22,17 +22,17 @@ func (s *Server) writeCommitmentGraphError(w http.ResponseWriter, r *http.Reques
 		if s.store != nil && r != nil {
 			workspaceID, _ := r.Context().Value(ctxResolvedWorkspaceID).(string)
 			if workspaceID != "" {
-				access, e := s.buildCommitmentAccess(r, s.store.Q(), workspaceID, commitmentAccessLive)
-				if e != nil {
-					writeInternalError(w, errors.New("commitment_access_failed"))
-					return true
-				}
 				item, e := s.store.ResolveItem(workspaceID, chi.URLParam(r, "itemSlug"))
 				if e != nil {
 					writeInternalError(w, errors.New("commitment_partner_lookup_failed"))
 					return true
 				}
 				if item != nil {
+					access, e := s.buildCommitmentAccess(r, s.store.Q(), workspaceID, item.ID, commitmentAccessLive)
+					if e != nil {
+						writeInternalError(w, errors.New("commitment_access_failed"))
+						return true
+					}
 					partners, e := s.store.CommitmentLinkPartnersQ(s.store.Q(), workspaceID, item.ID)
 					if e != nil {
 						writeInternalError(w, errors.New("commitment_partner_lookup_failed"))

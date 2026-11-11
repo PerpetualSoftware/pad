@@ -464,7 +464,7 @@ func (s *Server) handleCopyItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	access, err := s.buildCommitmentAccess(r, s.store.Q(), sourceWorkspaceID, commitmentAccessLive)
+	access, err := s.buildCommitmentAccess(r, s.store.Q(), sourceWorkspaceID, item.ID, commitmentAccessLive)
 	if err != nil {
 		writeInternalError(w, err)
 		return

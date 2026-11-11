@@ -73,6 +73,7 @@ func (f *graphHTTP) reneg(tok string, preview bool, revision string, ack bool) *
 func TestTASK4423_R13AccessAndAck(t *testing.T) {
 	t.Run("transaction access and owner removal", func(t *testing.T) {
 		f := newGraphHTTP(t, models.CommitmentRolesInput{}, models.CommitmentRolesInput{})
+		f.link(0, 1, "target", "target", "")
 		co := f.member("graph-coowner@example.com", "owner")
 		if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, co.ID, "specific", []string{}); err != nil {
 			t.Fatal(err)
@@ -83,11 +84,11 @@ func TestTASK4423_R13AccessAndAck(t *testing.T) {
 		for _, u := range []*models.User{co, f.owner} {
 			r := httptest.NewRequest("GET", f.path(f.item), nil)
 			r = r.WithContext(WithCurrentUser(r.Context(), u))
-			live, err := f.srv.buildCommitmentAccess(r, f.srv.store.Q(), f.ws.ID, commitmentAccessLive)
+			live, err := f.srv.buildCommitmentAccess(r, f.srv.store.Q(), f.ws.ID, f.item.ID, commitmentAccessLive)
 			if err != nil {
 				t.Fatal(err)
 			}
-			remove, err := f.srv.buildCommitmentAccess(r, f.srv.store.Q(), f.ws.ID, commitmentAccessRemove)
+			remove, err := f.srv.buildCommitmentAccess(r, f.srv.store.Q(), f.ws.ID, f.item.ID, commitmentAccessRemove)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -106,14 +107,14 @@ func TestTASK4423_R13AccessAndAck(t *testing.T) {
 		defer tx.Rollback()
 		r := httptest.NewRequest("GET", f.path(f.item), nil)
 		r = r.WithContext(WithCurrentUser(r.Context(), g))
-		a, err := f.srv.buildCommitmentAccess(r, tx, f.ws.ID, commitmentAccessLive)
+		a, err := f.srv.buildCommitmentAccess(r, tx, f.ws.ID, f.item.ID, commitmentAccessLive)
 		if err != nil || ctx.Err() != nil || !a.Readable[f.item.ID] || !a.Editable[f.item.ID] {
 			t.Fatalf("transaction-bound access: %+v %v context=%v", a, err, ctx.Err())
 		}
 		if err := tx.Rollback(); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := f.srv.buildCommitmentAccess(r, tx, f.ws.ID, commitmentAccessLive); err == nil {
+		if _, err := f.srv.buildCommitmentAccess(r, tx, f.ws.ID, f.item.ID, commitmentAccessLive); err == nil {
 			t.Fatal("failed access query granted access")
 		}
 	})
@@ -134,7 +135,7 @@ func TestTASK4423_R13AccessAndAck(t *testing.T) {
 			if bearer {
 				r.Header.Set("Authorization", "Bearer test")
 			}
-			a, err := f.srv.buildCommitmentAccess(r, f.srv.store.Q(), f.ws.ID, commitmentAccessLive)
+			a, err := f.srv.buildCommitmentAccess(r, f.srv.store.Q(), f.ws.ID, f.item.ID, commitmentAccessLive)
 			if err != nil {
 				t.Fatal(err)
 			}
