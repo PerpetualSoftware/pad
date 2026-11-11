@@ -23,15 +23,11 @@ func TestMeAgendaExactWorkBudgetWithEmptyWorkspace(t *testing.T) {
 			// Exercise the shared /me/agenda work read with a small exact budget.
 			run := w.srv.newAgendaRead(meAgendaNow, meAgendaNow, usertz.Resolve(nil), "")
 			run.workRemaining = 1
-			if err := w.srv.appendAgendaWork(run, w.ws.ID, store.PendingReminderScope{}); err != nil {
-				t.Fatal(err)
-			}
+			w.srv.appendAgendaWork(run, w.ws.ID, store.PendingReminderScope{})
 			if run.workRemaining != 0 || len(run.response.NoDate) != 1 || !run.response.NoDateComplete {
 				t.Fatalf("first workspace did not exactly consume budget: %+v", run)
 			}
-			if err := w.srv.appendAgendaWork(run, other.ws.ID, store.PendingReminderScope{}); err != nil {
-				t.Fatal(err)
-			}
+			w.srv.appendAgendaWork(run, other.ws.ID, store.PendingReminderScope{})
 			a := run.response
 			if a.PriorityListComplete == laterWork || a.WaitingOnComplete == laterWork || a.NoDateComplete == laterWork {
 				t.Fatalf("later work=%v completeness=%v/%v/%v", laterWork, a.PriorityListComplete, a.WaitingOnComplete, a.NoDateComplete)

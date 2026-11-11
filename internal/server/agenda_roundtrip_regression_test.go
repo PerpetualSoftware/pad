@@ -25,9 +25,7 @@ func TestAgendaEndedScheduleRemainsUnplaced(t *testing.T) {
 			for _, personal := range []bool{false, true} {
 				run := w.srv.newAgendaRead(meAgendaNow, meAgendaNow.Add(time.Hour), usertz.Resolve(nil), "")
 				run.listNoDate = personal
-				if err := w.srv.appendAgendaWork(run, w.ws.ID, store.PendingReminderScope{}); err != nil {
-					t.Fatal(err)
-				}
+				w.srv.appendAgendaWork(run, w.ws.ID, store.PendingReminderScope{})
 				a := run.response
 				if len(a.PriorityList) != 1 || a.PriorityList[0].ItemRef != live.Ref {
 					t.Fatalf("live priority lost: %+v", a)
@@ -101,9 +99,8 @@ func TestAgendaGateReadErrorContinuesCandidates(t *testing.T) {
 	meAgendaExec(t, w.agendaWorld, `ALTER TABLE schedule_gates RENAME TO agenda_test_gates`)
 	meAgendaExec(t, w.agendaWorld, `CREATE VIEW schedule_gates AS SELECT id,workspace_id,blocked_item_id,blocker_item_id,blocker_schedule_id,blocker_occurrence_key,opened_at,NULL AS created_at FROM agenda_test_gates`)
 	run := w.srv.newAgendaRead(meAgendaNow, meAgendaNow.Add(time.Hour), usertz.Resolve(nil), "")
-	if err := w.srv.appendAgendaWork(run, w.ws.ID, store.PendingReminderScope{}); err != nil {
-		t.Fatalf("gate error escaped: %v", err)
-	}
+	// appendAgendaWork has no error return, so a gate error cannot escape it.
+	w.srv.appendAgendaWork(run, w.ws.ID, store.PendingReminderScope{})
 	found := false
 	for _, e := range run.response.NoDate {
 		if e.ItemRef == good.Ref {

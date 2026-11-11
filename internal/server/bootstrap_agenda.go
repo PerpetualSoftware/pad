@@ -123,9 +123,8 @@ func (s *Server) buildBootstrapAgenda(workspaceID string, user *models.User, r *
 	if agent {
 		run.audience = "agent"
 	}
-	if err := s.appendAgendaWork(run, workspaceID, scope); err != nil {
-		return nil, err
-	}
+	// A group-read failure marks the groups incomplete and keeps due and carried rows.
+	s.appendAgendaWork(run, workspaceID, scope)
 	// Count before the full agenda's 500-row projection; counts are floors
 	// when the candidate scan was incomplete.
 	priorityCount, waitingCount, noDateCount := len(run.response.PriorityList), len(run.response.WaitingOn), len(run.response.NoDate)

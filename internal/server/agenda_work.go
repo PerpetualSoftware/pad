@@ -46,18 +46,18 @@ func agendaPriority(c store.AgendaWorkCandidate) string {
 	return "unranked"
 }
 
-func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope store.PendingReminderScope) error {
+func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope store.PendingReminderScope) {
 	resp := &run.response
 	cut := func() { resp.PriorityListComplete, resp.WaitingOnComplete, resp.NoDateComplete = false, false, false }
 	if s.agendaNow().After(run.deadline) {
 		cut()
-		return nil
+		return
 	}
 	candidates, more, err := s.store.ListAgendaWork(workspaceID, scope, run.recipient, run.audience, run.workRemaining, run.listNoDate)
 	if err != nil {
 		slog.Warn("agenda: work candidates unavailable", "workspace_id", workspaceID, "error_class", fmt.Sprintf("%T", err))
 		cut()
-		return nil
+		return
 	}
 	run.workRemaining -= len(candidates)
 	if more {
@@ -71,7 +71,7 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 	if err != nil {
 		slog.Warn("agenda: work details unavailable", "workspace_id", workspaceID, "error_class", fmt.Sprintf("%T", err))
 		cut()
-		return nil
+		return
 	}
 	for _, c := range candidates {
 		if s.agendaNow().After(run.deadline) {
@@ -141,7 +141,6 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 		}
 		resp.PriorityList = append(resp.PriorityList, e)
 	}
-	return nil
 }
 
 func finishAgendaWork(resp *agendaResponse) {
