@@ -51,12 +51,13 @@ func TestAgendaGroupReadErrorPreservesWindow(t *testing.T) {
 			today := w.sched(t, w.owner, "Today", "2031-03-10T09:00", "both")
 			carried := w.sched(t, w.owner, "Carried", "2031-03-09T09:00", "both")
 			bad := w.sched(t, w.owner, "Future", "2031-04-10T09:00", "both")
-			// Inject a scan error only in the secondary read. The future schedule
-			// and its item are outside the chronological and due/carried queries.
+			// Inject a scan error only in the secondary read. This ended schedule
+			// has no history in the window and is excluded from due/carried reads.
+			meAgendaExec(t, w.agendaWorld, `UPDATE item_schedules SET ended_at='2031-03-01T00:00:00Z',next_at=NULL,next_wall=NULL WHERE item_id=?`, bad.ID)
 			if source == "candidates" {
 				meAgendaExec(t, w.agendaWorld, `UPDATE items SET item_number='bad' WHERE id=?`, bad.ID)
 			} else {
-				meAgendaExec(t, w.agendaWorld, `UPDATE item_schedules SET lead_minutes=0.5,ended_at='2031-03-01T00:00:00Z',next_at=NULL,next_wall=NULL WHERE item_id=?`, bad.ID)
+				meAgendaExec(t, w.agendaWorld, `UPDATE item_schedules SET lead_minutes=0.5 WHERE item_id=?`, bad.ID)
 			}
 			req := httptest.NewRequest("GET", "/", nil)
 			a, err := w.srv.buildBootstrapAgenda(w.ws.ID, w.owner, req, store.PendingReminderScope{})
