@@ -76,6 +76,7 @@
 	let composing = false;
 
 	let box = $state<HTMLTextAreaElement | null>(null);
+	let sendButton = $state<HTMLButtonElement | null>(null);
 	/** Reply puts the reader straight into the box (r5 H3). */
 	export function focus() {
 		box?.focus();
@@ -199,7 +200,11 @@
 	class="composer"
 	onsubmit={(e) => {
 		e.preventDefault();
-		box?.focus();
+		// Keep the box focused (and a touch keyboard up) through the send. Send itself never takes
+		// focus on a press; a keyboard activation of Send returns to the box, because the button
+		// disables once the box empties. Focus that was elsewhere (keyboard closed) is left alone.
+		const active = document.activeElement;
+		if (active === box || active === sendButton) box?.focus();
 		void send();
 	}}
 >
@@ -240,6 +245,7 @@
 			}}
 		></textarea>
 		<button
+			bind:this={sendButton}
 			type="submit"
 			class="send"
 			onpointerdown={(e) => e.preventDefault()}

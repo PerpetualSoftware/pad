@@ -175,6 +175,17 @@ describe('sending', () => {
 		expect(document.activeElement).toBe(box);
 	});
 
+	it('leaves focus alone when it was outside the box (a closed touch keyboard stays closed)', async () => {
+		setPointer(false);
+		const { box, send, onSend } = mount();
+		await type(box, 'hello');
+		box.blur();
+		expect(document.activeElement).toBe(document.body);
+		await fireEvent.click(send);
+		expect(onSend).toHaveBeenCalledTimes(1);
+		expect(document.activeElement).toBe(document.body);
+	});
+
 	it('sends the text with the reply target, clears the box and the reply on success', async () => {
 		const { box, send, onSend, onClearReply } = mount({ replyTo: target });
 		await type(box, 'hello');

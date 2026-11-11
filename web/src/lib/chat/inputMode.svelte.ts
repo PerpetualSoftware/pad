@@ -7,8 +7,7 @@ import { uiStore } from '$lib/stores/ui.svelte';
 // coarse means Enter adds a line. Touch on the box overrides the fine default,
 // but preserves a stored choice. While a soft keyboard is up, Enter adds a line
 // whatever is stored; when it goes down, a stored choice applies again. Turning
-// the setting off removes the stored choice: the pointer default applies again
-// after a reload, and touch mode holds for this page.
+// the setting off removes the stored choice, and the pointer default applies at once.
 // Nothing here ever sends by itself.
 const STORAGE_KEY = 'pad-chat-enter-sends';
 
@@ -31,7 +30,8 @@ class InputMode {
 
 	/** True when unmodified Enter sends. */
 	get hardware(): boolean {
-		return (this.#stored && !uiStore.keyboardVisible) || (this.#finePointer() && !this.#touched);
+		if (uiStore.keyboardVisible) return false;
+		return this.#stored || (this.#finePointer() && !this.#touched);
 	}
 
 	/** The per-device choice, even while a soft keyboard overrides it for this page. */
@@ -58,10 +58,10 @@ class InputMode {
 		this.#touched = true;
 	}
 
-	/** The person's explicit choice. Off clears the stored choice and holds touch mode for this page. */
+	/** The person's explicit choice. Off removes it: the pointer default applies, now and after a reload. */
 	setHardware(on: boolean): void {
 		this.#stored = on;
-		this.#touched = !on;
+		this.#touched = false;
 		if (!browser) return;
 		try {
 			if (on) localStorage.setItem(STORAGE_KEY, 'on');

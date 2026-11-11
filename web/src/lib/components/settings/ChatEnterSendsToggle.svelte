@@ -1,7 +1,8 @@
 <script lang="ts">
 	import { inputMode } from '$lib/chat/inputMode.svelte';
 
-	const id = `chat-enter-sends-${Math.random().toString(36).slice(2, 8)}`;
+	const uid = $props.id();
+	const id = `chat-enter-sends-${uid}`;
 </script>
 
 {#if inputMode.offered}

@@ -60,8 +60,9 @@ describe('inputMode', () => {
 		inputMode.enterByTouch();
 		inputMode.setHardware(true);
 		expect(inputMode.hardware).toBe(true);
+		// Off removes the choice: on a fine pointer the default (Enter sends) applies at once.
 		inputMode.setHardware(false);
-		expect(inputMode.hardware).toBe(false);
+		expect(inputMode.hardware).toBe(true);
 		inputMode.reset();
 		expect(inputMode.hardware).toBe(true);
 	});
@@ -114,9 +115,19 @@ describe('inputMode', () => {
 		expect(inputMode.offered).toBe(true);
 		inputMode.setHardware(false);
 		expect(inputMode.stored).toBe(false);
-		expect(inputMode.hardware).toBe(false);
-		expect(inputMode.offered).toBe(true);
+		expect(inputMode.hardware).toBe(true);
+		expect(inputMode.offered).toBe(false);
 		expect(localStorage.getItem('pad-chat-enter-sends')).toBeNull();
+	});
+
+	it('a visible soft keyboard means touch mode on a fine pointer too, even right after choosing hardware', () => {
+		setPointer(true);
+		kb.visible = true;
+		inputMode.setHardware(true);
+		expect(inputMode.hardware).toBe(false);
+		expect(inputMode.stored).toBe(true);
+		kb.visible = false;
+		expect(inputMode.hardware).toBe(true);
 	});
 
 	it('reset clears the in-memory stored choice and tab flags', () => {
