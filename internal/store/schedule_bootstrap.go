@@ -83,12 +83,14 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	}
 	scopeSQL, scopeArgs := scopeClause("i", p.Scope)
 	open, openArgs := s.nonTerminalFilter(p.WorkspaceID, "i")
-	// Only near-term seeds belong in this due/carried/stale scan. The separate
+	// Only near-term occurrences belong in this due/carried/stale scan: a moved
+	// target keeps next_at at its seed and reads at next_override_at. The separate
 	// actionable-work read includes future commitments and their role overrides.
-	args := []any{p.WorkspaceID, startTomorrow.Add(36 * time.Hour).UTC().Format(time.RFC3339), audiences[0], audiences[1], p.WorkspaceID, p.UserID}
+	bound := startTomorrow.Add(36 * time.Hour).UTC().Format(time.RFC3339)
+	args := []any{p.WorkspaceID, bound, bound, audiences[0], audiences[1], p.WorkspaceID, p.UserID}
 	args = append(append(args, scopeArgs...), openArgs...)
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND ended_at IS NULL AND next_at IS NOT NULL AND next_at < ? AND audience IN (?, ?)
+		WHERE workspace_id = ? AND ended_at IS NULL AND next_at IS NOT NULL AND (next_at < ? OR next_override_at < ?) AND audience IN (?, ?)
 			AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
