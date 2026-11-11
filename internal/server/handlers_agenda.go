@@ -28,6 +28,7 @@ const (
 )
 
 type agendaEntry struct {
+	Forecast      *models.ForecastSummary `json:"forecast,omitempty"`
 	Type          string                  `json:"type"` // schedule | date | created | completed
 	At            string                  `json:"at,omitempty"`
 	Day           string                  `json:"day,omitempty"`
@@ -460,6 +461,21 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 			}
 
 			res.Entries = append(res.Entries, out)
+		}
+	}
+	ids := make([]string, 0, len(res.Entries))
+	for _, e := range res.Entries {
+		if e.State == "outstanding" {
+			ids = append(ids, e.ScheduleID)
+		}
+	}
+	forecasts, err := st.ForecastSummaries(ids)
+	if err != nil {
+		return res, err
+	}
+	for i := range res.Entries {
+		if res.Entries[i].State == "outstanding" {
+			res.Entries[i].Forecast = forecasts[res.Entries[i].ScheduleID]
 		}
 	}
 	return res, nil

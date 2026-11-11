@@ -599,8 +599,8 @@ func (s *Store) maxTransitionSeqs(q Queryer, ids []string) (map[string]int64, er
 // the last act was a clear.
 func (s *Store) readForecast(q Queryer, scheduleID string, loc *time.Location, nowT time.Time) (*models.CommitmentForecast, error) {
 	f := &models.CommitmentForecast{History: []models.ForecastEvent{}}
-	err := q.QueryRow(s.q(`SELECT value,set_by,set_by_kind,set_at,source FROM schedule_forecasts WHERE schedule_id = ?`), scheduleID).
-		Scan(&f.Value, &f.SetBy, &f.SetByKind, &f.SetAt, &f.Source)
+	err := q.QueryRow(s.q(`SELECT f.value,f.set_by,COALESCE(u.name,''),f.set_by_kind,f.set_at,f.source FROM schedule_forecasts f LEFT JOIN users u ON u.id = f.set_by WHERE f.schedule_id = ?`), scheduleID).
+		Scan(&f.Value, &f.SetBy, &f.SetByName, &f.SetByKind, &f.SetAt, &f.Source)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, nil
 	}
@@ -897,4 +897,37 @@ func (s *Store) importMilestoneTx(tx *sql.Tx, workspaceID, scheduleID, itemID st
 		}
 	}
 	return drops, nil
+}
+
+// ForecastSummaries decorates already admitted schedules without loading history.
+func (s *Store) ForecastSummaries(scheduleIDs []string) (map[string]*models.ForecastSummary, error) {
+	out := make(map[string]*models.ForecastSummary)
+	for start := 0; start < len(scheduleIDs); start += 500 {
+		end := min(start+500, len(scheduleIDs))
+		args := make([]any, end-start)
+		for i, id := range scheduleIDs[start:end] {
+			args[i] = id
+		}
+		rows, err := s.db.Query(s.q(`SELECT f.schedule_id,f.value,f.set_by,COALESCE(u.name,''),f.set_by_kind,f.set_at,f.source
+ FROM schedule_forecasts f LEFT JOIN users u ON u.id = f.set_by
+ WHERE f.schedule_id IN (`+placeholders(len(args))+`)`), args...)
+		if err != nil {
+			return nil, fmt.Errorf("batch forecasts: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			var f models.ForecastSummary
+			if err := rows.Scan(&id, &f.Value, &f.SetBy, &f.SetByName, &f.SetByKind, &f.SetAt, &f.Source); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			out[id] = &f
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }

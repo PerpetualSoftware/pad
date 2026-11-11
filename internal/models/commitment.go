@@ -31,11 +31,21 @@ type CommitmentDateConflict struct {
 	BoundValue string `json:"bound_value"`
 }
 
-// CommitmentForecast is a forecast and who set it. Passed is derived for
-// display on every read and is never stored.
+// ForecastSummary is display-only decoration for an admitted schedule.
+type ForecastSummary struct {
+	Value     string `json:"value"`
+	SetBy     string `json:"set_by"`
+	SetByName string `json:"set_by_name,omitempty"`
+	SetByKind string `json:"set_by_kind"`
+	SetAt     string `json:"set_at"`
+	Source    string `json:"source"`
+}
+
+// CommitmentForecast includes read-time passing state and stored history.
 type CommitmentForecast struct {
 	Value     string          `json:"value"`
 	SetBy     string          `json:"set_by"`
+	SetByName string          `json:"set_by_name,omitempty"`
 	SetByKind string          `json:"set_by_kind"`
 	SetAt     string          `json:"set_at"`
 	Source    string          `json:"source"`
