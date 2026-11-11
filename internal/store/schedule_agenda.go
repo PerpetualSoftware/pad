@@ -25,7 +25,7 @@ type AgendaSchedule struct {
 	ItemTitle   string
 	Collection  string // slug
 	RolesOrigin string
-	// Terminal is set only by ListSchedulesForCalendar: the item is in a
+	// Terminal is set by agenda and calendar admission: the item is in a
 	// terminal status of its collection.
 	Terminal bool
 }
@@ -37,7 +37,7 @@ type AgendaSchedule struct {
 // [from, to) (an early resolve ends a schedule before its due instant) never
 // push a visible schedule past it.
 func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
-	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, false)
+	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, true)
 }
 
 // ListSchedulesForCalendar is ListSchedulesForAgenda for the calendar, which
@@ -57,24 +57,26 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 	}
 	scopeSQL, scopeArgs := scopeClause("i", scope)
 	f := time.RFC3339
-	lo, hi := from.UTC().Add(-36*time.Hour).Format(f), to.UTC().Add(36*time.Hour).Format(f)
 	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
+	// History must reach the role membership check only near this window.
+	// Offset roles invert the seed window with 36h padding, and history reads
+	// add another 36h. Check each offset separately rather than admitting all
+	// history (or the entire span between distant roles).
+	historySQL, historyArgs := s.agendaHistoryWindow(from, to)
 	var doneSQL string
 	var doneArgs []any
 	if includeTerminal {
-		// ONE parenthesised expression in the place the open filter held, so no
-		// OR can escape the workspace, scope and deleted conditions before it.
-		// The terminal expression is used twice, so its arguments are passed
-		// for each use, in placeholder order.
 		doneSQL, doneArgs = s.buildChildrenDoneExpr(s.doneFiltersForWorkspace(workspaceID), "i")
-		open = "(" + open + " OR (" + doneSQL + " AND EXISTS (SELECT 1 FROM schedule_occurrences t WHERE t.schedule_id = item_schedules.id AND t.occurrence_at >= ? AND t.occurrence_at < ?)))"
-		openArgs = append(append(append(append([]any{}, openArgs...), doneArgs...), lo), hi)
+		open = "(" + open + " OR (" + doneSQL + " AND " + historySQL + "))"
+		openArgs = append(append(openArgs, doneArgs...), historyArgs...)
 	}
-	args := append(append([]any{workspaceID, from.UTC().Format(f), lo, hi, workspaceID}, scopeArgs...), openArgs...)
+	args := []any{workspaceID, from.UTC().Format(f)}
+	args = append(args, historyArgs...)
+	args = append(args, workspaceID)
+	args = append(append(args, scopeArgs...), openArgs...)
 	// item_id IN (...), not a join: scheduleColumns names item_schedules.id.
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR EXISTS (SELECT 1 FROM schedule_occurrences o
-			WHERE o.schedule_id = item_schedules.id AND o.occurrence_at >= ? AND o.occurrence_at < ?)) AND item_id IN (
+		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR `+historySQL+`) AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)
 		ORDER BY item_schedules.id LIMIT ?`), append(args, limit+1)...)
@@ -107,6 +109,28 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 		return nil, false, err
 	}
 	return out, truncated, nil
+}
+
+// agendaHistoryWindow admits only history near a seed/role window or an
+// effective override in the requested window. Parameters follow SQL order.
+func (s *Store) agendaHistoryWindow(from, to time.Time) (string, []any) {
+	lo, hi := from.UTC().Add(-36*time.Hour), to.UTC().Add(36*time.Hour)
+	args := []any{lo.Format(time.RFC3339), hi.Format(time.RFC3339)}
+	near := `(h.occurrence_at >= ? AND h.occurrence_at < ?)`
+	epoch := "unixepoch(h.occurrence_at)"
+	if s.dialect.Driver() == DriverPostgres {
+		epoch = "EXTRACT(EPOCH FROM CAST(h.occurrence_at AS timestamptz))"
+	}
+	for _, role := range []string{"target", "earliest", "deadline", "occupied"} {
+		days, secs := role+"_days", role+"_secs"
+		shifted := "(" + epoch + " + " + days + " * 86400.0 + " + secs + ")"
+		near += " OR ((" + days + " <> 0 OR " + secs + " <> 0) AND " + shifted + " >= ? AND " + shifted + " < ?)"
+		args = append(args, from.Add(-72*time.Hour).Unix(), to.Add(72*time.Hour).Unix())
+	}
+	query := `(EXISTS (SELECT 1 FROM schedule_occurrences h WHERE h.schedule_id=item_schedules.id AND (` + near + `))
+		OR EXISTS (SELECT 1 FROM schedule_occurrence_overrides v WHERE v.schedule_id=item_schedules.id AND v.value_at >= ? AND v.value_at < ?))`
+	args = append(args, lo.Format(time.RFC3339), hi.Format(time.RFC3339))
+	return query, args
 }
 
 // fillAgendaRolesOrigin sets each row's origin, by schedule id. It is a separate
@@ -168,20 +192,23 @@ func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneAr
 	return irows.Err()
 }
 
-// AgendaEntry is one occurrence on the agenda. At is the grid instant, in the
-// view's zone for a floating schedule; EffectiveAt is where a MOVE put it.
+// AgendaEntry contains one occurrence and all its effective roles. At is its
+// effective target; Wall and OccurrenceKey retain the immutable seed identity.
 type AgendaEntry struct {
-	At          time.Time
-	Wall        schedule.Wall
-	State       string // outstanding | scheduled | done | skipped | moved | missed | lapsed | unrecorded
-	Fired       bool
-	Overdue     bool
-	EffectiveAt *time.Time
-	ResolvedAt  string
-	Actor       string
-	CommentID   string
-	MissedCount int // the outstanding entry only
-	Stale       bool
+	Roles          models.CommitmentRoles
+	OccurrenceKey  string
+	DeadlinePassed bool
+	At             time.Time
+	Wall           schedule.Wall
+	State          string // outstanding | scheduled | done | skipped | moved | missed | lapsed | unrecorded
+	Fired          bool
+	Overdue        bool
+	EffectiveAt    *time.Time
+	ResolvedAt     string
+	Actor          string
+	CommentID      string
+	MissedCount    int // the outstanding entry only
+	Stale          bool
 }
 
 type agendaRow struct{ at, wall, state, commentID, actor, resolvedAt string }
@@ -224,7 +251,7 @@ func (s *Store) agendaOccurrences(scheduleID string, from, to time.Time) ([]agen
 // in the caller's zone) and by the INSTANT for a pinned timed one, whose elapsed
 // rules can repeat a wall.
 func (s *Store) ExpandAgenda(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (entries []AgendaEntry, truncated bool, unavailable string, err error) {
-	x, err := s.ExpandAgendaCut(sc, view, from, to, now)
+	x, err := s.ExpandAgendaCut(sc, view, from, to, now, time.Now().Add(1500*time.Millisecond), time.Now)
 	return x.Entries, x.Truncated, x.Unavailable, err
 }
 
@@ -249,7 +276,7 @@ type AgendaExpansion struct {
 
 // ExpandAgendaCut is ExpandAgenda with the resume instant of any time-ordered
 // cut: the per-schedule entry cut, the instance cap, CapTime and CapStall.
-func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
+func (s *Store) expandAgendaSeedsCut(sc *models.ItemSchedule, view *time.Location, from, to, now, deadline time.Time, clock func() time.Time) (AgendaExpansion, error) {
 	if sc.ErrorCode != nil {
 		return AgendaExpansion{Unavailable: *sc.ErrorCode}, nil
 	}
@@ -264,10 +291,10 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 	var x AgendaExpansion
 	c, err := compileScheduleSpec(storedSpecInput(sc, start))
 	if err == nil {
-		x, err = s.expandCompiled(c, sc, rows, view, from, to, now)
+		x, err = s.expandCompiled(c, sc, rows, view, from, to, now, deadline, clock)
 	}
 	if x.Unexpanded {
-		return AgendaExpansion{Truncated: true, Unexpanded: true}, nil
+		return AgendaExpansion{Truncated: true, Unexpanded: true, Unpromised: x.Unpromised}, nil
 	}
 	if code := ScheduleErrorCode(err); code != "" {
 		if code == "cap_time" || code == "cap_stall" {
@@ -296,7 +323,7 @@ func earlier(a, b time.Time) time.Time {
 	return a
 }
 
-func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, rows []agendaRow, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
+func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, rows []agendaRow, view *time.Location, from, to, now, deadline time.Time, clock func() time.Time) (AgendaExpansion, error) {
 	loc := view
 	if !sc.Floating {
 		var err error
@@ -309,7 +336,13 @@ func (s *Store) expandCompiled(c *schedule.Compiled, sc *models.ItemSchedule, ro
 		lo = floor // nothing before the walk's own start
 	}
 	var x AgendaExpansion
-	occs, err := c.Between(lo, to, view, schedule.DefaultLimits)
+	remaining := deadline.Sub(clock())
+	if remaining <= 0 {
+		return AgendaExpansion{Truncated: true, Unexpanded: true, Unpromised: true}, nil
+	}
+	limits := schedule.DefaultLimits
+	limits.MaxDuration = min(limits.MaxDuration, remaining)
+	occs, err := c.Between(lo, to, view, limits)
 	var capErr *schedule.CapError
 	if errors.As(err, &capErr) {
 		switch {

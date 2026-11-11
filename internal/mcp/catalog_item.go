@@ -475,7 +475,8 @@ Actions:
     With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
   schedule-delete — Irreversibly delete schedule, rule, resolved history and managed
     reminder; pending occurrence stops firing. Required: ref. Keeps item, comments, one-shot reminders.
-  agenda — Schedule occurrences and dated items in a window. Required: from, to (RFC3339, at most 92 days). Optional: tz.
+  agenda — Occurrences and dated items. Required: from, to (RFC3339, <=92 days). Optional: tz.
+    no_date_scope: personal_only means undated work is not listed here, never nothing undated. /me/agenda personal groups (priority_list, waiting_on, no_date) contain the caller's own work: assigned to them, else created by them, for their human/agent audience.
   ack-reminder — Acknowledge fired reminder; leaves next/ready. Required: reminder_id
     (fired suggestion/arming response, NOT item ref). Only this acknowledges; completing
     the item does not. Reminders may fire after work finishes.

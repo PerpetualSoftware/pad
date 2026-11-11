@@ -123,6 +123,21 @@ func TestMeAgendaTokenAllowlist(t *testing.T) {
 			if got := seen(m); got != "completed:Allowed,created:Allowed,date:Allowed,schedule:Allowed" {
 				t.Fatalf("entries = %s", got)
 			}
+			for _, key := range []string{"priority_list", "waiting_on", "no_date"} {
+				rows, _ := m[key].([]any)
+				for _, v := range rows {
+					e := v.(map[string]any)
+					if e["workspace"] != w.ws.Slug {
+						t.Fatalf("token scope leaked %s: %v", key, e)
+					}
+					if key == "priority_list" {
+						r, _ := e["roles"].(map[string]any)
+						if r["target"] == nil {
+							t.Fatalf("scoped roles missing: %v", e)
+						}
+					}
+				}
+			}
 			for _, e := range entriesOf(m) {
 				if e["workspace"] != w.ws.Slug || e["workspace_name"] != w.ws.Name {
 					t.Fatalf("workspace = %v", e)
@@ -393,5 +408,184 @@ func TestMeAgendaNoAdmissionIsEmpty(t *testing.T) {
 				t.Fatalf("excluded = %d %s; want %s", rr.Code, rr.Body.String(), expected.Body.String())
 			}
 		})
+	}
+}
+
+func TestAgendaActionableSectionsAndRoles(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	placed := w.item(t, "tasks", "Placed", `{"status":"open"}`, nil)
+	days, secs, behavior := 2, 0, "stays_owed"
+	_, err := w.srv.store.CreateCommitmentSchedule(w.ws.ID, placed.ID, *oneShot(), models.CommitmentRolesInput{DeadlineDays: &days, DeadlineSecs: &secs, DeadlineBehavior: &behavior})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.item(t, "tasks", "Undated", `{"status":"open"}`, nil)
+	for _, m := range []map[string]any{w.ok(t, w.owner, agendaWindow), meAgendaOK(t, w, w.owner, agendaWindow)} {
+		for _, key := range []string{"window_complete", "priority_list_complete", "waiting_on_complete", "no_date_complete"} {
+			if m[key] != true {
+				t.Errorf("%s=%v", key, m[key])
+			}
+		}
+		for _, key := range []string{"priority_list", "waiting_on", "no_date"} {
+			if _, ok := m[key].([]any); !ok {
+				t.Errorf("missing group %s: %v", key, m[key])
+			}
+		}
+		found := 0
+		for _, e := range entriesOf(m) {
+			if e["type"] != "schedule" {
+				continue
+			}
+			found++
+			if _, ok := e["kind"]; ok {
+				t.Error("kind remains")
+			}
+			roles, _ := e["roles"].(map[string]any)
+			if roles["target"] != "2031-03-10T09:00:00Z" || roles["deadline"] != "2031-03-12T09:00:00Z" {
+				t.Errorf("roles %v", roles)
+			}
+		}
+		if found != 1 {
+			t.Errorf("%d occurrences", found)
+		}
+	}
+}
+
+func TestAgendaWaitingGateScopeAndCommitmentRedaction(t *testing.T) {
+	f := newGraphHTTP(t, models.CommitmentRolesInput{}, models.CommitmentRolesInput{}, models.CommitmentRolesInput{})
+	f.link(0, 1, "target", "target", "")
+	if _, err := f.srv.store.CreateScheduleGate(f.ws.ID, f.items[2].ID, f.items[0].ID, f.access); err != nil {
+		t.Fatal(err)
+	}
+	guest := f.guest(1, 2)
+	// Both agenda doors must exercise gate redaction on the guest's own work.
+	if _, err := f.srv.store.DB().Exec(`UPDATE items SET assigned_user_id=? WHERE id=?`, guest.ID, f.items[2].ID); err != nil {
+		t.Fatal(err)
+	}
+	// A collection-grant guest reads the children, while the parent's
+	// collection stays restricted.
+	secret, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Secret", Schema: agendaSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE items SET collection_id=? WHERE id=?`, secret.ID, f.items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, f.coll.ID, guest.ID, "view", f.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	start, _ := time.Parse(time.RFC3339, f.dates[0])
+	query := "from=" + start.Add(-time.Hour).Format(time.RFC3339) + "&to=" + start.Add(5*24*time.Hour).Format(time.RFC3339)
+	hidden := f.as(f.token(guest, `["read"]`), "GET", f.path(f.items[0]), nil)
+	unknown := f.as(f.token(guest, `["read"]`), "GET", f.path(&models.Item{Slug: "missing-hidden-parent"}), nil)
+	if hidden.Code != 404 || unknown.Code != 404 || hidden.Body.String() != unknown.Body.String() {
+		t.Fatalf("hidden-item errors differ: %d %s / %d %s", hidden.Code, hidden.Body.String(), unknown.Code, unknown.Body.String())
+	}
+	for _, scopes := range []string{"", `["read"]`} {
+		for _, path := range []string{"/api/v1/workspaces/" + f.ws.Slug + "/agenda?" + query, "/api/v1/me/agenda?" + query, f.path(f.items[1]), f.path(f.items[2])} {
+			rr := f.as(f.token(guest, scopes), "GET", path, nil)
+			if rr.Code != 200 {
+				t.Fatalf("%s: %d %s", path, rr.Code, rr.Body.String())
+			}
+			body := rr.Body.String()
+			if strings.Contains(body, f.items[0].ID) || strings.Contains(body, "parent_role") || strings.Contains(body, "\"offset\"") || strings.Contains(body, "blocker_item_id") {
+				t.Fatalf("hidden lineage: %s", body)
+			}
+			if strings.Contains(path, "/agenda?") {
+				var m map[string]any
+				_ = json.Unmarshal(rr.Body.Bytes(), &m)
+				waiting, _ := m["waiting_on"].([]any)
+				if len(waiting) != 1 {
+					t.Errorf("waiting_on: %s", body)
+				}
+				for _, e := range entriesOf(m) {
+					if e["item_ref"] == f.items[2].Ref {
+						t.Errorf("blocked on calendar: %v", e)
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestAgendaPriorityIndependentOfWindowCap(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	for i := 0; i < agendaMaxEntries+1; i++ {
+		w.item(t, "tasks", fmt.Sprintf("Window %03d", i), `{"status":"open","due_date":"2031-03-10"}`, nil)
+	}
+	old := w.item(t, "tasks", "Owed outside window", `{"status":"open","priority":"urgent"}`, &models.ScheduleCreate{Kind: "deadline_hard", Dtstart: "2030-03-10T09:00", Tz: "UTC"})
+	m := w.ok(t, w.owner, agendaWindow)
+	if m["window_complete"] != false {
+		t.Errorf("window completeness %v", m["window_complete"])
+	}
+	rows, _ := m["priority_list"].([]any)
+	found := false
+	for _, v := range rows {
+		r := v.(map[string]any)
+		if r["item_ref"] == old.Ref {
+			found = true
+			if r["rank"] != "unranked" || r["reason"] == "" {
+				t.Errorf("priority %+v", r)
+			}
+		}
+	}
+	if !found && m["priority_list_complete"] != false {
+		t.Fatal("outstanding omitted without incomplete flag")
+	}
+}
+
+func TestAgendaPriorityRankDeadlineTargetAndID(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	schema := `{"fields":[{"key":"priority","type":"select","options":["low","normal","high","urgent"]}]}`
+	if _, err := w.srv.store.DB().Exec(`UPDATE collections SET schema=? WHERE id=?`, schema, w.colls["tasks"].ID); err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, row := range []struct {
+		name, priority, start string
+		deadline              int
+	}{{"High later", "high", "2031-03-12T09:00", 2}, {"High sooner", "high", "2031-03-11T09:00", 1}, {"Low", "low", "2031-03-10T09:00", 0}, {"Unknown", "urgent", "2031-03-10T09:00", 0}} {
+		it := w.item(t, "tasks", row.name, `{"priority":"`+row.priority+`"}`, nil)
+		_, err := w.srv.store.CreateCommitmentSchedule(w.ws.ID, it.ID, models.ScheduleCreate{Dtstart: row.start, Tz: "UTC"}, models.CommitmentRolesInput{DeadlineDays: &row.deadline, DeadlineSecs: agendaInt(0), DeadlineBehavior: agendaString("stays_owed")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, it.Ref)
+	}
+	m := w.ok(t, w.owner, agendaWindow)
+	rows, _ := m["priority_list"].([]any)
+	if len(rows) != 4 {
+		t.Fatalf("priority rows %v", rows)
+	}
+	for i, idx := range []int{1, 0, 2, 3} {
+		if rows[i].(map[string]any)["item_ref"] != want[idx] {
+			t.Fatalf("priority order: %v", rows)
+		}
+	}
+	if rows[3].(map[string]any)["rank"] != "unranked" {
+		t.Fatalf("guessed priority: %v", rows[3])
+	}
+}
+func agendaInt(n int) *int          { return &n }
+func agendaString(s string) *string { return &s }
+
+func TestAgendaReferenceDocumentsAreNotUnplacedWork(t *testing.T) {
+	w := newAgendaWorld(t, "tasks", "reference")
+	if _, err := w.srv.store.DB().Exec(`UPDATE collections SET settings=? WHERE id=?`, `{"tracks_work":false}`, w.colls["reference"].ID); err != nil {
+		t.Fatal(err)
+	}
+	w.item(t, "reference", "Reference only", `{"status":"open"}`, nil)
+	deliberate := w.item(t, "reference", "Deliberate commitment", `{"status":"open"}`, oneShot())
+	meAgendaExec(t, w, `UPDATE items SET assigned_user_id=? WHERE id=?`, w.owner.ID, deliberate.ID)
+	work := w.item(t, "tasks", "Unplaced work", `{"status":"open"}`, nil)
+	meAgendaExec(t, w, `UPDATE items SET assigned_user_id=? WHERE id=?`, w.owner.ID, work.ID)
+	m := w.ok(t, w.owner, agendaWindow+"&recipient="+w.owner.ID)
+	rows, _ := m["no_date"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["item_ref"] != work.Ref {
+		t.Fatalf("unplaced work: %v", rows)
+	}
+	priority, _ := m["priority_list"].([]any)
+	if len(priority) != 1 || priority[0].(map[string]any)["item_title"] != "Deliberate commitment" {
+		t.Fatalf("explicit reference commitment: %v", priority)
 	}
 }

@@ -64,6 +64,9 @@ func TestMeNeedsDueHumanOccurrence(t *testing.T) {
 				meAgendaExec(t, w.agendaWorld, `UPDATE item_schedules SET next_override_at = ?, updated_at = ? WHERE item_id = ?`, until.Format(time.RFC3339), stamp, it.ID)
 				if tc.action == "move" {
 					meAgendaExec(t, w.agendaWorld, `INSERT INTO schedule_occurrences (id,schedule_id,occurrence_at,occurrence_wall,state,actor,resolved_at) VALUES (?,?,?,?,'moved','user',?)`, it.ID, w.scheduleID(t, it.ID), due.Format(time.RFC3339), "2031-03-10T09:00:00", stamp)
+					// Current moves persist placement separately from reminder timing.
+					key := store.OccurrenceKey(&models.ItemSchedule{}, due.Format(time.RFC3339), "2031-03-10T09:00:00")
+					meAgendaExec(t, w.agendaWorld, `INSERT INTO schedule_occurrence_overrides(id,schedule_id,occurrence_key,role,value_at,created_at,updated_at) VALUES(?,?,?,'target',?,?,?)`, it.ID+"-target", w.scheduleID(t, it.ID), key, until.Format(time.RFC3339), stamp, stamp)
 				}
 			}
 			got := f.need(viewer, "")

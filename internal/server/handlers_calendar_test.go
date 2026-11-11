@@ -666,11 +666,11 @@ func TestCalendarFinishedItemShowsRecordedEntriesOnly(t *testing.T) {
 		t.Errorf("an open item keeps projecting")
 	}
 
-	// The agenda is untouched, and no parameter can turn the option on.
+	// The agenda shares recorded-only terminal history, without an opt-in.
 	for _, q := range []string{"from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z", "from=2031-03-01T00:00:00Z&to=2031-03-31T00:00:00Z&include_terminal=true&terminal=1"} {
 		am := w.ok(t, w.owner, q)
-		if got := entryStates(am, "FIN done"); len(got) != 0 {
-			t.Errorf("the agenda %q shows a finished item: %v", q, got)
+		if got := entryStates(am, "FIN done"); len(got) != 2 || !got["done"] || !got["skipped"] {
+			t.Errorf("agenda terminal history %q: %v", q, got)
 		}
 	}
 	// Nor on the calendar route: an unknown parameter is a list filter, refused.

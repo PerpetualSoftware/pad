@@ -10,9 +10,9 @@ import (
 )
 
 const agendaBody = `{"from":"x","to":"y","tz":"America/New_York","entries":[
-{"type":"schedule","at":"2026-11-01T05:30:00Z","day":"2026-11-01","state":"scheduled","item_ref":"TASK-1","item_title":"Early","kind":"check"},
-{"type":"schedule","at":"2026-11-01T06:30:00Z","day":"2026-11-01","state":"outstanding","item_ref":"TASK-2","item_title":"Late","kind":"deadline_hard","overdue":true,"missed_count":2},
-{"type":"schedule","at":"2026-11-02T14:00:00Z","day":"2026-11-02","state":"scheduled","item_ref":"TASK-3","item_title":"Next day","kind":"window"},
+{"type":"schedule","at":"2026-11-01T05:30:00Z","day":"2026-11-01","state":"scheduled","item_ref":"TASK-1","item_title":"Early","roles":{}},
+{"type":"schedule","at":"2026-11-01T06:30:00Z","day":"2026-11-01","state":"outstanding","item_ref":"TASK-2","item_title":"Late","roles":{"deadline":"2031-03-10T09:00:00Z"},"overdue":true,"missed_count":2},
+{"type":"schedule","at":"2026-11-02T14:00:00Z","day":"2026-11-02","state":"scheduled","item_ref":"TASK-3","item_title":"Next day","roles":{"occupied_until":"2031-03-10T10:00:00Z"}},
 {"type":"date","at":"2026-11-03T05:00:00Z","day":"2026-11-03","date":"2026-11-03","field":"due_date","item_ref":"TASK-4","item_title":"Dated","collection":"tasks"}]}`
 
 func agendaCall(t *testing.T, calls []recordedCall) url.Values {
@@ -62,7 +62,7 @@ func TestAgendaDefaultWindowStartsToday(t *testing.T) {
 		n := time.Now().In(loc)
 		return time.Date(n.Year(), n.Month(), n.Day(), 0, 0, 0, 0, loc).UTC()
 	}
-	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
+	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"window_complete":true,"entries":[]}` })
 	root := tzCLIWithLocal(t, h, time.UTC)
 	before := day()
 	out, _, err := tzRun(t, root, "item", "remind", "agenda")
@@ -110,7 +110,7 @@ func TestAgendaWindowFlags(t *testing.T) {
 		{[]string{"--tz", "Local"}, "--tz"},
 	} {
 		t.Run(strings.Join(tc.args, " "), func(t *testing.T) {
-			h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
+			h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"window_complete":true,"entries":[]}` })
 			root := tzCLIWithLocal(t, h, time.UTC)
 			_, _, err := tzRun(t, root, append([]string{"item", "remind", "agenda"}, tc.args...)...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
@@ -125,7 +125,7 @@ func TestAgendaWindowFlags(t *testing.T) {
 	}
 	// 92 days exactly is allowed, and --tz is forwarded.
 	t.Run("ninety-two days", func(t *testing.T) {
-		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
+		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"window_complete":true,"entries":[]}` })
 		root := tzCLIWithLocal(t, h, time.UTC)
 		if _, _, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01", "--days", "92", "--tz", "Asia/Tokyo"); err != nil {
 			t.Fatal(err)
@@ -138,8 +138,8 @@ func TestAgendaWindowFlags(t *testing.T) {
 }
 
 func TestAgendaTruncationHints(t *testing.T) {
-	entry := `"entries":[{"type":"schedule","at":"2026-11-02T14:00:00Z","day":"2026-11-02","state":"scheduled","item_ref":"TASK-3","item_title":"T","kind":"check"}]`
-	unexpanded := `"unexpanded":[{"schedule_id":"s1","item_ref":"TASK-8","item_title":"Busy","collection":"tasks","kind":"check","audience":"agent","reason":"cap_instances"}]`
+	entry := `"entries":[{"type":"schedule","at":"2026-11-02T14:00:00Z","day":"2026-11-02","state":"scheduled","item_ref":"TASK-3","item_title":"T","roles":{}}]`
+	unexpanded := `"unexpanded":[{"schedule_id":"s1","item_ref":"TASK-8","item_title":"Busy","collection":"tasks","roles":{},"audience":"agent","reason":"cap_instances"}]`
 	unavailable := `"unavailable":[{"item_ref":"TASK-9","code":"cap_time"}]`
 	for _, tc := range []struct {
 		name, body string
@@ -148,11 +148,11 @@ func TestAgendaTruncationHints(t *testing.T) {
 		{"next_from", `{` + entry + `,"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`,
 			[]string{"more after 2026-11-05 00:00 EST: pad item remind agenda --from 2026-11-05T05:00:00Z --to 2026-11-08T05:00:00Z"}, []string{"incomplete"}},
 		{"next_from is the window end (only unexpanded schedules cut)", `{` + entry + `,"truncated":true,"next_from":"2026-11-08T05:00:00Z",` + unexpanded + `}`,
-			[]string{"TASK-8  check  agent  cap_instances"}, []string{"more after", "--from", "incomplete"}},
+			[]string{"TASK-8  agent  cap_instances"}, []string{"more after", "--from", "incomplete"}},
 		{"no next_from", `{` + entry + `,"truncated":true}`,
 			[]string{"list incomplete; narrow the window"}, []string{"more after"}},
 		{"unexpanded", `{` + entry + `,` + unexpanded + `}`,
-			[]string{"TASK-8  check  agent  cap_instances"}, []string{"incomplete", "more after"}},
+			[]string{"TASK-8  agent  cap_instances"}, []string{"incomplete", "more after"}},
 		{"unavailable", `{` + entry + `,` + unavailable + `}`,
 			[]string{"TASK-9  unavailable  cap_time"}, []string{"incomplete", "more after"}},
 		{"none", `{` + entry + `}`, []string{"TASK-3"}, []string{"incomplete", "more after", "unavailable", "cap_"}},
@@ -179,7 +179,7 @@ func TestAgendaTruncationHints(t *testing.T) {
 }
 
 func TestAgendaJSONIsVerbatim(t *testing.T) {
-	body := `{"entries":[],"future_field":{"a":1}}`
+	body := `{"window_complete":true,"entries":[],"future_field":{"a":1}}`
 	h, _ := recordingStub(func(c recordedCall) (int, string) { return 200, body })
 	root := tzCLIWithLocal(t, h, time.UTC)
 	out, stderr, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01", "--format", "json")
@@ -191,7 +191,7 @@ func TestAgendaJSONIsVerbatim(t *testing.T) {
 func TestAgendaClampIsNotSilent(t *testing.T) {
 	run := func(t *testing.T, args ...string) (stderr string, q url.Values) {
 		t.Helper()
-		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"entries":[]}` })
+		h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, `{"window_complete":true,"entries":[]}` })
 		root := tzCLIWithLocal(t, h, time.UTC)
 		_, stderr, err := tzRun(t, root, append([]string{"item", "remind", "agenda"}, args...)...)
 		if err != nil {
@@ -219,7 +219,7 @@ func TestAgendaClampIsNotSilent(t *testing.T) {
 }
 
 func TestAgendaResumeHintKeepsWindowAndZone(t *testing.T) {
-	body := `{"entries":[],"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`
+	body := `{"window_complete":true,"entries":[],"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`
 	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, body })
 	root := tzCLIWithLocal(t, h, time.UTC)
 	out, _, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01", "--days", "30", "--tz", "Asia/Tokyo")
@@ -237,7 +237,7 @@ func TestAgendaResumeHintKeepsWindowAndZone(t *testing.T) {
 }
 
 func TestAgendaResumeHintWithoutTzHasNone(t *testing.T) {
-	body := `{"entries":[],"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`
+	body := `{"window_complete":true,"entries":[],"truncated":true,"next_from":"2026-11-05T05:00:00Z"}`
 	h, _ := recordingStub(func(c recordedCall) (int, string) { return 200, body })
 	out, _, err := tzRun(t, tzCLIWithLocal(t, h, time.UTC), "item", "remind", "agenda", "--from", "2026-11-01")
 	if err != nil || strings.Contains(out, "--tz") || !strings.Contains(out, " --to ") {
@@ -250,8 +250,8 @@ func TestAgendaResumeHintWithoutTzHasNone(t *testing.T) {
 // The comparison that decides whether there is anything to resume uses the end
 // as sent.
 func TestAgendaNoResumeHintWhenNextFromIsTheSentEnd(t *testing.T) {
-	body := `{"entries":[],"truncated":true,"next_from":"2026-11-08T05:00:00Z",` +
-		`"unexpanded":[{"schedule_id":"s1","item_ref":"TASK-8","item_title":"Busy","collection":"tasks","kind":"check","audience":"agent","reason":"scan_limit"}]}`
+	body := `{"window_complete":true,"entries":[],"truncated":true,"next_from":"2026-11-08T05:00:00Z",` +
+		`"unexpanded":[{"schedule_id":"s1","item_ref":"TASK-8","item_title":"Busy","collection":"tasks","roles":{},"audience":"agent","reason":"scan_limit"}]}`
 	h, _ := recordingStub(func(c recordedCall) (int, string) { return 200, body })
 	root := tzCLIWithLocal(t, h, time.UTC)
 	out, _, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01T05:00:00Z", "--to", "2026-11-08T05:00:00.5Z")
@@ -261,7 +261,17 @@ func TestAgendaNoResumeHintWhenNextFromIsTheSentEnd(t *testing.T) {
 	if strings.Contains(out, "more after") || strings.Contains(out, "--from") {
 		t.Errorf("a resume command was printed for a cut at the window end:\n%s", out)
 	}
-	if !strings.Contains(out, "TASK-8  check  agent  scan_limit") {
+	if !strings.Contains(out, "TASK-8  agent  scan_limit") {
 		t.Errorf("the unexpanded schedule is not named:\n%s", out)
+	}
+}
+
+func TestAgendaLabelsFromRoles(t *testing.T) {
+	h, _ := recordingStub(func(c recordedCall) (int, string) {
+		return 200, `{"tz":"UTC","entries":[{"type":"schedule","at":"2026-11-05T09:00:00Z","day":"2026-11-05","state":"outstanding","item_ref":"TASK-1","item_title":"Appointment","roles":{"target":"2026-11-05T09:00:00Z","occupied_until":"2026-11-05T10:00:00Z"}}]}`
+	})
+	out, _, err := tzRun(t, tzCLIWithLocal(t, h, time.UTC), "item", "remind", "agenda")
+	if err != nil || !strings.Contains(out, "window") {
+		t.Fatalf("role label missing: %s %v", out, err)
 	}
 }

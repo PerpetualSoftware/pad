@@ -35,7 +35,7 @@
 	let preferenceUser: string | undefined;
 	const entries = $derived(filterEntries(data?.entries ?? [], showEvents));
 	const groups = $derived(groupEntries(entries));
-	const incomplete = $derived(!!(data?.truncated || data?.unavailable?.length || data?.unexpanded?.length));
+	const incomplete = $derived(!!(data?.window_complete === false || data?.truncated || data?.unavailable?.length || data?.unexpanded?.length));
 	const status = $derived(loading ? 'Loading agenda…' : updating ? 'Updating agenda…' : announcement);
 
 	$effect(() => {

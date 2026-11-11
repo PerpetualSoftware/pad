@@ -132,7 +132,7 @@ func TestAgendaPinnedIgnoresViewerFloatingFollowsIt(t *testing.T) {
 	}
 }
 
-func TestAgendaMovedOccurrenceAtGridWithEffectiveAt(t *testing.T) {
+func TestAgendaMovedOccurrenceKeepsIdentityAtEffectiveTarget(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	item, _ := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, "2026-10-01T00:00:00Z")
@@ -150,11 +150,17 @@ func TestAgendaMovedOccurrenceAtGridWithEffectiveAt(t *testing.T) {
 				o = &es[i]
 			}
 		}
+		if name == "grid window" {
+			if o != nil {
+				t.Errorf("original placement is live: %+v", o)
+			}
+			continue
+		}
 		if o == nil {
 			t.Errorf("%s: the moved occurrence is not listed: %+v", name, es)
 			continue
 		}
-		if !o.At.Equal(rt("2026-10-01T09:00:00Z")) || o.EffectiveAt == nil || !o.EffectiveAt.Equal(until) {
+		if !o.At.Equal(until) || o.Wall.String() != "2026-10-01T09:00:00" {
 			t.Errorf("%s: at %s effective %v, want grid 2026-10-01T09:00Z and effective %s", name, o.At, o.EffectiveAt, until)
 		}
 	}
@@ -278,5 +284,86 @@ func TestAgendaExpandClassifiesStoredStateVersusDatabase(t *testing.T) {
 	es, _, unavailable, err = f.s.ExpandAgenda(sc, time.UTC, rt("2026-10-01T00:00:00Z"), rt("2026-10-05T00:00:00Z"), rt("2026-10-01T00:00:00Z"))
 	if err == nil || unavailable != "" || len(es) != 0 {
 		t.Errorf("failing history read: entries=%d unavailable=%q err=%v, want an error and no code", len(es), unavailable, err)
+	}
+}
+
+func TestAgendaEffectivePlacementRoles(t *testing.T) {
+	f := newSchedFixture(t)
+	sc, err := f.s.createScheduleRolesAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-27T09:00", Tz: "UTC"}, ptr(mustRoles(t, models.CommitmentRolesInput{DeadlineDays: ptr(0), DeadlineSecs: ptr(4 * 3600), DeadlineBehavior: ptr("stays_owed")})), rt("2026-10-01T00:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The target is Oct 27 and the deadline is later that day. Read each role
+	// separately, so neither admission nor role grouping can hide the other.
+	for _, window := range [][2]string{{"2026-10-27T08:00:00Z", "2026-10-27T10:00:00Z"}, {"2026-10-27T11:00:00Z", "2026-10-27T15:00:00Z"}} {
+		es, _, code, err := f.s.ExpandAgenda(sc, time.UTC, rt(window[0]), rt(window[1]), renegNow)
+		if err != nil || code != "" || len(es) != 1 {
+			t.Fatalf("roles window %v: %+v %s %v", window, es, code, err)
+		}
+	}
+}
+
+func TestAgendaMovedOnlyAtEffectiveTarget(t *testing.T) {
+	f := newSchedFixture(t)
+	item, sc := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-01T09:00", Tz: "UTC"}, "2026-10-01T00:00:00Z")
+	until := rt("2026-10-04T15:00:00Z")
+	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "move", Until: &until, Actor: "user"}, "2026-10-01T08:00:00Z")
+	old := f.expand(t, item, time.UTC, "2026-10-01T00:00:00Z", "2026-10-02T00:00:00Z", "2026-10-01T08:00:00Z")
+	if len(old) != 0 {
+		t.Fatalf("original date is still live: %+v", old)
+	}
+	moved := f.expand(t, item, time.UTC, "2026-10-04T00:00:00Z", "2026-10-05T00:00:00Z", "2026-10-01T08:00:00Z")
+	if len(moved) != 1 || !moved[0].At.Equal(until) {
+		t.Fatalf("effective target: %+v", moved)
+	}
+	history, err := f.s.GetCommitment(f.ws.ID, item.ID)
+	if err != nil || len(history.Journal) != 1 || history.Journal[0].BeforeJSON == nil {
+		t.Fatalf("move history: %+v %v", history, err)
+	}
+}
+
+func TestAgendaTerminalRecordedOnly(t *testing.T) {
+	w := newCalWorld(t)
+	item := w.sched(t, nil, "done", true)
+	sc, err := w.s.GetSchedule(w.ws.ID, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	es, _, code, err := w.s.ExpandAgenda(sc, time.UTC, rt("2026-10-01T00:00:00Z"), rt("2026-10-08T00:00:00Z"), rt("2026-10-05T12:00:00Z"))
+	if err != nil || code != "" || len(es) != 1 || es[0].State != "done" || es[0].Overdue {
+		t.Fatalf("terminal projections: %+v %s %v", es, code, err)
+	}
+}
+
+func TestAgendaFourRolesOneOccurrenceAndRoleOnlyWindows(t *testing.T) {
+	f := newSchedFixture(t)
+	input := models.CommitmentRolesInput{EarliestDays: ptr(-2), EarliestSecs: ptr(0), DeadlineDays: ptr(3), DeadlineSecs: ptr(0), DeadlineBehavior: ptr("stays_owed"), OccupiedDays: ptr(0), OccupiedSecs: ptr(3600)}
+	sc, err := f.s.createScheduleRolesAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-27T09:00", Tz: "UTC"}, ptr(mustRoles(t, input)), rt("2026-10-01T00:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, win := range [][2]string{{"2026-10-25T00:00:00Z", "2026-10-26T00:00:00Z"}, {"2026-10-27T09:30:00Z", "2026-10-27T11:00:00Z"}, {"2026-10-25T00:00:00Z", "2026-10-31T00:00:00Z"}} {
+		x, err := f.s.ExpandAgendaCut(sc, time.UTC, rt(win[0]), rt(win[1]), rt("2026-10-26T00:00:00Z"), time.Now().Add(1500*time.Millisecond), time.Now)
+		if err != nil || x.Unavailable != "" || len(x.Entries) != 1 {
+			t.Fatalf("window %v: %+v %v", win, x, err)
+		}
+		r := x.Entries[0].Roles
+		if r.Target == nil || r.Earliest == nil || r.Deadline == nil || r.OccupiedUntil == nil {
+			t.Fatalf("roles %+v", r)
+		}
+	}
+	// A terminal item's role-only history window must be admitted too.
+	f.mustResolve(t, f.item, ResolveInput{State: "done", OccurrenceAt: rt(*sc.NextAt), Actor: "user"}, "2026-10-27T10:00:00Z")
+	fields := `{"status":"done"}`
+	if _, err := f.s.UpdateItem(f.item.ID, models.ItemUpdate{Fields: &fields}); err != nil {
+		t.Fatal(err)
+	}
+	rows, more, err := f.s.ListSchedulesForAgenda(f.ws.ID, PendingReminderScope{}, rt("2026-10-30T00:00:00Z"), rt("2026-10-31T00:00:00Z"), 100)
+	if err != nil || more || len(rows) != 1 {
+		t.Fatalf("terminal role admission: %+v %v %v", rows, more, err)
+	}
+	x, err := f.s.ExpandAgendaCut(rows[0].Schedule, time.UTC, rt("2026-10-30T00:00:00Z"), rt("2026-10-31T00:00:00Z"), rt("2026-11-01T00:00:00Z"), time.Now().Add(1500*time.Millisecond), time.Now)
+	if err != nil || len(x.Entries) != 1 || x.Entries[0].State != "done" || x.Entries[0].Overdue {
+		t.Fatalf("terminal deadline history: %+v %v", x, err)
 	}
 }

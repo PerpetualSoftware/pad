@@ -115,15 +115,15 @@ func TestListSchedulesForCalendarTerminalNeedsAnOccurrenceNearTheWindow(t *testi
 		t.Errorf("Terminal flags = %v", terminal)
 	}
 
-	// The agenda's read is unchanged: open items only, no flag.
+	// Both reads admit terminal history and mark it for recorded-only expansion.
 	ag, _, err := w.s.ListSchedulesForAgenda(w.ws.ID, all, rt("2026-10-01T00:00:00Z"), rt("2026-10-08T00:00:00Z"), 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	sameSchedItems(t, "agenda", ag, open, openCustom)
+	sameSchedItems(t, "agenda", ag, open, openCustom, done, shipped)
 	for _, a := range ag {
-		if a.Terminal {
-			t.Errorf("the agenda's rows never carry Terminal: %+v", a)
+		if a.Terminal != terminal[a.Schedule.ItemID] {
+			t.Errorf("agenda terminal flag differs: %+v", a)
 		}
 	}
 

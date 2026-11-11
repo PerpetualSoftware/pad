@@ -1,5 +1,5 @@
 <script lang="ts">
- import { dayLabel, timeLabel, zoneDay, type CalendarRow } from '$lib/calendar/monthGrid';
+ import { dayLabel, timeLabel, type CalendarRow } from '$lib/calendar/monthGrid';
  import { shouldOpenInPane } from '../collections/itemCardClick';
  import { canonicalValueColor, formatFieldLabel } from '$lib/utils/fieldColors';
  import Chip from '../common/Chip.svelte';
@@ -20,7 +20,7 @@
   {#if row.stale}<Chip size="sm" color="var(--accent-amber)">Stale</Chip>{/if}
  </span>
  {#if row.start && row.end}<span class="range">{row.continues ? '‹ ' : ''}{dayLabel(row.start)} – {dayLabel(row.end)}{row.day < row.end ? ' ›' : ''}</span>{/if}
- {#if row.state === 'moved' && row.effectiveAt}<span class="range">Moved to {dayLabel(zoneDay(new Date(row.effectiveAt),zone))}, {timeLabel(row.effectiveAt,zone)}</span>{/if}
+
  {#if row.missedCount}<span class="range">{row.missedCount} missed occurrences</span>{/if}
 </a>
 <style>

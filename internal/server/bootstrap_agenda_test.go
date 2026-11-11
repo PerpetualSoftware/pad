@@ -119,13 +119,13 @@ func TestBootstrapAgendaLimits(t *testing.T) {
 		t.Errorf("today %q tz %q note %q: all must be set", a.Today, a.Tz, a.Note)
 	}
 	first := a.Carried[0]
-	if first.Title != "carried 1" || first.Kind != "check" || first.At != "2031-03-01T09:00:00Z" || fmt.Sprint(first.Resolve) != "[done skip move]" {
+	if first.Title != "carried 1" || first.Roles.Target == nil || first.At != "2031-03-01T09:00:00Z" || fmt.Sprint(first.Resolve) != "[done skip move]" {
 		t.Errorf("row = %+v", first)
 	}
 }
 
 // Nothing to show: the key is absent, not an empty header.
-func TestBootstrapAgendaAbsentWhenEmpty(t *testing.T) {
+func TestBootstrapAgendaFuturePriorityWithoutDueRows(t *testing.T) {
 	t.Parallel()
 	w := newBootAgendaWorld(t, "2031-03-13T12:00:00Z")
 	w.sched(t, w.owner, "later", "2031-03-20T09:00", "both")
@@ -139,8 +139,12 @@ func TestBootstrapAgendaAbsentWhenEmpty(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &raw); err != nil {
 		t.Fatal(err)
 	}
-	if _, has := raw["agenda"]; has {
-		t.Fatalf("agenda present with nothing due: %s", raw["agenda"])
+	var agenda BootstrapAgenda
+	if err := json.Unmarshal(raw["agenda"], &agenda); err != nil {
+		t.Fatal(err)
+	}
+	if len(agenda.DueToday)+len(agenda.Carried) != 0 || len(agenda.PriorityList) != 1 || agenda.PriorityList[0].ItemTitle != "later" {
+		t.Fatalf("future outstanding scope: %s", raw["agenda"])
 	}
 }
 
@@ -292,5 +296,93 @@ func TestBootstrapAgendaTruncatedEmptyStillShows(t *testing.T) {
 	}
 	if a := projectBootstrapAgenda(&store.BootstrapAgendaSet{}, usertz.Resolve(nil), time.Unix(0, 0)); a != nil {
 		t.Fatalf("nothing found and not truncated: agenda = %+v, want none", a)
+	}
+}
+
+func TestBootstrapAgendaRolesAndNoKind(t *testing.T) {
+	w := newBootAgendaWorld(t, "2031-03-10T12:00:00Z")
+	w.sched(t, w.owner, "Role row", "2031-03-10T09:00", "both")
+	rr := doRequestWithHeaders(w.srv, "GET", "/api/v1/workspaces/"+w.ws.Slug+"/agent/bootstrap", nil, map[string]string{"Cookie": "pad_session=" + w.tok})
+	if rr.Code != 200 {
+		t.Fatalf("bootstrap %d %s", rr.Code, rr.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rr.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	agenda := body["agenda"].(map[string]any)
+	rows := agenda["due_today"].([]any)
+	row := rows[0].(map[string]any)
+	if _, ok := row["kind"]; ok {
+		t.Fatalf("kind remains: %v", row)
+	}
+	roles, ok := row["roles"].(map[string]any)
+	if !ok || roles["target"] != "2031-03-10T09:00:00Z" {
+		t.Fatalf("roles absent: %v", row)
+	}
+}
+
+func TestBootstrapAgendaWaitingAndUnplacedStayUndated(t *testing.T) {
+	w := newBootAgendaWorld(t, "2031-03-10T12:00:00Z")
+	child := w.sched(t, w.owner, "Blocked", "2031-03-10T09:00", "both")
+	blocker := w.item(t, "tasks", "Blocker", `{"status":"open"}`, nil)
+	_, err := w.srv.store.CreateScheduleGate(w.ws.ID, child.ID, blocker.ID, models.CommitmentAccess{Readable: map[string]bool{child.ID: true, blocker.ID: true}, Editable: map[string]bool{child.ID: true, blocker.ID: true}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = w.srv.store.CreateItem(w.ws.ID, w.colls["tasks"].ID, models.ItemCreate{Title: "Unplaced", AssignedUserID: &w.owner.ID, Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := w.bootstrap(t, w.tok, nil)
+	if b.Agenda == nil || len(b.Agenda.DueToday) != 0 || len(b.Agenda.WaitingOn) != 1 || len(b.Agenda.NoDate) != 1 {
+		t.Fatalf("bootstrap %+v", b.Agenda)
+	}
+	raw, _ := json.Marshal(b.Agenda)
+	var m map[string]any
+	_ = json.Unmarshal(raw, &m)
+	for _, group := range []string{"waiting_on", "no_date"} {
+		for _, v := range m[group].([]any) {
+			e := v.(map[string]any)
+			if _, ok := e["at"]; ok {
+				t.Fatalf("fake date: %s", raw)
+			}
+			if _, ok := e["kind"]; ok {
+				t.Fatalf("kind: %s", raw)
+			}
+		}
+	}
+}
+
+func TestBootstrapAgendaRoleWindowCountsOnceAfterMove(t *testing.T) {
+	base := time.Now().UTC().Truncate(24 * time.Hour).Add(10*24*time.Hour + 9*time.Hour)
+	w := newBootAgendaWorld(t, base.Add(3*time.Hour).Format(time.RFC3339))
+	it, err := w.srv.store.CreateItem(w.ws.ID, w.colls["tasks"].ID, models.ItemCreate{Title: "Both dates", AssignedUserID: &w.owner.ID, Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	days, secs, behavior := 2, 0, "stays_owed"
+	input := *oneShot()
+	input.Dtstart = base.Format("2006-01-02T15:04:05")
+	sc, err := w.srv.store.CreateCommitmentSchedule(w.ws.ID, it.ID, input, models.CommitmentRolesInput{DeadlineDays: &days, DeadlineSecs: &secs, DeadlineBehavior: &behavior})
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := w.bootstrap(t, w.tok, nil)
+	if b.Agenda == nil || len(b.Agenda.DueToday) != 1 || b.Agenda.DueToday[0].Roles.Deadline == nil {
+		t.Fatalf("target day: %+v", b.Agenda)
+	}
+	until := base.AddDate(0, 0, 3)
+	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, store.ResolveInput{OccurrenceAt: rtServer(*sc.NextAt), State: "move", Until: &until, Actor: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	w.srv.agendaClock = func() time.Time { return base.AddDate(0, 0, 2).Add(3 * time.Hour) }
+	b = w.bootstrap(t, w.tok, nil)
+	if b.Agenda == nil || len(b.Agenda.DueToday) != 1 || len(b.Agenda.Carried) != 0 {
+		t.Fatalf("deadline-only day: %+v", b.Agenda)
+	}
+	row := b.Agenda.DueToday[0]
+	if row.At != until.Format(time.RFC3339) || row.Roles.Target == nil || *row.Roles.Target != row.At || row.Roles.Deadline == nil || *row.Roles.Deadline != base.AddDate(0, 0, 2).Format(time.RFC3339) {
+		t.Fatalf("effective dates: %+v", row)
 	}
 }

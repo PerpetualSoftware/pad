@@ -28,30 +28,32 @@ const (
 )
 
 type agendaEntry struct {
-	Type        string `json:"type"` // schedule | date | created | completed
-	At          string `json:"at"`
-	Day         string `json:"day"`
-	Wall        string `json:"wall,omitempty"`
-	AllDay      bool   `json:"all_day,omitempty"`
-	Floating    *bool  `json:"floating,omitempty"`
-	State       string `json:"state,omitempty"`
-	ItemRef     string `json:"item_ref"`
-	ItemTitle   string `json:"item_title"`
-	Collection  string `json:"collection"`
-	Kind        string `json:"kind,omitempty"`
-	RolesOrigin string `json:"roles_origin,omitempty"`
-	Audience    string `json:"audience,omitempty"`
-	ScheduleID  string `json:"schedule_id,omitempty"`
-	Field       string `json:"field,omitempty"`
-	Date        string `json:"date,omitempty"`
-	Fired       bool   `json:"fired,omitempty"`
-	Overdue     bool   `json:"overdue,omitempty"`
-	EffectiveAt string `json:"effective_at,omitempty"`
-	ResolvedAt  string `json:"resolved_at,omitempty"`
-	Actor       string `json:"actor,omitempty"`
-	CommentID   string `json:"comment_id,omitempty"`
-	MissedCount int    `json:"missed_count,omitempty"`
-	Stale       bool   `json:"stale,omitempty"`
+	Type          string                  `json:"type"` // schedule | date | created | completed
+	At            string                  `json:"at,omitempty"`
+	Day           string                  `json:"day,omitempty"`
+	Wall          string                  `json:"wall,omitempty"`
+	AllDay        bool                    `json:"all_day,omitempty"`
+	Floating      *bool                   `json:"floating,omitempty"`
+	State         string                  `json:"state,omitempty"`
+	ItemRef       string                  `json:"item_ref"`
+	ItemTitle     string                  `json:"item_title"`
+	Collection    string                  `json:"collection"`
+	Roles         *models.CommitmentRoles `json:"roles,omitempty"`
+	OccurrenceKey string                  `json:"occurrence_key,omitempty"`
+	Rank          string                  `json:"rank,omitempty"`
+	Reason        string                  `json:"reason,omitempty"`
+	RolesOrigin   string                  `json:"roles_origin,omitempty"`
+	Audience      string                  `json:"audience,omitempty"`
+	ScheduleID    string                  `json:"schedule_id,omitempty"`
+	Field         string                  `json:"field,omitempty"`
+	Date          string                  `json:"date,omitempty"`
+	Fired         bool                    `json:"fired,omitempty"`
+	Overdue       bool                    `json:"overdue,omitempty"`
+	ResolvedAt    string                  `json:"resolved_at,omitempty"`
+	Actor         string                  `json:"actor,omitempty"`
+	CommentID     string                  `json:"comment_id,omitempty"`
+	MissedCount   int                     `json:"missed_count,omitempty"`
+	Stale         bool                    `json:"stale,omitempty"`
 
 	Workspace     string `json:"workspace,omitempty"`
 	WorkspaceName string `json:"workspace_name,omitempty"`
@@ -78,7 +80,6 @@ type agendaUnexpanded struct {
 	ItemRef    string `json:"item_ref"`
 	ItemTitle  string `json:"item_title"`
 	Collection string `json:"collection"`
-	Kind       string `json:"kind,omitempty"`
 	Audience   string `json:"audience,omitempty"`
 	Reason     string `json:"reason"` // scan_limit
 	Workspace  string `json:"workspace,omitempty"`
@@ -87,15 +88,23 @@ type agendaUnexpanded struct {
 }
 
 type agendaResponse struct {
-	From         string              `json:"from"`
-	To           string              `json:"to"`
-	Tz           string              `json:"tz"`
-	TimezoneNote string              `json:"timezone_note,omitempty"`
-	Entries      []agendaEntry       `json:"entries"`
-	Truncated    bool                `json:"truncated,omitempty"`
-	NextFrom     string              `json:"next_from,omitempty"`
-	Unexpanded   []agendaUnexpanded  `json:"unexpanded,omitempty"`
-	Unavailable  []agendaUnavailable `json:"unavailable,omitempty"`
+	WindowComplete       bool                `json:"window_complete"`
+	PriorityList         []agendaEntry       `json:"priority_list"`
+	PriorityListComplete bool                `json:"priority_list_complete"`
+	WaitingOn            []agendaEntry       `json:"waiting_on"`
+	WaitingOnComplete    bool                `json:"waiting_on_complete"`
+	NoDate               []agendaEntry       `json:"no_date"`
+	NoDateComplete       bool                `json:"no_date_complete"`
+	NoDateScope          string              `json:"no_date_scope,omitempty"`
+	From                 string              `json:"from"`
+	To                   string              `json:"to"`
+	Tz                   string              `json:"tz"`
+	TimezoneNote         string              `json:"timezone_note,omitempty"`
+	Entries              []agendaEntry       `json:"entries"`
+	Truncated            bool                `json:"truncated,omitempty"`
+	NextFrom             string              `json:"next_from,omitempty"`
+	Unexpanded           []agendaUnexpanded  `json:"unexpanded,omitempty"`
+	Unavailable          []agendaUnavailable `json:"unavailable,omitempty"`
 	// Counts is the per-day series for /me/agenda; CountsTruncated says a cap
 	// stopped it, in which case Counts is absent rather than partial.
 	Counts          []agendaCount `json:"counts,omitempty"`
@@ -192,10 +201,21 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run := s.newAgendaRead(from, to, zone, note)
+	run.recipient = strings.TrimSpace(r.URL.Query().Get("recipient"))
+	run.listNoDate = run.recipient != ""
+	if !run.listNoDate {
+		run.response.NoDateScope = "personal_only"
+	} else {
+		run.audience = "human"
+		if actor, _ := actorFromRequest(r); actor == "agent" {
+			run.audience = "agent"
+		}
+	}
 	if err := s.appendWorkspaceAgenda(run, workspaceID, scope); err != nil {
 		writeInternalError(w, err)
 		return
 	}
+	s.appendAgendaWork(run, workspaceID, scope)
 	run.finish()
 	writeJSON(w, http.StatusOK, run.response)
 }
@@ -206,6 +226,9 @@ type agendaRead struct {
 	from, to, now, deadline time.Time
 	loc                     *time.Location
 	remaining               int
+	workRemaining           int
+	recipient, audience     string
+	listNoDate              bool
 	scanCut                 bool
 	// A set cut cannot promise a resume instant. A time cut can.
 	setCut  bool
@@ -219,8 +242,8 @@ func (s *Server) newAgendaRead(from, to time.Time, zone usertz.Zone, note string
 		limit = min(limit, s.agendaScanLimit)
 	}
 	return &agendaRead{
-		response: agendaResponse{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note, Entries: []agendaEntry{}},
-		from:     from, to: to, now: now, deadline: now.Add(agendaBudget), loc: zone.Loc, remaining: limit,
+		response: agendaResponse{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note, Entries: []agendaEntry{}, WindowComplete: true, PriorityListComplete: true, WaitingOnComplete: true, NoDateComplete: true, PriorityList: []agendaEntry{}, WaitingOn: []agendaEntry{}, NoDate: []agendaEntry{}},
+		from:     from, to: to, now: now, deadline: now.Add(agendaBudget), loc: zone.Loc, remaining: limit, workRemaining: agendaMaxScan, listNoDate: true,
 	}
 }
 
@@ -269,7 +292,24 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 	resp.Truncated = resp.Truncated || len(items) > agendaMaxEntries
 	run.setCut = run.setCut || len(items) > agendaMaxEntries
 	today := overdueToday(now.In(loc))
+	itemIDs := make([]string, len(items))
+	for i, it := range items {
+		itemIDs[i] = it.ID
+	}
+	gated, err := s.store.AgendaGatedItemIDs(workspaceID, itemIDs)
+	if err != nil {
+		return err
+	}
 	for _, it := range items {
+		if gated[it.ID] {
+			gates, err := s.store.ScheduleGates(workspaceID, it.ID, models.CommitmentAccess{Readable: map[string]bool{it.ID: true}})
+			if err != nil {
+				return err
+			}
+			if gates.State != models.GateStateReleased {
+				continue
+			}
+		}
 		ref := it.Ref
 		if ref == "" {
 			ref = it.Slug
@@ -357,6 +397,8 @@ func (run *agendaRead) finish() {
 	if len(resp.Unexpanded) > 0 {
 		resp.Truncated = true
 	}
+	resp.WindowComplete = !resp.Truncated && len(resp.Unavailable) == 0
+	finishAgendaWork(resp)
 }
 
 // agendaSchedules is the schedule half of an agenda-shaped answer.
@@ -384,7 +426,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 			break
 		}
 		sc := as.Schedule
-		x, err := st.ExpandAgendaCut(sc, loc, from, to, now)
+		x, err := st.ExpandAgendaCut(sc, loc, from, to, now, deadline, clock)
 		if err != nil {
 			return res, err
 		}
@@ -398,7 +440,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 		if x.Unexpanded {
 			res.Unexpanded = append(res.Unexpanded, agendaUnexpanded{
 				ScheduleID: sc.ID, ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection,
-				Kind: sc.Kind, Audience: sc.Audience, Reason: "scan_limit",
+				Audience: sc.Audience, Reason: "scan_limit",
 			})
 		}
 		if !x.NextFrom.IsZero() && (res.TimeCut.IsZero() || x.NextFrom.Before(res.TimeCut)) {
@@ -408,17 +450,15 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 		for _, e := range es {
 			out := agendaEntry{
 				Type: "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
-				Wall: e.Wall.String(), AllDay: e.Wall.AllDay, Floating: &sc.Floating, State: e.State,
-				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Kind: sc.Kind, Audience: sc.Audience,
-				RolesOrigin: as.RolesOrigin, ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
+				Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Floating: &sc.Floating, State: e.State,
+				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Audience: sc.Audience,
+				Roles: &e.Roles, OccurrenceKey: e.OccurrenceKey, RolesOrigin: as.RolesOrigin, ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
 				CommentID: e.CommentID, MissedCount: e.MissedCount, Stale: e.Stale, instant: e.At, subKey: sc.ID,
 			}
-			if e.Wall.AllDay {
-				out.Day = e.Wall.String() // a date, not shifted by the zone it is read in
+			if out.AllDay {
+				out.Day = *e.Roles.Target // a date, not shifted by the zone it is read in
 			}
-			if e.EffectiveAt != nil {
-				out.EffectiveAt = e.EffectiveAt.In(loc).Format(time.RFC3339)
-			}
+
 			res.Entries = append(res.Entries, out)
 		}
 	}

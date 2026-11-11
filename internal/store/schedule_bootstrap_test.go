@@ -108,6 +108,40 @@ func TestBootstrapAgendaMovedComesBackWhenDue(t *testing.T) {
 	}
 }
 
+// A far-future occurrence moved into today keeps next_at at its seed instant
+// and reads at next_override_at, so the near-term bound must admit either.
+func TestBootstrapAgendaFarFutureMovedIntoToday(t *testing.T) {
+	t.Parallel()
+	f := newBootFixture(t)
+	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-12-20T09:00", Tz: "UTC"}, "2026-10-20T00:00:00Z")
+	until := rt("2026-10-29T15:00:00Z")
+	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-12-20T09:00:00Z"), State: "move", Until: &until, Actor: "user"}, "2026-10-29T08:00:00Z")
+
+	if set := f.read(t, false, time.UTC, "2026-10-29T08:00:00Z"); len(set.DueToday) != 1 || len(set.Carried) != 0 {
+		t.Fatalf("moved from December into today: due today %v, carried %v", refsOf(set.DueToday), refsOf(set.Carried))
+	}
+}
+
+// A deadline overridden into today, with the target still far ahead, must
+// reach the role membership check: next_at alone does not bound it.
+func TestBootstrapAgendaDeadlineOverrideIntoToday(t *testing.T) {
+	t.Parallel()
+	f := newBootFixture(t)
+	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "deadline_hard", Dtstart: "2026-12-20T09:00", Tz: "UTC"}, "2026-10-20T00:00:00Z")
+	sc, err := f.s.GetSchedule(f.ws.ID, item.ID)
+	if err != nil || sc == nil || sc.NextAt == nil || sc.NextWall == nil {
+		t.Fatalf("GetSchedule: %v %+v", err, sc)
+	}
+	key := OccurrenceKey(sc, *sc.NextAt, *sc.NextWall)
+	f.exec(t, `INSERT INTO schedule_occurrence_overrides (id, schedule_id, occurrence_key, role, value_at, created_at, updated_at) VALUES (?, ?, ?, 'deadline', ?, ?, ?)`,
+		"ovr-deadline-today", sc.ID, key, "2026-10-29T17:00:00Z", "2026-10-29T07:00:00Z", "2026-10-29T07:00:00Z")
+
+	set := f.read(t, false, time.UTC, "2026-10-29T08:00:00Z")
+	if len(set.DueToday)+len(set.Carried) != 1 {
+		t.Fatalf("deadline overridden into today: due today %v, carried %v", refsOf(set.DueToday), refsOf(set.Carried))
+	}
+}
+
 // Past 14 days an occurrence leaves the list and is only counted.
 func TestBootstrapAgendaStaleAfterFourteenDays(t *testing.T) {
 	t.Parallel()
@@ -267,9 +301,8 @@ func TestBootstrapAgendaOrder(t *testing.T) {
 	}
 }
 
-// A snooze after a move replaces the override but leaves the moved row: the
-// occurrence is listed at its grid time again, never hidden by the old move.
-func TestBootstrapAgendaSnoozeAfterMoveIsNotAMove(t *testing.T) {
+// A snooze changes reminder timing only; the sparse target override survives.
+func TestBootstrapAgendaSnoozePreservesMovedTarget(t *testing.T) {
 	t.Parallel()
 	f := newBootFixture(t)
 	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-20T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, "2026-10-20T00:00:00Z")
@@ -280,7 +313,7 @@ func TestBootstrapAgendaSnoozeAfterMoveIsNotAMove(t *testing.T) {
 	}
 	snooze := rt("2026-10-30T09:00:00Z")
 	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-10-20T09:00:00Z"), State: "snooze", Until: &snooze, Actor: "user"}, "2026-10-29T09:00:00Z")
-	if set := f.read(t, false, time.UTC, "2026-10-29T12:00:00Z"); len(set.Carried) != 1 {
-		t.Fatalf("after a snooze, carried = %d, want the occurrence at its grid time", len(set.Carried))
+	if set := f.read(t, false, time.UTC, "2026-10-29T12:00:00Z"); len(set.Carried)+len(set.DueToday) != 0 {
+		t.Fatalf("snooze resurrected the original target: %+v", set)
 	}
 }
