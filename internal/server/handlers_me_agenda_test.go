@@ -395,3 +395,111 @@ func TestMeAgendaNoAdmissionIsEmpty(t *testing.T) {
 		})
 	}
 }
+
+func TestAgendaActionableSectionsAndRoles(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	placed := w.item(t, "tasks", "Placed", `{"status":"open"}`, nil)
+	days, secs, behavior := 2, 0, "stays_owed"
+	_, err := w.srv.store.CreateCommitmentSchedule(w.ws.ID, placed.ID, *oneShot(), models.CommitmentRolesInput{DeadlineDays: &days, DeadlineSecs: &secs, DeadlineBehavior: &behavior})
+	if err != nil {
+		t.Fatal(err)
+	}
+	w.item(t, "tasks", "Undated", `{"status":"open"}`, nil)
+	for _, m := range []map[string]any{w.ok(t, w.owner, agendaWindow), meAgendaOK(t, w, w.owner, agendaWindow)} {
+		for _, key := range []string{"window_complete", "priority_list_complete", "waiting_on_complete", "no_date_complete"} {
+			if m[key] != true {
+				t.Errorf("%s=%v", key, m[key])
+			}
+		}
+		for _, key := range []string{"priority_list", "waiting_on", "no_date"} {
+			if _, ok := m[key].([]any); !ok {
+				t.Errorf("missing group %s: %v", key, m[key])
+			}
+		}
+		found := 0
+		for _, e := range entriesOf(m) {
+			if e["type"] != "schedule" {
+				continue
+			}
+			found++
+			if _, ok := e["kind"]; ok {
+				t.Error("kind remains")
+			}
+			roles, _ := e["roles"].(map[string]any)
+			if roles["target"] != "2031-03-10T09:00:00Z" || roles["deadline"] != "2031-03-12T09:00:00Z" {
+				t.Errorf("roles %v", roles)
+			}
+		}
+		if found != 1 {
+			t.Errorf("%d occurrences", found)
+		}
+	}
+}
+
+func TestAgendaWaitingGateScopeAndCommitmentRedaction(t *testing.T) {
+	f := newGraphHTTP(t, models.CommitmentRolesInput{}, models.CommitmentRolesInput{}, models.CommitmentRolesInput{})
+	f.link(0, 1, "target", "target", "")
+	if _, err := f.srv.store.CreateScheduleGate(f.ws.ID, f.items[2].ID, f.items[0].ID, f.access); err != nil {
+		t.Fatal(err)
+	}
+	guest := f.guest(1, 2)
+	// Make this an admitted guest with a restricted collection, with item grants
+	// for the readable children only.
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, guest.ID, "guest"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, guest.ID, "specific", []string{}); err != nil {
+		t.Fatal(err)
+	}
+	start, _ := time.Parse(time.RFC3339, f.dates[0])
+	query := "from=" + start.Add(-time.Hour).Format(time.RFC3339) + "&to=" + start.Add(5*24*time.Hour).Format(time.RFC3339)
+	for _, path := range []string{"/api/v1/workspaces/" + f.ws.Slug + "/agenda?" + query, "/api/v1/me/agenda?" + query, f.path(f.items[1]), f.path(f.items[2])} {
+		rr := f.as(f.token(guest, ""), "GET", path, nil)
+		if rr.Code != 200 {
+			t.Fatalf("%s: %d %s", path, rr.Code, rr.Body.String())
+		}
+		body := rr.Body.String()
+		if strings.Contains(body, f.items[0].ID) || strings.Contains(body, "parent_role") || strings.Contains(body, "\"offset\"") || strings.Contains(body, "blocker_item_id") {
+			t.Fatalf("hidden lineage: %s", body)
+		}
+		if strings.Contains(path, "/agenda?") {
+			var m map[string]any
+			_ = json.Unmarshal(rr.Body.Bytes(), &m)
+			waiting, _ := m["waiting_on"].([]any)
+			if len(waiting) != 1 {
+				t.Errorf("waiting_on: %s", body)
+			}
+			for _, e := range entriesOf(m) {
+				if e["item_ref"] == f.items[2].Ref {
+					t.Errorf("blocked on calendar: %v", e)
+				}
+			}
+		}
+	}
+}
+
+func TestAgendaPriorityIndependentOfWindowCap(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	for i := 0; i < agendaMaxEntries+1; i++ {
+		w.item(t, "tasks", fmt.Sprintf("Window %03d", i), `{"status":"open","due_date":"2031-03-10"}`, nil)
+	}
+	old := w.item(t, "tasks", "Owed outside window", `{"status":"open","priority":"urgent"}`, &models.ScheduleCreate{Kind: "deadline_hard", Dtstart: "2030-03-10T09:00", Tz: "UTC"})
+	m := w.ok(t, w.owner, agendaWindow)
+	if m["window_complete"] != false {
+		t.Errorf("window completeness %v", m["window_complete"])
+	}
+	rows, _ := m["priority_list"].([]any)
+	found := false
+	for _, v := range rows {
+		r := v.(map[string]any)
+		if r["item_ref"] == old.Ref {
+			found = true
+			if r["rank"] != "unranked" || r["reason"] == "" {
+				t.Errorf("priority %+v", r)
+			}
+		}
+	}
+	if !found && m["priority_list_complete"] != false {
+		t.Fatal("outstanding omitted without incomplete flag")
+	}
+}

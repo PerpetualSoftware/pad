@@ -125,3 +125,14 @@ func TestBootstrapMarkdownTitleStaysOnItsLine(t *testing.T) {
 		t.Errorf("title spilled across lines:\n%s", md)
 	}
 }
+
+func TestBootstrapAgendaLabelsFromRoles(t *testing.T) {
+	out := captureStdout(t, func() {
+		if err := printBootstrapMarkdown([]byte(`{"workspace":{"slug":"w","name":"W"},"user":{},"collections":[],"conventions":[],"roles":[],"playbooks":[],"agenda":{"tz":"UTC","today":"2026-11-05","due_today":[{"ref":"TASK-1","title":"Deadline","at":"2026-11-05T09:00:00Z","roles":{"target":"2026-11-05T09:00:00Z","deadline":"2026-11-05T12:00:00Z"}}]}}`)); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "deadline_hard") {
+		t.Fatalf("role label missing: %s", out)
+	}
+}

@@ -265,3 +265,13 @@ func TestAgendaNoResumeHintWhenNextFromIsTheSentEnd(t *testing.T) {
 		t.Errorf("the unexpanded schedule is not named:\n%s", out)
 	}
 }
+
+func TestAgendaLabelsFromRoles(t *testing.T) {
+	h, _ := recordingStub(func(c recordedCall) (int, string) {
+		return 200, `{"tz":"UTC","entries":[{"type":"schedule","at":"2026-11-05T09:00:00Z","day":"2026-11-05","state":"outstanding","item_ref":"TASK-1","item_title":"Appointment","roles":{"target":"2026-11-05T09:00:00Z","occupied_until":"2026-11-05T10:00:00Z"}}]}`
+	})
+	out, _, err := tzRun(t, tzCLIWithLocal(t, h, time.UTC), "item", "remind", "agenda")
+	if err != nil || !strings.Contains(out, "window") {
+		t.Fatalf("role label missing: %s %v", out, err)
+	}
+}

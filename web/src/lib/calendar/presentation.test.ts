@@ -79,3 +79,8 @@ describe('agenda timezone presentation', () => {
   for (const key of ['owner_username', 'workspace', 'collection', 'item_ref'] as const) expect(entryHref(row({ [key]: '' }))).toBeNull();
  });
 });
+
+it('uses roles for the hard-deadline move guard without kind', () => {
+ const roles = { target: '2026-03-08T04:00:00Z', deadline: '2026-03-09T04:00:00Z', earliest: null, occupied_until: null, deadline_behavior: 'stays_owed' as const, outcome: '', roles_origin: 'legacy_backfill' as const };
+ expect(canMove(row({ roles, roles_origin: 'legacy_backfill' } as Partial<AgendaEntry>))).toBe(false);
+});
