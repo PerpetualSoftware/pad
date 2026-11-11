@@ -1,17 +1,27 @@
-// Which keys send in the Chat composer (TASK-4099, DOC-4316 section 5, product 11-04).
-//
-// The browser cannot say whether an Enter came from a physical keyboard, so the
-// default follows the PRIMARY pointer: (pointer: fine) is a hardware-keyboard
-// setup (Enter sends, Shift+Enter adds a line); (pointer: coarse), or no way to
-// ask, is touch (Enter adds a line, the Send button sends). A person with a
-// keyboard on a tablet can say so with the Hardware keyboard setting, held in
-// memory for the tab only. A touch on the box, or a soft keyboard coming up,
-// drops back to touch mode, which also covers a 2-in-1 that reports a fine
-// pointer while it is used as a tablet. Nothing here ever sends by itself.
+import { browser } from '$app/env';
+import { uiStore } from '$lib/stores/ui.svelte';
+
+// Which keys send in the Chat composer (TASK-4099, DOC-4316 section 5).
+// The preference lives on the preferences page and is kept per device.
+// With no stored choice, the primary pointer decides: fine means Enter sends,
+// coarse means Enter adds a line. Touch on the box overrides the fine default,
+// but preserves a stored choice. While a soft keyboard is up, Enter adds a line
+// whatever is stored; when it goes down, a stored choice applies again. Turning
+// the setting off removes the stored choice, and the pointer default applies at once.
+// Nothing here ever sends by itself.
+const STORAGE_KEY = 'pad-chat-enter-sends';
+
+function readStored(): boolean {
+	if (!browser) return false;
+	try {
+		return localStorage.getItem(STORAGE_KEY) === 'on';
+	} catch {
+		return false;
+	}
+}
+
 class InputMode {
-	/** "Hardware keyboard: Enter sends" chosen in this tab. */
-	#chosen = $state(false);
-	/** The box was entered by touch (or a soft keyboard opened) since the last choice. */
+	#stored = $state(readStored());
 	#touched = $state(false);
 
 	#finePointer(): boolean {
@@ -20,29 +30,50 @@ class InputMode {
 
 	/** True when unmodified Enter sends. */
 	get hardware(): boolean {
-		return this.#chosen || (this.#finePointer() && !this.#touched);
+		if (uiStore.keyboardVisible) return false;
+		return this.#stored || (this.#finePointer() && !this.#touched);
 	}
 
-	/** True when the Hardware keyboard setting is worth showing: hardware is not already the default. */
+	/** The per-device choice, even while a soft keyboard overrides it for this page. */
+	get stored(): boolean {
+		return this.#stored;
+	}
+
+	/** Offer the setting when hardware is not the default, or a stored choice can be turned off. */
 	get offered(): boolean {
-		return !this.#finePointer() || this.#touched;
+		return !this.#finePointer() || this.#touched || this.#stored;
 	}
 
-	/** Touch on the box, or a soft keyboard: Enter stops sending until the person chooses hardware again. */
+	/** A tap overrides only the pointer default, preserving an explicit stored choice. */
 	enterByTouch(): void {
-		this.#touched = true;
-		this.#chosen = false;
+		if (!this.#stored) this.#touched = true;
 	}
 
-	/** The person's explicit choice. Off is a choice too: it holds even on a fine pointer. */
+	/**
+	 * A soft keyboard came up: with nothing stored, touch mode holds for this page. A stored
+	 * choice is paused by `hardware` reading uiStore.keyboardVisible directly, so no copy of
+	 * that state can outlive the composer that saw it.
+	 */
+	softKeyboardUp(): void {
+		this.#touched = true;
+	}
+
+	/** The person's explicit choice. Off removes it: the pointer default applies, now and after a reload. */
 	setHardware(on: boolean): void {
-		this.#chosen = on;
-		this.#touched = !on;
+		this.#stored = on;
+		this.#touched = false;
+		if (!browser) return;
+		try {
+			if (on) localStorage.setItem(STORAGE_KEY, 'on');
+			else localStorage.removeItem(STORAGE_KEY);
+		} catch {
+			// Storage blocked: the choice still holds for this page's lifetime.
+		}
 	}
 
 	/** Back to the pointer default (tests; nothing else needs it). */
 	reset(): void {
-		this.#chosen = false;
+		this.#stored = false;
 		this.#touched = false;
 	}
 }

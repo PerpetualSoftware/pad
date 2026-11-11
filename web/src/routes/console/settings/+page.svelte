@@ -14,6 +14,7 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import NotificationSettings from '$lib/components/settings/NotificationSettings.svelte';
+	import ChatEnterSendsToggle from '$lib/components/settings/ChatEnterSendsToggle.svelte';
 	import CharacterShortcutsToggle from '$lib/components/common/CharacterShortcutsToggle.svelte';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
 	import { describeTokenScopes } from '$lib/settings/tokenScopes';
@@ -887,6 +888,7 @@
 					<span>Show Chat</span>
 				</label>
 				<p class="plan-desc">Display preference only; messages are kept either way.</p>
+				<ChatEnterSendsToggle />
 				{#if chatSaving}<p role="status">Saving...</p>{/if}
 				{#if chatError}<p class="error" role="alert">{chatError}</p>{/if}
 			</div>

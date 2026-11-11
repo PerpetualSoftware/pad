@@ -83,6 +83,7 @@ beforeEach(() => {
 	unsealChatRecords();
 	signOutFailed();
 	sessionStorage.clear();
+	localStorage.clear();
 	inputMode.reset();
 	setPointer(true);
 });
@@ -147,6 +148,44 @@ describe('Send enable', () => {
 });
 
 describe('sending', () => {
+	it.each(['pointerdown', 'mousedown'])('prevents %s on Send from taking focus', async (event) => {
+		setPointer(false);
+		const { box, send } = mount();
+		await type(box, 'hello');
+		box.focus();
+		const press = event === 'pointerdown'
+			? new PointerEvent(event, { pointerType: 'touch', bubbles: true, cancelable: true })
+			: new MouseEvent(event, { bubbles: true, cancelable: true });
+		expect(send.dispatchEvent(press)).toBe(false);
+		expect(document.activeElement).toBe(box);
+	});
+
+	it('focuses the box synchronously when Send submits, before the send answers', async () => {
+		setPointer(false);
+		const { box, send, onSend } = mount();
+		onSend.mockImplementation(() => {
+			expect(document.activeElement).toBe(box);
+			return new Promise(() => {});
+		});
+		await type(box, 'hello');
+		send.focus();
+		expect(document.activeElement).toBe(send);
+		await fireEvent.click(send);
+		expect(onSend).toHaveBeenCalledTimes(1);
+		expect(document.activeElement).toBe(box);
+	});
+
+	it('leaves focus alone when it was outside the box (a closed touch keyboard stays closed)', async () => {
+		setPointer(false);
+		const { box, send, onSend } = mount();
+		await type(box, 'hello');
+		box.blur();
+		expect(document.activeElement).toBe(document.body);
+		await fireEvent.click(send);
+		expect(onSend).toHaveBeenCalledTimes(1);
+		expect(document.activeElement).toBe(document.body);
+	});
+
 	it('sends the text with the reply target, clears the box and the reply on success', async () => {
 		const { box, send, onSend, onClearReply } = mount({ replyTo: target });
 		await type(box, 'hello');
@@ -218,7 +257,7 @@ describe('keyboard', () => {
 
 	it('a soft keyboard coming up enters touch mode once, on the false to true edge', async () => {
 		setPointer(true);
-		const spy = vi.spyOn(inputMode, 'enterByTouch');
+		const spy = vi.spyOn(inputMode, 'softKeyboardUp');
 		mount();
 		expect(spy).not.toHaveBeenCalled();
 		kb.visible = true;
@@ -236,7 +275,7 @@ describe('keyboard', () => {
 
 	it('a keyboard already up when the composer mounts counts as touch', () => {
 		kb.visible = true;
-		const spy = vi.spyOn(inputMode, 'enterByTouch');
+		const spy = vi.spyOn(inputMode, 'softKeyboardUp');
 		mount();
 		flushSync();
 		expect(spy).toHaveBeenCalledTimes(1);
@@ -381,7 +420,9 @@ describe('Enter sends (TASK-4099)', () => {
 	it('with a fine pointer, Enter sends once and is not left to insert a newline', async () => {
 		const { box, onSend } = mount();
 		await type(box, 'hello');
+		box.focus();
 		const ev = key(box, {});
+		expect(document.activeElement).toBe(box);
 		expect(ev.defaultPrevented).toBe(true);
 		expect(onSend).toHaveBeenCalledTimes(1);
 		expect(onSend.mock.calls[0][0]).toBe('hello');
@@ -478,26 +519,28 @@ describe('Enter sends (TASK-4099)', () => {
 		expect(touch.container.querySelector('.key-hint')!.textContent).toContain('Enter adds a line');
 	});
 
-	describe('Hardware keyboard setting', () => {
-		it('is offered on a coarse pointer, and turning it on makes Enter send', async () => {
+	describe('per-device Enter-sends choice', () => {
+		it('a stored-on choice on a coarse pointer makes Enter send', async () => {
 			setPointer(false);
-			const { box, onSend, getByLabelText } = mount();
+			const { box, onSend } = mount();
 			await type(box, 'hello');
-			await fireEvent.click(getByLabelText('Hardware keyboard: Enter sends'));
+			inputMode.setHardware(true);
 			flushSync();
 			key(box, {});
 			expect(onSend).toHaveBeenCalledTimes(1);
 		});
 
-		it('is not offered on a fine pointer, where Enter already sends', () => {
-			const { queryByLabelText } = mount();
+		it('has no hardware checkbox in the composer on a coarse pointer', () => {
+			setPointer(false);
+			const { queryByLabelText, container } = mount();
 			expect(queryByLabelText('Hardware keyboard: Enter sends')).toBeNull();
+			expect(container.querySelector('label.hardware')).toBeNull();
 		});
 
-		it('is kept in memory for the tab: a fresh composer starts with it on', async () => {
+		it('a fresh composer uses the stored-on choice', async () => {
 			setPointer(false);
-			const first = mount();
-			await fireEvent.click(first.getByLabelText('Hardware keyboard: Enter sends'));
+			mount();
+			inputMode.setHardware(true);
 			cleanup();
 			const second = mount();
 			await type(second.box, 'hello');
@@ -505,7 +548,7 @@ describe('Enter sends (TASK-4099)', () => {
 			expect(second.onSend).toHaveBeenCalledTimes(1);
 		});
 
-		it('a touch on the box resets it to touch mode, even on a fine pointer (a 2-in-1 used as a tablet)', async () => {
+		it('with nothing stored, a touch on the box resets a fine pointer to touch mode', async () => {
 			const { box, onSend } = mount();
 			await type(box, 'hello');
 			box.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
@@ -523,22 +566,59 @@ describe('Enter sends (TASK-4099)', () => {
 			expect(onSend).toHaveBeenCalledTimes(1);
 		});
 
-		it('a touch clears an override that was on', async () => {
+		it('a touch on the box preserves a stored-on choice', async () => {
 			setPointer(false);
-			const { box, onSend, getByLabelText } = mount();
-			await fireEvent.click(getByLabelText('Hardware keyboard: Enter sends'));
+			const { box, onSend } = mount();
+			inputMode.setHardware(true);
 			box.dispatchEvent(new PointerEvent('pointerdown', { pointerType: 'touch', bubbles: true }));
 			flushSync();
 			await type(box, 'hello');
 			key(box, {});
-			expect(onSend).not.toHaveBeenCalled();
-			expect((getByLabelText('Hardware keyboard: Enter sends') as HTMLInputElement).checked).toBe(false);
+			expect(onSend).toHaveBeenCalledTimes(1);
+			expect(inputMode.hardware).toBe(true);
+			expect(localStorage.getItem('pad-chat-enter-sends')).toBe('on');
 		});
 
-		it('a soft keyboard coming up resets it to touch mode', async () => {
+		it('a soft keyboard drops a stored-on choice to touch while it is up and keeps storage', async () => {
+			setPointer(false);
+			inputMode.setHardware(true);
 			const { box, onSend } = mount();
 			await type(box, 'hello');
 			kb.visible = true;
+			flushSync();
+			await tick();
+			key(box, {});
+			expect(onSend).not.toHaveBeenCalled();
+			expect(localStorage.getItem('pad-chat-enter-sends')).toBe('on');
+			kb.visible = false;
+			flushSync();
+			await tick();
+			key(box, {});
+			expect(onSend).toHaveBeenCalledTimes(1);
+		});
+
+		it('a composer unmounted while the keyboard was up leaves no stuck touch mode for the next one', async () => {
+			setPointer(false);
+			inputMode.setHardware(true);
+			mount();
+			kb.visible = true;
+			flushSync();
+			cleanup();
+			kb.visible = false;
+			flushSync();
+			const { box, onSend } = mount();
+			await type(box, 'hello');
+			key(box, {});
+			expect(onSend).toHaveBeenCalledTimes(1);
+		});
+
+		it('with nothing stored, a soft keyboard going down leaves touch mode in force', async () => {
+			setPointer(true);
+			const { box, onSend } = mount();
+			await type(box, 'hello');
+			kb.visible = true;
+			flushSync();
+			kb.visible = false;
 			flushSync();
 			await tick();
 			key(box, {});
