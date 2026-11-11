@@ -46,6 +46,10 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		zone, note = usertz.Zone{Name: tz, Loc: loc, Set: true}, ""
 	}
 	run := s.newAgendaRead(from, to, zone, note)
+	run.recipient, run.audience = user.ID, "human"
+	if actor, _ := actorFromRequest(r); actor == "agent" {
+		run.audience = "agent"
+	}
 	admitted, err := s.needsAdmittedWorkspaces(r, user)
 	if err != nil {
 		writeInternalError(w, err)
@@ -66,6 +70,13 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	for i, d := range days {
 		counts[i].Day = d
 	}
+	// Save the admitted scope and owner once for the later group pass.
+	type groupWorkspace struct {
+		workspace models.Workspace
+		scope     store.PendingReminderScope
+		owner     string
+	}
+	var groupWorkspaces []groupWorkspace
 	countRows, countsCut := 0, false
 	for _, ws := range admitted {
 		elig := &needsEligibility{s: s, wsID: ws.ID, cache: map[string]*needsVisibility{}}
@@ -137,11 +148,24 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			e := &run.response.Entries[i]
 			e.Workspace, e.WorkspaceName, e.OwnerUsername = ws.Slug, ws.Name, owner
 		}
+		groupWorkspaces = append(groupWorkspaces, groupWorkspace{ws, scope, owner})
 		for i := unavailableStart; i < len(run.response.Unavailable); i++ {
 			run.response.Unavailable[i].Workspace, run.response.Unavailable[i].OwnerUsername = ws.Slug, owner
 		}
 		for i := unexpandedStart; i < len(run.response.Unexpanded); i++ {
 			run.response.Unexpanded[i].Workspace, run.response.Unexpanded[i].OwnerUsername = ws.Slug, owner
+		}
+	}
+	// Every workspace's window, counts and events precede actionable work.
+	// Group budget cuts affect only the group completeness flags.
+	for _, group := range groupWorkspaces {
+		ws := group.workspace
+		priorityStart, waitingStart, noDateStart := len(run.response.PriorityList), len(run.response.WaitingOn), len(run.response.NoDate)
+		s.appendAgendaWork(run, ws.ID, group.scope)
+		for _, rows := range [][]agendaEntry{run.response.PriorityList[priorityStart:], run.response.WaitingOn[waitingStart:], run.response.NoDate[noDateStart:]} {
+			for i := range rows {
+				rows[i].Workspace, rows[i].WorkspaceName, rows[i].OwnerUsername = ws.Slug, ws.Name, group.owner
+			}
 		}
 	}
 	if countsCut {
@@ -200,6 +224,7 @@ func (s *Server) agendaGroupWorkspaces(w http.ResponseWriter, r *http.Request, u
 func (s *Server) agendaExpired(run *agendaRead) bool {
 	if s.agendaNow().After(run.deadline) {
 		run.response.Truncated, run.setCut = true, true
+		run.response.PriorityListComplete, run.response.WaitingOnComplete, run.response.NoDateComplete = false, false, false
 		return true
 	}
 	return false

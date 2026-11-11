@@ -7,13 +7,13 @@ import (
 	"regexp"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The agenda's wire bytes for a fixed world, captured before the schedule half
-// moved into a helper shared with the calendar (TASK-4239). Schedule ids are
-// random, so they are masked; everything else is compared as served.
+// The role-aware agenda wire contract for a fixed world. Random schedule IDs
+// are masked; every other byte is compared as served.
 
 var agendaScheduleIDRe = regexp.MustCompile(`"schedule_id":"[^"]+"`)
 
@@ -33,6 +33,7 @@ func agendaBytes(t *testing.T, w *agendaWorld, query string) string {
 func TestAgendaCharacterization(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks", "ideas")
+	w.srv.agendaClock = func() time.Time { return rtServer("2031-03-01T12:00:00Z") }
 	w.item(t, "tasks", "CH sched", `{"status":"open"}`, oneShot())
 	w.item(t, "ideas", "CH weekly", `{"status":"open"}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-03T14:30", Tz: "UTC", Rrule: "FREQ=DAILY;COUNT=40"})
 	w.item(t, "tasks", "CH dated", `{"status":"open","due_date":"2031-03-10","end_date":"2031-03-11"}`, nil)
@@ -56,4 +57,4 @@ func TestAgendaCharacterization(t *testing.T) {
 	}
 }
 
-const characterizationAgendaWant = `{"from":"2031-03-10T00:00:00Z","to":"2031-03-11T00:00:00Z","tz":"America/New_York","entries":[{"type":"date","at":"2031-03-10T00:00:00-04:00","day":"2031-03-10","item_ref":"P0-3","item_title":"CH dated","collection":"tasks","field":"due_date","date":"2031-03-10"},{"type":"schedule","at":"2031-03-10T05:00:00-04:00","day":"2031-03-10","wall":"2031-03-10T09:00:00","floating":false,"state":"outstanding","item_ref":"P0-1","item_title":"CH sched","collection":"tasks","kind":"check","roles_origin":"legacy_backfill","audience":"both","schedule_id":"<id>"},{"type":"schedule","at":"2031-03-10T10:30:00-04:00","day":"2031-03-10","wall":"2031-03-10T14:30:00","floating":false,"state":"scheduled","item_ref":"P1-2","item_title":"CH weekly","collection":"ideas","kind":"check","roles_origin":"legacy_backfill","audience":"both","schedule_id":"<id>"}]}`
+const characterizationAgendaWant = `{"window_complete":true,"priority_list":[{"type":"schedule","at":"2031-03-03T09:30:00-05:00","day":"2031-03-03","wall":"2031-03-03T14:30:00","state":"outstanding","item_ref":"P1-2","item_title":"CH weekly","collection":"ideas","roles":{"target":"2031-03-03T14:30:00Z","earliest":null,"deadline":null,"deadline_behavior":null,"occupied_until":null,"outcome":"","roles_origin":"legacy_backfill"},"occurrence_key":"2031-03-03T14:30:00Z|2031-03-03T14:30:00","rank":"unranked","reason":"outstanding","roles_origin":"legacy_backfill","schedule_id":"<id>"},{"type":"schedule","at":"2031-03-10T05:00:00-04:00","day":"2031-03-10","wall":"2031-03-10T09:00:00","state":"outstanding","item_ref":"P0-1","item_title":"CH sched","collection":"tasks","roles":{"target":"2031-03-10T09:00:00Z","earliest":null,"deadline":null,"deadline_behavior":null,"occupied_until":null,"outcome":"","roles_origin":"legacy_backfill"},"occurrence_key":"2031-03-10T09:00:00Z|2031-03-10T09:00:00","rank":"unranked","reason":"outstanding","roles_origin":"legacy_backfill","schedule_id":"<id>"}],"priority_list_complete":true,"waiting_on":[],"waiting_on_complete":true,"no_date":[],"no_date_complete":true,"no_date_scope":"personal_only","from":"2031-03-10T00:00:00Z","to":"2031-03-11T00:00:00Z","tz":"America/New_York","entries":[{"type":"date","at":"2031-03-10T00:00:00-04:00","day":"2031-03-10","item_ref":"P0-3","item_title":"CH dated","collection":"tasks","field":"due_date","date":"2031-03-10"},{"type":"schedule","at":"2031-03-10T05:00:00-04:00","day":"2031-03-10","wall":"2031-03-10T09:00:00","floating":false,"state":"outstanding","item_ref":"P0-1","item_title":"CH sched","collection":"tasks","roles":{"target":"2031-03-10T09:00:00Z","earliest":null,"deadline":null,"deadline_behavior":null,"occupied_until":null,"outcome":"","roles_origin":"legacy_backfill"},"occurrence_key":"2031-03-10T09:00:00Z|2031-03-10T09:00:00","roles_origin":"legacy_backfill","audience":"both","schedule_id":"<id>"},{"type":"schedule","at":"2031-03-10T10:30:00-04:00","day":"2031-03-10","wall":"2031-03-10T14:30:00","floating":false,"state":"scheduled","item_ref":"P1-2","item_title":"CH weekly","collection":"ideas","roles":{"target":"2031-03-10T14:30:00Z","earliest":null,"deadline":null,"deadline_behavior":null,"occupied_until":null,"outcome":"","roles_origin":"legacy_backfill"},"occurrence_key":"2031-03-10T14:30:00Z|2031-03-10T14:30:00","roles_origin":"legacy_backfill","audience":"both","schedule_id":"<id>"}]}`

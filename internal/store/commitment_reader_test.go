@@ -47,3 +47,42 @@ func TestGetCommitmentMoveAndAssigneeJournal(t *testing.T) {
 		t.Fatalf("order %+v", got.Journal)
 	}
 }
+
+func TestCommitmentJournalSameSecondHistoryAndExport(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := f.nativeCommit(t)
+	for _, row := range []struct{ id, at string }{{"z-exact", "2026-10-27T00:00:00Z"}, {"b-half", "2026-10-27T00:00:00.5Z"}, {"a-half", "2026-10-27T00:00:00.500Z"}, {"c-later", "2026-10-27T00:00:00.51Z"}} {
+		f.exec(t, `INSERT INTO schedule_changes(id,workspace_id,item_id,schedule_id,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,recorded_at) VALUES(?,?,?,?,'move','target','{}','{}','user','move','user',?,?)`, row.id, f.ws.ID, f.item.ID, sc.ID, row.id, row.at)
+	}
+	got, err := f.s.GetCommitment(f.ws.ID, f.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"z-exact", "a-half", "b-half", "c-later"}
+	if len(got.Journal) != len(want) {
+		t.Fatalf("journal %+v", got.Journal)
+	}
+	for i, id := range want {
+		if got.Journal[i].ID != id {
+			t.Fatalf("history order: %+v", got.Journal)
+		}
+	}
+	bundle, err := f.s.ExportWorkspace(f.ws.Slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, r := range bundle.ScheduleChanges {
+		if r.ChangeType == "move" {
+			ids = append(ids, r.ID)
+		}
+	}
+	if len(ids) != len(want) {
+		t.Fatalf("export changes %+v", bundle.ScheduleChanges)
+	}
+	for i, id := range want {
+		if ids[i] != id {
+			t.Fatalf("export order: %v", ids)
+		}
+	}
+}

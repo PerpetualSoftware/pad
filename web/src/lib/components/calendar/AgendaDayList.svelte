@@ -25,9 +25,7 @@
 						{#if href}<a {href}>{entry.item_title}</a>{:else}<span>{entry.item_title}</span>{/if}
 					</div>
 					<div class="meta"><span>{entry.workspace_name} / {entry.collection}</span><span>{entry.item_ref}</span></div>
-					{#if entry.effective_at && entry.type === 'schedule'}
-						<p class="note">Moved to {localTime(entry.effective_at, zone)}</p>
-					{/if}
+
 				</div>
 				<div class="chips">
 					{#each entryChips(entry) as chip, index (index)}
@@ -55,7 +53,6 @@
 	.meta { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-1); font-size: 0.8rem; color: var(--text-muted); }
 	.chips { display: flex; flex-wrap: wrap; gap: var(--space-1); max-width: 16rem; }
 	.chip-text { color: var(--text-primary); }
-	.note { margin: var(--space-1) 0 0; font-size: 0.85rem; color: var(--text-secondary); }
 	@media (max-width: 767px) {
 		.agenda-row { flex-direction: column; gap: var(--space-2); padding: var(--space-3) 0; }
 		.time { flex: none; order: 1; }

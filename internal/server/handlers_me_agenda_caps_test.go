@@ -17,7 +17,9 @@ func TestMeAgendaBudgetIsRequestWide(t *testing.T) {
 	calls := 0
 	w.srv.agendaClock = func() time.Time {
 		calls++
-		if calls > 5 {
+		// Allow the first schedule's internal deadline checks, then expire
+		// the shared request budget before the next workspace.
+		if calls > 8 {
 			return clock.Add(2 * time.Second)
 		}
 		return clock

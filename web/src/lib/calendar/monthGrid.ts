@@ -84,7 +84,7 @@ export function calendarError(error: unknown): string {
 export interface CalendarRow {
  key: string; day: string; ref: string; target: string; title: string; allDay: boolean;
  item?: Item; at?: string; label?: string; terminal?: string; abandoned?: boolean; state?: string; overdue?: boolean;
- start?: string; end?: string; continues?: boolean; effectiveAt?: string; missedCount?: number; stale?: boolean;
+ start?: string; end?: string; continues?: boolean; missedCount?: number; stale?: boolean;
 }
 /** Keep the server's day placement; expand only the supplied inclusive item span. Rows sort by day, all-day first, items before schedule entries within a day (as the API places them), then stable server order. */
 export function calendarRows(data: CalendarResponse, collection: Collection, field: string, month?: string): CalendarRow[] {
@@ -110,7 +110,7 @@ export function calendarRows(data: CalendarResponse, collection: Collection, fie
  for (const [index, entry] of data.entries.entries()) {
   if (days && !days.includes(entry.day)) continue;
   rows.push({key:`schedule:${entry.schedule_id ?? index}:${entry.at}:${index}`,day:entry.day,ref:entry.item_ref,target:entry.item_ref,title:entry.item_title,
-   allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,effectiveAt:entry.effective_at,missedCount:entry.missed_count,stale:entry.stale});
+   allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,missedCount:entry.missed_count,stale:entry.stale});
  }
  return rows.sort((a,b) => a.day.localeCompare(b.day) || Number(b.allDay) - Number(a.allDay));
 }

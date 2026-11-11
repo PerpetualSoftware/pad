@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -160,6 +161,10 @@ func TestAgendaCutOnADatedEntryHasNoNextFrom(t *testing.T) {
 func TestAgendaFiftySchedulesStayWithinTheBoundAndResume(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
+	// Exercise the entry cap independently of elapsed test-runner time.
+	// Deadline cuts are covered with the injectable clock in their own tests.
+	w.srv.agendaClock = func() time.Time { return meAgendaNow }
+
 	for i := 0; i < 50; i++ {
 		w.item(t, "tasks", fmt.Sprintf("AG hourly %02d", i), `{"status":"open"}`, hourly())
 	}

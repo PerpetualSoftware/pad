@@ -654,3 +654,49 @@ func TestAgendaAppTokenCeilingMatchesItemList(t *testing.T) {
 		t.Errorf("ceiling on tasks: agenda %q, list %q, want both AG tasks dated,AG tasks sched", a, l)
 	}
 }
+
+func TestAgendaEachSectionReportsItsOwnCap(t *testing.T) {
+	for _, section := range []string{"priority_list", "waiting_on", "no_date"} {
+		t.Run(section, func(t *testing.T) {
+			rows := make([]map[string]any, agendaMaxEntries+1)
+			for i := range rows {
+				rows[i] = map[string]any{"item_ref": fmt.Sprintf("TASK-%04d", i), "rank": "normal", "reason": "outstanding"}
+			}
+			raw, _ := json.Marshal(map[string]any{section: rows, section + "_complete": true, "window_complete": true, "entries": []any{}})
+			run := &agendaRead{from: rtServer("2031-03-10T00:00:00Z"), to: rtServer("2031-03-11T00:00:00Z")}
+			if err := json.Unmarshal(raw, &run.response); err != nil {
+				t.Fatal(err)
+			}
+			run.finish()
+			b, _ := json.Marshal(run.response)
+			var got map[string]any
+			_ = json.Unmarshal(b, &got)
+			if got[section+"_complete"] != false {
+				t.Fatalf("section cut is silent: %s", b)
+			}
+			kept, _ := got[section].([]any)
+			if len(kept) != agendaMaxEntries {
+				t.Fatalf("kept %d", len(kept))
+			}
+		})
+	}
+}
+
+func rtServer(s string) time.Time { t, _ := time.Parse(time.RFC3339, s); return t }
+
+func TestAgendaPriorityStableIDAfterDeadlineAndTarget(t *testing.T) {
+	roles := func(target, deadline string) *models.CommitmentRoles {
+		return &models.CommitmentRoles{Target: &target, Deadline: &deadline}
+	}
+	resp := agendaResponse{PriorityList: []agendaEntry{
+		{ItemRef: "C", Rank: "normal", Roles: roles("2031-03-10T12:00:00Z", "2031-03-11T12:00:00Z"), subKey: "c"},
+		{ItemRef: "B", Rank: "normal", Roles: roles("2031-03-10T09:00:00Z", "2031-03-11T12:00:00Z"), subKey: "b"},
+		{ItemRef: "A", Rank: "normal", Roles: roles("2031-03-10T09:00:00Z", "2031-03-11T12:00:00Z"), subKey: "a"},
+	}}
+	finishAgendaWork(&resp)
+	for i, want := range []string{"A", "B", "C"} {
+		if resp.PriorityList[i].ItemRef != want {
+			t.Fatalf("priority order: %+v", resp.PriorityList)
+		}
+	}
+}

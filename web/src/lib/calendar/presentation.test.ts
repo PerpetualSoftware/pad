@@ -67,10 +67,10 @@ describe('agenda timezone presentation', () => {
   expect(entryChips(row({ type: type as AgendaEntry['type'] })).map(c => c.text)).toEqual([label]);
  });
  it('allows Move on native hard deadlines and fails closed for other hard rows', () => {
-  expect(canMove(row({ kind: 'deadline_soft' }))).toBe(true);
-  expect(canMove(row({ kind: 'deadline_hard', roles_origin: 'native' }))).toBe(true);
-  expect(canMove(row({ kind: 'deadline_hard', roles_origin: 'legacy_backfill' }))).toBe(false);
-  expect(canMove(row({ kind: 'deadline_hard' }))).toBe(false);
+  expect(canMove(row({ roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' } }))).toBe(true);
+  expect(canMove(row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, roles_origin: 'native' }))).toBe(true);
+  expect(canMove(row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, roles_origin: 'legacy_backfill' }))).toBe(false);
+  expect(canMove(row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' } }))).toBe(false);
   expect(canMove(row({ state: 'scheduled' }))).toBe(false);
   expect(canMove(row({ type: 'date' }))).toBe(false);
  });
@@ -78,4 +78,9 @@ describe('agenda timezone presentation', () => {
   expect(entryHref(row())).toBe('/alice/work/tasks/EX-30');
   for (const key of ['owner_username', 'workspace', 'collection', 'item_ref'] as const) expect(entryHref(row({ [key]: '' }))).toBeNull();
  });
+});
+
+it('uses roles for the hard-deadline move guard without kind', () => {
+ const roles = { target: '2026-03-08T04:00:00Z', deadline: '2026-03-09T04:00:00Z', earliest: null, occupied_until: null, deadline_behavior: 'stays_owed' as const, outcome: '', roles_origin: 'legacy_backfill' as const };
+ expect(canMove(row({ roles, roles_origin: 'legacy_backfill' } as Partial<AgendaEntry>))).toBe(false);
 });

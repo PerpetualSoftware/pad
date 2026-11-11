@@ -551,29 +551,29 @@ confirmation unless --yes is given.`,
 // ---- agenda ----
 
 type agendaEntry struct {
-	Type        string `json:"type"`
-	At          string `json:"at"`
-	Day         string `json:"day"`
-	Date        string `json:"date"`
-	AllDay      bool   `json:"all_day"`
-	State       string `json:"state"`
-	ItemRef     string `json:"item_ref"`
-	ItemTitle   string `json:"item_title"`
-	Kind        string `json:"kind"`
-	Field       string `json:"field"`
-	Overdue     bool   `json:"overdue"`
-	MissedCount int    `json:"missed_count"`
-	Stale       bool   `json:"stale"`
+	Type        string                 `json:"type"`
+	At          string                 `json:"at"`
+	Day         string                 `json:"day"`
+	Date        string                 `json:"date"`
+	AllDay      bool                   `json:"all_day"`
+	State       string                 `json:"state"`
+	ItemRef     string                 `json:"item_ref"`
+	ItemTitle   string                 `json:"item_title"`
+	Roles       models.CommitmentRoles `json:"roles"`
+	Field       string                 `json:"field"`
+	Overdue     bool                   `json:"overdue"`
+	MissedCount int                    `json:"missed_count"`
+	Stale       bool                   `json:"stale"`
 }
 
 type agendaResponse struct {
-	TimezoneNote string        `json:"timezone_note"`
-	Entries      []agendaEntry `json:"entries"`
-	Truncated    bool          `json:"truncated"`
-	NextFrom     string        `json:"next_from"`
-	Unexpanded   []struct {
+	WindowComplete bool          `json:"window_complete"`
+	TimezoneNote   string        `json:"timezone_note"`
+	Entries        []agendaEntry `json:"entries"`
+	Truncated      bool          `json:"truncated"`
+	NextFrom       string        `json:"next_from"`
+	Unexpanded     []struct {
 		ItemRef  string `json:"item_ref"`
-		Kind     string `json:"kind"`
 		Audience string `json:"audience"`
 		Reason   string `json:"reason"`
 	} `json:"unexpanded"`
@@ -653,6 +653,10 @@ today in your zone) and runs --days days (default 7) or to --to. It is capped at
 92 days. --tz names the zone floating schedules are read in and times are shown in.
 
 When the list is cut short, the last line says where to continue.
+The workspace JSON marker no_date_scope: "personal_only" means undated work is
+not listed here; it never means "nothing undated". GET /me/agenda lists the caller's
+own work in priority_list, waiting_on and no_date: assigned to the caller, or
+created by the caller when nobody is assigned, for their human/agent audience.
 
 --stale lists instead what 'pad bootstrap' collapses into "stale: K items": your
 occurrences unresolved for more than 14 days, oldest first. It takes no window;
@@ -709,12 +713,12 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 }
 
 type staleAgendaRow struct {
-	Ref         string `json:"ref"`
-	Title       string `json:"title"`
-	At          string `json:"at"`
-	AllDay      bool   `json:"all_day"`
-	Kind        string `json:"kind"`
-	MissedCount int    `json:"missed_count"`
+	Ref         string                 `json:"ref"`
+	Title       string                 `json:"title"`
+	At          string                 `json:"at"`
+	AllDay      bool                   `json:"all_day"`
+	Roles       models.CommitmentRoles `json:"roles"`
+	MissedCount int                    `json:"missed_count"`
 }
 
 type staleAgendaAnswer struct {
@@ -761,9 +765,10 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 	}
 	out := cmd.OutOrStdout()
 	if len(resp.Entries) == 0 {
-		fmt.Fprintln(out, "Nothing has been unresolved for more than 14 days.")
 		if resp.Truncated {
 			fmt.Fprintln(out, "list incomplete: the server read only the first 1000 schedules")
+		} else {
+			fmt.Fprintln(out, "Nothing has been unresolved for more than 14 days.")
 		}
 		return nil
 	}
@@ -786,7 +791,7 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 				due = t.Format("2006-01-02") + " all day"
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), e.Kind, e.MissedCount)
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil), e.MissedCount)
 	}
 	_ = w.Flush()
 	if resp.Truncated {
@@ -807,7 +812,11 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, end time.Time, tz string) {
 	out := cmd.OutOrStdout()
 	if len(resp.Entries) == 0 {
-		fmt.Fprintln(out, "Nothing on the agenda in this window.")
+		if resp.WindowComplete {
+			fmt.Fprintln(out, "Nothing on the agenda in this window.")
+		} else {
+			fmt.Fprintln(out, "Agenda window is incomplete; no entries returned.")
+		}
 	} else {
 		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "DAY\tTIME\tSTATE\tREF\tTITLE\tKIND\tFLAGS")
@@ -827,7 +836,7 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 			if allDay {
 				clock = "all day"
 			}
-			state, kind := e.State, e.Kind
+			state, kind := e.State, schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil)
 			if e.Type == "date" {
 				state, kind = "dated", e.Field
 			}
@@ -862,7 +871,7 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 		}
 	}
 	for _, u := range resp.Unexpanded {
-		fmt.Fprintf(out, "%s  %s  %s  %s\n", u.ItemRef, u.Kind, u.Audience, u.Reason)
+		fmt.Fprintf(out, "%s  %s  %s\n", u.ItemRef, u.Audience, u.Reason)
 	}
 	for _, u := range resp.Unavailable {
 		fmt.Fprintf(out, "%s  unavailable  %s\n", u.ItemRef, u.Code)
