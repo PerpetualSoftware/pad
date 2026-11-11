@@ -12,8 +12,8 @@ identityGateSuite({
 	table: {
 		asyncFunctions: {
 			load: {
-				reviewed: '37628f9f288b',
-				why: 'setCurrent and both fetches issued together at entry, under the identity captured there (TASK-2229); dashLoadSeq and identityHeld before every commit on both arms; the finally clears loading on the sequence alone, deliberately (#1378)',
+				reviewed: '720869e473e2',
+				why: 'setCurrent and both fetches issued together at entry, under the identity captured there (TASK-2229); dashLoadSeq and identityHeld before every commit on both arms, notFoundSlug included (BUG-4472); the finally clears loading on the sequence alone, deliberately (#1378)',
 			},
 		},
 		nested: [],

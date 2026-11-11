@@ -50,6 +50,14 @@
 	// Stamping the data's own slug lets consumers (the aha-highlight effect) gate
 	// on data that actually belongs to the current route.
 	let dashboardSlug = $state<string | null>(null);
+	// The workspace slug whose dashboard load answered 404 `not_found`: the
+	// workspace does not exist, or the signed-in user cannot open it (the
+	// access middleware answers both alike). Terminal, so no Retry; the page
+	// says so and links to the caller's workspaces instead, because nothing
+	// else on the page may offer a way out (on mobile the bottom nav needs a
+	// resolved workspace) (BUG-4472). Stamped with the slug, like
+	// `dashboardSlug`, so it never answers for a different route.
+	let notFoundSlug = $state<string | null>(null);
 	let collections = $state<Collection[]>([]);
 
 	// Memoised so the effects below re-run on a change of USER and not on every
@@ -352,6 +360,7 @@
 			dashboardSlug = null;
 			collections = [];
 			dashError = null;
+			notFoundSlug = null;
 			// The aha-highlight track goes with the data it describes. It is keyed on `dashboardSlug`, which does NOT change
 			// on a same-route identity change, so the previous user's
 			// `onboarding: true` was still standing when the new user's first
@@ -489,6 +498,7 @@
 			// A clean load clears any prior transient error so a recovered
 			// dashboard renders normally rather than pinning the retry state.
 			dashError = null;
+			notFoundSlug = null;
 		} catch (err) {
 			// Superseded, or the previous session's failure — don't commit this
 			// stale outcome. The identity half matters here as much as on the
@@ -497,9 +507,9 @@
 			if (seq !== dashLoadSeq || !identityHeld(epochAtEntry)) return;
 			// A genuine not-found (nonexistent workspace → 404 `not_found`
 			// from the workspace-access middleware) is terminal, not
-			// transient — fall through to the "No dashboard data available."
-			// empty state rather than a Retry loop that can never succeed
-			// (BUG-2025). Any OTHER thrown error (network / 5xx / 429) is
+			// transient — show the "workspace not found" state, with a link to
+			// the caller's workspaces, rather than a Retry loop that can never
+			// succeed (BUG-2025, BUG-4472). Any OTHER thrown error (network / 5xx / 429) is
 			// transient: surface an error + Retry state instead of the flat
 			// empty state. A silent poll that fails while `dashboard`
 			// already holds data for the CURRENT workspace leaves it in
@@ -509,13 +519,16 @@
 			// masks a failed load of the new one).
 			if (err instanceof PadApiError && err.code === 'not_found') {
 				// Terminal: drop any stale dashboard for this route so the
-				// "No dashboard data available." empty state shows instead
-				// of a workspace that's since been deleted/revoked lingering
-				// on screen.
+				// not-found state shows instead of a workspace that's since
+				// been deleted/revoked lingering on screen.
 				dashboard = null;
 				dashboardSlug = null;
 				dashError = null;
+				notFoundSlug = slug;
 			} else {
+				// `notFoundSlug` is left as it is: a transient failure says
+				// nothing new about access, so a poll blip must not turn the
+				// not-found state into a Retry that can only 404 again.
 				dashError = err instanceof Error ? err : new Error('Failed to load dashboard');
 			}
 		} finally {
@@ -1023,6 +1036,18 @@
 			</section>
 		{/if}
 		{/if}
+	{:else if wsSlug && notFoundSlug === wsSlug}
+		<!-- 404 `not_found`: the workspace doesn't exist or this account can't
+		     open it (BUG-4472). Terminal, so no Retry; the link is the way out,
+		     since on mobile no other chrome renders without a workspace. -->
+		<div class="dash-not-found">
+			<div class="dash-error-icon">🔒</div>
+			<h2>Workspace not found</h2>
+			<p>
+				This workspace doesn't exist, or {authStore.user?.email ?? 'your account'} doesn't have access to it.
+			</p>
+			<a class="dash-not-found-link" href="/console">Go to your workspaces</a>
+		</div>
 	{:else if dashError}
 		<!-- Transient dashboard load failure (network / 5xx / 429) —
 		     NOT an empty workspace (BUG-2025). Offer a Retry instead of
@@ -1094,8 +1119,10 @@
 		padding-top: 20vh;
 		color: var(--text-muted);
 	}
-	/* Transient dashboard load failure state (BUG-2025). */
-	.dash-error {
+	/* Transient dashboard load failure state (BUG-2025), and the
+	   not-found state (BUG-4472), which shares its layout. */
+	.dash-error,
+	.dash-not-found {
 		text-align: center;
 		padding-top: 15vh;
 		color: var(--text-secondary);
@@ -1107,14 +1134,37 @@
 	.dash-error-icon {
 		font-size: 2em;
 	}
-	.dash-error h2 {
+	.dash-error h2,
+	.dash-not-found h2 {
 		font-size: 1.2em;
 		font-weight: 700;
 		color: var(--text-primary);
 	}
-	.dash-error p {
+	.dash-error p,
+	.dash-not-found p {
 		color: var(--text-muted);
 		max-width: 32em;
+	}
+	/* Matches Button's primary variant; Button renders a <button>, and this
+	   is a navigation, so it stays a real link. */
+	.dash-not-found-link {
+		display: inline-flex;
+		align-items: center;
+		padding: 6px 14px;
+		font-size: 13px;
+		line-height: 1.5;
+		border-radius: var(--radius);
+		background: var(--accent-primary-strong, var(--accent-primary));
+		color: var(--text-on-accent);
+		font-weight: 600;
+		text-decoration: none;
+	}
+	.dash-not-found-link:hover {
+		filter: brightness(1.08);
+	}
+	.dash-not-found-link:focus-visible {
+		outline: 2px solid color-mix(in srgb, var(--accent-primary) 65%, transparent);
+		outline-offset: 2px;
 	}
 
 	/* ── Header ─────────────────────────────────────────────────────────── */
