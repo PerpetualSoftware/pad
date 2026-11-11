@@ -155,7 +155,7 @@ describe('the dashboard fences every async commit point', () => {
 				name: 'the keyed load effect',
 				body: loadEffect(),
 				call: /\bload\(wsSlug\)/,
-				allowedWrites: ['dashboard', 'dashboardSlug', 'collections', 'dashError', 'onboardingTrack', 'justCreatedSlugs', 'lastLoadKey'],
+				allowedWrites: ['dashboard', 'dashboardSlug', 'collections', 'dashError', 'notFoundSlug', 'onboardingTrack', 'justCreatedSlugs', 'lastLoadKey'],
 			},
 			{ name: 'the 30 s poll', body: timerBody('setInterval'), call: /\bload\(wsSlug, true\)/, allowedWrites: [] },
 			// BUG-3447: an item or collection event while onboarding re-arms this
@@ -245,7 +245,7 @@ describe('the dashboard fences every async commit point', () => {
 		// The commit points, named. `loading` is deliberately absent — the
 		// finally arm is seq-gated and NOT identity-gated, the library's
 		// asymmetry (#1378): pinning the skeleton for ever is the worse failure.
-		const COMMITS = ['dashboard', 'dashboardSlug', 'collections', 'dashError'];
+		const COMMITS = ['dashboard', 'dashboardSlug', 'collections', 'dashError', 'notFoundSlug'];
 		const body = loadBody();
 		const offenders: string[] = [];
 		for (const m of body.matchAll(new RegExp(`\\b(${COMMITS.join('|')})\\s*=(?!=)`, 'g'))) {
@@ -395,7 +395,7 @@ describe('the dashboard fences every async commit point', () => {
 		const load = body.search(/\bload\(wsSlug\)/);
 		expect(clear, 'the load effect no longer drops the board before reloading').toBeGreaterThan(-1);
 		expect(clear, 'the board is dropped AFTER the reload is dispatched').toBeLessThan(load);
-		for (const v of ['dashboardSlug = null', 'collections = []', 'dashError = null', 'onboardingTrack = null']) {
+		for (const v of ['dashboardSlug = null', 'collections = []', 'dashError = null', 'notFoundSlug = null', 'onboardingTrack = null']) {
 			expect(body.indexOf(v), `${v} is not cleared before the reload`).toBeGreaterThan(-1);
 			expect(body.indexOf(v)).toBeLessThan(load);
 		}
@@ -429,6 +429,7 @@ describe('the dashboard fences every async commit point', () => {
 			loading: "owned by load()'s seq-gated finally",
 			dashboard: 'page DATA — dropped by the keyed load effect before it reloads',
 			dashError: 'page DATA — dropped by the keyed load effect before it reloads',
+			notFoundSlug: 'page DATA — dropped by the keyed load effect before it reloads',
 			dashboardSlug: 'page DATA — dropped by the keyed load effect before it reloads',
 			collections: 'page DATA — dropped by the keyed load effect before it reloads',
 			isOwner: 'a sticky permission, reset by its own (user, workspace)-keyed effect',

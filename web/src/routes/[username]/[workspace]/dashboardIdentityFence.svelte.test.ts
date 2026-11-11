@@ -373,7 +373,7 @@ describe('the dashboard stops a commit when the identity moves mid-flight', () =
 		const reload = await nextDashboardCall(1);
 		reload.reject(new PadApiError('not_found'));
 		await spin(() => !shown('Live board'), 'the not_found never emptied the board — the leg above measures nothing');
-		expect(shown('No dashboard data available.')).toBe(true);
+		expect(shown('Workspace not found')).toBe(true);
 	});
 
 	it('the 30 s POLL: a poll in flight when the identity moves paints nothing', async () => {
