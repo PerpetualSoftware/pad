@@ -83,14 +83,32 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	}
 	scopeSQL, scopeArgs := scopeClause("i", p.Scope)
 	open, openArgs := s.nonTerminalFilter(p.WorkspaceID, "i")
-	// Only near-term occurrences belong in this due/carried/stale scan: a moved
-	// target keeps next_at at its seed and reads at next_override_at. The separate
-	// actionable-work read includes future commitments and their role overrides.
-	bound := startTomorrow.Add(36 * time.Hour).UTC().Format(time.RFC3339)
-	args := []any{p.WorkspaceID, bound, bound, audiences[0], audiences[1], p.WorkspaceID, p.UserID}
+	// Only near-term occurrences belong in this due/carried/stale scan. Any role
+	// landing today makes a row due, so the bound admits the seed (next_at), a
+	// moved target (next_override_at, next_at stays at the seed), an override of
+	// any role on the outstanding occurrence, and a role offset that reaches
+	// back before the bound. The role check below then decides membership.
+	boundAt := startTomorrow.Add(36 * time.Hour).UTC()
+	bound := boundAt.Format(time.RFC3339)
+	epoch := "unixepoch(next_at)"
+	if s.dialect.Driver() == DriverPostgres {
+		epoch = "EXTRACT(EPOCH FROM CAST(next_at AS timestamptz))"
+	}
+	nearSQL := `(next_at < ? OR next_override_at < ? OR EXISTS (SELECT 1 FROM schedule_occurrence_overrides v
+			WHERE v.schedule_id = item_schedules.id AND v.value_at < ?
+				AND (v.occurrence_key = next_wall OR v.occurrence_key = next_at || '|' || next_wall))`
+	nearArgs := []any{bound, bound, bound}
+	for _, role := range []string{"target", "earliest", "deadline", "occupied"} {
+		// Day offsets count as 86400s; 72h of slack covers DST and zone shifts.
+		nearSQL += ` OR ((COALESCE(` + role + `_days, 0) < 0 OR COALESCE(` + role + `_secs, 0) < 0) AND ` + epoch + ` + COALESCE(` + role + `_days, 0) * 86400.0 + COALESCE(` + role + `_secs, 0) < ?)`
+		nearArgs = append(nearArgs, boundAt.Add(72*time.Hour).Unix())
+	}
+	nearSQL += `)`
+	args := append([]any{p.WorkspaceID}, nearArgs...)
+	args = append(args, audiences[0], audiences[1], p.WorkspaceID, p.UserID)
 	args = append(append(args, scopeArgs...), openArgs...)
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND ended_at IS NULL AND next_at IS NOT NULL AND (next_at < ? OR next_override_at < ?) AND audience IN (?, ?)
+		WHERE workspace_id = ? AND ended_at IS NULL AND next_at IS NOT NULL AND `+nearSQL+` AND audience IN (?, ?)
 			AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
