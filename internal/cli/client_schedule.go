@@ -16,10 +16,14 @@ func commitmentBase(wsSlug, ref string) string {
 }
 
 // IsCommitmentRoute identifies commitment API paths for the CLI and MCP error
-// contracts. The escaped path may include /api/v1 and a query string.
+// contracts. The escaped path may include /api/v1, a mount prefix before it
+// (a server URL such as https://host/pad), and a query string.
 func IsCommitmentRoute(path string) bool {
 	path, _, _ = strings.Cut(path, "?")
-	path = strings.TrimPrefix(path, "/api/v1")
+	// Slugs and refs are path-escaped, so the first /api/v1/ is the API root.
+	if _, rest, ok := strings.Cut(path, "/api/v1/"); ok {
+		path = "/" + rest
+	}
 	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
 	if len(parts) < 4 || parts[0] != "workspaces" || parts[1] == "" || parts[3] == "" {
 		return false
