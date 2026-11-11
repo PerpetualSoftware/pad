@@ -49,7 +49,8 @@ import (
 
 type Server struct {
 	// enqueueCommitmentRefusal is a test-only replacement for notice delivery.
-	enqueueCommitmentRefusal func(string, models.LinkedMoveInput) error
+	enqueueCommitmentRefusal     func(string, models.LinkedMoveInput) error
+	enqueueCommitmentLinkRefusal func(string, *models.ScheduleLinkCreate, string, *models.ScheduleLinkUpdate) error
 	// calendarPageOverride, when non-zero, replaces calendarPageSize for this
 	// server's calendar reads. Tests only.
 	calendarPageOverride int
@@ -2218,6 +2219,9 @@ func (s *Server) setupRouter() {
 				r.Route("/{slug}", func(r chi.Router) {
 					r.Use(s.RequireWorkspaceAccess)
 
+					r.Patch("/commitment-links/{linkID}", s.handleUpdateCommitmentLink)
+					r.Delete("/commitment-links/{linkID}", s.handleDeleteCommitmentLink)
+					r.Delete("/commitment-gates/{gateID}", s.handleDeleteCommitmentGate)
 					r.Get("/", s.handleGetWorkspace)
 					r.Patch("/", s.handleUpdateWorkspace)
 					r.Delete("/", s.handleDeleteWorkspace)
@@ -2452,6 +2456,12 @@ func (s *Server) setupRouter() {
 						r.Post("/reminders", s.handleCreateItemReminder)
 						// Item schedules (TASK-4102): the time trigger whose
 						// outstanding occurrence is a managed reminder row.
+						r.Get("/commitment/links", s.handleListCommitmentLinks)
+						r.Post("/commitment/links", s.handleCreateCommitmentLink)
+						r.Post("/commitment/move-preview", s.handlePreviewCommitmentMove)
+						r.Post("/commitment/move", s.handleMoveCommitment)
+						r.Get("/commitment/gates", s.handleGetCommitmentGates)
+						r.Post("/commitment/gates", s.handleCreateCommitmentGate)
 						r.Get("/commitment", s.handleGetItemCommitment)
 						r.Post("/commitment", s.handleCreateItemCommitment)
 						r.Patch("/commitment", s.handleUpdateItemCommitment)

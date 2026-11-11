@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"net/http/httptest"
+	"reflect"
 	"regexp"
 	"strings"
 	"testing"
@@ -230,6 +231,22 @@ func TestTASK4423_R14ResolvePreview(t *testing.T) {
 			if *before.Roles.Target != *after.Roles.Target || *before.Roles.Deadline != *after.Roles.Deadline || f.count(`SELECT COUNT(*) FROM comments`) != comments || f.count(`SELECT COUNT(*) FROM schedule_changes`) != journal {
 				t.Fatal("refused resolve wrote state")
 			}
+			body := map[string]any{"role": "target", "to": to, "reason": "Review this move"}
+			preview := f.as(f.token(f.owner, ""), "POST", f.path(f.item)+"/move-preview", body)
+			if preview.Code != 200 {
+				t.Fatalf("follow preview path: %d %s", preview.Code, preview.Body.String())
+			}
+			planned := schedMap(t, preview)
+			body["revision"] = planned["revision"]
+			body["acknowledge_violations"] = true
+			applied := f.as(f.token(f.owner, ""), "POST", f.path(f.item)+"/move", body)
+			if applied.Code != 200 {
+				t.Fatalf("follow commit path: %d %s", applied.Code, applied.Body.String())
+			}
+			if !reflect.DeepEqual(planned["changes"], schedMap(t, applied)["changes"]) {
+				t.Fatal("applied changes differ from preview")
+			}
+
 		})
 	}
 	t.Run("unlinked", func(t *testing.T) {

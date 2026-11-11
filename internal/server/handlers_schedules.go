@@ -519,7 +519,7 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		if in.Comment != nil {
 			reason = in.Comment.Input.Body
 		}
-		s.afterCommitmentRefusal(r, workspaceID, models.LinkedMoveInput{ItemID: item.ID, Role: "target", To: in.Until.UTC().Format(time.RFC3339), Actor: in.Actor, ActorUserID: in.ActorUserID, Reason: reason})
+		s.afterCommitmentRefusal(r, workspaceID, commitmentRefusalAttempt{move: &models.LinkedMoveInput{ItemID: item.ID, Role: "target", To: in.Until.UTC().Format(time.RFC3339), Actor: in.Actor, ActorUserID: in.ActorUserID, Reason: reason}})
 	}
 	if errors.Is(err, store.ErrSkipDeadlineAuthority) {
 		writeSkipDeadlineOwnerRequired(w)
