@@ -294,3 +294,21 @@ func TestBootstrapAgendaTruncatedEmptyStillShows(t *testing.T) {
 		t.Fatalf("nothing found and not truncated: agenda = %+v, want none", a)
 	}
 }
+
+func TestBootstrapAgendaRolesAndNoKind(t *testing.T) {
+	row := bootstrapAgendaRows([]store.BootstrapAgendaRow{{AgendaSchedule: store.AgendaSchedule{Schedule: &models.ItemSchedule{Kind: "check"}}, Due: time.Date(2031, 3, 10, 9, 0, 0, 0, time.UTC)}}, time.UTC, time.Date(2031, 3, 10, 8, 0, 0, 0, time.UTC))
+	b, err := json.Marshal(row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var rows []map[string]any
+	if err := json.Unmarshal(b, &rows); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := rows[0]["kind"]; ok {
+		t.Fatalf("kind remains: %s", b)
+	}
+	if _, ok := rows[0]["roles"]; !ok {
+		t.Fatalf("roles absent: %s", b)
+	}
+}

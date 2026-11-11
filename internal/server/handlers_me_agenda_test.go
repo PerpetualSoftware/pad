@@ -503,3 +503,38 @@ func TestAgendaPriorityIndependentOfWindowCap(t *testing.T) {
 		t.Fatal("outstanding omitted without incomplete flag")
 	}
 }
+
+func TestAgendaPriorityRankDeadlineTargetAndID(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	schema := `{"fields":[{"key":"priority","type":"select","options":["low","normal","high","urgent"]}]}`
+	if _, err := w.srv.store.DB().Exec(`UPDATE collections SET schema=? WHERE id=?`, schema, w.colls["tasks"].ID); err != nil {
+		t.Fatal(err)
+	}
+	var want []string
+	for _, row := range []struct {
+		name, priority, start string
+		deadline              int
+	}{{"High later", "high", "2031-03-12T09:00", 2}, {"High sooner", "high", "2031-03-11T09:00", 1}, {"Low", "low", "2031-03-10T09:00", 0}, {"Unknown", "urgent", "2031-03-10T09:00", 0}} {
+		it := w.item(t, "tasks", row.name, `{"priority":"`+row.priority+`"}`, nil)
+		_, err := w.srv.store.CreateCommitmentSchedule(w.ws.ID, it.ID, models.ScheduleCreate{Dtstart: row.start, Tz: "UTC"}, models.CommitmentRolesInput{DeadlineDays: &row.deadline, DeadlineSecs: agendaInt(0), DeadlineBehavior: agendaString("stays_owed")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want = append(want, it.Ref)
+	}
+	m := w.ok(t, w.owner, agendaWindow)
+	rows, _ := m["priority_list"].([]any)
+	if len(rows) != 4 {
+		t.Fatalf("priority rows %v", rows)
+	}
+	for i, idx := range []int{1, 0, 2, 3} {
+		if rows[i].(map[string]any)["item_ref"] != want[idx] {
+			t.Fatalf("priority order: %v", rows)
+		}
+	}
+	if rows[3].(map[string]any)["rank"] != "unranked" {
+		t.Fatalf("guessed priority: %v", rows[3])
+	}
+}
+func agendaInt(n int) *int          { return &n }
+func agendaString(s string) *string { return &s }
