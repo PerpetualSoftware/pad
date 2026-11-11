@@ -5,7 +5,39 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+func TestTASK4412_RenderElapsedOffsets(t *testing.T) {
+	for _, tc := range []struct {
+		seconds int64
+		want    string
+	}{
+		{1800, "30m"},
+		{600, "10m"},
+		{4200, "1h10m"},
+		{-43200, "-12h"},
+		{90, "1m30s"},
+		{108000, "30h"}, // --offset accepts 1d6h; existing output uses hours.
+		{0, "0s"},
+		{-1800, "-30m"},
+		{9460800000, "9460800000s elapsed"}, // Beyond time.Duration's range.
+	} {
+		t.Run(tc.want, func(t *testing.T) {
+			link := displayCommitmentLink{ScheduleLink: models.ScheduleLink{
+				ID: "l1", ParentItemID: "p", ChildItemID: "c", ParentRole: "target", ChildRole: "earliest",
+				Offset: models.ScheduleLinkOffset{Mode: "elapsed", ElapsedSecs: tc.seconds}, CancelPolicy: "waiting_on",
+			}}
+			var out strings.Builder
+			renderCommitmentLink(&out, link)
+			want := "Link l1: target -> earliest: p -> c; " + tc.want + "; waiting_on\n"
+			if out.String() != want {
+				t.Errorf("got %q; want %q", out.String(), want)
+			}
+		})
+	}
+}
 
 const linkPlan = `{"link":null,"moved":{"revision":"rev-1","changes":[{"item_id":"child","role":"target","from":"2099-01-01T09:00:00Z","to":"2099-01-02T09:00:00Z"}],"violations":[{"item_id":"child","role":"target","to":"2099-01-02T09:00:00Z"}],"left_in_place":[{"item_id":"finished","role":"target","to":"2099-01-02T09:00:00Z"}],"renegotiates_deadline":true},"future_member":7}`
 

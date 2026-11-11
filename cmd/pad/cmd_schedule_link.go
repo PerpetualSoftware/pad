@@ -350,7 +350,14 @@ func renderCommitmentLink(w io.Writer, l displayCommitmentLink) {
 	offset := fmt.Sprintf("%ds elapsed", off.ElapsedSecs)
 	// Response offsets span 300 years, beyond time.Duration's range.
 	if off.ElapsedSecs <= int64((1<<63-1)/int64(time.Second)) && off.ElapsedSecs >= -int64((1<<63-1)/int64(time.Second)) {
-		offset = strings.TrimSuffix((time.Duration(off.ElapsedSecs) * time.Second).String(), "0m0s")
+		d := time.Duration(off.ElapsedSecs) * time.Second
+		offset = d.String()
+		// Trim only whole zero units, never digits from a nonzero minute.
+		if d%time.Hour == 0 {
+			offset = strings.TrimSuffix(offset, "0m0s")
+		} else if d%time.Minute == 0 {
+			offset = strings.TrimSuffix(offset, "0s")
+		}
 	}
 	if off.Mode == "civil" {
 		offset = fmt.Sprintf("%+d days at %02d:%02d:%02d %s (all_day=%t)", off.Days, off.ClockSecs/3600, off.ClockSecs/60%60, off.ClockSecs%60, off.Zone, off.AllDay)
