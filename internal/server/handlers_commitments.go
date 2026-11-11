@@ -381,7 +381,7 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 	result, err := s.store.RenegotiateCommitment(workspaceID, item.ID, currentUserID(r), body, commitmentAssigneeGuard(r, item))
 	if errors.Is(err, store.ErrDeadlineApprovalRequired) && !body.Preview && body.Deadline != nil {
 		actor, _ := actorFromRequest(r)
-		s.afterCommitmentRefusal(r, workspaceID, commitmentRefusalAttempt{move: &models.LinkedMoveInput{ItemID: item.ID, Role: "deadline", To: *body.Deadline, Reason: body.Reason, Actor: actor, ActorUserID: body.ActorUserID}})
+		s.afterCommitmentRefusal(r, workspaceID, commitmentRefusalAttempt{move: &models.LinkedMoveInput{ItemID: item.ID, Role: "deadline", To: *body.Deadline, Reason: body.Reason, Actor: actor, ActorUserID: body.ActorUserID, ExpectedAssignee: commitmentAssigneeGuard(r, item)}})
 	}
 	if errors.Is(err, store.ErrCommitmentChanged) {
 		writeCommitmentChanged(w)

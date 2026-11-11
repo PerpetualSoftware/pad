@@ -164,6 +164,27 @@ func graphPushDevice(t *testing.T, f *graphHTTP, user *models.User) {
 	}
 }
 func testGraphRouteNotices(t *testing.T) {
+	t.Run("reassigned root after refusal", func(t *testing.T) {
+		f := newGraphHTTP(t, graphHard(), graphHard())
+		f.link(0, 1, "deadline", "deadline", "")
+		g := f.guest(0)
+		if _, err := f.srv.store.DB().Exec(`UPDATE items SET assigned_user_id=? WHERE id=?`, g.ID, f.item.ID); err != nil {
+			t.Fatal(err)
+		}
+		graphPushDevice(t, f, f.owner)
+		f.srv.enqueueCommitmentRefusal = func(ws string, in models.LinkedMoveInput) error {
+			if _, err := f.srv.store.DB().Exec(`UPDATE items SET assigned_user_id=? WHERE id=?`, f.owner.ID, f.item.ID); err != nil {
+				return err
+			}
+			return f.srv.store.EnqueueLinkedDeadlineApprovalNotice(ws, in)
+		}
+		rr := f.as(f.token(g, ""), "POST", f.path(f.item)+"/move", map[string]any{"role": "deadline", "to": time.Now().UTC().Add(30 * 24 * time.Hour).Format(time.RFC3339), "reason": "Replan"})
+		f.expectErr(rr, 409, "deadline_approval_required", "")
+		if n := f.count(`SELECT COUNT(*) FROM user_notifications WHERE kind='deadline_approval_requested'`); n != 0 {
+			t.Fatalf("stale assignee refusal enqueued %d notices", n)
+		}
+	})
+
 	t.Run("hidden bound and history", func(t *testing.T) {
 		f := newGraphHTTP(t, models.CommitmentRolesInput{}, graphHard())
 		f.link(0, 1, "target", "target", "")

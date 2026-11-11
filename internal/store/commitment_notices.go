@@ -165,6 +165,11 @@ func (s *Store) EnqueueLinkedDeadlineApprovalNotice(workspaceID string, in model
 	if err != nil {
 		return err
 	}
+	if matches, err := s.commitmentAssigneeMatchesTx(tx, in.ItemID, in.ExpectedAssignee); err != nil {
+		return err
+	} else if !matches {
+		return nil
+	}
 	p, err := s.planLinkedTx(tx, c, workspaceID, in.ItemID, role, to.UTC().Truncate(time.Second), true)
 	if err != nil {
 		var refused *LinkRefusedError
