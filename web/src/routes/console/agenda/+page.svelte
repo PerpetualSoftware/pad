@@ -182,6 +182,8 @@
 			if (sameIdentity()) pending = { ...pending, [key]: false };
 		}
 	}
+	// A move to the date the target already has changes nothing: the server returns no root change for it.
+	const unchanged = (entry: AgendaEntry, to: string) => Date.parse(to) === Date.parse(entry.roles?.target ?? entry.at);
 	function clearDrag() {
 		dragSerial++; dragging = null; dragImpact = null; hoverDay = ''; dragCache.clear();
 	}
@@ -192,7 +194,8 @@
 	}
 	async function loadTitles(entry: AgendaEntry, preview: CommitmentMoveResult) {
 		const sameIdentity = authStore.identityFence();
-		const ids = [...new Set([...preview.changes, ...(preview.violations ?? []), ...(preview.left_in_place ?? [])].filter(change => !change.root).map(change => change.item_id))];
+		const ids = [...new Set([...preview.changes, ...(preview.violations ?? []), ...(preview.left_in_place ?? [])].filter(change => !change.root && !(change.item_id in linkedTitles)).map(change => change.item_id))];
+		if (!ids.length) return;
 		const titles = await Promise.all(ids.map(async id => {
 			try { const item = await api.items.get(entry.workspace!, id); return [id, item.title || 'Linked item'] as const; }
 			catch { return [id, 'Linked item'] as const; }
@@ -203,6 +206,7 @@
 		const entry = dragging;
 		if (!entry) return;
 		if (date === hoverDay) return; // dragenter also fires on children inside the same day
+		if (unchanged(entry, targetOnDay(entry, date, zone))) { hoverDay = date; dragImpact = null; return; }
 		const serial = dragSerial;
 		const sameIdentity = authStore.identityFence();
 		hoverDay = date; dragImpact = null;
@@ -222,7 +226,8 @@
 		const entry = dragging;
 		if (!entry) return;
 		hoverDay = date;
-		void moveTarget(entry, targetOnDay(entry, date, zone));
+		const to = targetOnDay(entry, date, zone);
+		if (!unchanged(entry, to)) void moveTarget(entry, to);
 		clearDrag();
 	}
 	async function moveError(error: unknown) {

@@ -355,6 +355,12 @@ describe('agenda Week and priority', () => {
   expect(within(marker).queryByRole('button')).toBeNull(); expect(marker.getAttribute('draggable')).not.toBe('true');
   expect(within(daySection('2026-11-08')).getByText('Nothing on this day.')).toBeTruthy();
  });
+ it('dropping a card back on its own day is a no-op, not a conflict', async () => {
+  await mount(); await drop('2026-11-05');
+  await settle();
+  expect(h.preview).not.toHaveBeenCalled(); expect(h.move).not.toHaveBeenCalled();
+  expect(screen.queryByText(/This occurrence changed/)).toBeNull(); expect(h.agenda).toHaveBeenCalledTimes(1);
+ });
  it('deadline markers come only from live occurrences, never history rows', async () => {
   const roles = { ...row().roles!, deadline: '2026-11-08T14:00:00Z', deadline_behavior: 'lapses' as const };
   h.agenda.mockResolvedValue(response([
