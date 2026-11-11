@@ -55,23 +55,30 @@ func (s *Store) CommitmentAccessItemsQ(q Queryer, workspaceID, itemID string) ([
 	return out, rows.Err()
 }
 
+// CommitmentLinkPartner is one link of an item and the item at its other end.
+type CommitmentLinkPartner struct {
+	LinkID    string
+	PartnerID string
+}
+
 // CommitmentLinkPartnersQ is an unfiltered internal authorization query. Unlike
-// ListScheduleLinks it retains deleted and unreadable ends; callers never expose it.
-func (s *Store) CommitmentLinkPartnersQ(q Queryer, workspaceID, itemID string) ([]string, error) {
-	rows, err := q.Query(s.q(`SELECT CASE WHEN p.item_id=? THEN c.item_id ELSE p.item_id END FROM schedule_links l JOIN item_schedules p ON p.id=l.parent_schedule_id JOIN item_schedules c ON c.id=l.child_schedule_id WHERE l.workspace_id=? AND (p.item_id=? OR c.item_id=?)`), itemID, workspaceID, itemID, itemID)
+// ListScheduleLinks it retains deleted and unreadable ends; callers never expose
+// a partner id.
+func (s *Store) CommitmentLinkPartnersQ(q Queryer, workspaceID, itemID string) ([]CommitmentLinkPartner, error) {
+	rows, err := q.Query(s.q(`SELECT l.id, CASE WHEN p.item_id=? THEN c.item_id ELSE p.item_id END FROM schedule_links l JOIN item_schedules p ON p.id=l.parent_schedule_id JOIN item_schedules c ON c.id=l.child_schedule_id WHERE l.workspace_id=? AND (p.item_id=? OR c.item_id=?) ORDER BY l.id`), itemID, workspaceID, itemID, itemID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var ids []string
+	var out []CommitmentLinkPartner
 	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
+		var p CommitmentLinkPartner
+		if err := rows.Scan(&p.LinkID, &p.PartnerID); err != nil {
 			return nil, err
 		}
-		ids = append(ids, id)
+		out = append(out, p)
 	}
-	return ids, rows.Err()
+	return out, rows.Err()
 }
 
 // reloadGraphAccess checks both ends after the pin. Direct store callers may
