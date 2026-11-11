@@ -189,17 +189,35 @@ func printBootstrapMarkdown(raw []byte) error {
 
 // bootstrapAgendaView is the bootstrap's `agenda` section (TASK-4237).
 type bootstrapAgendaView struct {
-	Tz                string               `json:"tz"`
-	Today             string               `json:"today"`
-	Note              string               `json:"note"`
-	DueToday          []bootstrapAgendaRow `json:"due_today"`
-	DueTodayMoreCount int                  `json:"due_today_more_count"`
-	Carried           []bootstrapAgendaRow `json:"carried"`
-	CarriedMoreCount  int                  `json:"carried_more_count"`
-	CarriedMoreHint   string               `json:"carried_more_hint"`
-	StaleCount        int                  `json:"stale_count"`
-	StaleHint         string               `json:"stale_hint"`
-	Truncated         bool                 `json:"truncated"`
+	Tz                    string                   `json:"tz"`
+	Today                 string                   `json:"today"`
+	Note                  string                   `json:"note"`
+	DueToday              []bootstrapAgendaRow     `json:"due_today"`
+	DueTodayMoreCount     int                      `json:"due_today_more_count"`
+	Carried               []bootstrapAgendaRow     `json:"carried"`
+	CarriedMoreCount      int                      `json:"carried_more_count"`
+	CarriedMoreHint       string                   `json:"carried_more_hint"`
+	StaleCount            int                      `json:"stale_count"`
+	StaleHint             string                   `json:"stale_hint"`
+	Truncated             bool                     `json:"truncated"`
+	DueTodayComplete      bool                     `json:"due_today_complete"`
+	CarriedComplete       bool                     `json:"carried_complete"`
+	StaleComplete         bool                     `json:"stale_complete"`
+	PriorityList          []bootstrapAgendaWorkRow `json:"priority_list"`
+	PriorityListComplete  bool                     `json:"priority_list_complete"`
+	PriorityListMoreCount int                      `json:"priority_list_more_count"`
+	WaitingOn             []bootstrapAgendaWorkRow `json:"waiting_on"`
+	WaitingOnComplete     bool                     `json:"waiting_on_complete"`
+	WaitingOnMoreCount    int                      `json:"waiting_on_more_count"`
+	NoDate                []bootstrapAgendaWorkRow `json:"no_date"`
+	NoDateComplete        bool                     `json:"no_date_complete"`
+	NoDateMoreCount       int                      `json:"no_date_more_count"`
+}
+
+type bootstrapAgendaWorkRow struct {
+	ItemRef   string `json:"item_ref"`
+	ItemTitle string `json:"item_title"`
+	Reason    string `json:"reason"`
 }
 
 type bootstrapAgendaRow struct {
@@ -211,9 +229,14 @@ type bootstrapAgendaRow struct {
 	MissedCount int                    `json:"missed_count"`
 }
 
-// printBootstrapAgenda renders the agenda section; nothing when it is absent.
+// printBootstrapAgenda renders rows, counts and incomplete sections.
+// A complete empty agenda prints nothing.
 func printBootstrapAgenda(a *bootstrapAgendaView) {
 	if a == nil {
+		return
+	}
+	incomplete := a.Truncated || !a.DueTodayComplete || !a.CarriedComplete || !a.StaleComplete || !a.PriorityListComplete || !a.WaitingOnComplete || !a.NoDateComplete
+	if len(a.DueToday)+len(a.Carried)+len(a.PriorityList)+len(a.WaitingOn)+len(a.NoDate)+a.StaleCount+a.DueTodayMoreCount+a.CarriedMoreCount+a.PriorityListMoreCount+a.WaitingOnMoreCount+a.NoDateMoreCount == 0 && !incomplete {
 		return
 	}
 	row := func(r bootstrapAgendaRow) {
@@ -255,6 +278,33 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 	}
 	if a.StaleCount > 0 {
 		fmt.Printf("stale: %d items — %s\n", a.StaleCount, a.StaleHint)
+	}
+	for _, g := range []struct {
+		label string
+		rows  []bootstrapAgendaWorkRow
+		more  int
+	}{{"Priority list", a.PriorityList, a.PriorityListMoreCount}, {"Waiting on", a.WaitingOn, a.WaitingOnMoreCount}, {"No date", a.NoDate, a.NoDateMoreCount}} {
+		if len(g.rows)+g.more == 0 {
+			continue
+		}
+		fmt.Printf("%s (%d):\n", g.label, len(g.rows))
+		for _, r := range g.rows {
+			fmt.Printf("- [%s] %s (%s)\n", r.ItemRef, strings.Join(strings.Fields(r.ItemTitle), " "), r.Reason)
+		}
+		if g.more > 0 {
+			fmt.Printf("+%d more %s: GET /me/agenda\n", g.more, strings.ToLower(g.label))
+		}
+	}
+	for _, g := range []struct {
+		label    string
+		complete bool
+	}{
+		{"due today", a.DueTodayComplete}, {"carried", a.CarriedComplete}, {"stale", a.StaleComplete},
+		{"priority list", a.PriorityListComplete}, {"waiting on", a.WaitingOnComplete}, {"no date", a.NoDateComplete},
+	} {
+		if !g.complete {
+			fmt.Printf("incomplete: %s; listed rows and counts are a floor\n", g.label)
+		}
 	}
 	if a.Truncated {
 		fmt.Println("incomplete: the server read only the first 1000 schedules, so counts are a floor")
