@@ -47,11 +47,15 @@ func (s *Server) buildCommitmentAccess(r *http.Request, q store.Queryer, workspa
 	}
 	var memberCollections map[string]bool
 	writes := tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPatch, "")
+	// Only removal reaches past collection restrictions and onto deleted ends.
+	// Live reads and writes follow the owner's ordinary visibility, and an app
+	// principal never takes the bypass past its install ceiling.
+	ownerRemove := owner && mode == commitmentAccessRemove && !user.IsApp()
 	for _, it := range items {
-		if it.DeletedAt != nil && !(owner && mode == commitmentAccessRemove) {
+		if it.DeletedAt != nil && !ownerRemove {
 			continue
 		}
-		if owner {
+		if ownerRemove {
 			access.Readable[it.ID] = true
 			access.Editable[it.ID] = writes && appWriteAllows(r, it.CollectionID)
 			continue

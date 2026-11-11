@@ -93,7 +93,10 @@ func TestTASK4423_R13AccessAndAck(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !live.Editable[f.item.ID] || live.Readable[f.items[1].ID] || !remove.Editable[f.items[1].ID] {
+			// Live access follows the owner's collection access; removal
+			// reaches every item, deleted ends included.
+			restricted := u == co
+			if live.Readable[f.item.ID] == restricted || live.Editable[f.item.ID] == restricted || live.Readable[f.items[1].ID] || !remove.Editable[f.item.ID] || !remove.Editable[f.items[1].ID] {
 				t.Fatalf("owner live/remove access: %+v %+v", live, remove)
 			}
 		}

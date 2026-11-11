@@ -210,3 +210,41 @@ func testGraphResourceDisappears(t *testing.T) {
 		}
 	}
 }
+
+// A restricted owner reads the graph as their collection access allows. Only
+// removal reaches across collection restrictions.
+func TestTASK4423_R02OwnerLiveVisibility(t *testing.T) {
+	for _, owner := range []string{"workspace", "member"} {
+		t.Run(owner, func(t *testing.T) {
+			f := newGraphHTTP(t, models.CommitmentRolesInput{}, models.CommitmentRolesInput{})
+			hidden := mustCollection(t, f.srv, f.ws.ID, "Hidden")
+			if _, err := f.srv.store.DB().Exec(`UPDATE items SET collection_id=? WHERE id=?`, hidden.ID, f.items[1].ID); err != nil {
+				t.Fatal(err)
+			}
+			id := f.graphResource("links")
+			u := f.member("live-owner@example.com", "owner")
+			if owner == "workspace" {
+				u = f.owner
+				if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET role='editor' WHERE workspace_id=? AND user_id=?`, f.ws.ID, u.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, u.ID, "specific", []string{f.coll.ID}); err != nil {
+				t.Fatal(err)
+			}
+			tok := f.token(u, "")
+			rr := f.as(tok, "GET", f.path(f.item)+"/links", nil)
+			if rr.Code != 200 || rr.Body.String() != "{\"links\":[]}\n" {
+				t.Fatalf("live list: %d %s", rr.Code, rr.Body.String())
+			}
+			rr = f.as(tok, "PATCH", f.resourcePath("links", id), map[string]any{"cancel_policy": "waiting_on"})
+			if rr.Code != 404 || rr.Body.String() != graphMissingBody {
+				t.Fatalf("live update: %d %q", rr.Code, rr.Body.String())
+			}
+			rr = f.as(tok, "DELETE", f.resourcePath("links", id), nil)
+			if rr.Code != 204 {
+				t.Fatalf("owner remove: %d %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
