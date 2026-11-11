@@ -50,7 +50,7 @@ func (f *linkOffsetFlags) addFlags(c *cobra.Command) {
 	c.Flags().Int32Var(&f.days, "days", 0, "civil day offset; selects civil mode, including zero")
 	c.Flags().StringVar(&f.clock, "clock", "00:00", "civil clock HH:MM[:SS]")
 	c.Flags().BoolVar(&f.allDay, "all-day", false, "civil offset produces an all-day date (clock must be zero)")
-	c.Flags().StringVar(&f.zone, "zone", time.Local.String(), "civil pinned IANA zone (never Local)")
+	c.Flags().StringVar(&f.zone, "zone", "", "civil IANA zone (default: your account time zone, set with pad auth timezone)")
 	c.Flags().StringVar(&f.raw, "offset-json", "", "API offset object, as an alternative to offset flags")
 }
 
@@ -97,11 +97,19 @@ func (f linkOffsetFlags) body(c *cobra.Command) (map[string]any, error) {
 	if !c.Flags().Changed("days") {
 		return nil, fmt.Errorf("civil offset requires --days (including zero)")
 	}
-	if f.zone == "Local" || strings.TrimSpace(f.zone) == "" {
+	zone := strings.TrimSpace(f.zone)
+	if !c.Flags().Changed("zone") {
+		// The machine's zone is not used: Go names it "Local" whenever TZ is
+		// unset, and the server needs an IANA name.
+		if zone = linkAccountZone(); zone == "" {
+			return nil, fmt.Errorf("civil offset needs --zone <IANA>, or an account time zone (pad auth timezone <IANA>)")
+		}
+	}
+	if zone == "Local" || zone == "" {
 		return nil, fmt.Errorf("--zone must be a loadable IANA zone, never Local")
 	}
-	if _, err := time.LoadLocation(f.zone); err != nil {
-		return nil, fmt.Errorf("--zone %q: %w", f.zone, err)
+	if _, err := time.LoadLocation(zone); err != nil {
+		return nil, fmt.Errorf("--zone %q: %w", zone, err)
 	}
 	clock, err := time.Parse("15:04:05", f.clock)
 	if err != nil {
@@ -114,7 +122,21 @@ func (f linkOffsetFlags) body(c *cobra.Command) (map[string]any, error) {
 	if f.allDay && secs != 0 {
 		return nil, fmt.Errorf("--all-day requires a zero --clock")
 	}
-	return map[string]any{"mode": "civil", "days": f.days, "clock_secs": secs, "all_day": f.allDay, "zone": f.zone}, nil
+	return map[string]any{"mode": "civil", "days": f.days, "clock_secs": secs, "all_day": f.allDay, "zone": zone}, nil
+}
+
+// linkAccountZone returns the caller's account time zone when it is set and
+// loads on this machine, else "". A variable so tests can stub the lookup.
+var linkAccountZone = func() string {
+	client, _ := getClient()
+	user, err := client.GetCurrentUser()
+	if err != nil || user == nil || user.Timezone == nil || *user.Timezone == "" {
+		return ""
+	}
+	if _, err := time.LoadLocation(*user.Timezone); err != nil {
+		return ""
+	}
+	return *user.Timezone
 }
 
 func remindLinkCmd() *cobra.Command {

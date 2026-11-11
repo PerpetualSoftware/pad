@@ -147,3 +147,28 @@ func TestTASK4412_ShowGraph(t *testing.T) {
 		}
 	}
 }
+
+func TestTASK4412_CivilZoneDefault(t *testing.T) {
+	args := []string{"remind", "link", "add", "TASK-5", "TASK-6", "--parent-role", "target", "--child-role", "target", "--days", "0"}
+	restore := linkAccountZone
+	t.Cleanup(func() { linkAccountZone = restore })
+
+	linkAccountZone = func() string { return "Europe/Paris" }
+	_, _, err, calls := runSched(t, okReply(linkPlan), "", args...)
+	if err != nil || len(calls) != 1 {
+		t.Fatalf("err=%v calls=%+v", err, calls)
+	}
+	var got struct {
+		Offset map[string]any `json:"offset"`
+	}
+	_ = json.Unmarshal([]byte(calls[0].body), &got)
+	if got.Offset["zone"] != "Europe/Paris" {
+		t.Fatalf("zone=%v, want the account time zone", got.Offset["zone"])
+	}
+
+	linkAccountZone = func() string { return "" }
+	_, _, err, calls = runSched(t, okReply(linkPlan), "", args...)
+	if err == nil || !strings.Contains(err.Error(), "--zone") || !strings.Contains(err.Error(), "pad auth timezone") || len(calls) != 0 {
+		t.Fatalf("no account zone: err=%v calls=%+v", err, calls)
+	}
+}
