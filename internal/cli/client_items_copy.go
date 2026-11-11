@@ -287,7 +287,11 @@ type ItemCopySchedule struct {
 	// leave the forecast and the selected children behind.
 	ForecastDropped int `json:"forecast_dropped"`
 	ChildrenDropped int `json:"children_dropped"`
-	Skipped         *struct {
+	// LinksDropped and GatesDropped count the time links and gates the copy
+	// leaves behind, only those whose other end the caller can read.
+	LinksDropped int `json:"links_dropped"`
+	GatesDropped int `json:"gates_dropped"`
+	Skipped      *struct {
 		Reason string `json:"reason"`
 	} `json:"skipped,omitempty"`
 }
