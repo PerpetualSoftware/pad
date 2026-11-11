@@ -253,3 +253,52 @@ func (d *HTTPHandlerDispatcher) dispatchItemCommitmentEdit(ctx context.Context, 
 
 	return d.executeRequest(ctx, "item remind edit", user, method, path, raw)
 }
+
+func graphWriteBody(input map[string]any, keys ...string) map[string]any {
+	body := map[string]any{}
+	for _, k := range keys {
+		if v, ok := input[k]; ok && v != nil {
+			body[k] = v
+		}
+	}
+	return body
+}
+
+func mapScheduleLink(edit bool) RouteMapper {
+	return func(input map[string]any) (string, string, []byte, error) {
+		method, template := http.MethodPost, itemSchedulePathTemplate+"/links"
+		if edit {
+			method, template = http.MethodPatch, "/api/v1/workspaces/{workspace}/commitment-links/{link_id}"
+		}
+		body := graphWriteBody(input, "cancel_policy", "reason", "revision", "acknowledge_violations")
+		if off, ok := input["link_offset"]; ok && off != nil {
+			body["offset"] = off
+		}
+		if !edit {
+			for _, k := range []string{"child", "parent_role", "child_role"} {
+				body[k] = input[k]
+			}
+		}
+		if apply, _ := input["apply"].(bool); !apply {
+			body["preview"] = true
+		}
+		return marshalScheduleRequest(method, template, input, body)
+	}
+}
+
+func mapScheduleMove(input map[string]any) (string, string, []byte, error) {
+	if role, _ := input["role"].(string); role == "" {
+		return mapScheduleResolve("move")(input)
+	}
+	body := graphWriteBody(input, "role", "to", "reason")
+	path := itemSchedulePathTemplate + "/move-preview"
+	if apply, _ := input["apply"].(bool); apply {
+		path = itemSchedulePathTemplate + "/move"
+		for _, k := range []string{"revision", "acknowledge_violations"} {
+			if v, ok := input[k]; ok {
+				body[k] = v
+			}
+		}
+	}
+	return marshalScheduleRequest(http.MethodPost, path, input, body)
+}

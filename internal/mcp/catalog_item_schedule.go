@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -393,4 +394,139 @@ func actionItemScheduleRenegotiate(ctx context.Context, input map[string]any, en
 		out["behavior"] = b
 	}
 	return env.Dispatch(ctx, []string{"item", "remind", "renegotiate"}, out)
+}
+
+// actionItemScheduleGraph keeps previews and typed graph inputs identical on
+// both transports. offset-json carries the API union without dropping zeros,
+// false, or unknown members that the strict API must judge itself.
+func actionItemScheduleGraph(action string) ActionFn {
+	return func(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+		name := "pad_item." + action
+		out := copyInputMap(input)
+		fail := func(err error) (*CallToolResult, error) { return errStructured(name, err), nil }
+		for _, k := range []string{"ref", "child", "parent_role", "child_role", "link_id", "gate_id", "blocker", "cancel_policy", "reason", "revision"} {
+			v, ok := out[k]
+			delete(out, k)
+			if !ok || v == nil {
+				continue
+			}
+			s, ok := v.(string)
+			if !ok {
+				return fail(fmt.Errorf("%s must be a string, got %T", k, v))
+			}
+			if s = strings.TrimSpace(s); s != "" {
+				out[k] = s
+			}
+		}
+		for _, k := range []string{"apply", "preview", "acknowledge_violations"} {
+			v, ok := out[k]
+			delete(out, k)
+			if !ok || v == nil {
+				continue
+			}
+			b, ok := v.(bool)
+			if !ok {
+				return fail(fmt.Errorf("%s must be a boolean, got %T", k, v))
+			}
+			out[k] = b
+		}
+		apply, _ := out["apply"].(bool)
+		if p, ok := out["preview"].(bool); ok && !p && !apply {
+			return fail(fmt.Errorf("preview=false requires apply=true; preview first and repeat its inputs"))
+		}
+		// False flags are absent on the CLI and the HTTP body alike.
+		delete(out, "preview")
+		delete(out, "apply")
+		if apply {
+			out["apply"] = true
+		}
+		if ack, _ := out["acknowledge_violations"].(bool); ack {
+			out["ack_violations"] = true
+		} else {
+			delete(out, "acknowledge_violations")
+		}
+		require := func(keys ...string) error {
+			for _, k := range keys {
+				if _, ok := out[k]; !ok {
+					return fmt.Errorf("%s is required for %s", k, action)
+				}
+			}
+			return nil
+		}
+		path := []string{"item", "remind"}
+		switch action {
+		case "schedule-link":
+			if off, ok := out["link_offset"]; ok && off != nil {
+				if _, ok := off.(map[string]any); !ok {
+					return fail(fmt.Errorf("link_offset must be an offset object"))
+				}
+				raw, err := json.Marshal(off)
+				if err != nil {
+					return fail(err)
+				}
+				out["offset_json"] = string(raw)
+			}
+			if _, edit := out["link_id"]; edit {
+				if out["offset_json"] == nil && out["cancel_policy"] == nil {
+					return fail(fmt.Errorf("link_offset or cancel_policy is required to edit a link"))
+				}
+				path = append(path, "link", "edit")
+			} else {
+				if err := require("ref", "child", "parent_role", "child_role", "offset_json"); err != nil {
+					return fail(err)
+				}
+				out["parent_ref"], out["child_ref"] = out["ref"], out["child"]
+				path = append(path, "link", "add")
+			}
+		case "schedule-unlink":
+			if err := require("link_id"); err != nil {
+				return fail(err)
+			}
+			path = append(path, "link", "rm")
+		case "schedule-move":
+			for _, k := range []string{"role", "to"} {
+				v, ok := out[k]
+				if !ok || v == nil {
+					delete(out, k)
+					continue
+				}
+				str, ok := v.(string)
+				if !ok {
+					return fail(fmt.Errorf("%s must be a string, got %T", k, v))
+				}
+				if strings.TrimSpace(str) == "" {
+					delete(out, k)
+				} else {
+					out[k] = strings.TrimSpace(str)
+				}
+			}
+			if err := require("ref", "role", "to"); err != nil {
+				return fail(err)
+			}
+			to := out["to"].(string)
+			t, err := time.Parse(time.RFC3339, to)
+			if err != nil {
+				return fail(fmt.Errorf("to must be an RFC3339 instant"))
+			}
+			if err = wholeSecond("to", to, t); err != nil {
+				return fail(err)
+			}
+			out["to"] = t.UTC().Format(time.RFC3339)
+			path = append(path, "move")
+		case "schedule-gate":
+			if _, remove := out["gate_id"]; remove {
+				if out["blocker"] != nil {
+					return fail(fmt.Errorf("gate_id cannot be combined with blocker"))
+				}
+				path = append(path, "gate", "rm")
+			} else {
+				if err := require("ref", "blocker"); err != nil {
+					return fail(err)
+				}
+				out["blocker_ref"] = out["blocker"]
+				path = append(path, "gate", "add")
+			}
+		}
+		return env.Dispatch(ctx, path, out)
+	}
 }

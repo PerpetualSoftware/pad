@@ -665,6 +665,7 @@ func bug4065WalkBase(cmd string) map[string]any {
 	case "item remind renegotiate":
 		base["reason"], base["scope"] = "slipped", "series"
 	}
+	task4105FixtureFor(cmd, base)
 	return base
 }
 

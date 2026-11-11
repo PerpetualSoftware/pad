@@ -308,6 +308,15 @@ func TestChatArmHasNoMCPPath(t *testing.T) {
 									input["deadline"] = "hard"
 								case "schedule-resolve":
 									input["state"], input["occurrence_at"] = "done", "2026-11-09T09:00:00Z"
+								case "schedule-link":
+									input["child"], input["parent_role"], input["child_role"] = "TASK-2", "target", "target"
+									input["link_offset"] = map[string]any{"mode": "elapsed", "elapsed_secs": 0}
+								case "schedule-unlink":
+									input["link_id"] = "link-1"
+								case "schedule-gate":
+									input["blocker"] = "TASK-2"
+								case "schedule-move":
+									input["role"], input["to"] = "target", "2099-01-01T09:00:00Z"
 								case "schedule-renegotiate":
 									input["reason"] = "slipped"
 								case "agenda":

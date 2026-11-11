@@ -42,6 +42,7 @@ import (
 type ErrorCode string
 
 const (
+	ErrInvalidBody               ErrorCode = "invalid_body"
 	ErrScheduleLinked            ErrorCode = "schedule_linked"
 	ErrDeadlineApprovalRequired  ErrorCode = "deadline_approval_required"
 	ErrLinkViolationAck          ErrorCode = "link_violation_ack"
@@ -516,6 +517,7 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
+	"invalid_body":                {},
 	"schedule_linked":             {},
 	"deadline_approval_required":  {},
 	"link_violation_ack":          {},
@@ -1890,7 +1892,7 @@ func upstreamHTTPErrorResult(
 // commitmentGraphCode preserves graph refusals across both MCP transports.
 func commitmentGraphCode(code string) bool {
 	switch ErrorCode(code) {
-	case ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired:
+	case ErrInvalidBody, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired:
 		return true
 	}
 	return false
@@ -1904,7 +1906,7 @@ func commitmentValidationDetails(raw json.RawMessage) bool {
 		return false
 	}
 	switch d.Field {
-	case "reason", "revision", "role", "to", "cancel_policy":
+	case "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker":
 		return true
 	}
 	return false

@@ -125,7 +125,11 @@ func TestCaptureSkillRules(t *testing.T) {
 	must := map[string]string{
 		"labels target vs deadline in the read-back": `(?i)target.{0,80}deadline|deadline.{0,80}target`,
 		"asks only what changes behaviour":           `(?i)only.{0,60}(changes|change) (the )?behaviou?r`,
-		"reports links as unavailable":               `(?i)links? (are|is) not available|links? unavailable`,
+		"proposes the link in the read-back":         `(?i)propose the link in the read.back`,
+		"previews the link before apply":             `pad remind link add <parent> <child> --parent-role`,
+		"applies the preview revision":               `--apply --revision <token>`,
+		"gates commitment ordering":                  `pad remind gate add <item> <blocker>`,
+		"keeps undated dependencies":                 `pad item blocked-by <item> <blocker>`,
 		"keeps the autonomous-capture exception":     `(?i)autonomous`,
 		"keeps the convention load":                  `trigger=always`,
 		"offers an edit after the read-back":         `(?i)read.?back`,
