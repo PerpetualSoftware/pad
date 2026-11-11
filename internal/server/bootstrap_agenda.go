@@ -20,6 +20,7 @@ const (
 	bootstrapAgendaCarriedCap = 10 // carried rows listed, oldest first
 	bootstrapAgendaTodayCap   = 10
 	bootstrapAgendaWorkCap    = 10
+	bootstrapAgendaWorkScan   = 200
 	bootstrapAgendaStalePage  = 50 // rows of `agenda --stale` per page
 
 	// bootstrapAgendaStaleHint is the command the "stale" line points at.
@@ -108,6 +109,9 @@ func (s *Server) buildBootstrapAgenda(workspaceID string, user *models.User, r *
 		return nil, nil
 	}
 	now := s.agendaNow()
+	run := s.newAgendaRead(now, now.Add(24*time.Hour), zone, "")
+	run.deadline = now.Add(agendaBudget)
+	run.workRemaining = bootstrapAgendaWorkScan
 	set, err := s.store.BootstrapAgenda(store.BootstrapAgendaParams{
 		WorkspaceID: workspaceID, UserID: user.ID, Agent: agent, Scope: scope, Loc: zone.Loc, Now: now,
 	})
@@ -115,7 +119,6 @@ func (s *Server) buildBootstrapAgenda(workspaceID string, user *models.User, r *
 		return nil, err
 	}
 	out := projectBootstrapAgenda(set, zone, now)
-	run := s.newAgendaRead(now, now.Add(24*time.Hour), zone, "")
 	run.recipient, run.audience = user.ID, "human"
 	if agent {
 		run.audience = "agent"
