@@ -551,3 +551,7 @@ whereas schedule `rm` prompts because it deletes occurrence history.
 To fit the fixed prompt budget, the item and collection descriptions and repeated server-instruction explanations were
 condensed: repeated explanations and padding were shortened while preserving
 required/optional parameters, refusal rules, return fields and safety guidance.
+
+### Agenda result roles (v0.111)
+
+`pad_item` agenda and bootstrap resources return the commitment role contract in place: no `kind`, one entry per occurrence with all roles, effective moved placement, terminal recorded history, and independent priority, Waiting on and No date groups with completeness flags. The REST shapes and caps are documented in docs/api.md. Parameters and commands are unchanged.

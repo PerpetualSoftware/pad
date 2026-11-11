@@ -17,9 +17,9 @@ vi.mock('$lib/stores/auth.svelte', async () => {
 });
 import Agenda from './+page.svelte';
 
-const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-11-05T14:00:00Z', day: '2026-11-05', wall: '2026-11-05T09:00:00', floating: true, item_ref: 'EX-30', item_title: 'First item', collection: 'tasks', workspace: 'work', workspace_name: 'First workspace', owner_username: 'alice', state: 'outstanding', kind: 'deadline_soft', schedule_id: 'schedule-1', ...extra });
+const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-11-05T14:00:00Z', day: '2026-11-05', wall: '2026-11-05T09:00:00', floating: true, item_ref: 'EX-30', item_title: 'First item', collection: 'tasks', workspace: 'work', workspace_name: 'First workspace', owner_username: 'alice', state: 'outstanding', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, schedule_id: 'schedule-1', ...extra });
 const frozenAt = '2026-11-05T17:00:00Z';
-const response = (entries: AgendaEntry[] = [row()], extra: Partial<AgendaResponse> = {}): AgendaResponse => ({ from: '', to: '', tz: 'America/New_York', entries, ...extra });
+const response = (entries: AgendaEntry[] = [row()], extra: Partial<AgendaResponse> = {}): AgendaResponse => ({ from: '', to: '', tz: 'America/New_York', entries, window_complete:true,priority_list:[],priority_list_complete:true,waiting_on:[],waiting_on_complete:true,no_date:[],no_date_complete:true, ...extra });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 const settle = async () => { await new Promise(r => setTimeout(r, 0)); flushSync(); };
 async function mount() { render(Agenda); await screen.findByText('First item'); }
@@ -35,7 +35,7 @@ beforeEach(() => {
  vi.resetAllMocks(); localStorage.clear(); h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch = 0; h.browserZone = 'Europe/London';
  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-05T12:00:00Z'));
  h.agenda.mockResolvedValue(response());
- h.view.mockResolvedValue({ item_ref: 'EX-30', kind: 'deadline_soft', floating: true, next_occurrence: { at: frozenAt, wall: row().wall } });
+ h.view.mockResolvedValue({ item_ref: 'EX-30', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, floating: true, next_occurrence: { at: frozenAt, wall: row().wall } });
  h.resolve.mockResolvedValue({ schedule: {}, resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0 } });
 });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
@@ -78,12 +78,12 @@ describe('agenda Day page', () => {
  it('renders history styling and moved time without creating links with missing route fields', async () => {
   h.agenda.mockResolvedValue(response([
    row({ state: 'done', item_title: 'Finished occurrence' }),
-   row({ state: 'moved', item_ref: 'EX-31', schedule_id: 's2', item_title: 'Moved occurrence', effective_at: '2026-11-06T15:30:00Z' }),
+   row({ state: 'moved', item_ref: 'EX-31', schedule_id: 's2', item_title: 'Moved occurrence', at: '2026-11-06T15:30:00Z' }),
    row({ owner_username: '', item_ref: 'EX-32', schedule_id: 's3', item_title: 'No owner' })
   ]));
   render(Agenda); const done = await screen.findByRole('link', { name: 'Finished occurrence' });
   expect(done.parentElement?.classList.contains('done')).toBe(true); expect(screen.getByLabelText('Done')).toHaveTextContent('✓');
-  expect(screen.getByText('Moved to 10:30')).toBeTruthy(); expect(screen.getByText('No owner')).toBeTruthy();
+  expect(screen.getByText('10:30')).toBeTruthy(); expect(screen.getByText('No owner')).toBeTruthy();
   expect(screen.queryByRole('link', { name: 'No owner' })).toBeNull();
  });
  it('survives throwing storage with an in-memory default', async () => {
@@ -126,12 +126,12 @@ describe('agenda Day page', () => {
  });
  it('offers controls only on outstanding schedules and disables legacy hard-deadline Move', async () => {
   const entries = ['scheduled', 'done', 'skipped', 'moved', 'missed', 'unrecorded'].map((state, i) => row({ state: state as AgendaEntry['state'], item_ref: `EX-${i}`, schedule_id: `s${i}` }));
-  h.agenda.mockResolvedValue(response([...entries, ...['date', 'created', 'completed'].map(type => row({ type: type as AgendaEntry['type'] })), row({ kind: 'deadline_hard', roles_origin: 'legacy_backfill' })]));
+  h.agenda.mockResolvedValue(response([...entries, ...['date', 'created', 'completed'].map(type => row({ type: type as AgendaEntry['type'] })), row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, roles_origin: 'legacy_backfill' })]));
   render(Agenda); await screen.findByRole('button', { name: 'Done EX-30' }); expect(screen.getAllByRole('button', { name: /^Done / })).toHaveLength(1);
   await menu(); expect((screen.getByRole('menuitem', { name: 'Legacy hard deadlines cannot be moved.' }) as HTMLButtonElement).disabled).toBe(true);
  });
  it('offers Move for a native hard deadline without a legacy note', async () => {
-  h.agenda.mockResolvedValue(response([row({ kind: 'deadline_hard', roles_origin: 'native' })]));
+  h.agenda.mockResolvedValue(response([row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, roles_origin: 'native' })]));
   await mount(); await menu();
   expect((screen.getByRole('menuitem', { name: 'Move…' }) as HTMLButtonElement).disabled).toBe(false);
   expect(screen.queryByRole('menuitem', { name: 'Legacy hard deadlines cannot be moved.' })).toBeNull();
@@ -175,7 +175,7 @@ describe('resolve identity and dialogs', () => {
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'move', until: '2026-11-06T14:30:00.000Z', comment: 'Waiting for review' })); await screen.findByText('Occurrence moved.');
  });
  it('Move says when the new target is after the deadline', async () => {
-  h.agenda.mockResolvedValue(response([row({ kind: 'deadline_hard', roles_origin: 'native' })]));
+  h.agenda.mockResolvedValue(response([row({ roles: { target: null, earliest: null, deadline: '2031-03-10T09:00:00Z', deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, roles_origin: 'native' })]));
   h.resolve.mockResolvedValue({ commitment: {}, resolution: { occurrence_at: frozenAt, state: 'move', missed_recorded: 0, warning: 'target_after_deadline' } });
   await mount(); const d = await dialog('Move'); await fillTime(d);
   await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: 'Slipped' } });

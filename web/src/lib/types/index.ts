@@ -3772,7 +3772,8 @@ export interface AgendaEntry {
 	all_day?: boolean;
 	floating?: boolean;
 	state?: 'outstanding' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'lapsed' | 'unrecorded';
-	kind?: string;
+	roles?: CommitmentRoles;
+ occurrence_key?: string;
 	roles_origin?: 'native' | 'legacy_backfill';
 	audience?: 'human' | 'agent' | 'both';
 	schedule_id?: string;
@@ -3780,7 +3781,6 @@ export interface AgendaEntry {
 	date?: string;
 	fired?: boolean;
 	overdue?: boolean;
-	effective_at?: string;
 	resolved_at?: string;
 	actor?: string;
 	comment_id?: string;
@@ -3799,7 +3799,19 @@ export interface AgendaDayCount {
 	burndown: number;
 }
 
+export type AgendaWorkEntry = Omit<AgendaEntry, 'type' | 'at' | 'day'> & {
+ type: 'item' | 'schedule'; at?: string; day?: string;
+ rank?: 'high' | 'normal' | 'low' | 'unranked'; reason: string;
+};
+
 export interface AgendaResponse {
+ window_complete: boolean;
+ priority_list: AgendaWorkEntry[];
+ priority_list_complete: boolean;
+ waiting_on: AgendaWorkEntry[];
+ waiting_on_complete: boolean;
+ no_date: AgendaWorkEntry[];
+ no_date_complete: boolean;
 	from: string;
 	to: string;
 	tz: string;
@@ -3816,8 +3828,7 @@ export interface AgendaResponse {
 		item_ref: string;
 		item_title: string;
 		collection: string;
-		kind?: string;
-		audience?: 'human' | 'agent' | 'both';
+			audience?: 'human' | 'agent' | 'both';
 		reason: 'scan_limit';
 		workspace?: string;
 		owner_username?: string;

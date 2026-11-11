@@ -2324,7 +2324,9 @@ const CmdhelpVersion = "0.1"
 // schedule-gate actions; preview-first graph writes, offsets and gates on both
 // transports. link_offset is an API object; offset remains numeric pagination.
 // Existing catalog descriptions shortened without changing their rules.
-const ToolSurfaceVersion = "0.110"
+// v0.111 — TASK-4354: agenda and bootstrap return grouped date roles without
+// kind, independent actionable groups and per-section completeness.
+const ToolSurfaceVersion = "0.111"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

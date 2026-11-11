@@ -11,6 +11,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
 // bootstrapCmd returns the agent bootstrap blob — the consolidated
@@ -202,12 +203,12 @@ type bootstrapAgendaView struct {
 }
 
 type bootstrapAgendaRow struct {
-	Ref         string `json:"ref"`
-	Title       string `json:"title"`
-	At          string `json:"at"`
-	AllDay      bool   `json:"all_day"`
-	Kind        string `json:"kind"`
-	MissedCount int    `json:"missed_count"`
+	Ref         string                 `json:"ref"`
+	Title       string                 `json:"title"`
+	At          string                 `json:"at"`
+	AllDay      bool                   `json:"all_day"`
+	Roles       models.CommitmentRoles `json:"roles"`
+	MissedCount int                    `json:"missed_count"`
 }
 
 // printBootstrapAgenda renders the agenda section; nothing when it is absent.
@@ -228,7 +229,7 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 			missed = fmt.Sprintf(", missed %d", r.MissedCount)
 		}
 		// A title is item data: one line, so it cannot open a line of its own.
-		fmt.Printf("- [%s] %s — %s (%s%s)\n", r.Ref, strings.Join(strings.Fields(r.Title), " "), at, r.Kind, missed)
+		fmt.Printf("- [%s] %s — %s (%s%s)\n", r.Ref, strings.Join(strings.Fields(r.Title), " "), at, schedule.CommitmentKind(r.Roles.Deadline != nil, r.Roles.OccupiedUntil != nil), missed)
 	}
 	fmt.Printf("## Agenda (%s, %s)\n", a.Today, a.Tz)
 	if a.Note != "" {
