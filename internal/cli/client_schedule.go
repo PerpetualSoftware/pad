@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"net/url"
+	"strings"
 )
 
 // --- Item schedules and the agenda ---
@@ -12,6 +13,21 @@ import (
 
 func commitmentBase(wsSlug, ref string) string {
 	return "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(ref) + "/commitment"
+}
+
+// IsCommitmentRoute identifies commitment API paths for the CLI and MCP error
+// contracts. The escaped path may include /api/v1 and a query string.
+func IsCommitmentRoute(path string) bool {
+	path, _, _ = strings.Cut(path, "?")
+	path = strings.TrimPrefix(path, "/api/v1")
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) < 4 || parts[0] != "workspaces" || parts[1] == "" || parts[3] == "" {
+		return false
+	}
+	if parts[2] == "items" {
+		return len(parts) >= 5 && parts[4] == "commitment"
+	}
+	return len(parts) == 4 && (parts[2] == "commitment-links" || parts[2] == "commitment-gates")
 }
 
 // GetItemCommitment returns an item's schedule view.

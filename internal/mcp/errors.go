@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1061,7 +1063,7 @@ func classifyHTTPStatusKind(
 
 	if status == 400 || status == 403 || status == 404 || status == 409 || status == 503 {
 		up := extractUpstreamErrorEnvelope(bodyText)
-		if commitmentGraphCode(up.Code) || (up.Code == "validation_error" && commitmentValidationDetails(up.Details)) {
+		if commitmentGraphCode(up.Code, route) || (up.Code == "validation_error" && commitmentValidationDetails(up.Details)) {
 			hint := ""
 			if up.Code == string(ErrCommitmentChanged) {
 				hint = conflictHintFor(up.Message, route)
@@ -1890,9 +1892,11 @@ func upstreamHTTPErrorResult(
 }
 
 // commitmentGraphCode preserves graph refusals across both MCP transports.
-func commitmentGraphCode(code string) bool {
+func commitmentGraphCode(code, route string) bool {
 	switch ErrorCode(code) {
-	case ErrInvalidBody, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired:
+	case ErrInvalidBody:
+		return cli.IsCommitmentRoute(route)
+	case ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired:
 		return true
 	}
 	return false

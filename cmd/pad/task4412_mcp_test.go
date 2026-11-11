@@ -1,10 +1,14 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"os/exec"
 	"reflect"
 	"strings"
 	"testing"
@@ -45,6 +49,9 @@ func TestTASK4412_MCPTransportParity(t *testing.T) {
 				reply := func(recordedCall) (int, string) {
 					if code != "" {
 						status := 409
+						if code == "invalid_body" || code == "validation_error" {
+							status = 400
+						}
 						if code == "schedule_link_not_found" {
 							status = 404
 						}
@@ -124,11 +131,81 @@ func TestTASK4412_MCPTransportParity(t *testing.T) {
 }
 
 func TestTASK4412_GraphBodyErrors(t *testing.T) {
+	setTempHomeMain(t)
 	for _, code := range []string{"invalid_body", "validation_error"} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusBadRequest)
+			_, _ = w.Write([]byte(`{"error":{"code":"` + code + `","message":"Invalid offset","details":{"field":"offset","code":"combination"}}}`))
+		}))
+		t.Cleanup(srv.Close)
+		client := cli.NewClientFromURLWithAgentName(srv.URL, "")
+		client.SetHTTPClient(srv.Client())
+		_, err := client.AddCommitmentLink("test", "TASK-5", map[string]any{})
 		var marker strings.Builder
-		writeRootStructuredError(&marker, &cli.APIError{Status: 400, Code: code, Message: "Invalid offset", Details: json.RawMessage(`{"field":"offset","code":"combination"}`)})
-		if !strings.Contains(marker.String(), `"code":"`+code+`"`) {
-			t.Errorf("%s: missing structured marker: %s", code, marker.String())
+		writeRootStructuredError(&marker, err)
+		want := cli.StructuredErrorMarker + `{"error":{"code":"` + code + `","message":"Invalid offset","details":{"field":"offset","code":"combination"}}}` + "\n"
+		if marker.String() != want {
+			t.Errorf("%s: marker=%q, want %q", code, marker.String(), want)
+		}
+	}
+}
+
+func TestTASK4412_NonCommitmentInvalidBody(t *testing.T) {
+	const body = `{"error":{"code":"invalid_body","message":"Invalid JSON body"}}`
+	h, calls := recordingStub(func(recordedCall) (int, string) { return 400, body })
+	tzCLIWithLocal(t, h, time.UTC)
+	t.Setenv(padHelperEnv, "1")
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmdPath := []string{"item", "move"}
+	argv := []string{"TASK-5", "tasks", "--workspace", "test", "--format", "json"}
+	// Pin main's CLI bytes, including the absence of a structured marker.
+	t.Run("CLI JSON", func(t *testing.T) {
+		cmd := exec.Command(bin, append(append([]string{}, cmdPath...), argv...)...)
+		var stdout, stderr bytes.Buffer
+		cmd.Stdout, cmd.Stderr = &stdout, &stderr
+		var exit *exec.ExitError
+		if err := cmd.Run(); !errors.As(err, &exit) || exit.ExitCode() != 1 {
+			t.Fatalf("exit=%v", err)
+		}
+		if stdout.String() != "" || stderr.String() != "Error: Invalid JSON body\n" {
+			t.Errorf("stdout=%q stderr=%q", stdout.String(), stderr.String())
+		}
+	})
+	dispatchers := []struct {
+		name string
+		d    mcp.Dispatcher
+		hint string
+	}{
+		{"stdio", &mcp.ExecDispatcher{Binary: bin}, "Invalid JSON body"},
+		{"HTTP", &mcp.HTTPHandlerDispatcher{Handler: h, UserResolver: func(context.Context) *models.User { return &models.User{ID: "u"} }}, "Backend: Invalid JSON body Adjust the input shape and retry."},
+	}
+	for _, tc := range dispatchers {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := mcp.WithDispatchInput(context.Background(), map[string]any{"workspace": "test", "ref": "TASK-5", "target_collection": "tasks"})
+			res, err := tc.d.Dispatch(ctx, cmdPath, argv)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := json.Marshal(res.StructuredContent)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, _ := json.Marshal(mcp.ErrorEnvelope{Error: mcp.ErrorPayload{Code: mcp.ErrValidationFailed, Message: "Validation failed.", Hint: tc.hint}})
+			if !res.IsError || string(got) != string(want) {
+				t.Errorf("got %s; want main's %s", got, want)
+			}
+		})
+	}
+	if got := calls(); len(got) != 3 {
+		t.Fatalf("requests=%+v; want one move per surface", got)
+	} else {
+		for _, call := range got {
+			if call.method != "POST" || call.path != "/workspaces/test/items/TASK-5/move" {
+				t.Errorf("unexpected request: %+v", call)
+			}
 		}
 	}
 }

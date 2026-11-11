@@ -86,8 +86,10 @@ func writeRootStructuredError(w io.Writer, err error) {
 	if errors.As(err, &commitmentErr) {
 		structured := false
 		switch commitmentErr.Code {
+		case "invalid_body":
+			structured = cli.IsCommitmentRoute(commitmentErr.RequestPath)
 		case "hard_deadline", "deadline_owner_required", "commitment_changed",
-			"invalid_body", "schedule_linked", "deadline_approval_required", "link_violation_ack", "link_budget", "link_edit_required", "schedule_link_not_found",
+			"schedule_linked", "deadline_approval_required", "link_violation_ack", "link_budget", "link_edit_required", "schedule_link_not_found",
 			"link_cycle", "link_self", "link_duplicate_incoming", "link_limit", "link_invalid", "gate_duplicate", "commitment_preview_required":
 			structured = true
 		case "validation_error":

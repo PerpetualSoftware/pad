@@ -531,7 +531,9 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	// those test paths and (more critically) in any production
 	// dispatcher that attaches token state via Apply rather than
 	// inheriting from the inbound request's ctx (#379).
-	return packageHTTPResponse(req.Context(), cmdKey, rec.Result(), d.Lister)
+	resp := rec.Result()
+	resp.Request = req
+	return packageHTTPResponse(req.Context(), cmdKey, resp, d.Lister)
 }
 
 // buildRequestErrorResult maps a buildAuthedRequest failure onto the
@@ -769,6 +771,14 @@ func packageHTTPResponse(ctx context.Context, cmdKey string, resp *http.Response
 	body := string(bodyBytes)
 
 	if resp.StatusCode >= 400 {
+		// Only commitment invalid_body needs the request route here. Keep the
+		// legacy route-less hints byte-identical for every other refusal.
+		if up := extractUpstreamErrorEnvelope(body); up.Code == string(ErrInvalidBody) && resp.Request != nil && resp.Request.URL != nil {
+			route := resp.Request.URL.EscapedPath()
+			if commitmentGraphCode(up.Code, route) {
+				return classifyHTTPStatusKind(ctx, cmdKey, route, resp.StatusCode, bodyBytes, lister, ResourceUnknown, ""), nil
+			}
+		}
 		return classifyHTTPStatus(ctx, cmdKey, resp.StatusCode, bodyBytes, lister), nil
 	}
 

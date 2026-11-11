@@ -95,7 +95,7 @@ func TestTASK4412_GraphBodyErrorParity(t *testing.T) {
 	for _, code := range []string{"invalid_body", "validation_error"} {
 		body := fmt.Sprintf(`{"error":{"code":%q,"message":"Invalid offset","details":{"field":"offset","code":"combination"}}}`, code)
 		for _, res := range []*CallToolResult{
-			classifyHTTPStatus(context.Background(), "item remind link add", 400, []byte(body), nil),
+			classifyHTTPStatusKind(context.Background(), "item remind link add", "/api/v1/workspaces/test/items/TASK-5/commitment/links", 400, []byte(body), nil, ResourceItem, "TASK-5"),
 			classifyExecError(context.Background(), []string{"item", "remind", "link", "add"}, errors.New("exit status 1"), structuredErrorMarker+body, nil),
 		} {
 			env, ok := res.StructuredContent.(ErrorEnvelope)
@@ -103,5 +103,46 @@ func TestTASK4412_GraphBodyErrorParity(t *testing.T) {
 				t.Errorf("%s: %+v", code, res)
 			}
 		}
+	}
+}
+
+func TestTASK4412_InvalidBodyRoutes(t *testing.T) {
+	for _, tc := range []struct {
+		route string
+		graph bool
+	}{
+		{"/api/v1/workspaces/test/items/TASK-5/commitment", true},
+		{"/api/v1/workspaces/test/items/TASK-5/commitment/resolve", true},
+		{"/api/v1/workspaces/test/items/TASK-5/commitment/renegotiate", true},
+		{"/api/v1/workspaces/test/items/TASK-5/commitment/links", true},
+		{"/api/v1/workspaces/test/items/TASK-5/commitment/move-preview", true},
+		{"/api/v1/workspaces/test/items/TASK-5/commitment/move", true},
+		{"/api/v1/workspaces/test/items/TASK-5/commitment/gates", true},
+		{"/api/v1/workspaces/test/commitment-links/link-id", true},
+		{"/api/v1/workspaces/test/commitment-gates/gate-id", true},
+		{"/api/v1/workspaces/test/items/TASK-5/move", false},
+		{"/api/v1/workspaces/test/items/TASK-5/copy", false},
+		{"/api/v1/workspaces/test/items/TASK-5/copy/resolve", false},
+		{"/api/v1/workspaces/test/items/TASK-5/reminders", false},
+		{"/api/v1/workspaces/test/items/TASK-5/verifications", false},
+		{"/api/v1/workspaces/test/items/import", false},
+		// A resource name or query value is not a commitment route.
+		{"/api/v1/workspaces/commitment/items/commitment/move", false},
+		{"/api/v1/workspaces/test/items/TASK-5/commitment-notes", false},
+		{"/api/v1/workspaces/test/items/TASK-5/move?next=/commitment", false},
+	} {
+		t.Run(tc.route, func(t *testing.T) {
+			const body = `{"error":{"code":"invalid_body","message":"Invalid JSON body"}}`
+			res := classifyHTTPStatusKind(context.Background(), "item", tc.route, 400, []byte(body), nil, ResourceItem, "TASK-5")
+			want := ErrorPayload{Code: ErrValidationFailed, Message: "Validation failed.", Hint: "Backend: Invalid JSON body Route: " + tc.route + ". Adjust the input shape and retry."}
+			if tc.graph {
+				want = ErrorPayload{Code: ErrInvalidBody, Message: "Invalid JSON body"}
+			}
+			gotJSON, _ := json.Marshal(res.StructuredContent)
+			wantJSON, _ := json.Marshal(ErrorEnvelope{Error: want})
+			if !res.IsError || string(gotJSON) != string(wantJSON) {
+				t.Errorf("got %s; want %s", gotJSON, wantJSON)
+			}
+		})
 	}
 }
