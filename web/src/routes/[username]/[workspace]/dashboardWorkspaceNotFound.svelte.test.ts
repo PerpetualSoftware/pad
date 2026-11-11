@@ -52,8 +52,13 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 		loadAll: vi.fn(async () => {}),
 	},
 }));
+const syncCallbacks = vi.hoisted(() => [] as Array<(r: unknown) => void>);
 vi.mock('$lib/services/sync.svelte', () => ({
-	syncService: { onSync: () => () => {}, start: () => {}, stop: () => {} },
+	syncService: {
+		onSync: (cb: (r: unknown) => void) => { syncCallbacks.push(cb); return () => {}; },
+		start: () => {},
+		stop: () => {},
+	},
 }));
 vi.mock('$lib/stores/ui.svelte', () => ({
 	uiStore: {
@@ -95,6 +100,7 @@ async function mountAndFail(err: unknown): Promise<void> {
 describe('a workspace the caller cannot open (BUG-4472)', () => {
 	beforeEach(() => {
 		dashboardCalls.length = 0;
+		syncCallbacks.length = 0;
 	});
 	afterEach(() => cleanup());
 
@@ -107,6 +113,17 @@ describe('a workspace the caller cannot open (BUG-4472)', () => {
 		expect(link!.textContent).toContain('Go to your workspaces');
 		expect(shown('No dashboard data available.')).toBe(false);
 		// Terminal, not transient: no Retry loop that can never succeed.
+		expect(document.querySelector('.dash-error')).toBeNull();
+	});
+
+	it('a later background reload that fails transiently does not turn it into a Retry', async () => {
+		await mountAndFail(new PadApiError('not_found'));
+		expect(syncCallbacks.length, 'the page did not subscribe to sync').toBeGreaterThan(0);
+		for (const cb of syncCallbacks) cb({ workspace: 'ws', type: 'changed' });
+		await spin(() => dashboardCalls.length > 1, 'the sync signal never reloaded — this leg measures nothing');
+		dashboardCalls[1]!.reject(new Error('blip'));
+		for (let i = 0; i < 5; i++) { await Promise.resolve(); await tick(); }
+		expect(shown('Workspace not found')).toBe(true);
 		expect(document.querySelector('.dash-error')).toBeNull();
 	});
 
