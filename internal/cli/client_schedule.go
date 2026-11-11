@@ -74,3 +74,57 @@ func (c *Client) GetStaleAgenda(wsSlug, from, tz string) (json.RawMessage, error
 	var result json.RawMessage
 	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agenda?"+q.Encode(), &result)
 }
+
+// ListCommitmentLinks returns the readable links of an item.
+func (c *Client) ListCommitmentLinks(ws, ref string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.get(commitmentBase(ws, ref)+"/links", &raw)
+}
+
+// AddCommitmentLink previews or creates a link from the URL's parent item.
+func (c *Client) AddCommitmentLink(ws, ref string, body map[string]any) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.post(commitmentBase(ws, ref)+"/links", body, &raw)
+}
+
+func commitmentGraphPath(ws, kind, id string) string {
+	return "/workspaces/" + url.PathEscape(ws) + "/commitment-" + kind + "/" + url.PathEscape(id)
+}
+
+// EditCommitmentLink previews or applies an offset or cancellation policy edit.
+func (c *Client) EditCommitmentLink(ws, id string, body map[string]any) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.patch(commitmentGraphPath(ws, "links", id), body, &raw)
+}
+
+// RemoveCommitmentLink removes a link without deleting either commitment.
+func (c *Client) RemoveCommitmentLink(ws, id string) (json.RawMessage, error) {
+	return nil, c.delete(commitmentGraphPath(ws, "links", id))
+}
+
+// MoveLinkedCommitment previews or applies a cascade of linked dates.
+func (c *Client) MoveLinkedCommitment(ws, ref string, preview bool, body map[string]any) (json.RawMessage, error) {
+	path := "/move"
+	if preview {
+		path = "/move-preview"
+	}
+	var raw json.RawMessage
+	return raw, c.post(commitmentBase(ws, ref)+path, body, &raw)
+}
+
+// ListCommitmentGates returns the item's gate state and readable blockers.
+func (c *Client) ListCommitmentGates(ws, ref string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.get(commitmentBase(ws, ref)+"/gates", &raw)
+}
+
+// AddCommitmentGate waits for the blocker to succeed.
+func (c *Client) AddCommitmentGate(ws, ref, blocker string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.post(commitmentBase(ws, ref)+"/gates", map[string]any{"blocker": blocker}, &raw)
+}
+
+// RemoveCommitmentGate removes the ordering constraint.
+func (c *Client) RemoveCommitmentGate(ws, id string) (json.RawMessage, error) {
+	return nil, c.delete(commitmentGraphPath(ws, "gates", id))
+}

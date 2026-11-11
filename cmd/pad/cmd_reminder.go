@@ -70,7 +70,7 @@ Schedule flags cannot be combined with --remind-at or --rearm. Rules only the
 server can judge (a firing floor on HOURLY and MINUTELY, anchor completion with
 a BYxxx part) are refused by it, and its message is shown unchanged.
 
-Subcommands: show, done, skip, snooze, move, renegotiate, agenda, edit, rm (see each --help).`,
+Subcommands: show, done, skip, snooze, move, renegotiate, link, gate, agenda, edit, rm (see each --help).`,
 		// `[ref]` rather than `<ref>` in Use, because cmdhelp derives the
 		// machine-readable arg spec from this string and `<ref>` would declare
 		// a REQUIRED positional that --rearm does not take.
