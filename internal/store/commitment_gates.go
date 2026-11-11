@@ -340,9 +340,10 @@ func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.Com
 //     a passed-over `missed`, are lapsed. A recorded deadline miss under
 //     deadline_behavior `lapses` is lapsed whether or not the occurrence was
 //     closed; under `stays_owed` the occurrence is still owed, so it stays
-//     pending and a later Done opens the gate. A `moved` occurrence, or one with
-//     no row, is pending, unless the blocker ITEM can no longer deliver: an
-//     abandoned status, or an item removed, is cancelled.
+//     pending and a later Done opens the gate. A `moved` occurrence is lapsed
+//     once the schedule has passed it over; while still outstanding it is
+//     pending. An occurrence with no row is pending, unless the blocker ITEM
+//     can no longer deliver: an abandoned status, or an item removed, is cancelled.
 //   - A blocker with no commitment, or whose commitment had ended when the gate
 //     was written (an empty key: there is no occurrence to fix), or whose
 //     commitment was deleted since (the schedule id is NULL), is judged by the
@@ -420,6 +421,14 @@ func (s *Store) occurrenceOutcomeQ(q Queryer, scheduleID, key string) (out sched
 		return schedule.OutcomeSkipped, true, nil
 	case "lapsed", "missed":
 		return schedule.OutcomeLapsed, true, nil
+	case "moved":
+		sc, err := s.getScheduleByIDQ(q, scheduleID)
+		if err != nil {
+			return "", false, err
+		}
+		if sc != nil && (sc.EndedAt != nil || sc.NextAt == nil || sc.NextWall == nil || OccurrenceKey(sc, *sc.NextAt, *sc.NextWall) != key) {
+			return schedule.OutcomeLapsed, true, nil
+		}
 	}
 	var misses int
 	if err := q.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_changes c JOIN item_schedules sc ON sc.id=c.schedule_id
