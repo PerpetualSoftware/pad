@@ -159,11 +159,11 @@ func bootstrapAgendaRows(rows []store.BootstrapAgendaRow, loc *time.Location, no
 // projectBootstrapAgenda applies the limits to a read. Nil when there is
 // nothing to show.
 func projectBootstrapAgenda(set *store.BootstrapAgendaSet, zone usertz.Zone, now time.Time) *BootstrapAgenda {
-	if set == nil || (len(set.DueToday)+len(set.Carried)+len(set.Stale) == 0 && !set.Truncated) {
+	if set == nil || (len(set.DueToday)+len(set.Carried)+len(set.Stale) == 0 && !set.Truncated && !set.Incomplete) {
 		return nil
 	}
 	loc := zone.Loc
-	out := &BootstrapAgenda{Tz: zone.Name, Today: now.In(loc).Format("2006-01-02"), Note: bootstrapAgendaNote, Truncated: set.Truncated, DueTodayComplete: !set.Truncated && len(set.DueToday) <= bootstrapAgendaTodayCap, CarriedComplete: !set.Truncated && len(set.Carried) <= bootstrapAgendaCarriedCap, StaleComplete: !set.Truncated}
+	out := &BootstrapAgenda{Tz: zone.Name, Today: now.In(loc).Format("2006-01-02"), Note: bootstrapAgendaNote, Truncated: set.Truncated, DueTodayComplete: !set.Truncated && !set.Incomplete && len(set.DueToday) <= bootstrapAgendaTodayCap, CarriedComplete: !set.Truncated && !set.Incomplete && len(set.Carried) <= bootstrapAgendaCarriedCap, StaleComplete: !set.Truncated && !set.Incomplete}
 	today, carried := set.DueToday, set.Carried
 	if n := len(today) - bootstrapAgendaTodayCap; n > 0 {
 		today, out.DueTodayMoreCount = today[:bootstrapAgendaTodayCap], n
@@ -284,7 +284,7 @@ func (s *Server) handleStaleAgenda(w http.ResponseWriter, r *http.Request, works
 		}
 		rows = rows[:n]
 	}
-	resp.Truncated = set.Truncated
+	resp.Truncated = set.Truncated || set.Incomplete
 	resp.Entries = bootstrapAgendaRows(rows, zone.Loc, now)
 	writeJSON(w, http.StatusOK, resp)
 }

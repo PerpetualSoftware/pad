@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -43,6 +44,8 @@ type BootstrapAgendaSet struct {
 	Stale    []BootstrapAgendaRow // due more than 14 days ago
 	// Truncated is true when the scan cap stopped the read.
 	Truncated bool
+	// Incomplete marks skipped unreadable schedules, whose group cannot be known.
+	Incomplete bool
 }
 
 // bootstrapAgendaScan bounds the schedules one read looks at.
@@ -116,10 +119,8 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	if err := s.fillAgendaItemFacts(found, "", nil); err != nil {
 		return nil, err
 	}
-	outstanding, err := s.outstandingAgendaRows(found, loc)
-	if err != nil {
-		return nil, err
-	}
+	outstanding, incomplete := s.outstandingAgendaRows(found, loc)
+	set.Incomplete = incomplete
 	for _, row := range outstanding {
 		due := row.Due
 		roleToday := false
@@ -161,19 +162,26 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 
 // outstandingAgendaRows reads each outstanding occurrence at its effective due
 // instant. A move defers the claim; a snooze only defers its next notification.
-func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location) ([]BootstrapAgendaRow, error) {
+func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location) ([]BootstrapAgendaRow, bool) {
 	var out []BootstrapAgendaRow
+	incomplete := false
+	skip := func(as AgendaSchedule, err error) {
+		incomplete = true
+		slog.Warn("agenda: schedule unreadable", "schedule_id", as.Schedule.ID, "error_class", fmt.Sprintf("%T", err))
+	}
 	for _, as := range found {
 		gates, err := s.evaluateGatesQ(s.db, as.Schedule.WorkspaceID, as.Schedule.ItemID)
 		if err != nil {
-			return nil, err
+			skip(as, err)
+			continue
 		}
 		if gates.state != models.GateStateReleased {
 			continue
 		}
 		e, err := s.AgendaOutstanding(as.Schedule, loc, time.Time{})
 		if err != nil {
-			return nil, err
+			skip(as, err)
+			continue
 		}
 		if e == nil {
 			continue
@@ -182,10 +190,11 @@ func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location
 		if e.Roles.Target != nil && len(*e.Roles.Target) == 10 {
 			due, err = agendaRoleInstant(*e.Roles.Target, loc)
 			if err != nil {
-				return nil, err
+				skip(as, err)
+				continue
 			}
 		}
 		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, Due: due, Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Roles: e.Roles, OccurrenceKey: e.OccurrenceKey})
 	}
-	return out, nil
+	return out, incomplete
 }
