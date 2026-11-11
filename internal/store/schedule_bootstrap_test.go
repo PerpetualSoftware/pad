@@ -108,6 +108,20 @@ func TestBootstrapAgendaMovedComesBackWhenDue(t *testing.T) {
 	}
 }
 
+// A far-future occurrence moved into today keeps next_at at its seed instant
+// and reads at next_override_at, so the near-term bound must admit either.
+func TestBootstrapAgendaFarFutureMovedIntoToday(t *testing.T) {
+	t.Parallel()
+	f := newBootFixture(t)
+	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-12-20T09:00", Tz: "UTC"}, "2026-10-20T00:00:00Z")
+	until := rt("2026-10-29T15:00:00Z")
+	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-12-20T09:00:00Z"), State: "move", Until: &until, Actor: "user"}, "2026-10-29T08:00:00Z")
+
+	if set := f.read(t, false, time.UTC, "2026-10-29T08:00:00Z"); len(set.DueToday) != 1 || len(set.Carried) != 0 {
+		t.Fatalf("moved from December into today: due today %v, carried %v", refsOf(set.DueToday), refsOf(set.Carried))
+	}
+}
+
 // Past 14 days an occurrence leaves the list and is only counted.
 func TestBootstrapAgendaStaleAfterFourteenDays(t *testing.T) {
 	t.Parallel()
