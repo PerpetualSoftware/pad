@@ -117,7 +117,6 @@
 	$effect(() => {
 		const up = uiStore.keyboardVisible;
 		if (up && !keyboardWas) inputMode.softKeyboardUp();
-		else if (!up && keyboardWas) inputMode.softKeyboardDown();
 		keyboardWas = up;
 	});
 

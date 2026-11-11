@@ -17,7 +17,8 @@
 			<label for={id}>Chat: Enter sends (for a hardware keyboard)</label>
 			<p id="{id}-desc" class="desc">
 				For a tablet or phone with a keyboard attached. While the on-screen keyboard
-				is up, Enter adds a line. Saved on this device.
+				is up, Enter adds a line. Saved on this device; turning it off goes back to the
+				default.
 			</p>
 		</div>
 	</div>

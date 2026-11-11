@@ -586,6 +586,21 @@ describe('Enter sends (TASK-4099)', () => {
 			expect(onSend).toHaveBeenCalledTimes(1);
 		});
 
+		it('a composer unmounted while the keyboard was up leaves no stuck touch mode for the next one', async () => {
+			setPointer(false);
+			inputMode.setHardware(true);
+			mount();
+			kb.visible = true;
+			flushSync();
+			cleanup();
+			kb.visible = false;
+			flushSync();
+			const { box, onSend } = mount();
+			await type(box, 'hello');
+			key(box, {});
+			expect(onSend).toHaveBeenCalledTimes(1);
+		});
+
 		it('with nothing stored, a soft keyboard going down leaves touch mode in force', async () => {
 			setPointer(true);
 			const { box, onSend } = mount();

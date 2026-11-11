@@ -1,6 +1,17 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 // The per-device key preference and tab mode shared by every composer.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { kb } from './uiKeyboard.fixture.svelte';
+// A real soft keyboard cannot be raised in jsdom: keyboardVisible is driven by hand.
+vi.mock('$lib/stores/ui.svelte', async (orig) => {
+	const actual = await orig<typeof import('$lib/stores/ui.svelte')>();
+	return {
+		...actual,
+		uiStore: new Proxy(actual.uiStore, {
+			get: (t, k) => (k === 'keyboardVisible' ? kb.visible : Reflect.get(t, k))
+		})
+	};
+});
 import { inputMode } from './inputMode.svelte';
 
 function setPointer(fine: boolean | null) {
@@ -20,6 +31,7 @@ beforeEach(() => {
 	inputMode.reset();
 });
 afterEach(() => {
+	kb.visible = false;
 	vi.restoreAllMocks();
 	Reflect.deleteProperty(window, 'matchMedia');
 });
@@ -64,23 +76,35 @@ describe('inputMode', () => {
 		expect(localStorage.getItem('pad-chat-enter-sends')).toBe('on');
 	});
 
-	it('a soft keyboard drops the tab to touch mode and keeps the stored choice', () => {
-		setPointer(true);
+	it('a soft keyboard pauses a stored choice while it is up and keeps it stored', () => {
+		setPointer(false);
 		inputMode.setHardware(true);
+		kb.visible = true;
 		inputMode.softKeyboardUp();
 		expect(inputMode.hardware).toBe(false);
 		expect(inputMode.stored).toBe(true);
 		expect(localStorage.getItem('pad-chat-enter-sends')).toBe('on');
 		inputMode.enterByTouch();
 		expect(inputMode.hardware).toBe(false);
-		inputMode.softKeyboardDown();
+		kb.visible = false;
+		expect(inputMode.hardware).toBe(true);
+	});
+
+	it('a stored choice applies again when the keyboard goes down, whoever saw it come up', () => {
+		setPointer(false);
+		inputMode.setHardware(true);
+		kb.visible = true;
+		inputMode.softKeyboardUp();
+		// No softKeyboard-down call: the composer that saw the keyboard may be gone.
+		kb.visible = false;
 		expect(inputMode.hardware).toBe(true);
 	});
 
 	it('with nothing stored, touch mode outlasts the soft keyboard going down', () => {
 		setPointer(true);
+		kb.visible = true;
 		inputMode.softKeyboardUp();
-		inputMode.softKeyboardDown();
+		kb.visible = false;
 		expect(inputMode.hardware).toBe(false);
 	});
 

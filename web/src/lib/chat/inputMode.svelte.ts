@@ -1,11 +1,14 @@
 import { browser } from '$app/env';
+import { uiStore } from '$lib/stores/ui.svelte';
 
 // Which keys send in the Chat composer (TASK-4099, DOC-4316 section 5).
 // The preference lives on the preferences page and is kept per device.
 // With no stored choice, the primary pointer decides: fine means Enter sends,
 // coarse means Enter adds a line. Touch on the box overrides the fine default,
 // but preserves a stored choice. While a soft keyboard is up, Enter adds a line
-// whatever is stored; when it goes down, a stored choice applies again.
+// whatever is stored; when it goes down, a stored choice applies again. Turning
+// the setting off removes the stored choice: the pointer default applies again
+// after a reload, and touch mode holds for this page.
 // Nothing here ever sends by itself.
 const STORAGE_KEY = 'pad-chat-enter-sends';
 
@@ -21,7 +24,6 @@ function readStored(): boolean {
 class InputMode {
 	#stored = $state(readStored());
 	#touched = $state(false);
-	#softKeyboard = $state(false);
 
 	#finePointer(): boolean {
 		return typeof window !== 'undefined' && !!window.matchMedia?.('(pointer: fine)').matches;
@@ -29,7 +31,7 @@ class InputMode {
 
 	/** True when unmodified Enter sends. */
 	get hardware(): boolean {
-		return (this.#stored && !this.#softKeyboard) || (this.#finePointer() && !this.#touched);
+		return (this.#stored && !uiStore.keyboardVisible) || (this.#finePointer() && !this.#touched);
 	}
 
 	/** The per-device choice, even while a soft keyboard overrides it for this page. */
@@ -47,22 +49,19 @@ class InputMode {
 		if (!this.#stored) this.#touched = true;
 	}
 
-	/** A soft keyboard stops Enter sending while it is up, without changing the saved choice. */
+	/**
+	 * A soft keyboard came up: with nothing stored, touch mode holds for this page. A stored
+	 * choice is paused by `hardware` reading uiStore.keyboardVisible directly, so no copy of
+	 * that state can outlive the composer that saw it.
+	 */
 	softKeyboardUp(): void {
 		this.#touched = true;
-		this.#softKeyboard = true;
 	}
 
-	/** The soft keyboard went down: a stored choice applies again. With none stored, touch mode stays. */
-	softKeyboardDown(): void {
-		this.#softKeyboard = false;
-	}
-
-	/** The person's explicit choice. Off is a choice too: it holds even on a fine pointer. */
+	/** The person's explicit choice. Off clears the stored choice and holds touch mode for this page. */
 	setHardware(on: boolean): void {
 		this.#stored = on;
 		this.#touched = !on;
-		this.#softKeyboard = false;
 		if (!browser) return;
 		try {
 			if (on) localStorage.setItem(STORAGE_KEY, 'on');
@@ -76,7 +75,6 @@ class InputMode {
 	reset(): void {
 		this.#stored = false;
 		this.#touched = false;
-		this.#softKeyboard = false;
 	}
 }
 
