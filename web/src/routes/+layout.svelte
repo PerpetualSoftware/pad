@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { purgeNotUser } from '$lib/chat/chatRecords';
 	import { modKeyLabel } from '$lib/utils/platform';
+	import { stopIOSFocusZoom } from '$lib/utils/iosFocusZoom';
 	import '../app.css';
 	import { onMount, untrack } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -154,6 +155,9 @@
 	setNetworkUnreachableHandler(() => {
 		notifyNetworkUnreachable();
 	});
+
+	// Before any field can take focus: iOS zooms into small text on focus (BUG-4482).
+	onMount(() => stopIOSFocusZoom(document, navigator));
 
 	onMount(() => {
 		// Re-arm the one-shot workspace-load latch whenever the signed-in user
