@@ -47,10 +47,6 @@ func agendaPriority(c store.AgendaWorkCandidate) string {
 func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope store.PendingReminderScope) error {
 	resp := &run.response
 	cut := func() { resp.PriorityListComplete, resp.WaitingOnComplete, resp.NoDateComplete = false, false, false }
-	if run.workRemaining <= 0 {
-		cut()
-		return nil
-	}
 	candidates, more, err := s.store.ListAgendaWork(workspaceID, scope, run.recipient, run.audience, run.workRemaining, run.listNoDate)
 	if err != nil {
 		return err
