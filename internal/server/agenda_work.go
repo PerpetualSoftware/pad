@@ -2,6 +2,8 @@ package server
 
 import (
 	"encoding/json"
+	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -47,9 +49,15 @@ func agendaPriority(c store.AgendaWorkCandidate) string {
 func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope store.PendingReminderScope) error {
 	resp := &run.response
 	cut := func() { resp.PriorityListComplete, resp.WaitingOnComplete, resp.NoDateComplete = false, false, false }
+	if s.agendaNow().After(run.deadline) {
+		cut()
+		return nil
+	}
 	candidates, more, err := s.store.ListAgendaWork(workspaceID, scope, run.recipient, run.audience, run.workRemaining, run.listNoDate)
 	if err != nil {
-		return err
+		slog.Warn("agenda: work candidates unavailable", "workspace_id", workspaceID, "error_class", fmt.Sprintf("%T", err))
+		cut()
+		return nil
 	}
 	run.workRemaining -= len(candidates)
 	if more {
@@ -61,7 +69,9 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 	}
 	schedules, gated, err := s.store.AgendaWorkDetails(workspaceID, ids)
 	if err != nil {
-		return err
+		slog.Warn("agenda: work details unavailable", "workspace_id", workspaceID, "error_class", fmt.Sprintf("%T", err))
+		cut()
+		return nil
 	}
 	for _, c := range candidates {
 		if s.agendaNow().After(run.deadline) {
@@ -73,7 +83,9 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 		if gated[c.ItemID] {
 			gates, err := s.store.ScheduleGates(workspaceID, c.ItemID, models.CommitmentAccess{Readable: map[string]bool{c.ItemID: true}})
 			if err != nil {
-				return err
+				slog.Warn("agenda: work gates unavailable", "workspace_id", workspaceID, "item_id", c.ItemID, "error_class", fmt.Sprintf("%T", err))
+				resp.WaitingOnComplete = false
+				continue
 			}
 			gateState = gates.State
 		}
@@ -109,6 +121,12 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 			continue
 		}
 		if current == nil {
+			if run.listNoDate {
+				e.Reason, e.ScheduleID = "unplaced", sc.ID
+				resp.NoDate = append(resp.NoDate, e)
+			} else {
+				resp.PriorityListComplete = false
+			}
 			continue
 		}
 		e.Type, e.At, e.Day, e.State, e.ScheduleID = "schedule", current.At.In(run.loc).Format(time.RFC3339), current.At.In(run.loc).Format("2006-01-02"), "outstanding", sc.ID

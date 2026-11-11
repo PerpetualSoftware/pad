@@ -215,6 +215,7 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	s.appendAgendaWork(run, workspaceID, scope)
 	run.finish()
 	writeJSON(w, http.StatusOK, run.response)
 }
@@ -278,9 +279,6 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 		run.timeCut = sch.TimeCut
 	}
 
-	if err := s.appendAgendaWork(run, workspaceID, scope); err != nil {
-		return err
-	}
 	// The dated half: ListItems carries the scope, archived and terminal clauses.
 	fromDay, toDay := from.In(loc).Format("2006-01-02"), to.Add(-time.Nanosecond).In(loc).Format("2006-01-02")
 	items, err := s.store.ListItems(workspaceID, models.ItemListParams{

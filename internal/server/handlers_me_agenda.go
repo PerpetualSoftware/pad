@@ -66,6 +66,13 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	for i, d := range days {
 		counts[i].Day = d
 	}
+	// Save the admitted scope and owner once for the later group pass.
+	type groupWorkspace struct {
+		workspace models.Workspace
+		scope     store.PendingReminderScope
+		owner     string
+	}
+	var groupWorkspaces []groupWorkspace
 	countRows, countsCut := 0, false
 	for _, ws := range admitted {
 		elig := &needsEligibility{s: s, wsID: ws.ID, cache: map[string]*needsVisibility{}}
@@ -112,7 +119,6 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		priorityStart, waitingStart, noDateStart := len(run.response.PriorityList), len(run.response.WaitingOn), len(run.response.NoDate)
 		entryStart, unavailableStart, unexpandedStart := len(run.response.Entries), len(run.response.Unavailable), len(run.response.Unexpanded)
 		if err := s.appendWorkspaceAgenda(run, ws.ID, scope); err != nil {
 			writeInternalError(w, err)
@@ -138,16 +144,24 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			e := &run.response.Entries[i]
 			e.Workspace, e.WorkspaceName, e.OwnerUsername = ws.Slug, ws.Name, owner
 		}
-		for _, rows := range [][]agendaEntry{run.response.PriorityList[priorityStart:], run.response.WaitingOn[waitingStart:], run.response.NoDate[noDateStart:]} {
-			for i := range rows {
-				rows[i].Workspace, rows[i].WorkspaceName, rows[i].OwnerUsername = ws.Slug, ws.Name, owner
-			}
-		}
+		groupWorkspaces = append(groupWorkspaces, groupWorkspace{ws, scope, owner})
 		for i := unavailableStart; i < len(run.response.Unavailable); i++ {
 			run.response.Unavailable[i].Workspace, run.response.Unavailable[i].OwnerUsername = ws.Slug, owner
 		}
 		for i := unexpandedStart; i < len(run.response.Unexpanded); i++ {
 			run.response.Unexpanded[i].Workspace, run.response.Unexpanded[i].OwnerUsername = ws.Slug, owner
+		}
+	}
+	// Every workspace's window, counts and events precede actionable work.
+	// Group budget cuts affect only the group completeness flags.
+	for _, group := range groupWorkspaces {
+		ws := group.workspace
+		priorityStart, waitingStart, noDateStart := len(run.response.PriorityList), len(run.response.WaitingOn), len(run.response.NoDate)
+		s.appendAgendaWork(run, ws.ID, group.scope)
+		for _, rows := range [][]agendaEntry{run.response.PriorityList[priorityStart:], run.response.WaitingOn[waitingStart:], run.response.NoDate[noDateStart:]} {
+			for i := range rows {
+				rows[i].Workspace, rows[i].WorkspaceName, rows[i].OwnerUsername = ws.Slug, ws.Name, group.owner
+			}
 		}
 	}
 	if countsCut {
