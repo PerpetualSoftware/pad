@@ -267,9 +267,8 @@ func TestBootstrapAgendaOrder(t *testing.T) {
 	}
 }
 
-// A snooze after a move replaces the override but leaves the moved row: the
-// occurrence is listed at its grid time again, never hidden by the old move.
-func TestBootstrapAgendaSnoozeAfterMoveIsNotAMove(t *testing.T) {
+// A snooze changes reminder timing only; the sparse target override survives.
+func TestBootstrapAgendaSnoozePreservesMovedTarget(t *testing.T) {
 	t.Parallel()
 	f := newBootFixture(t)
 	item, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-20T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, "2026-10-20T00:00:00Z")
@@ -280,7 +279,7 @@ func TestBootstrapAgendaSnoozeAfterMoveIsNotAMove(t *testing.T) {
 	}
 	snooze := rt("2026-10-30T09:00:00Z")
 	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-10-20T09:00:00Z"), State: "snooze", Until: &snooze, Actor: "user"}, "2026-10-29T09:00:00Z")
-	if set := f.read(t, false, time.UTC, "2026-10-29T12:00:00Z"); len(set.Carried) != 1 {
-		t.Fatalf("after a snooze, carried = %d, want the occurrence at its grid time", len(set.Carried))
+	if set := f.read(t, false, time.UTC, "2026-10-29T12:00:00Z"); len(set.Carried)+len(set.DueToday) != 0 {
+		t.Fatalf("snooze resurrected the original target: %+v", set)
 	}
 }

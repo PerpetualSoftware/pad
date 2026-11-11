@@ -112,6 +112,7 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
+		priorityStart, waitingStart, noDateStart := len(run.response.PriorityList), len(run.response.WaitingOn), len(run.response.NoDate)
 		entryStart, unavailableStart, unexpandedStart := len(run.response.Entries), len(run.response.Unavailable), len(run.response.Unexpanded)
 		if err := s.appendWorkspaceAgenda(run, ws.ID, scope); err != nil {
 			writeInternalError(w, err)
@@ -136,6 +137,11 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		for i := entryStart; i < len(run.response.Entries); i++ {
 			e := &run.response.Entries[i]
 			e.Workspace, e.WorkspaceName, e.OwnerUsername = ws.Slug, ws.Name, owner
+		}
+		for _, rows := range [][]agendaEntry{run.response.PriorityList[priorityStart:], run.response.WaitingOn[waitingStart:], run.response.NoDate[noDateStart:]} {
+			for i := range rows {
+				rows[i].Workspace, rows[i].WorkspaceName, rows[i].OwnerUsername = ws.Slug, ws.Name, owner
+			}
 		}
 		for i := unavailableStart; i < len(run.response.Unavailable); i++ {
 			run.response.Unavailable[i].Workspace, run.response.Unavailable[i].OwnerUsername = ws.Slug, owner
@@ -200,6 +206,7 @@ func (s *Server) agendaGroupWorkspaces(w http.ResponseWriter, r *http.Request, u
 func (s *Server) agendaExpired(run *agendaRead) bool {
 	if s.agendaNow().After(run.deadline) {
 		run.response.Truncated, run.setCut = true, true
+		run.response.PriorityListComplete, run.response.WaitingOnComplete, run.response.NoDateComplete = false, false, false
 		return true
 	}
 	return false

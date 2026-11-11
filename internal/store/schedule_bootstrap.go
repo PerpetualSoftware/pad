@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
-	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
 // BootstrapAgendaStaleAfter is how long an occurrence may stay unresolved and
@@ -18,9 +17,11 @@ const BootstrapAgendaStaleAfter = 14 * 24 * time.Hour
 // agenda shows it.
 type BootstrapAgendaRow struct {
 	AgendaSchedule
-	Due    time.Time // the instant it is due, the moved instant for a moved one
-	Wall   string    // the occurrence's wall, a date for an all-day one
-	AllDay bool
+	Due           time.Time // the instant it is due, the moved instant for a moved one
+	Wall          string    // the occurrence's wall, a date for an all-day one
+	Roles         models.CommitmentRoles
+	OccurrenceKey string
+	AllDay        bool
 	// MissedCount is set by ReadMissed, for the rows that are shown.
 	MissedCount int
 }
@@ -79,16 +80,13 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	}
 	scopeSQL, scopeArgs := scopeClause("i", p.Scope)
 	open, openArgs := s.nonTerminalFilter(p.WorkspaceID, "i")
-	// The stored instants are early or late by up to a day and a half against the
-	// caller's reading (a floating or all-day occurrence), so the bound is padded
-	// and the exact test is made below.
-	const f = "2006-01-02T15:04:05Z"
-	bound := startTomorrow.UTC().Add(36 * time.Hour).Format(f)
-	args := []any{p.WorkspaceID, audiences[0], audiences[1], bound, bound, p.WorkspaceID, p.UserID}
+	// Role overrides can move any date into today independently of next_at.
+	// Apply the role membership check after the bounded, admitted scan.
+	args := []any{p.WorkspaceID, audiences[0], audiences[1], p.WorkspaceID, p.UserID}
 	args = append(append(args, scopeArgs...), openArgs...)
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
 		WHERE workspace_id = ? AND ended_at IS NULL AND next_at IS NOT NULL AND audience IN (?, ?)
-			AND (next_at < ? OR next_override_at < ?) AND item_id IN (
+			AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
 				AND (CASE WHEN i.assigned_user_id IS NULL OR i.assigned_user_id = '' THEN i.created_by_user_id ELSE i.assigned_user_id END) = ?`+scopeSQL+` AND `+open+`)
@@ -124,7 +122,19 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	}
 	for _, row := range outstanding {
 		due := row.Due
+		roleToday := false
+		for _, v := range []*string{row.Roles.Target, row.Roles.Earliest, row.Roles.Deadline, row.Roles.OccupiedUntil} {
+			if v == nil {
+				continue
+			}
+			at, err := agendaRoleInstant(*v, loc)
+			if err == nil && !at.Before(startToday) && at.Before(startTomorrow) {
+				roleToday = true
+			}
+		}
 		switch {
+		case roleToday:
+			set.DueToday = append(set.DueToday, row)
 		case !due.Before(startTomorrow):
 		case !due.Before(startToday):
 			set.DueToday = append(set.DueToday, row)
@@ -149,80 +159,33 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	return set, nil
 }
 
-// movedStill says the override on sc is its MOVE. A snooze after a move replaces
-// the override and leaves the moved row, so the row counts only while the
-// schedule has not been written since: a later write (a snooze, or an edit) reads
-// as not moved, and the occurrence is listed at its grid time, which errs toward
-// showing it. The stamps are whole seconds, so a snooze in the same second as the
-// move still reads as the move; the occurrence then waits for the snoozed time,
-// which is when it re-fires anyway.
-func movedStill(moved map[[2]string]string, sc *models.ItemSchedule) bool {
-	at, ok := moved[[2]string{sc.ID, *sc.NextWall}]
-	return ok && sc.UpdatedAt <= at
-}
-
-// movedWalls maps (schedule, wall) to the stamp of its MOVED history row, for the
-// schedules that hold an override. A move and a snooze both set the override;
-// only a move writes the row, and only a move defers the occurrence.
-func (s *Store) movedWalls(found []AgendaSchedule) (map[[2]string]string, error) {
-	var ids []any
-	for _, as := range found {
-		if as.Schedule.NextOverrideAt != nil {
-			ids = append(ids, as.Schedule.ID)
-		}
-	}
-	out := map[[2]string]string{}
-	if len(ids) == 0 {
-		return out, nil
-	}
-	rows, err := s.db.Query(s.q(`SELECT schedule_id, occurrence_wall, resolved_at FROM schedule_occurrences
-		WHERE state = 'moved' AND schedule_id IN (`+placeholders(len(ids))+`)`), ids...)
-	if err != nil {
-		return nil, fmt.Errorf("read moved occurrences: %w", err)
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var id, wall, at string
-		if err := rows.Scan(&id, &wall, &at); err != nil {
-			return nil, fmt.Errorf("scan moved occurrence: %w", err)
-		}
-		out[[2]string{id, wall}] = at
-	}
-	return out, rows.Err()
-}
-
 // outstandingAgendaRows reads each outstanding occurrence at its effective due
 // instant. A move defers the claim; a snooze only defers its next notification.
 func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location) ([]BootstrapAgendaRow, error) {
-	moved, err := s.movedWalls(found)
-	if err != nil {
-		return nil, err
-	}
 	var out []BootstrapAgendaRow
 	for _, as := range found {
-		sc := as.Schedule
-		if sc.NextWall == nil {
-			continue
-		}
-		wall, err := schedule.ParseWall(*sc.NextWall)
+		gates, err := s.evaluateGatesQ(s.db, as.Schedule.WorkspaceID, as.Schedule.ItemID)
 		if err != nil {
-			continue // a stored wall that will not parse is not listed
+			return nil, err
 		}
-		due, ok, err := OutstandingInstant(sc, loc)
-		if err != nil || !ok {
+		if gates.state != models.GateStateReleased {
 			continue
 		}
-		switch {
-		case sc.NextOverrideAt != nil && movedStill(moved, sc):
-			t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt)
-			if err != nil {
-				continue
-			}
-			due = t
-		case wall.AllDay:
-			due = schedule.Resolve(loc, wall) // a date, read in the caller's zone
+		e, err := s.AgendaOutstanding(as.Schedule, loc, time.Time{})
+		if err != nil {
+			return nil, err
 		}
-		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, Due: due, Wall: *sc.NextWall, AllDay: wall.AllDay})
+		if e == nil {
+			continue
+		}
+		due := e.At
+		if e.Roles.Target != nil && len(*e.Roles.Target) == 10 {
+			due, err = agendaRoleInstant(*e.Roles.Target, loc)
+			if err != nil {
+				return nil, err
+			}
+		}
+		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, Due: due, Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Roles: e.Roles, OccurrenceKey: e.OccurrenceKey})
 	}
 	return out, nil
 }

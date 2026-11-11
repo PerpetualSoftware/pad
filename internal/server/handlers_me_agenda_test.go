@@ -123,6 +123,21 @@ func TestMeAgendaTokenAllowlist(t *testing.T) {
 			if got := seen(m); got != "completed:Allowed,created:Allowed,date:Allowed,schedule:Allowed" {
 				t.Fatalf("entries = %s", got)
 			}
+			for _, key := range []string{"priority_list", "waiting_on", "no_date"} {
+				rows, _ := m[key].([]any)
+				for _, v := range rows {
+					e := v.(map[string]any)
+					if e["workspace"] != w.ws.Slug {
+						t.Fatalf("token scope leaked %s: %v", key, e)
+					}
+					if key == "priority_list" {
+						r, _ := e["roles"].(map[string]any)
+						if r["target"] == nil {
+							t.Fatalf("scoped roles missing: %v", e)
+						}
+					}
+				}
+			}
 			for _, e := range entriesOf(m) {
 				if e["workspace"] != w.ws.Slug || e["workspace_name"] != w.ws.Name {
 					t.Fatalf("workspace = %v", e)
@@ -443,35 +458,46 @@ func TestAgendaWaitingGateScopeAndCommitmentRedaction(t *testing.T) {
 		t.Fatal(err)
 	}
 	guest := f.guest(1, 2)
-	// Make this an admitted guest with a restricted collection, with item grants
-	// for the readable children only.
-	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, guest.ID, "guest"); err != nil {
+	// A collection-grant guest reads the children, while the parent's
+	// collection stays restricted.
+	secret, err := f.srv.store.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Secret", Schema: agendaSchema})
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, guest.ID, "specific", []string{}); err != nil {
+	if _, err := f.srv.store.DB().Exec(`UPDATE items SET collection_id=? WHERE id=?`, secret.ID, f.items[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.srv.store.CreateCollectionGrant(f.ws.ID, f.coll.ID, guest.ID, "view", f.owner.ID); err != nil {
 		t.Fatal(err)
 	}
 	start, _ := time.Parse(time.RFC3339, f.dates[0])
 	query := "from=" + start.Add(-time.Hour).Format(time.RFC3339) + "&to=" + start.Add(5*24*time.Hour).Format(time.RFC3339)
-	for _, path := range []string{"/api/v1/workspaces/" + f.ws.Slug + "/agenda?" + query, "/api/v1/me/agenda?" + query, f.path(f.items[1]), f.path(f.items[2])} {
-		rr := f.as(f.token(guest, ""), "GET", path, nil)
-		if rr.Code != 200 {
-			t.Fatalf("%s: %d %s", path, rr.Code, rr.Body.String())
-		}
-		body := rr.Body.String()
-		if strings.Contains(body, f.items[0].ID) || strings.Contains(body, "parent_role") || strings.Contains(body, "\"offset\"") || strings.Contains(body, "blocker_item_id") {
-			t.Fatalf("hidden lineage: %s", body)
-		}
-		if strings.Contains(path, "/agenda?") {
-			var m map[string]any
-			_ = json.Unmarshal(rr.Body.Bytes(), &m)
-			waiting, _ := m["waiting_on"].([]any)
-			if len(waiting) != 1 {
-				t.Errorf("waiting_on: %s", body)
+	hidden := f.as(f.token(guest, `["read"]`), "GET", f.path(f.items[0]), nil)
+	unknown := f.as(f.token(guest, `["read"]`), "GET", f.path(&models.Item{Slug: "missing-hidden-parent"}), nil)
+	if hidden.Code != 404 || unknown.Code != 404 || hidden.Body.String() != unknown.Body.String() {
+		t.Fatalf("hidden-item errors differ: %d %s / %d %s", hidden.Code, hidden.Body.String(), unknown.Code, unknown.Body.String())
+	}
+	for _, scopes := range []string{"", `["read"]`} {
+		for _, path := range []string{"/api/v1/workspaces/" + f.ws.Slug + "/agenda?" + query, "/api/v1/me/agenda?" + query, f.path(f.items[1]), f.path(f.items[2])} {
+			rr := f.as(f.token(guest, scopes), "GET", path, nil)
+			if rr.Code != 200 {
+				t.Fatalf("%s: %d %s", path, rr.Code, rr.Body.String())
 			}
-			for _, e := range entriesOf(m) {
-				if e["item_ref"] == f.items[2].Ref {
-					t.Errorf("blocked on calendar: %v", e)
+			body := rr.Body.String()
+			if strings.Contains(body, f.items[0].ID) || strings.Contains(body, "parent_role") || strings.Contains(body, "\"offset\"") || strings.Contains(body, "blocker_item_id") {
+				t.Fatalf("hidden lineage: %s", body)
+			}
+			if strings.Contains(path, "/agenda?") {
+				var m map[string]any
+				_ = json.Unmarshal(rr.Body.Bytes(), &m)
+				waiting, _ := m["waiting_on"].([]any)
+				if len(waiting) != 1 {
+					t.Errorf("waiting_on: %s", body)
+				}
+				for _, e := range entriesOf(m) {
+					if e["item_ref"] == f.items[2].Ref {
+						t.Errorf("blocked on calendar: %v", e)
+					}
 				}
 			}
 		}

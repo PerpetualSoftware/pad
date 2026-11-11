@@ -67,18 +67,18 @@ func TestCommitmentJournalSameSecondHistoryAndExport(t *testing.T) {
 			t.Fatalf("history order: %+v", got.Journal)
 		}
 	}
-	rows, err := f.s.scheduleChangesQ(f.s.db, f.ws.ID, "")
+	bundle, err := f.s.ExportWorkspace(f.ws.Slug)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var ids []string
-	for _, r := range rows {
+	for _, r := range bundle.ScheduleChanges {
 		if r.ChangeType == "move" {
 			ids = append(ids, r.ID)
 		}
 	}
 	if len(ids) != len(want) {
-		t.Fatalf("export changes %+v", rows)
+		t.Fatalf("export changes %+v", bundle.ScheduleChanges)
 	}
 	for i, id := range want {
 		if ids[i] != id {

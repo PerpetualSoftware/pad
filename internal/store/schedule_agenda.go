@@ -25,7 +25,7 @@ type AgendaSchedule struct {
 	ItemTitle   string
 	Collection  string // slug
 	RolesOrigin string
-	// Terminal is set only by ListSchedulesForCalendar: the item is in a
+	// Terminal is set by agenda and calendar admission: the item is in a
 	// terminal status of its collection.
 	Terminal bool
 }
@@ -37,7 +37,7 @@ type AgendaSchedule struct {
 // [from, to) (an early resolve ends a schedule before its due instant) never
 // push a visible schedule past it.
 func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
-	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, false)
+	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, true)
 }
 
 // ListSchedulesForCalendar is ListSchedulesForAgenda for the calendar, which
@@ -59,6 +59,10 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 	f := time.RFC3339
 	lo, hi := from.UTC().Add(-36*time.Hour).Format(f), to.UTC().Add(36*time.Hour).Format(f)
 	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
+	// Offset roles and sparse exceptions can place recorded dates far from
+	// their seed. These candidates must reach the role membership check.
+	shifted := `(target_days<>0 OR target_secs<>0 OR COALESCE(earliest_days,0)<>0 OR COALESCE(earliest_secs,0)<>0 OR COALESCE(deadline_days,0)<>0 OR COALESCE(deadline_secs,0)<>0 OR COALESCE(occupied_days,0)<>0 OR COALESCE(occupied_secs,0)<>0 OR EXISTS (SELECT 1 FROM schedule_occurrence_overrides v WHERE v.schedule_id=item_schedules.id))`
+	historyExtra := ` OR (` + shifted + ` AND EXISTS (SELECT 1 FROM schedule_occurrences h WHERE h.schedule_id=item_schedules.id))`
 	var doneSQL string
 	var doneArgs []any
 	if includeTerminal {
@@ -67,14 +71,14 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 		// The terminal expression is used twice, so its arguments are passed
 		// for each use, in placeholder order.
 		doneSQL, doneArgs = s.buildChildrenDoneExpr(s.doneFiltersForWorkspace(workspaceID), "i")
-		open = "(" + open + " OR (" + doneSQL + " AND EXISTS (SELECT 1 FROM schedule_occurrences t WHERE t.schedule_id = item_schedules.id AND t.occurrence_at >= ? AND t.occurrence_at < ?)))"
+		open = "(" + open + " OR (" + doneSQL + " AND (EXISTS (SELECT 1 FROM schedule_occurrences t WHERE t.schedule_id = item_schedules.id AND t.occurrence_at >= ? AND t.occurrence_at < ?)" + historyExtra + ")))"
 		openArgs = append(append(append(append([]any{}, openArgs...), doneArgs...), lo), hi)
 	}
 	args := append(append([]any{workspaceID, from.UTC().Format(f), lo, hi, workspaceID}, scopeArgs...), openArgs...)
 	// item_id IN (...), not a join: scheduleColumns names item_schedules.id.
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
 		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR EXISTS (SELECT 1 FROM schedule_occurrences o
-			WHERE o.schedule_id = item_schedules.id AND o.occurrence_at >= ? AND o.occurrence_at < ?)) AND item_id IN (
+			WHERE o.schedule_id = item_schedules.id AND o.occurrence_at >= ? AND o.occurrence_at < ?)`+historyExtra+`) AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)
 		ORDER BY item_schedules.id LIMIT ?`), append(args, limit+1)...)
@@ -168,20 +172,23 @@ func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneAr
 	return irows.Err()
 }
 
-// AgendaEntry is one occurrence on the agenda. At is the grid instant, in the
-// view's zone for a floating schedule; EffectiveAt is where a MOVE put it.
+// AgendaEntry contains one occurrence and all its effective roles. At is its
+// effective target; Wall and OccurrenceKey retain the immutable seed identity.
 type AgendaEntry struct {
-	At          time.Time
-	Wall        schedule.Wall
-	State       string // outstanding | scheduled | done | skipped | moved | missed | lapsed | unrecorded
-	Fired       bool
-	Overdue     bool
-	EffectiveAt *time.Time
-	ResolvedAt  string
-	Actor       string
-	CommentID   string
-	MissedCount int // the outstanding entry only
-	Stale       bool
+	Roles          models.CommitmentRoles
+	OccurrenceKey  string
+	DeadlinePassed bool
+	At             time.Time
+	Wall           schedule.Wall
+	State          string // outstanding | scheduled | done | skipped | moved | missed | lapsed | unrecorded
+	Fired          bool
+	Overdue        bool
+	EffectiveAt    *time.Time
+	ResolvedAt     string
+	Actor          string
+	CommentID      string
+	MissedCount    int // the outstanding entry only
+	Stale          bool
 }
 
 type agendaRow struct{ at, wall, state, commentID, actor, resolvedAt string }
@@ -249,7 +256,7 @@ type AgendaExpansion struct {
 
 // ExpandAgendaCut is ExpandAgenda with the resume instant of any time-ordered
 // cut: the per-schedule entry cut, the instance cap, CapTime and CapStall.
-func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
+func (s *Store) expandAgendaSeedsCut(sc *models.ItemSchedule, view *time.Location, from, to, now time.Time) (AgendaExpansion, error) {
 	if sc.ErrorCode != nil {
 		return AgendaExpansion{Unavailable: *sc.ErrorCode}, nil
 	}
