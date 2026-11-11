@@ -1,6 +1,6 @@
 <script lang="ts">
 	import AgendaRow from './AgendaRow.svelte';
-	import { dayLabel, entryKey, groupEntries, todayIn, shiftDay, type AgendaAction } from '$lib/calendar/presentation';
+	import { dayLabel, entryKey, groupEntries, roleDay, todayIn, shiftDay, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, CommitmentMoveResult } from '$lib/types';
 	let { start, entries, zone, complete = true, pending, saved, dragging, impact, titles, onaction, ondragstart, ondragend, onenter, ondrop }: {
 		start: string; entries: AgendaEntry[]; zone: string; complete?: boolean; pending: Record<string, boolean>; saved: Record<string, boolean>;
@@ -11,7 +11,7 @@
 	} = $props();
 	const days = $derived(Array.from({ length: 7 }, (_, index) => shiftDay(start, index)));
 	const groups = $derived(groupEntries(entries));
-	const localDay = (at: string) => todayIn(zone, new Date(at));
+	const localDay = (at: string) => roleDay(at, zone);
 	const weekday = (day: string) => new Intl.DateTimeFormat('en-GB', { weekday: 'long', timeZone: 'UTC' }).format(new Date(`${day}T12:00Z`));
 </script>
 

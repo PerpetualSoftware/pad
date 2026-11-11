@@ -361,6 +361,38 @@ describe('agenda Week and priority', () => {
   expect(h.preview).not.toHaveBeenCalled(); expect(h.move).not.toHaveBeenCalled();
   expect(screen.queryByText(/This occurrence changed/)).toBeNull(); expect(h.agenda).toHaveBeenCalledTimes(1);
  });
+ it('date-only roles stay on their own date west of UTC, and an all-day move is not read as stale', async () => {
+  const roles = { ...row().roles!, target: '2026-11-05', deadline: '2026-11-08', deadline_behavior: 'lapses' as const };
+  h.agenda.mockResolvedValue(response([row({ all_day: true, at: '2026-11-05T05:00:00Z', day: '2026-11-05', wall: '2026-11-05T00:00:00', roles, roles_origin: 'native' })]));
+  // The engine resolves a date-only target at midnight in the recipient zone.
+  h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to, { changes: [{ item_id: 'root', role: 'target', from: '2026-11-05T05:00:00Z', to: body.to, root: true }] })));
+  await mount();
+  expect(within(daySection('2026-11-08')).getByText('Deadline · First item')).toBeTruthy();
+  expect(within(daySection('2026-11-07')).queryByText(/Deadline ·/)).toBeNull();
+  expect(within(daySection('2026-11-05')).getByText(/Deadline November 8, 2026 · Lapses/)).toBeTruthy();
+  await drop('2026-11-06');
+  await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
+  expect(h.move.mock.calls[0][2]).toMatchObject({ role: 'target', to: '2026-11-06T05:00:00.000Z', revision: 'revision-1' });
+  expect(screen.queryByText(/This occurrence changed/)).toBeNull();
+ });
+ it('Move target to the current target closes the dialog with no request', async () => {
+  h.agenda.mockResolvedValue(response([row({ at: '2026-11-06T14:00:00Z', day: '2026-11-06', wall: '2026-11-06T09:00:00', roles: { ...row().roles!, target: '2026-11-06T14:00:00Z' } })]));
+  await mount(); await menu();
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Move target…' }));
+  const d = screen.getByRole('dialog', { name: 'Move target' });
+  await fillTime(d, '2026-11-06T09:00'); await fireEvent.submit(d.querySelector('form')!); await settle();
+  expect(h.preview).not.toHaveBeenCalled(); expect(h.move).not.toHaveBeenCalled();
+  expect(screen.queryByRole('dialog', { name: 'Move target' })).toBeNull();
+  expect(screen.queryByText(/This occurrence changed/)).toBeNull();
+ });
+ it('Week says when the created and completed toggle hides every entry', async () => {
+  localStorage.setItem('pad-agenda-show-events:user-a', '0');
+  h.agenda.mockResolvedValue(response([row({ type: 'created', item_title: 'Created item' })]));
+  render(Agenda);
+  expect(await screen.findByText('Created and completed entries are hidden.')).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show created and completed' }));
+  expect(await screen.findByText('Created item')).toBeTruthy();
+ });
  it('deadline markers come only from live occurrences, never history rows', async () => {
   const roles = { ...row().roles!, deadline: '2026-11-08T14:00:00Z', deadline_behavior: 'lapses' as const };
   h.agenda.mockResolvedValue(response([
@@ -374,7 +406,10 @@ describe('agenda Week and priority', () => {
   expect(day.queryByText('Deadline · Finished item')).toBeNull();
  });
  it.each([false, true])('Bring to today uses the shared target flow, all-day=%s', async all_day => {
-  h.agenda.mockResolvedValue(response([row({ all_day, day: '2026-11-06' })])); await mount(); await menu();
+  const at = all_day ? '2026-11-06T05:00:00Z' : '2026-11-06T14:00:00Z';
+  h.agenda.mockResolvedValue(response([row({ all_day, at, day: '2026-11-06', wall: all_day ? '2026-11-06T00:00:00' : '2026-11-06T09:00:00' })]));
+  h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to, { changes: [{ item_id: 'root', role: 'target', from: at, to: body.to, root: true }] })));
+  await mount(); await menu();
   await fireEvent.click(screen.getByRole('menuitem', { name: 'Bring to today' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: all_day ? '2026-11-05T05:00:00.000Z' : '2026-11-05T14:00:00.000Z', revision: 'revision-1' }));
   expect(h.resolve).not.toHaveBeenCalled();

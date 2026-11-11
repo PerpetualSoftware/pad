@@ -160,3 +160,26 @@ export function dateTime(at: string, zone: string, allDay = false): string {
 export function targetOnDay(entry: AgendaEntry, day: string, zone: string): string {
 	return wallToInstant(`${day}T${isAllDay(entry) ? '00:00' : localTime(entry.at, zone)}`, zone);
 }
+
+/** A date-only role value (`YYYY-MM-DD`) is a calendar date, never a UTC instant. */
+export function isDateOnly(value: string): boolean {
+	return /^\d{4}-\d{2}-\d{2}$/.test(value);
+}
+
+/** The viewer-local day a role value falls on. */
+export function roleDay(value: string, zone: string): string {
+	return isDateOnly(value) ? value : todayIn(zone, new Date(value));
+}
+
+/** A role value as text: a date-only value shows its date alone. */
+export function roleText(value: string, zone: string): string {
+	return isDateOnly(value) ? dayLabel(value) : dateTime(value, zone);
+}
+
+/** Whether instant names the current target. A date-only target matches local midnight of its date in zone. */
+export function sameTarget(current: string, instant: string, zone: string): boolean {
+	const at = Date.parse(instant);
+	if (!Number.isFinite(at)) return false;
+	if (isDateOnly(current)) return at === Date.parse(wallToInstant(`${current}T00:00`, zone));
+	return at === Date.parse(current);
+}

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Chip from '$lib/components/common/Chip.svelte';
 	import OccurrenceActions from './OccurrenceActions.svelte';
-	import { canResolve, canMove, dateTime, entryChips, entryHref, isAllDay, localTime, type AgendaAction } from '$lib/calendar/presentation';
+	import { canResolve, canMove, roleText, entryChips, entryHref, isAllDay, isDateOnly, localTime, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	let { entry, zone, pending = false, saved = false, week = false, onaction, ondragstart, ondragend }: {
@@ -24,9 +24,9 @@
 		</div>
 		<div class="meta"><span>{entry.workspace_name} / {entry.collection}</span><span>{entry.item_ref}</span></div>
 		{#if week && entry.type === 'schedule'}
-			{#if entry.roles?.earliest}<div class="role">Available from {dateTime(entry.roles.earliest, zone)}</div>{/if}
-			{#if entry.roles?.deadline}<div class="role">Deadline {dateTime(entry.roles.deadline, zone)}{entry.roles.deadline_behavior === 'stays_owed' ? ' · Still owed' : entry.roles.deadline_behavior === 'lapses' ? ' · Lapses' : ''}</div>{/if}
-			{#if entry.roles?.occupied_until}<div class="role">Until {localTime(entry.roles.occupied_until, zone)}</div>{/if}
+			{#if entry.roles?.earliest}<div class="role">Available from {roleText(entry.roles.earliest, zone)}</div>{/if}
+			{#if entry.roles?.deadline}<div class="role">Deadline {roleText(entry.roles.deadline, zone)}{entry.roles.deadline_behavior === 'stays_owed' ? ' · Still owed' : entry.roles.deadline_behavior === 'lapses' ? ' · Lapses' : ''}</div>{/if}
+			{#if entry.roles?.occupied_until}<div class="role">Until {isDateOnly(entry.roles.occupied_until) ? roleText(entry.roles.occupied_until, zone) : localTime(entry.roles.occupied_until, zone)}</div>{/if}
 		{/if}
 	</div>
 	<div class="chips">

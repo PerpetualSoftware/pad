@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
-	import { canMove, dateTime, entryHref, entryKey, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { canMove, entryHref, entryKey, isDateOnly, roleDay, roleText, todayIn, wallToInstant, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry } from '$lib/types';
 	let { data, zone, pending, saved, onaction }: {
 		data: AgendaResponse; zone: string; pending: Record<string, boolean>; saved: Record<string, boolean>;
@@ -12,7 +12,9 @@
 	const reasons: Record<string, string> = { target_passed: 'Target passed', deadline_still_owed: 'Missed deadline · Still owed', waiting: 'Waiting on', blocked_needs_decision: 'Needs a decision' };
 	function occurrence(row: AgendaWorkEntry): AgendaEntry | null {
 		if (row.type !== 'schedule' || !row.roles?.target) return null;
-		return { ...row, type: 'schedule', state: 'outstanding', at: row.roles.target, day: todayIn(zone, new Date(row.roles.target)) };
+		const target = row.roles.target;
+		const at = isDateOnly(target) ? wallToInstant(`${target}T00:00`, zone) : target;
+		return { ...row, type: 'schedule', state: 'outstanding', at, day: roleDay(target, zone), all_day: row.all_day ?? isDateOnly(target) };
 	}
 </script>
 
@@ -26,8 +28,8 @@
 				{#if href}<a {href}>{row.item_title}</a>{:else}<span>{row.item_title}</span>{/if}
 				<div class="meta">{row.workspace_name} / {row.collection} / {row.item_ref}</div>
 				{#if reasons[row.reason]}<Chip size="sm">{reasons[row.reason]}</Chip>{/if}
-				{#if row.roles?.target}<div class="date">Target {dateTime(row.roles.target, zone, row.all_day)}</div>{/if}
-				{#if row.roles?.deadline}<div class="date">Deadline {dateTime(row.roles.deadline, zone)}</div>{/if}
+				{#if row.roles?.target}<div class="date">Target {roleText(row.roles.target, zone)}</div>{/if}
+				{#if row.roles?.deadline}<div class="date">Deadline {roleText(row.roles.deadline, zone)}</div>{/if}
 				{#if entry && canMove(entry)}
 					<div class="actions">
 						<Button size="sm" disabled={!!busy} onclick={() => onaction(entry, 'move')}>Move target…</Button>

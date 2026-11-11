@@ -3,7 +3,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { canMove, canResolve, dateTime, dayLabel, dayWindow, weekLabel, weekWindow, targetOnDay, isAllDay, entryKey, filterEntries, groupEntries, localDate, shiftDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { canMove, canResolve, dateTime, dayLabel, dayWindow, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localDate, shiftDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import ContentError from '$lib/components/common/ContentError.svelte';
@@ -183,7 +183,7 @@
 		}
 	}
 	// A move to the date the target already has changes nothing: the server returns no root change for it.
-	const unchanged = (entry: AgendaEntry, to: string) => Date.parse(to) === Date.parse(entry.roles?.target ?? entry.at);
+	const unchanged = (entry: AgendaEntry, to: string) => sameTarget(entry.roles?.target ?? entry.at, to, zone);
 	function clearDrag() {
 		dragSerial++; dragging = null; dragImpact = null; hoverDay = ''; dragCache.clear();
 	}
@@ -270,6 +270,7 @@
 	async function moveTarget(entry: AgendaEntry, to: string, reason?: string) {
 		const key = entryKey(entry);
 		if (!canMove(entry) || pending[key] || saved[key] || review) return;
+		if (unchanged(entry, to)) { if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null; return; }
 		const sameIdentity = authStore.identityFence();
 		const cached = dragging && entryKey(dragging) === key ? dragCache.get(hoverDay) : undefined;
 		pending = { ...pending, [key]: true }; actionError = ''; announcement = '';
@@ -278,8 +279,7 @@
 			const preview = await (cached?.to === to ? cached.promise : api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}) }));
 			if (!sameIdentity()) return;
 			const root = preview.changes.find(change => change.root);
-			const from = Date.parse(root?.from ?? '');
-			if (!Number.isFinite(from) || from !== Date.parse(entry.roles?.target ?? entry.at)) {
+			if (!root?.from || !unchanged(entry, root.from)) {
 				actionError = staleCopy; dialogEntry = null; await load(day, zone, true); return;
 			}
 			if (preview.renegotiates_deadline || preview.violations?.length) {
@@ -332,6 +332,10 @@
 	{#if data?.next_from}<p>more after {localDate(data.next_from, zone)}</p>{/if}
 {/if}
 {#if mode === 'week'}
+	{#if !showEvents && data && entries.length === 0 && data.entries.length > 0}
+		<p>Created and completed entries are hidden.</p>
+		<Button onclick={() => setShowEvents(true)}>Show created and completed</Button>
+	{/if}
 	{#if mobile}
 		<div class="surface-switch">
 			<Button size="sm" aria-pressed={surface === 'agenda'} onclick={() => surface = 'agenda'}>Agenda</Button>
