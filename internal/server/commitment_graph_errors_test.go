@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"fmt"
 	"net/http/httptest"
 	"strings"
@@ -8,6 +9,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/go-chi/chi/v5"
 )
 
 const hiddenLinkedSentence = "This date is linked to something you can't view. Ask a workspace owner to change or remove the link."
@@ -150,6 +152,77 @@ func TestTASK4423_R04Errors(t *testing.T) {
 			}
 			if strings.Contains(rr.Body.String(), "hidden-sentinel-id") {
 				t.Fatal("hidden id disclosed")
+			}
+		})
+	}
+}
+
+const ownerLinkedSentence = "This date is linked to something you can't view. You can remove the link."
+
+// A restricted owner is told they can remove a link to a hidden end, and given
+// only the link to delete. Anyone the remove bypass does not cover, an app
+// principal with an owner membership included, gets the generic sentence.
+func TestTASK4423_R03OwnerLinkedRefusal(t *testing.T) {
+	for _, who := range []string{"workspace", "member", "app"} {
+		t.Run(who, func(t *testing.T) {
+			f := newGraphHTTP(t, models.CommitmentRolesInput{}, models.CommitmentRolesInput{})
+			hidden := mustCollection(t, f.srv, f.ws.ID, "Hidden")
+			if _, err := f.srv.store.DB().Exec(`UPDATE items SET collection_id=? WHERE id=?`, hidden.ID, f.items[1].ID); err != nil {
+				t.Fatal(err)
+			}
+			f.link(0, 1, "target", "target", "")
+			id := f.resourceID("links")
+			u := f.member("refusal-owner@example.com", "owner")
+			switch who {
+			case "workspace":
+				u = f.owner
+				if _, err := f.srv.store.DB().Exec(`UPDATE workspace_members SET role='editor' WHERE workspace_id=? AND user_id=?`, f.ws.ID, u.ID); err != nil {
+					t.Fatal(err)
+				}
+			case "app":
+				if _, err := f.srv.store.DB().Exec(`UPDATE users SET kind='app' WHERE id=?`, u.ID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, u.ID, "specific", []string{f.coll.ID}); err != nil {
+				t.Fatal(err)
+			}
+			if who == "app" {
+				// A bot reaches the API only through its install, so drive the
+				// adapter with the context RequireWorkspaceAccess would build.
+				bot, err := f.srv.store.GetUser(u.ID)
+				if err != nil || !bot.IsApp() {
+					t.Fatalf("app principal: %v %+v", err, bot)
+				}
+				r := httptest.NewRequest("PATCH", f.path(f.item), nil)
+				rc := chi.NewRouteContext()
+				rc.URLParams.Add("slug", f.ws.Slug)
+				rc.URLParams.Add("itemSlug", f.item.ID)
+				ctx := context.WithValue(WithCurrentUser(r.Context(), bot), chi.RouteCtxKey, rc)
+				ctx = context.WithValue(ctx, ctxResolvedWorkspaceID, f.ws.ID)
+				ctx = context.WithValue(ctx, ctxWorkspaceRole, "owner")
+				rr := httptest.NewRecorder()
+				if !f.srv.writeCommitmentGraphError(rr, r.WithContext(ctx), store.ErrScheduleLinked) {
+					t.Fatal("not handled")
+				}
+				f.expectErr(rr, 409, "schedule_linked", "")
+				if !strings.Contains(rr.Body.String(), hiddenLinkedSentence) || strings.Contains(rr.Body.String(), id) {
+					t.Fatalf("app principal refusal: %s", rr.Body.String())
+				}
+				return
+			}
+			rr := f.as(f.token(u, ""), "PATCH", f.path(f.item), map[string]any{"dtstart": "2099-02-01T09:00"})
+			f.expectErr(rr, 409, "schedule_linked", "")
+			want := "{\"error\":{\"code\":\"schedule_linked\",\"details\":{\"remove\":[\"DELETE /api/v1/workspaces/" + f.ws.Slug + "/commitment-links/" + id + "\"]},\"message\":\"" + ownerLinkedSentence + "\"}}\n"
+			if rr.Body.String() != want {
+				t.Fatalf("owner refusal:\n got %q\nwant %q", rr.Body.String(), want)
+			}
+			if strings.Contains(rr.Body.String(), f.items[1].ID) {
+				t.Fatal("owner refusal names the hidden end")
+			}
+			rr = f.as(f.token(u, ""), "DELETE", f.resourcePath("links", id), nil)
+			if rr.Code != 204 {
+				t.Fatalf("offered removal: %d %s", rr.Code, rr.Body.String())
 			}
 		})
 	}

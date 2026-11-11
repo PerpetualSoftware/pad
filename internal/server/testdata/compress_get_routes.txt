@@ -131,6 +131,8 @@ compress /api/v1/workspaces/{slug}/items/{itemSlug}/children
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/collab-set-aside
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/comments
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/commitment
+compress /api/v1/workspaces/{slug}/items/{itemSlug}/commitment/gates
+compress /api/v1/workspaces/{slug}/items/{itemSlug}/commitment/links
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/context
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/decisions
 compress /api/v1/workspaces/{slug}/items/{itemSlug}/export

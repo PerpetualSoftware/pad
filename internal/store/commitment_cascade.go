@@ -256,6 +256,15 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	if err != nil {
 		return nil, err
 	}
+	in.Access, err = reloadGraphAccess(tx, in.Access, []CommitmentAccessLoader{in.CommitmentAccessLoader}, in.ItemID)
+	if err != nil {
+		return nil, err
+	}
+	if matches, err := s.commitmentAssigneeMatchesTx(tx, in.ItemID, in.ExpectedAssignee); err != nil {
+		return nil, err
+	} else if !matches {
+		return nil, ErrCommitmentChanged
+	}
 	p, err := s.planLinkedTx(tx, c, workspaceID, in.ItemID, role, to.UTC().Truncate(time.Second), true)
 	if err != nil {
 		return nil, err

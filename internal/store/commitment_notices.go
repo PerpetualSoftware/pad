@@ -130,11 +130,16 @@ func (s *Store) EnqueueLinkedDeadlineApprovalNotice(workspaceID string, in model
 	if in.ActorUserID != "" {
 		in.Actor = in.ActorUserID
 	}
+	budget := s.newLinkBudget()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
+		return err
+	}
+
 	user, err := s.GetUserQ(tx, in.Actor)
 	if err != nil {
 		return err
@@ -160,6 +165,11 @@ func (s *Store) EnqueueLinkedDeadlineApprovalNotice(workspaceID string, in model
 	if err != nil {
 		return err
 	}
+	if matches, err := s.commitmentAssigneeMatchesTx(tx, in.ItemID, in.ExpectedAssignee); err != nil {
+		return err
+	} else if !matches {
+		return nil
+	}
 	p, err := s.planLinkedTx(tx, c, workspaceID, in.ItemID, role, to.UTC().Truncate(time.Second), true)
 	if err != nil {
 		var refused *LinkRefusedError
@@ -169,23 +179,15 @@ func (s *Store) EnqueueLinkedDeadlineApprovalNotice(workspaceID string, in model
 		}
 		return err
 	}
-	access := models.CommitmentAccess{Readable: map[string]bool{}, Editable: map[string]bool{}}
-	for _, node := range p.nodes {
-		var collection string
-		if err := tx.QueryRow(s.q(`SELECT collection_id FROM items WHERE id=?`), node.sc.ItemID).Scan(&collection); err != nil {
-			return err
-		}
-		perm, err := s.resolveUserPermissionQ(tx, workspaceID, in.Actor, node.sc.ItemID, collection)
-		if err != nil {
-			return err
-		}
-		access.Readable[node.sc.ItemID] = perm != ""
-		access.Editable[node.sc.ItemID] = perm == "owner" || perm == "editor" || perm == "edit" || perm == "admin"
+	access, err := s.refusalAccessTx(tx, workspaceID, in.Actor, p, in.CommitmentAccessLoader)
+	if err != nil {
+		return err
 	}
+
 	if !access.Editable[in.ItemID] {
 		return nil
 	}
-	_, _, err = s.settleLinkedPlan(p, s.newLinkBudget(), linkedOptions{actor: in.Actor, reason: strings.TrimSpace(in.Reason), access: access})
+	_, _, err = s.settleLinkedPlan(p, budget, linkedOptions{actor: in.Actor, reason: strings.TrimSpace(in.Reason), access: access})
 	if !errors.Is(err, ErrDeadlineApprovalRequired) {
 		return nil
 	}
@@ -194,6 +196,30 @@ func (s *Store) EnqueueLinkedDeadlineApprovalNotice(workspaceID string, in model
 		attempt.offset = p.incomingOffset
 		attempt.policy = p.incoming.CancelPolicy
 	}
+	return s.enqueueRefusedPlanTx(tx, workspaceID, p, access, attempt)
+}
+
+func (s *Store) refusalAccessTx(tx *sql.Tx, workspaceID, actor string, p *linkedPlan, loader CommitmentAccessLoader) (models.CommitmentAccess, error) {
+	if loader != nil {
+		return loader(tx)
+	}
+	access := models.CommitmentAccess{Readable: map[string]bool{}, Editable: map[string]bool{}}
+	for _, node := range p.nodes {
+		var collection string
+		if err := tx.QueryRow(s.q(`SELECT collection_id FROM items WHERE id=?`), node.sc.ItemID).Scan(&collection); err != nil {
+			return models.CommitmentAccess{}, err
+		}
+		perm, err := s.resolveUserPermissionQ(tx, workspaceID, actor, node.sc.ItemID, collection)
+		if err != nil {
+			return models.CommitmentAccess{}, err
+		}
+		access.Readable[node.sc.ItemID] = perm != ""
+		access.Editable[node.sc.ItemID] = perm == "owner" || perm == "editor" || perm == "edit" || perm == "admin"
+	}
+	return access, nil
+}
+
+func (s *Store) enqueueRefusedPlanTx(tx *sql.Tx, workspaceID string, p *linkedPlan, access models.CommitmentAccess, attempt RefusedCommitmentMove) error {
 	canonical, err := json.Marshal(struct {
 		Operation, Actor, Workspace, Root, Occurrence, Role, To, Revision string
 		Offset                                                            models.ScheduleLinkOffset
@@ -214,4 +240,164 @@ func (s *Store) EnqueueLinkedDeadlineApprovalNotice(workspaceID string, in model
 		}
 	}
 	return tx.Commit()
+}
+
+// EnqueueLinkedWriteDeadlineApprovalNotice recomputes the actual link operation
+// after rollback. A synthetic direct move would miss offset replacement and
+// the link graph revision, so this uses the same link write planner.
+func (s *Store) EnqueueLinkedWriteDeadlineApprovalNotice(workspaceID string, create *models.ScheduleLinkCreate, linkID string, update *models.ScheduleLinkUpdate) error {
+	if (create == nil) == (update == nil) {
+		return nil
+	}
+	var opts models.LinkWriteOptions
+	var parentID, childID string
+	var err error
+	if create != nil {
+		opts = create.Move
+		parentID, childID = create.ParentItemID, create.ChildItemID
+	} else {
+		opts = update.Move
+		if update.Offset == nil {
+			return nil
+		}
+		parentID, childID, err = s.linkEndsOf(workspaceID, linkID)
+		if errors.Is(err, ErrScheduleLinkNotFound) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+	if opts.Preview || opts.CommitmentAccessLoader == nil {
+		return nil
+	}
+	actor := opts.ActorUserID
+	if actor == "" {
+		actor = opts.Actor
+	}
+	budget := s.newLinkBudget()
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if err := s.setTxTimeoutsCtx(budget.ctx, tx, linkTxBudget, linkTxBudget); err != nil {
+		return err
+	}
+
+	user, err := s.GetUserQ(tx, actor)
+	if err != nil {
+		return err
+	}
+	if user == nil || user.IsDisabled() || user.IsApp() {
+		return nil
+	}
+	rows, err := tx.Query(s.q(`SELECT id,schema,settings FROM collections WHERE workspace_id=?`), workspaceID)
+	if err != nil {
+		return err
+	}
+	filters := scanCollectionDoneFilters(rows)
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return err
+	}
+	done, args := s.buildChildrenDoneExpr(filters, "i")
+	c, err := s.pinCommitmentTx(tx, workspaceID, "NOT "+done, args, true, parentID, childID)
+	if errors.Is(err, ErrScheduleItemGone) || errors.Is(err, ErrScheduleNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	var parent, child *models.ItemSchedule
+	for _, sc := range c.scheds {
+		if sc.ItemID == parentID {
+			parent = sc
+		}
+		if sc.ItemID == childID {
+			child = sc
+		}
+	}
+	if parent == nil || child == nil {
+		return nil
+	}
+	if create != nil {
+		for _, end := range []struct {
+			sc   *models.ItemSchedule
+			role string
+		}{{parent, create.ParentRole}, {child, create.ChildRole}} {
+			roles, err := s.scheduleRolesOf(tx, end.sc)
+			if err != nil {
+				return err
+			}
+			if !roleConfigured(roles, end.role) || (end.role == "deadline" && roles.Origin != "native") {
+				return nil
+			}
+		}
+	}
+	l := linkRow{}
+	operation := "create_link"
+	if create != nil {
+		policy := create.CancelPolicy
+		if policy == "" {
+			policy = models.LinkWaitingOn
+		}
+		off, err := offsetOf(create.Offset)
+		if err != nil {
+			return nil
+		}
+		l = linkRow{ParentSchedule: parent.ID, ParentRole: create.ParentRole, ChildSchedule: child.ID, ChildRole: create.ChildRole, Offset: storedOffset(off), CancelPolicy: policy}
+		if len(c.links)+1 > maxLinkComponent {
+			return nil
+		}
+	} else {
+		operation = "update_link"
+		found := false
+		for _, cur := range c.links {
+			if cur.ID == linkID {
+				l = cur
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil
+		}
+		off, err := offsetOf(*update.Offset)
+		if err != nil {
+			return nil
+		}
+		l.Offset = storedOffset(off)
+		if update.CancelPolicy != nil {
+			l.CancelPolicy = *update.CancelPolicy
+		}
+		c.explicitLink = linkID
+	}
+	g, err := c.structuralGraph(l.ID)
+	if err != nil {
+		return err
+	}
+	edge, err := l.edge()
+	if err != nil {
+		return nil
+	}
+	if err = schedule.CheckLink(g, edge, schedule.LinkLimits{}); err != nil {
+		return nil
+	}
+	// A supplied HTTP loader preserves token and application boundaries too.
+	access, err := opts.CommitmentAccessLoader(tx)
+	if err != nil {
+		return err
+	}
+	if !readableLinkEnds(access, parentID, childID) || !access.Editable[parentID] || !access.Editable[childID] {
+		return nil
+	}
+	opts.Revision = ""
+	_, p, _, err := s.linkWritePlanTx(tx, workspaceID, c, l, parent, budget, opts, access)
+	if !errors.Is(err, ErrDeadlineApprovalRequired) {
+		return nil
+	}
+	attempt := RefusedCommitmentMove{operation: operation, actor: actor, workspace: workspaceID, root: parentID, occurrence: p.nodes[p.root].key, role: l.ParentRole, revision: p.revision, offset: l.Offset, policy: l.CancelPolicy}
+	return s.enqueueRefusedPlanTx(tx, workspaceID, p, access, attempt)
 }

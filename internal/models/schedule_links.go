@@ -53,7 +53,8 @@ type ScheduleLinkCreate struct {
 // apply to it: a preview, the one reason and revision of a deadline
 // renegotiation, and the acknowledgement of a date outside its own bounds.
 type LinkWriteOptions struct {
-	Actor string
+	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
+	Actor                  string
 	// ActorUserID is the acting user's id. Actor is the journal's actor, which
 	// may be a kind; this is what excludes a person from their own move notice.
 	ActorUserID           string
@@ -94,10 +95,12 @@ type CommitmentAccess struct {
 // LinkedMoveInput moves one date of ItemID's outstanding occurrence, and every
 // date linked below it.
 type LinkedMoveInput struct {
-	ItemID string
-	Role   string // target | earliest | deadline | occupied_until
-	To     string // RFC3339 instant
-	Actor  string
+	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
+	ExpectedAssignee       *string                `json:"-"`
+	ItemID                 string
+	Role                   string // target | earliest | deadline | occupied_until
+	To                     string // RFC3339 instant
+	Actor                  string
 	// ActorUserID is the acting user's id. Actor is the journal's actor, which
 	// may be a kind; this is what excludes a person from their own move notice
 	// and what a refused move's approval notice is recomputed for.

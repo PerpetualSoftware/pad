@@ -410,11 +410,58 @@ Schedule PATCH/DELETE, resolve and renegotiate share these graph errors. Graph r
 | 400 | `link_invalid` | None; fixed invalid-configuration message |
 | 409 | `commitment_preview_required` | `{preview:"POST /api/v1/workspaces/<slug>/items/<itemRef>/commitment/move-preview",commit:"POST /api/v1/workspaces/<slug>/items/<itemRef>/commitment/move"}` using the request's URL identifiers |
 
-When any linked partner is unreadable or soft-deleted, `schedule_linked` has exactly this message, for either direction and any number of partners: "This date is linked to something you can't view. Ask a workspace owner to change or remove the link." When all partners are live and readable, it uses "this schedule is linked; unlink it before changing its timing or a linked role".
+When any linked partner is unreadable or soft-deleted, `schedule_linked` has exactly this message, for either direction and any number of partners: "This date is linked to something you can't view. Ask a workspace owner to change or remove the link." A workspace owner (by `owner_id` or an owner membership, never an app principal) whose collection access hides a partner instead gets "This date is linked to something you can't view. You can remove the link.", with `details.remove` listing one `DELETE /api/v1/workspaces/{slug}/commitment-links/{linkID}` per link to a hidden or deleted partner; nothing else about the hidden end is returned. When all partners are live and readable, it uses "this schedule is linked; unlink it before changing its timing or a linked role".
 
 A linked resolve needing deadline review (revision or reason) or crossing a readable dependent bound returns `commitment_preview_required` after dependent deadline authority checks, with no date, comment or journal write. A caller without edit authority over a changed hard deadline instead gets `deadline_approval_required`. After a non-preview resolve or renegotiate receives that refusal and rolls back, the server recomputes and attempts a deduplicated approval notice for an eligible owner/assignee with a registered push device. Enqueue success, failure, dedupe and no recipient leave the refusal bytes identical. A skip leaves a dependent hard-deadline occurrence and its reminder untouched unless the caller can edit that dependent; its response reveals no such child.
 
-The move-preview, move, link and gate mutation routes arrive in the next change; this change registers none of them.
+### Commitment links, moves and gates
+
+Let `W = /api/v1/workspaces/{slug}` and `C = W/items/{itemSlug}/commitment`. All routes use the workspace authentication, token-scope, workspace-access and rate-limit gates before any resource lookup. Item identifiers (`itemSlug`, `child`, `blocker`) accept the existing workspace-local slug, reference or UUID. Link and gate IDs are UUIDs; malformed IDs have the same answer as unknown IDs.
+
+| Method and path | Request JSON | Success |
+| --- | --- | --- |
+| `GET C/links` | No body | `200 {links: Link[]}` |
+| `POST C/links` | `{child, parent_role, child_role, offset, cancel_policy?, preview?, reason?, revision?, acknowledge_violations?}`; URL item is parent | Preview: `200 LinkWrite` with `link:null`; apply: `201 LinkWrite` |
+| `PATCH W/commitment-links/{linkID}` | `{offset?, cancel_policy?, preview?, reason?, revision?, acknowledge_violations?}`; offset or cancel_policy required | `200 LinkWrite` |
+| `DELETE W/commitment-links/{linkID}` | No body | `204`, empty body |
+| `POST C/move-preview` | `{role, to, reason?}` | `200 Move`, no writes or notices |
+| `POST C/move` | `{role, to, reason?, revision?, acknowledge_violations?}` | `200 Move` |
+| `POST C/gates` | `{blocker}` | `201 Gate` |
+| `DELETE W/commitment-gates/{gateID}` | No body | `204`, empty body |
+| `GET C/gates` | No body | `200 GateView`, including an item with no schedule |
+
+`Link` and `Gate` reuse the commitment view shapes above. `GateView` is `{state: "released"|"waiting"|"blocked_needs_decision", gates: Gate[], unresolved?: string[]}`. Its state accounts for all blockers; detail and unresolved IDs include only readable blockers. Reads never open gates or enqueue notices.
+
+`Move` is `{revision, changes:[{item_id, role, from?, to, root?}], violations?:[same], left_in_place?:[same], renegotiates_deadline?:true}`. `LinkWrite` is `{link: Link|null, moved: Move}`. A link write plans the child's outstanding date using the parent's date and the offset, then cascades to linked dates. A cancel-policy-only update moves nothing. `cancel_policy` defaults to `waiting_on`; `cancel_child_occurrence` is the other value. Roles are `target | earliest | deadline | occupied_until`; `to` is an RFC3339 instant.
+
+Request offsets are a strict union: `{mode:"elapsed", elapsed_secs}` or `{mode:"civil", days, clock_secs, all_day, zone}`. Supply every member of the selected mode, including zero or false. Members of the other mode are a `combination` error even when zero. Elapsed seconds are integers within ±(300 × 366 × 86400); civil days are signed 32-bit integers, clock seconds are 0–86399, and zone is a pinned IANA zone (never `Local`). All-day offsets require a zero clock. Response offsets may omit zero-valued members, as in the commitment view.
+
+Bodies are strict: unknown or repeated members, wrong JSON types, non-object bodies and NULs return `400 invalid_body`. Field errors return `400 validation_error` with details containing only `{field,code}`, where code is `required | enum | format | range | combination`. Required fields include child, blocker, parent_role, child_role, offset, role and to. Reasons are required when a move changes a hard deadline. A move that changes a hard deadline or crosses a readable dependent bound needs the fresh preview revision; bound crossings also require `acknowledge_violations:true`. Cheap moves may omit revision. Revisions are opaque 43-character unpadded base64url tokens; retain and return them without decoding or deriving meaning from them.
+
+Both ends must be readable before edit, duplicate, cycle or limit errors are reported, and both must be editable to create, update or delete a link or gate. Every mutation reloads access in its own transaction after pinning; a preview does not authorize its commit. Direct moves of the root's own deadline also require the renegotiation authority and assignee guard. Dependent deadlines require edit authority on those dependents.
+
+Missing, unreadable, soft-deleted, foreign-workspace and disappearing resources all return `404` with the same body: `{"error":{"code":"schedule_link_not_found","message":"Commitment link or gate not found"}}`. Missing deletes also return this 404. For the two deletes only, workspace owners (by workspace owner ID or membership role `owner`, never an app principal) may remove links and gates across collection restrictions and soft-deleted ends, including a deleted parent. This removal exception grants no live-mode access to deleted items.
+
+Link and gate detail is visible only when both ends are readable. Move changes, violations and left-in-place entries are filtered to readable items, with no count of hidden entries. The hidden-partner sentence remains: “This date is linked to something you can't view. Ask a workspace owner to change or remove the link.” For anyone but a workspace owner, one or several hidden or deleted partners produce identical refusals. A workspace owner reads the graph through their own collection access like any member; only removal reaches past it and onto deleted ends, so the owner's refusal offers removal of the hidden links (see `schedule_linked` above).
+
+| HTTP status | Error code | Details |
+| --- | --- | --- |
+| 400 | `invalid_body` | None |
+| 400 | `validation_error` | `{field,code}` only |
+| 400 | `link_invalid` | Fixed message, no graph detail |
+| 403 | `link_edit_required` | Only after both ends pass visibility |
+| 403 | `deadline_owner_required` | `{field:"deadline",code:"authority"}` |
+| 404 | `schedule_link_not_found` | Same fixed body for all inaccessible graph resources |
+| 409 | `schedule_linked` | Ordinary message only when all partners are readable; otherwise hidden-partner sentence |
+| 409 | `deadline_approval_required` | Fixed message, no path, impact, counts or limits |
+| 409 | `link_violation_ack` | None |
+| 409 | `commitment_changed` | `{field:"revision",code:"stale"}` |
+| 409 | `link_cycle`, `link_self`, `link_duplicate_incoming`, `link_limit`, `gate_duplicate` | No path, count or observed limit |
+| 409 | `commitment_preview_required` | Resolve names `POST C/move-preview` and `POST C/move`; follow preview then commit with its revision |
+| 503 | `link_budget` | `Retry-After: 1` |
+| 500 | `internal_error` | Sanitized storage failure |
+
+Authentication and workspace middleware retain their existing error codes and statuses. After a non-preview move, link create or link update refuses with `deadline_approval_required` and rolls back, the server recomputes the same operation in a separate transaction and attempts an approval notice. It reloads access and graph state, only notifies while the refusal still holds, and deduplicates per recipient and canonical operation. Enqueue success, failure, no recipient and dedupe leave response bytes identical. Notices retain the registered-push-device gate. Committed move notices are written in the move transaction; a hidden dependent target crossing its deadline produces its recipient's past-deadline notice, conflict and History without exposing the parent or its reason. Previews never write or notify.
 
 ### Workspace agenda (TASK-4104)
 

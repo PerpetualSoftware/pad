@@ -9,6 +9,7 @@ import (
 )
 
 const hiddenCommitmentPartnerMessage = "This date is linked to something you can't view. Ask a workspace owner to change or remove the link."
+const ownerHiddenCommitmentPartnerMessage = "This date is linked to something you can't view. You can remove the link."
 const commitmentPreviewMessage = "This linked change needs a commitment move preview before applying"
 
 // writeCommitmentGraphError handles only the closed graph error vocabulary.
@@ -38,14 +39,30 @@ func (s *Server) writeCommitmentGraphError(w http.ResponseWriter, r *http.Reques
 						writeInternalError(w, errors.New("commitment_partner_lookup_failed"))
 						return true
 					}
-					all := len(partners) > 0
-					for _, id := range partners {
-						if !access.Readable[id] {
-							all = false
+					var hiddenLinks []string
+					for _, p := range partners {
+						if !access.Readable[p.PartnerID] {
+							hiddenLinks = append(hiddenLinks, p.LinkID)
 						}
 					}
-					if all {
+					if len(partners) > 0 && len(hiddenLinks) == 0 {
 						message = store.ErrScheduleLinked.Error()
+					} else if len(hiddenLinks) > 0 {
+						owner, _, e := s.commitmentOwnerQ(r, s.store.Q(), workspaceID)
+						if e != nil {
+							writeInternalError(w, errors.New("commitment_access_failed"))
+							return true
+						}
+						if commitmentOwnerRemoves(owner, currentUser(r)) {
+							// The removal offer names only link ids, which this
+							// caller may delete; nothing about the hidden end.
+							remove := make([]string, 0, len(hiddenLinks))
+							for _, id := range hiddenLinks {
+								remove = append(remove, "DELETE /api/v1/workspaces/"+chi.URLParam(r, "slug")+"/commitment-links/"+id)
+							}
+							writeError2(w, http.StatusConflict, "schedule_linked", ownerHiddenCommitmentPartnerMessage, map[string]interface{}{"remove": remove})
+							return true
+						}
 					}
 				}
 			}

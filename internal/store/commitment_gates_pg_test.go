@@ -2,7 +2,9 @@ package store
 
 import (
 	"errors"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -227,6 +229,117 @@ func TestATimingEditOfTheBlockerRacingAGateWriteLeavesTheGateOnTheCurrentKey(t *
 			}
 			if want := *sc.NextAt + "|" + *sc.NextWall; key != want {
 				t.Fatalf("gate key %q, want the blocker's current outstanding occurrence %q", key, want)
+			}
+		})
+	}
+}
+
+// TestTASK4423_R12GateNoScheduleLocks checks the item pin even when the root
+// has no schedule. The inverted pin stays entirely inside this test.
+func TestTASK4423_R12GateNoScheduleLocks(t *testing.T) {
+	for _, inverted := range []bool{true, false} {
+		t.Run(fmt.Sprintf("pin/inverted=%v", inverted), func(t *testing.T) {
+			f := newLinkPG(t, 2)
+			if err := f.deleteSchedule(0); err != nil {
+				t.Fatal(err)
+			}
+			release := f.holdWorkspace(t)
+			defer release()
+			done := make(chan error, 1)
+			go func() {
+				if !inverted {
+					done <- f.gate(0, 1)
+					return
+				}
+				tx, err := f.s.db.Begin()
+				if err != nil {
+					done <- err
+					return
+				}
+				defer tx.Rollback()
+				var id string
+				if err = tx.QueryRow(`SELECT id FROM workspaces WHERE id=$1 FOR NO KEY UPDATE`, f.ws.ID).Scan(&id); err == nil {
+					err = tx.QueryRow(`SELECT id FROM items WHERE id=$1 FOR NO KEY UPDATE`, f.items[0].ID).Scan(&id)
+				}
+				done <- err
+			}()
+			f.waitForWaiters(t, 1)
+			probe, err := f.s.db.Begin()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var id string
+			err = probe.QueryRow(`SELECT id FROM items WHERE id=$1 FOR NO KEY UPDATE NOWAIT`, f.items[0].ID).Scan(&id)
+			probe.Rollback()
+			locked := err != nil
+			if locked == inverted {
+				t.Fatalf("root locked before workspace=%v, inverted=%v", locked, inverted)
+			}
+			if inverted {
+				t.Log("inverted pin detected: root was not locked before workspace wait")
+			}
+			release()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(15 * time.Second):
+				t.Fatal("pin did not finish")
+			}
+		})
+	}
+	for _, competitor := range []string{"resolve", "cascade", "create", "delete"} {
+		t.Run(competitor, func(t *testing.T) {
+			f := newLinkPG(t, 4)
+			if err := f.deleteSchedule(0); err != nil {
+				t.Fatal(err)
+			}
+			f.link(t, 1, 2)
+			var gate string
+			if competitor == "delete" {
+				if err := f.gate(3, 2); err != nil {
+					t.Fatal(err)
+				}
+				if err := f.s.db.QueryRow(`SELECT id FROM schedule_gates WHERE blocked_item_id=$1`, f.items[3].ID).Scan(&gate); err != nil {
+					t.Fatal(err)
+				}
+			}
+			other := func() error { return f.done(1) }
+			switch competitor {
+			case "cascade":
+				other = func() error { return f.move(1, "2030-03-10T09:00:00Z") }
+			case "create":
+				other = func() error { return f.gate(0, 2) }
+			case "delete":
+				other = func() error { return f.s.DeleteScheduleGate(f.ws.ID, gate, f.access()) }
+			}
+			for _, err := range f.run(t, func() error { return f.gate(0, 1) }, other) {
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+			var n int
+			if err := f.s.db.QueryRow(`SELECT COUNT(*) FROM schedule_gates WHERE blocked_item_id=$1`, f.items[0].ID).Scan(&n); err != nil {
+				t.Fatal(err)
+			}
+			want := 1
+			if competitor == "create" {
+				want = 2
+			}
+			if n != want {
+				t.Fatalf("gates=%d want %d", n, want)
+			}
+			view, err := f.s.ScheduleGates(f.ws.ID, f.items[0].ID, f.access())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if competitor == "resolve" {
+				if view.State != models.GateStateReleased {
+					t.Fatalf("resolved blocker state=%s", view.State)
+				}
+			} else if view.State != models.GateStateWaiting {
+				t.Fatalf("pending blocker state=%s", view.State)
 			}
 		})
 	}

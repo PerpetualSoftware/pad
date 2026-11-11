@@ -1915,6 +1915,7 @@ func classifyCommitmentStderr(message string) (ErrorCode, string, json.RawMessag
 	messages := map[string]ErrorCode{
 		"this schedule is linked; unlink it before changing its timing or a linked role":                       ErrScheduleLinked,
 		"this date is linked to something you can't view. ask a workspace owner to change or remove the link.": ErrScheduleLinked,
+		"this date is linked to something you can't view. you can remove the link.":                            ErrScheduleLinked,
 		"this change moves a hard deadline that needs its owner's approval":                                    ErrDeadlineApprovalRequired,
 		"a linked date lands outside one of its own bounds; acknowledge to apply":                              ErrLinkViolationAck,
 		"the commitment changed; re-preview before applying":                                                   ErrCommitmentChanged,

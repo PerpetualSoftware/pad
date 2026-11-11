@@ -67,9 +67,69 @@ func TestCommitmentAccessLoadersUsePinnedTransaction(t *testing.T) {
 	}
 }
 
+func TestCommitmentGraphMutationAccessLoaders(t *testing.T) {
+	for _, door := range []string{"move", "create link", "update link", "delete link", "create gate", "delete gate"} {
+		for _, mode := range []string{"revoked", "failed query"} {
+			t.Run(door+"/"+mode, func(t *testing.T) {
+				f := newLinkFix(t, 2)
+				var id string
+				if door == "update link" || door == "delete link" {
+					id = f.link(t, 0, 1, "target", "target", oneDay).ID
+				}
+				if door == "delete gate" {
+					g, err := f.s.CreateScheduleGate(f.ws.ID, f.items[0].ID, f.items[1].ID, f.allEdit())
+					if err != nil {
+						t.Fatal(err)
+					}
+					id = g.ID
+				}
+				called := false
+				sentinel := errors.New("access failed")
+				loader := func(q Queryer) (models.CommitmentAccess, error) {
+					called = true
+					if _, ok := q.(*sql.Tx); !ok {
+						t.Fatal("loader is not on transaction")
+					}
+					if mode == "failed query" {
+						return models.CommitmentAccess{}, sentinel
+					}
+					return models.CommitmentAccess{}, nil
+				}
+				before := renegotiateState(t, f.s)
+				var err error
+				opts := models.LinkWriteOptions{CommitmentAccessLoader: loader}
+				switch door {
+				case "move":
+					_, err = f.s.MoveLinkedDate(f.ws.ID, models.LinkedMoveInput{ItemID: f.item.ID, Role: "target", To: "2030-03-10T09:00:00Z", Access: f.allEdit(), CommitmentAccessLoader: loader})
+				case "create link":
+					_, err = f.s.CreateScheduleLink(f.ws.ID, models.ScheduleLinkCreate{ParentItemID: f.items[0].ID, ChildItemID: f.items[1].ID, ParentRole: "target", ChildRole: "target", Offset: oneDay, Move: opts}, f.allEdit())
+				case "update link":
+					_, err = f.s.UpdateScheduleLink(f.ws.ID, id, models.ScheduleLinkUpdate{Offset: &oneDay, Move: opts}, f.allEdit())
+				case "delete link":
+					err = f.s.DeleteScheduleLink(f.ws.ID, id, f.allEdit(), loader)
+				case "create gate":
+					_, err = f.s.CreateScheduleGate(f.ws.ID, f.items[0].ID, f.items[1].ID, f.allEdit(), loader)
+				case "delete gate":
+					err = f.s.DeleteScheduleGate(f.ws.ID, id, f.allEdit(), loader)
+				}
+				want := ErrScheduleLinkNotFound
+				if mode == "failed query" {
+					want = sentinel
+				}
+				if !called || !errors.Is(err, want) {
+					t.Fatalf("loader=%v err=%v want=%v", called, err, want)
+				}
+				if !reflect.DeepEqual(before, renegotiateState(t, f.s)) {
+					t.Fatal("refused mutation wrote state")
+				}
+			})
+		}
+	}
+}
+
 func TestTASK4423_CommitmentAccessItems(t *testing.T) {
 	f := newLinkFix(t, 8)
-	// The request has no graph edges. Disconnected edges still belong to the set.
+	// The request has no graph edges. Only its own lineage belongs to the set.
 	f.linkRaw(t, 1, 2, "target", "target", oneDay)
 	if _, err := f.s.CreateScheduleGate(f.ws.ID, f.items[3].ID, f.items[4].ID, f.allEdit()); err != nil {
 		t.Fatal(err)
@@ -106,11 +166,11 @@ func TestTASK4423_CommitmentAccessItems(t *testing.T) {
 		}
 	}
 	want := map[string]bool{}
-	for _, it := range f.items[:7] {
-		want[it.ID] = true
+	for _, i := range []int{0, 5, 6} {
+		want[f.items[i].ID] = true
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("access candidates: got %d items, want exactly root, link ends, gate ends and lineage owners (7); unrelated included=%v", len(got), got[f.items[7].ID])
+		t.Fatalf("access candidates: got %d items, want exactly root and lineage owners (3); unrelated included=%v", len(got), got[f.items[7].ID])
 	}
 }
 

@@ -16,6 +16,7 @@ func TestTASK4423_R04Errors(t *testing.T) {
 	}{
 		{"schedule_linked", "this schedule is linked; unlink it before changing its timing or a linked role", 409},
 		{"schedule_linked", "This date is linked to something you can't view. Ask a workspace owner to change or remove the link.", 409},
+		{"schedule_linked", "This date is linked to something you can't view. You can remove the link.", 409},
 		{"deadline_approval_required", "this change moves a hard deadline that needs its owner's approval", 409},
 		{"link_violation_ack", "a linked date lands outside one of its own bounds; acknowledge to apply", 409},
 		{"commitment_changed", "The commitment changed; re-preview before applying", 409},
