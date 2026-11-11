@@ -46,6 +46,10 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		zone, note = usertz.Zone{Name: tz, Loc: loc, Set: true}, ""
 	}
 	run := s.newAgendaRead(from, to, zone, note)
+	run.recipient, run.audience = user.ID, "human"
+	if actor, _ := actorFromRequest(r); actor == "agent" {
+		run.audience = "agent"
+	}
 	admitted, err := s.needsAdmittedWorkspaces(r, user)
 	if err != nil {
 		writeInternalError(w, err)

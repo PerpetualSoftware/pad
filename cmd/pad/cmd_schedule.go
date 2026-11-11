@@ -654,7 +654,9 @@ today in your zone) and runs --days days (default 7) or to --to. It is capped at
 
 When the list is cut short, the last line says where to continue.
 The workspace JSON marker no_date_scope: "personal_only" means undated work is
-not listed here; it never means "nothing undated". GET /me/agenda lists it.
+not listed here; it never means "nothing undated". GET /me/agenda lists the caller's
+own work in priority_list, waiting_on and no_date: assigned to the caller, or
+created by the caller when nobody is assigned, for their human/agent audience.
 
 --stale lists instead what 'pad bootstrap' collapses into "stale: K items": your
 occurrences unresolved for more than 14 days, oldest first. It takes no window;
