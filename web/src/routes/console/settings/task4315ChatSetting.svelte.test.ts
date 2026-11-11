@@ -1,4 +1,4 @@
-import { expect, it, vi, beforeEach } from 'vitest';
+import { expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
 
 /** TASK-4315: the Chat card on /console/settings is a labelled per-user toggle that writes through the store. */
@@ -60,9 +60,12 @@ vi.mock('$lib/stores/auth.svelte', async () => {
 	};
 });
 
+const { inputMode } = await import('$lib/chat/inputMode.svelte');
 const { default: AccountSettings } = await import('./+page.svelte');
 
 beforeEach(() => {
+	localStorage.clear();
+	inputMode.reset();
 	state.enabled = false; state.epoch = 0; state.userId = 'u1'; state.listeners.clear();
 	state.set.mockReset();
 });
@@ -116,4 +119,18 @@ it('an identity change clears the saving and error state of the previous identit
 	d.reject(new Error('late failure'));
 	await new Promise((r) => setTimeout(r, 0));
 	expect(screen.queryByRole('alert')).toBeNull();
+});
+
+
+afterEach(() => Reflect.deleteProperty(window, 'matchMedia'));
+
+it('shows the Enter-sends device preference in the Chat card on a coarse pointer', async () => {
+	Object.defineProperty(window, 'matchMedia', {
+		configurable: true,
+		value: () => ({ matches: false })
+	});
+	const { container } = render(AccountSettings);
+	const toggle = await screen.findByLabelText('Chat: Enter sends (for a hardware keyboard)');
+	expect(container.querySelector('section#chat')).toContainElement(toggle);
+	expect(toggle).not.toBeChecked();
 });

@@ -116,7 +116,7 @@
 	let keyboardWas = false;
 	$effect(() => {
 		const up = uiStore.keyboardVisible;
-		if (up && !keyboardWas) inputMode.enterByTouch();
+		if (up && !keyboardWas) inputMode.softKeyboardUp();
 		keyboardWas = up;
 	});
 
@@ -199,6 +199,7 @@
 	class="composer"
 	onsubmit={(e) => {
 		e.preventDefault();
+		box?.focus();
 		void send();
 	}}
 >
@@ -241,6 +242,8 @@
 		<button
 			type="submit"
 			class="send"
+			onpointerdown={(e) => e.preventDefault()}
+			onmousedown={(e) => e.preventDefault()}
 			disabled={block !== null}
 			aria-label={agentKey ? `Send to ${agentKey}, conversation ${n}` : undefined}>Send</button
 		>
@@ -250,16 +253,6 @@
 	<p class="key-hint">
 		{inputMode.hardware ? 'Enter sends · Shift+Enter adds a line' : 'Enter adds a line · use Send to send'}
 	</p>
-	{#if inputMode.offered}
-		<label class="hardware">
-			<input
-				type="checkbox"
-				checked={inputMode.hardware}
-				onchange={(e) => inputMode.setHardware(e.currentTarget.checked)}
-			/>
-			Hardware keyboard: Enter sends
-		</label>
-	{/if}
 	<!-- Mounted from the start, only its text changes: a region inserted with its text is not announced by some screen readers (r5 H5). -->
 	<p class="status" class:idle={!live} class:over={block === 'too_long' || block === 'too_large'} role="status">
 		{#if block === 'too_long'}
@@ -309,8 +302,7 @@
 	}
 	.draft-note,
 	.presence-note,
-	.key-hint,
-	.hardware {
+	.key-hint {
 		margin: 0;
 		font-size: 0.75rem;
 		color: var(--text-secondary);
