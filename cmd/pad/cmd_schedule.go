@@ -653,6 +653,8 @@ today in your zone) and runs --days days (default 7) or to --to. It is capped at
 92 days. --tz names the zone floating schedules are read in and times are shown in.
 
 When the list is cut short, the last line says where to continue.
+The workspace JSON marker no_date_scope: "personal_only" means undated work is
+not listed here; it never means "nothing undated". GET /me/agenda lists it.
 
 --stale lists instead what 'pad bootstrap' collapses into "stale: K items": your
 occurrences unresolved for more than 14 days, oldest first. It takes no window;

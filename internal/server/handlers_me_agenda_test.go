@@ -571,9 +571,11 @@ func TestAgendaReferenceDocumentsAreNotUnplacedWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	w.item(t, "reference", "Reference only", `{"status":"open"}`, nil)
-	w.item(t, "reference", "Deliberate commitment", `{"status":"open"}`, oneShot())
+	deliberate := w.item(t, "reference", "Deliberate commitment", `{"status":"open"}`, oneShot())
+	meAgendaExec(t, w, `UPDATE items SET assigned_user_id=? WHERE id=?`, w.owner.ID, deliberate.ID)
 	work := w.item(t, "tasks", "Unplaced work", `{"status":"open"}`, nil)
-	m := w.ok(t, w.owner, agendaWindow)
+	meAgendaExec(t, w, `UPDATE items SET assigned_user_id=? WHERE id=?`, w.owner.ID, work.ID)
+	m := w.ok(t, w.owner, agendaWindow+"&recipient="+w.owner.ID)
 	rows, _ := m["no_date"].([]any)
 	if len(rows) != 1 || rows[0].(map[string]any)["item_ref"] != work.Ref {
 		t.Fatalf("unplaced work: %v", rows)

@@ -334,8 +334,9 @@ func agendaSeedWindows(roles scheduleRoles, loc *time.Location, from, to time.Ti
 type AgendaWorkCandidate struct{ ItemID, ItemRef, ItemTitle, Collection, Fields, Schema string }
 
 // ListAgendaWork applies visibility and recipient admission before the scan cap.
-// Empty recipient means the workspace agenda's entire visible work set.
-func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, recipient, audience string, limit int) ([]AgendaWorkCandidate, bool, error) {
+// listNoDate admits unscheduled work collections for a personal listing.
+// Without it, only explicit schedules and gates consume the scan cap.
+func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, recipient, audience string, limit int, listNoDate bool) ([]AgendaWorkCandidate, bool, error) {
 	// Reference documents are not unplaced work. An explicit commitment or
 	// gate remains deliberate even on a reference collection.
 	collections, err := s.ListCollectionsMinimal(workspaceID)
@@ -344,7 +345,7 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 	}
 	var workIDs []any
 	for _, c := range collections {
-		if models.CollectionTracksWorkJSON(c.Settings) {
+		if listNoDate && models.CollectionTracksWorkJSON(c.Settings) {
 			workIDs = append(workIDs, c.ID)
 		}
 	}

@@ -51,7 +51,7 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 		cut()
 		return nil
 	}
-	candidates, more, err := s.store.ListAgendaWork(workspaceID, scope, run.recipient, run.audience, run.workRemaining)
+	candidates, more, err := s.store.ListAgendaWork(workspaceID, scope, run.recipient, run.audience, run.workRemaining, run.listNoDate)
 	if err != nil {
 		return err
 	}
@@ -59,21 +59,30 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 	if more {
 		cut()
 	}
+	ids := make([]string, len(candidates))
+	for i, c := range candidates {
+		ids[i] = c.ItemID
+	}
+	schedules, gated, err := s.store.AgendaWorkDetails(workspaceID, ids)
+	if err != nil {
+		return err
+	}
 	for _, c := range candidates {
 		if s.agendaNow().After(run.deadline) {
 			cut()
 			break
 		}
-		sc, err := s.store.GetSchedule(workspaceID, c.ItemID)
-		if err != nil {
-			return err
-		}
-		gates, err := s.store.ScheduleGates(workspaceID, c.ItemID, models.CommitmentAccess{Readable: map[string]bool{c.ItemID: true}})
-		if err != nil {
-			return err
+		sc := schedules[c.ItemID]
+		gateState := models.GateStateReleased
+		if gated[c.ItemID] {
+			gates, err := s.store.ScheduleGates(workspaceID, c.ItemID, models.CommitmentAccess{Readable: map[string]bool{c.ItemID: true}})
+			if err != nil {
+				return err
+			}
+			gateState = gates.State
 		}
 		e := agendaEntry{Type: "item", ItemRef: c.ItemRef, ItemTitle: c.ItemTitle, Collection: c.Collection, subKey: c.ItemID}
-		if gates.State != models.GateStateReleased {
+		if gateState != models.GateStateReleased {
 			if sc != nil {
 				current, err := s.store.AgendaOutstanding(sc, run.loc, run.now)
 				if err != nil {
@@ -82,11 +91,14 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 					e.Roles, e.OccurrenceKey, e.ScheduleID = &current.Roles, current.OccurrenceKey, sc.ID
 				}
 			}
-			e.Reason = gates.State
+			e.Reason = gateState
 			resp.WaitingOn = append(resp.WaitingOn, e)
 			continue
 		}
 		if sc == nil {
+			if !run.listNoDate {
+				continue
+			}
 			e.Reason = "unplaced"
 			resp.NoDate = append(resp.NoDate, e)
 			continue

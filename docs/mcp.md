@@ -554,4 +554,4 @@ required/optional parameters, refusal rules, return fields and safety guidance.
 
 ### Agenda result roles (v0.111)
 
-`pad_item` agenda and bootstrap resources return the commitment role contract in place: no `kind`, one entry per occurrence with all roles, effective moved placement, terminal recorded history, and independent priority, Waiting on and No date groups with completeness flags. The REST shapes and caps are documented in docs/api.md. Parameters and commands are unchanged.
+`pad_item` agenda and bootstrap resources return the commitment role contract in place: no `kind`, one entry per occurrence with all roles, effective moved placement, terminal recorded history, and independent priority, Waiting on and No date groups with completeness flags. The workspace agenda returns `no_date: []` with `no_date_scope: "personal_only"` when no recipient is selected: this means **not listed here**, never "nothing undated". Recipient-filtered listings and `/me/agenda` omit the marker. The REST shapes and caps are documented in docs/api.md. Parameters and commands are unchanged.

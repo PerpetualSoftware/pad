@@ -95,6 +95,7 @@ type agendaResponse struct {
 	WaitingOnComplete    bool                `json:"waiting_on_complete"`
 	NoDate               []agendaEntry       `json:"no_date"`
 	NoDateComplete       bool                `json:"no_date_complete"`
+	NoDateScope          string              `json:"no_date_scope,omitempty"`
 	From                 string              `json:"from"`
 	To                   string              `json:"to"`
 	Tz                   string              `json:"tz"`
@@ -200,6 +201,16 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run := s.newAgendaRead(from, to, zone, note)
+	run.recipient = strings.TrimSpace(r.URL.Query().Get("recipient"))
+	run.listNoDate = run.recipient != ""
+	if !run.listNoDate {
+		run.response.NoDateScope = "personal_only"
+	} else {
+		run.audience = "human"
+		if actor, _ := actorFromRequest(r); actor == "agent" {
+			run.audience = "agent"
+		}
+	}
 	if err := s.appendWorkspaceAgenda(run, workspaceID, scope); err != nil {
 		writeInternalError(w, err)
 		return
@@ -216,6 +227,7 @@ type agendaRead struct {
 	remaining               int
 	workRemaining           int
 	recipient, audience     string
+	listNoDate              bool
 	scanCut                 bool
 	// A set cut cannot promise a resume instant. A time cut can.
 	setCut  bool
@@ -230,7 +242,7 @@ func (s *Server) newAgendaRead(from, to time.Time, zone usertz.Zone, note string
 	}
 	return &agendaRead{
 		response: agendaResponse{From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note, Entries: []agendaEntry{}, WindowComplete: true, PriorityListComplete: true, WaitingOnComplete: true, NoDateComplete: true, PriorityList: []agendaEntry{}, WaitingOn: []agendaEntry{}, NoDate: []agendaEntry{}},
-		from:     from, to: to, now: now, deadline: now.Add(agendaBudget), loc: zone.Loc, remaining: limit, workRemaining: agendaMaxScan,
+		from:     from, to: to, now: now, deadline: now.Add(agendaBudget), loc: zone.Loc, remaining: limit, workRemaining: agendaMaxScan, listNoDate: true,
 	}
 }
 
@@ -282,13 +294,23 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 	resp.Truncated = resp.Truncated || len(items) > agendaMaxEntries
 	run.setCut = run.setCut || len(items) > agendaMaxEntries
 	today := overdueToday(now.In(loc))
+	itemIDs := make([]string, len(items))
+	for i, it := range items {
+		itemIDs[i] = it.ID
+	}
+	gated, err := s.store.AgendaGatedItemIDs(workspaceID, itemIDs)
+	if err != nil {
+		return err
+	}
 	for _, it := range items {
-		gates, err := s.store.ScheduleGates(workspaceID, it.ID, models.CommitmentAccess{Readable: map[string]bool{it.ID: true}})
-		if err != nil {
-			return err
-		}
-		if gates.State != models.GateStateReleased {
-			continue
+		if gated[it.ID] {
+			gates, err := s.store.ScheduleGates(workspaceID, it.ID, models.CommitmentAccess{Readable: map[string]bool{it.ID: true}})
+			if err != nil {
+				return err
+			}
+			if gates.State != models.GateStateReleased {
+				continue
+			}
 		}
 		ref := it.Ref
 		if ref == "" {

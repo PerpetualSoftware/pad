@@ -37,7 +37,7 @@ func TestAgendaNoDateScope(t *testing.T) {
 		})
 	}
 	// An unfiltered scan must not spend even one candidate on unplaced work.
-	rows, more, err := w.srv.store.ListAgendaWork(w.ws.ID, store.PendingReminderScope{}, "", "", 1)
+	rows, more, err := w.srv.store.ListAgendaWork(w.ws.ID, store.PendingReminderScope{}, "", "", 1, false)
 	if err != nil || more || len(rows) != 0 {
 		t.Fatalf("unfiltered candidates = %v, more=%v, err=%v", rows, more, err)
 	}
