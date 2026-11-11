@@ -20,7 +20,10 @@ go 1.26.5
 //
 // Raised to go1.26.10 (2026-10-21) for GO-2026-6809 (crypto/x509), fixed in
 // 1.26.10, which turned govulncheck red the same way again (TASK-4007).
-toolchain go1.26.10
+//
+// Raised to go1.26.11 (2026-11-11) for GO-2026-6859 (net/http), fixed in
+// 1.26.11, which turned govulncheck red the same way again (TASK-4481).
+toolchain go1.26.11
 
 require (
 	github.com/BurntSushi/toml v1.6.0
