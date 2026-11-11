@@ -135,6 +135,8 @@ Interpret the user's intent and route to the appropriate action. Here are common
 **Querying:**
 - "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
 - "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad remind` (IDEA-2641). The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack <reminder-id>` — `next` prints the exact ack command under the entry, so you never have to go looking for the id; **finishing the item does not acknowledge it**, because a reminder is often armed precisely to fire after the work is done
+`pad remind forecast set|clear` sets a hand-set milestone estimate; it arms nothing and is never a missed deadline.
+
 - "check this every weekday at 9" / "this is due Friday 5pm" / "what's on my agenda?" → a **schedule**: `pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays` (`--deadline hard|soft` for a due time, `--window 2h` for a span). The start is a wall time in the user's zone (no `Z`, no offset); omit `--tz` unless asked, and the server pins the account zone. Resolve an occurrence with `pad remind done|skip|snooze|move TASK-5`; list with `pad remind agenda`. There is no `pad cal`.
 - "what should I work on?" / "what's ready?" → `pad project ready` (actionable backlog); "what's stuck?" / "what needs attention?" → `pad project stale`
 - "show me status" / "how are we doing?" → `pad project dashboard`
