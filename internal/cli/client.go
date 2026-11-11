@@ -2359,6 +2359,9 @@ type APIError struct {
 	// seconds; zero when the response carried none or it did not parse.
 	Status            int `json:"-"`
 	RetryAfterSeconds int `json:"-"`
+
+	// Escaped request path, used to scope route-specific error contracts.
+	RequestPath string `json:"-"`
 }
 
 func (e *APIError) Error() string {
@@ -3410,6 +3413,9 @@ func WriteRateLimitedError(w io.Writer, apiErr *APIError) {
 func (c *Client) parseError(resp *http.Response) error {
 	body, _ := io.ReadAll(resp.Body)
 	err := parseErrorBody(resp.StatusCode, body)
+	if apiErr, ok := err.(*APIError); ok && resp.Request != nil && resp.Request.URL != nil {
+		apiErr.RequestPath = resp.Request.URL.EscapedPath()
+	}
 	if apiErr, ok := err.(*APIError); ok && resp.StatusCode == http.StatusTooManyRequests {
 		apiErr.RetryAfterSeconds = parseRetryAfterSeconds(resp.Header.Get("Retry-After"))
 	}

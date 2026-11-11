@@ -2320,7 +2320,11 @@ const CmdhelpVersion = "0.1"
 // deadline_behavior, remove_deadline, revision and preview; deadline also
 // names the new instant for schedule-renegotiate. No existing parameter or
 // action changes shape. ChatGPT: schedule-renegotiate is deferred to v2.
-const ToolSurfaceVersion = "0.109"
+// v0.110 — TASK-4412: additive schedule-link, schedule-unlink, schedule-move,
+// schedule-gate actions; preview-first graph writes, offsets and gates on both
+// transports. link_offset is an API object; offset remains numeric pagination.
+// Existing catalog descriptions shortened without changing their rules.
+const ToolSurfaceVersion = "0.110"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

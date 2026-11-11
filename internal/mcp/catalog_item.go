@@ -109,6 +109,10 @@ var padItemTool = ToolDef{
 		"schedule-delete":      actionItemScheduleDelete,
 		"schedule-resolve":     actionItemScheduleResolve,
 		"schedule-renegotiate": actionItemScheduleRenegotiate,
+		"schedule-link":        actionItemScheduleGraph("schedule-link"),
+		"schedule-unlink":      actionItemScheduleGraph("schedule-unlink"),
+		"schedule-move":        actionItemScheduleGraph("schedule-move"),
+		"schedule-gate":        actionItemScheduleGraph("schedule-gate"),
 		"agenda":               actionItemAgenda,
 
 		// Execution lease (#1221 / PR #1238). Agents are the motivating
@@ -187,14 +191,14 @@ var padItemTool = ToolDef{
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
 	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, PLAYB-3). Required for every action naming one item, except create, list, starred, import, agenda, bulk-update (use `refs`) and ack-reminder / unremind (use `reminder_id`: an item can carry several reminders)."},
-	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required for: bulk-update (one or more refs)."},
-	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required for: link, unlink. blocks: the item being blocked; blocked-by: the blocker; supersedes: the superseded item."},
+	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required: bulk-update (one or more refs)."},
+	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required: link, unlink. blocks: the item being blocked; blocked-by: the blocker; supersedes: the superseded item."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
 
 	// ── Item content ──
-	{Name: "collection", Type: "string", Description: "Collection slug (e.g. \"tasks\", \"ideas\"). Required for: create. Optional filter for: list."},
-	{Name: "title", Type: "string", Description: "Item title. Required for: create. Optional rename for: update."},
-	{Name: "content", Type: "string", Description: "Markdown body. Optional for: create, update."},
+	{Name: "collection", Type: "string", Description: "Collection slug (e.g. \"tasks\", \"ideas\"). Required: create. Optional filter for: list."},
+	{Name: "title", Type: "string", Description: "Item title. Required: create. Optional rename for: update."},
+	{Name: "content", Type: "string", Description: "Markdown body. For: create, update."},
 	{Name: "agent", Type: "bool", Description: "For action=get, return the full item body and meaningful work metadata as compact JSON while omitting internal UUIDs and duplicate join fields. Prefer this for Cursor and Codex reads."},
 
 	// ── Artifact export / import ── (Phase 5)
@@ -205,55 +209,66 @@ var padItemSchemaParams = []ParamDef{
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
-	{Name: "remind_at", Type: "string", Description: "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset). Required for: remind as a one-shot (no schedule parameters). A bare date is REFUSED, not assumed to be midnight."},
+	{Name: "remind_at", Type: "string", Description: "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset). Required: remind as a one-shot (no schedule parameters). A bare date is REFUSED, not assumed to be midnight."},
 	// PR metadata for action=link-pr (TASK-3611), sent as given.
-	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required for: link-pr."},
-	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required for: link-pr."},
-	{Name: "pr_title", Type: "string", Description: "The pull request's title. Optional for: link-pr."},
-	{Name: "pr_state", Type: "string", Description: "The pull request's state as you know it (e.g. open, merged, closed). Optional for: link-pr. Pad does not check it against GitHub."},
-	{Name: "pr_branch", Type: "string", Description: "The pull request's head branch. Optional for: link-pr."},
-	{Name: "pr_repo", Type: "string", Description: "The pull request's repository, owner/name. Optional for: link-pr."},
-	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required for: ack-reminder, unremind."},
+	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required: link-pr."},
+	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required: link-pr."},
+	{Name: "pr_title", Type: "string", Description: "The pull request's title. For: link-pr."},
+	{Name: "pr_state", Type: "string", Description: "The pull request's state as you know it (e.g. open, merged, closed). For: link-pr. Pad does not check it against GitHub."},
+	{Name: "pr_branch", Type: "string", Description: "The pull request's head branch. For: link-pr."},
+	{Name: "pr_repo", Type: "string", Description: "The pull request's repository, owner/name. For: link-pr."},
+	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required: ack-reminder, unremind."},
 
 	// ── Schedules ── (TASK-4105)
 	{Name: "every", Type: "string", Description: "Repeat rule: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE. For remind (schedule) and schedule-edit."},
-	{Name: "start", Type: "string", Description: "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required for: remind as a schedule. Optional for: schedule-edit."},
+	{Name: "start", Type: "string", Description: "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required: remind as a schedule. For: schedule-edit."},
 	{Name: "deadline", Type: "string", Description: "hard makes a deadline; soft or omit for no deadline. schedule-edit: soft and none clear it and keep any window. Not with window. schedule-renegotiate: the new deadline, an RFC3339 instant."},
 	{Name: "window", Type: "string", Description: "Span from start: a duration (90m, 2h, 3d) or an end wall (2026-11-09T17:00). Not with deadline."},
 	{Name: "anchor", Type: "string", Description: "calendar (default) | completion: the next one falls an interval after you mark it done."},
 	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
 	{Name: "tz", Type: "string", Description: "IANA zone the wall is read in (default: your account zone); for agenda, the zone shown. Not with floating."},
 	{Name: "floating", Type: "bool", Description: "Read the wall in the zone of whoever it fires for. Not with tz."},
-	{Name: "state", Type: "string", Description: "done | skip | snooze | move. Required for: schedule-resolve."},
-	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required for: snooze, move."},
-	{Name: "occurrence_at", Type: "string", Description: "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required for: schedule-resolve."},
-	{Name: "actual_done_at", Type: "string", Description: "RFC3339 instant the work really finished. Optional for: schedule-resolve, done only."},
-	{Name: "reason", Type: "string", Description: "Required for: schedule-renegotiate."},
+	{Name: "state", Type: "string", Description: "done | skip | snooze | move. Required: schedule-resolve."},
+	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required: snooze, move."},
+	{Name: "occurrence_at", Type: "string", Description: "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required: schedule-resolve."},
+	{Name: "actual_done_at", Type: "string", Description: "RFC3339 instant the work really finished. For: schedule-resolve, done only."},
+	{Name: "reason", Type: "string", Description: "Why dates change; required for schedule-renegotiate and graph changes moving hard deadlines."},
 	{Name: "scope", Type: "string", Description: "occurrence (default) | series. For: schedule-renegotiate."},
 	{Name: "deadline_days", Type: "number", Description: "Series offset in days. For: schedule-renegotiate."},
 	{Name: "deadline_secs", Type: "number", Description: "Series offset in seconds. For: schedule-renegotiate."},
 	{Name: "deadline_behavior", Type: "string", Description: "lapses | stays_owed. For: schedule-renegotiate."},
 	{Name: "remove_deadline", Type: "bool", Description: "Drop the series deadline. For: schedule-renegotiate."},
-	{Name: "revision", Type: "string", Description: "From a preview. Required for: schedule-renegotiate preview=false."},
-	{Name: "preview", Type: "bool", Description: "schedule-renegotiate: true (default) writes nothing; false applies."},
-	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required for: agenda; with stale, resumes the list."},
-	{Name: "to", Type: "string", Description: "Window end, RFC3339 instant, at most 92 days after from. Required for: agenda; not with stale."},
+	{Name: "revision", Type: "string", Description: "Opaque preview token; return unchanged with graph applies. Required: schedule-renegotiate preview=false."},
+	{Name: "preview", Type: "bool", Description: "Preview by default. schedule-renegotiate: false applies with revision. schedule-link: apply=true commits."},
+	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required: agenda; with stale, resumes the list."},
+	{Name: "to", Type: "string", Description: "RFC3339 instant: agenda end (<=92 days from from; not with stale), or schedule-move destination. Required for both."},
 	{Name: "stale", Type: "bool", Description: "agenda: yours unresolved over 14 days, not a window."},
+
+	{Name: "child", Type: "string", Description: "Child ref for schedule-link creation; ref is the parent."},
+	{Name: "parent_role", Type: "string", Description: "schedule-link: parent's target | earliest | deadline | occupied_until."},
+	{Name: "child_role", Type: "string", Description: "schedule-link: child's target | earliest | deadline | occupied_until."},
+	{Name: "link_offset", Type: "object", Description: "schedule-link API offset: {mode:elapsed,elapsed_secs} or {mode:civil,days,clock_secs,all_day,zone}. All chosen members required, including 0/false; no other-mode members. zone: pinned IANA, never Local."},
+	{Name: "cancel_policy", Type: "string", Description: "schedule-link: waiting_on (server default) | cancel_child_occurrence."},
+	{Name: "link_id", Type: "string", Description: "schedule-link: edit this link; schedule-unlink: remove it."},
+	{Name: "gate_id", Type: "string", Description: "schedule-gate: remove this gate; omit blocker."},
+	{Name: "blocker", Type: "string", Description: "schedule-gate: blocker ref; waits for success (fixed occurrence if scheduled)."},
+	{Name: "apply", Type: "bool", Description: "schedule-link/move: true commits; default previews without writes. Repeat preview inputs with revision; stale revision refuses."},
+	{Name: "acknowledge_violations", Type: "bool", Description: "schedule-link/move: accept previewed bound violations with its fresh revision; bounds and links remain."},
 
 	// ── Execution lease ── (#1221)
 	{Name: "holder", Type: "string", Description: "Lease holder label for action=claim/release. Optional; defaults to your agent name. Display only with a worker_id."},
-	{Name: "worker_id", Type: "string", Description: "Your lease worker id, as a claim answers it. Optional for: claim, release; pass it to resume your leases from a new connection."},
+	{Name: "worker_id", Type: "string", Description: "Your lease worker id, as a claim answers it. For: claim, release; pass it to resume your leases from a new connection."},
 	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"): default 15m, max 24h, minimum 1s (fractions truncate)."},
 
-	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import. NOT the same as `content` (which is just the item's Markdown body)."},
+	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required: import. NOT the same as `content` (which is just the item's Markdown body)."},
 
 	// ── Status / priority / scheduling ──
-	{Name: "status", Type: "string", Description: "Item status (collection-specific enum). Optional for: create, update, list filter, bulk-update."},
-	{Name: "priority", Type: "string", Description: "Item priority. Optional for: create, update, list filter, bulk-update."},
-	{Name: "category", Type: "string", Description: "Item category. Optional for: create, update."},
+	{Name: "status", Type: "string", Description: "Item status (collection-specific enum). For: create, update, list filter, bulk-update."},
+	{Name: "priority", Type: "string", Description: "Item priority. For: create, update, list filter, bulk-update."},
+	{Name: "category", Type: "string", Description: "Item category. For: create, update."},
 
 	// ── Hierarchy / assignment ──
-	{Name: "parent", Type: "string", Description: "Parent item ref (e.g. PLAN-3). Optional for: create, update, list filter."},
+	{Name: "parent", Type: "string", Description: "Parent item ref (e.g. PLAN-3). For: create, update, list filter."},
 	{Name: "unparented", Type: "bool", Description: "For action=list, keep only items with no parent or implements relationship. Mutually exclusive with parent."},
 	// BUG-2305: list is summary-shaped by default on BOTH transports;
 	// this is the discoverable opt-in for complete bodies. Reaches
@@ -262,11 +277,11 @@ var padItemSchemaParams = []ParamDef{
 	// declared only because both transports genuinely honor it (the
 	// v0.18 lesson: never advertise a param one transport drops).
 	{Name: "full", Type: "bool", Description: "list: complete content bodies instead of summaries. history: each version's content body. Token-expensive; prefer get for one item's body."},
-	{Name: "role", Type: "string", Description: "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter, context."},
+	{Name: "role", Type: "string", Description: "Agent role slug for create/update/list/context. schedule-move: target | earliest | deadline | occupied_until."},
 	// PLAN-3598 action=context.
-	{Name: "intent", Type: "string", Description: "Optional for: context. What you are about to do (implement, review, ...): picks the conventions whose trigger matches; without it, only always-on ones."},
-	{Name: "budget", Type: "number", Description: "Optional for: context. Size cap in characters (default 40000); whole parts past it are listed as omitted."},
-	{Name: "assign", Type: "string", Description: "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear."},
+	{Name: "intent", Type: "string", Description: "For: context. What you are about to do (implement, review, ...): picks the conventions whose trigger matches; without it, only always-on ones."},
+	{Name: "budget", Type: "number", Description: "For: context. Size cap in characters (default 40000); whole parts past it are listed as omitted."},
+	{Name: "assign", Type: "string", Description: "User name or email to assign. For: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear."},
 	// The canonical clear form (IDEA-2584). Booleans rather than an empty
 	// string on assign/role, for two reasons that both matter:
 	//
@@ -283,8 +298,8 @@ var padItemSchemaParams = []ParamDef{
 	// The empty-string `assigned_user_id: ""` form still works over the
 	// remote transport and is not deprecated — it's just not discoverable
 	// from this schema, which is what these params fix.
-	{Name: "clear_assigned_user", Type: "bool", Description: "Unassign the item (clear assigned_user_id); THE canonical way. Optional for: update. Combining it with assigning a user in the same call (`assign`, or assigned_user_id via `field`) is REFUSED."},
-	{Name: "clear_agent_role", Type: "bool", Description: "Clear the item's agent role (agent_role_id); THE canonical way. Optional for: update. Combining it with setting a role in the same call is REFUSED."},
+	{Name: "clear_assigned_user", Type: "bool", Description: "update: unassign (clear assigned_user_id). Refuses assignment in the same call via assign or assigned_user_id in field."},
+	{Name: "clear_agent_role", Type: "bool", Description: "update: clear agent_role_id. Refuses setting a role in the same call."},
 	// BUG-2078: same shape as clear_assigned_user/clear_agent_role above, for
 	// the same reason — an empty `parent` is inert everywhere else this
 	// mapper treats empty strings as "not provided", so it can't double as a
@@ -293,7 +308,7 @@ var padItemSchemaParams = []ParamDef{
 	// (extractParentLink treats a PRESENT-but-empty "parent" key in
 	// fields_patch as "detach"); this is the first client-visible way to
 	// reach it.
-	{Name: "clear_parent", Type: "bool", Description: "Detach the item from its parent; THE canonical way to un-parent. Optional for: update. An empty `parent` does NOT clear (it reads as \"not provided\"). Combining it with setting a parent in the same call is REFUSED."},
+	{Name: "clear_parent", Type: "bool", Description: "update: detach parent. Empty parent is inert. Refuses setting a parent in the same call."},
 
 	// ── Tagging ──
 	// `tags`: agents naturally pass a JSON array of strings (e.g.
@@ -304,7 +319,7 @@ var padItemSchemaParams = []ParamDef{
 	// AND the column shape (JSONB on Postgres) — agents passing
 	// "foo,bar" produced corrupt rows on SQLite and HTTP 500s on
 	// Postgres (JSONB rejects non-JSON).
-	{Name: "tags", Type: "array<string>", Description: "Tags as a JSON array of strings, e.g. [\"v1\",\"frontend\"]. Optional for: create, update."},
+	{Name: "tags", Type: "array<string>", Description: "Tags as a JSON array of strings, e.g. [\"v1\",\"frontend\"]. For: create, update."},
 	// `field`: the escape hatch for SCHEMA-DECLARED custom fields.
 	// Use the dedicated top-level params (`status`, `priority`,
 	// `category`, `parent`, `role`, `assign`, `tags`) for the named
@@ -318,27 +333,27 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "Setters for SCHEMA-DECLARED fields without a dedicated param: an array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated param. Optional for: create, update, list filter, move. Four keys are REFUSED on create, update and move, each with its own writer: implementation_notes -> action=note, decision_log -> action=decide, github_pr -> action=link-pr / unlink-pr, convention -> library activation only. On create/update the `fields` OBJECT param is an equivalent alternative."},
+	{Name: "field", Type: "array<string>", Description: "SCHEMA-DECLARED custom fields as [\"key=value\"] (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). Use dedicated status/priority/category/parent/role/assign/tags params. For create/update/list filter/move. create/update also accept fields OBJECT. create/update/move refuse implementation_notes (use note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library activation only)."},
 	// `fields`: the OBJECT alias for the write path (#1066). Reads
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
 	// dropped. See catalog_item_fields.go for the merge contract.
-	{Name: "fields", Type: "object", Description: "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges as `field` and the dedicated params do; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED. Values keep their JSON type; an object or array is written as-is to multi_select / json fields. Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref."},
+	{Name: "fields", Type: "object", Description: "Field OBJECT matching reads, e.g. {\"status\":\"done\",\"effort\":\"l\"}. create/update only. Merges like field/dedicated params; conflicting values for a key across placements refuse. JSON types stay intact; objects/arrays write as-is to multi_select/json. null refuses (omit unchanged keys); parent/plan must be string refs."},
 
 	// ── List / starred ──
-	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. Optional for: list, starred."},
-	{Name: "limit", Type: "number", Description: "Maximum results. Optional for: list, backlinks, history; default 50, max 300. history returns the NEWEST N versions. starred takes no limit: at most 300, with has_more."},
-	{Name: "offset", Type: "number", Description: "Skip the first N results (paging). Optional for: backlinks."},
-	{Name: "sort", Type: "string", Description: "Sort field. Optional for: list."},
-	{Name: "group_by", Type: "string", Description: "Group-by field. Optional for: list."},
+	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. For: list, starred."},
+	{Name: "limit", Type: "number", Description: "Maximum results. For: list, backlinks, history; default 50, max 300. history returns the NEWEST N versions. starred takes no limit: at most 300, with has_more."},
+	{Name: "offset", Type: "number", Description: "Skip the first N results (paging). For: backlinks."},
+	{Name: "sort", Type: "string", Description: "Sort field. For: list."},
+	{Name: "group_by", Type: "string", Description: "Group-by field. For: list."},
 
 	// ── Move ──
-	{Name: "target_collection", Type: "string", Description: "Destination collection slug for action=move. Required for: move."},
+	{Name: "target_collection", Type: "string", Description: "Destination collection slug for action=move. Required: move."},
 
 	// ── Comments ──
-	{Name: "message", Type: "string", Description: "Comment body. Required for: comment, edit-comment."},
-	{Name: "comment_id", Type: "string", Description: "ID of a comment on `ref` (from list-comments). Required for: edit-comment, delete-comment."},
-	{Name: "reply_to", Type: "string", Description: "Parent comment ID for threading replies. Optional for: comment."},
+	{Name: "message", Type: "string", Description: "Comment body. Required: comment, edit-comment."},
+	{Name: "comment_id", Type: "string", Description: "ID of a comment on `ref` (from list-comments). Required: edit-comment, delete-comment."},
+	{Name: "reply_to", Type: "string", Description: "Parent comment ID for threading replies. For: comment."},
 	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update, schedule-resolve."},
 
 	// ── Guard override ── (IDEA-1494)
@@ -350,7 +365,7 @@ var padItemSchemaParams = []ParamDef{
 	// force=true skips the guard and still records the transition.
 	// The same flag exists on `pad item update --force` so the CLI
 	// and MCP escape hatches are identical.
-	{Name: "force", Type: "bool", Description: "Override the open-children guard. Optional for: update, bulk-update, move. On code=open_children, details.open_children lists the blocking child refs: ship them and retry, or set force=true to orphan them on purpose."},
+	{Name: "force", Type: "bool", Description: "Override the open-children guard. For: update, bulk-update, move. On code=open_children, details.open_children lists the blocking child refs: ship them and retry, or set force=true to orphan them on purpose."},
 
 	// ── Optimistic concurrency ── (TASK-2022)
 	// update only. Round-trip the `updated_at` a prior get returned; the
@@ -374,8 +389,8 @@ var padItemSchemaParams = []ParamDef{
 			"line_hint": map[string]any{"type": "number", "description": "1-based line on which `old` starts; only chooses among several exact matches."},
 		},
 		"required": []any{"old", "new"},
-	}, Description: "patch: the edits, applied in order, all or nothing. Required for: patch."},
-	{Name: "op_key", Type: "string", Description: "patch, create, comment, note, decide: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer, not a second write; use it when a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused)."},
+	}, Description: "patch: the edits, applied in order, all or nothing. Required: patch."},
+	{Name: "op_key", Type: "string", Description: "patch/create/comment/note/decide: caller-chosen idempotency key (e.g. UUID). Retry SAME request/key for its first answer without another write after unclear outcomes. Different request with reused key refuses: idempotency_key_reused."},
 	{Name: "undo", Type: "string", Description: "patch: invert an earlier patch by its patch_id (instead of edits). Refused, writing nothing (patch_anchor_missing), when the text it changed has changed since."},
 	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch."},
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
@@ -384,10 +399,10 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "expected_seq", Type: "number", Description: "update: the `seq` you last read, PREFERRED over expected_updated_at; rejected with update_conflict if the item changed since."},
 
 	// ── Notes / decisions ──
-	{Name: "summary", Type: "string", Description: "Short note headline. Required for: note."},
-	{Name: "details", Type: "string", Description: "Long-form note body. Optional for: note."},
-	{Name: "decision", Type: "string", Description: "Decision summary text. Required for: decide."},
-	{Name: "rationale", Type: "string", Description: "Reasoning behind the decision. Optional for: decide."},
+	{Name: "summary", Type: "string", Description: "Short note headline. Required: note."},
+	{Name: "details", Type: "string", Description: "Long-form note body. For: note."},
+	{Name: "decision", Type: "string", Description: "Decision summary text. Required: decide."},
+	{Name: "rationale", Type: "string", Description: "Reasoning behind the decision. For: decide."},
 }
 
 const padItemToolDescription = `Item operations.
@@ -396,38 +411,32 @@ Actions:
   create — Create an item.
     Required: collection, title.
     Optional: status, priority, category, content, parent, role, assign, tags, field, fields.
-    Use dedicated params for those fields.
-    'field' is the escape hatch for SCHEMA-DECLARED custom fields without a dedicated param:
-    ["key=value"]. The fields OBJECT (the shape reads return) is equivalent;
-    a key with CONFLICTING values in two places is refused, not resolved.
-    tags is a JSON array of strings, NOT a comma-separated string.
+    Use dedicated params; field=["key=value"] handles other SCHEMA-DECLARED fields.
+    fields OBJECT matches reads; conflicting values across placements refuse.
+    tags: JSON string array, never comma-separated.
   update — Update an item; fields MERGE server-side, only supplied keys change.
     Required: ref, at least one mutable field.
     Optional: title, status, priority, content, role, assign, parent, comment, tags,
     field, fields, expected_seq, expected_updated_at, overwrite_pending_edits, replace.
-    Same placement as create. Pass expected_seq (last read seq): a stale value returns
-    update_conflict with details.actual_seq. PREFER IT over expected_updated_at.
-    content REPLACES the whole body: get, edit, send with the seq you read.
-    On update_conflict with details.content_write, NEVER resend your stale body:
-    re-read, apply your edit to CURRENT content, send with the new seq.
-    replace=true overwrites instead of checking seq. Without either,
-    warnings.unguarded_content_write is returned; a later release refuses it.
-    content_outcome="applied_pending_flush" means a browser tab holds the item: the read
-    lags, the write did not fail. Re-read later, never re-send.
+    Placement as create. Prefer expected_seq (last read seq) over expected_updated_at;
+    stale returns update_conflict, details.actual_seq. content REPLACES the body: get,
+    edit, send with read seq. On details.content_write conflict, NEVER resend stale
+    content: re-read, edit CURRENT content, send new seq. replace=true skips seq checks.
+    Neither: warnings.unguarded_content_write now, refusal in a later release.
+    content_outcome="applied_pending_flush": a browser holds the item; read lags,
+    write succeeded. Re-read later, never re-send.
   delete — Archive. Required: ref.
   restore — Restore an archived item. Required: ref.
   get — Read. Required: ref. Optional: lines ("40-80": numbered body lines + seq for anchors).
   patch — Exact body edits.
-    Required: ref, edits ([{old, new, line_hint?}]) OR undo (a patch_id from an earlier patch answer, to invert it).
-    Optional: expected_seq.
-    Each old must occur EXACTLY ONCE; quote more context or use line_hint to choose
-    among exact matches. Edits apply in order, all or nothing.
-    Read the diff: anchors fix position, not meaning; a rewritten anchor still lands.
-    A moved expected_seq does not refuse: the patch applies and returns rebased=true
-    with intervening writes (complete=false when some left no record).
-    Refusals write nothing: patch_anchor_missing / patch_anchor_ambiguous (re-read,
-    quote current text); patch_unstable_roundtrip (editor would change unrelated
-    content: send a whole-body update); patch_room_open (an older editor cannot apply patches).
+    Required: ref, edits ([{old,new,line_hint?}]) OR undo (invert a prior patch_id).
+    Optional: expected_seq. Each old must occur EXACTLY ONCE; quote context or use
+    line_hint to choose exact matches. Ordered, atomic edits. Read the diff: anchors
+    fix position, not meaning; rewritten anchors still land. A moved expected_seq
+    applies with rebased=true and intervening writes (complete=false if records missing).
+    Refusals write nothing: patch_anchor_missing/patch_anchor_ambiguous (re-read/quote
+    current text); patch_unstable_roundtrip (unrelated editor changes: whole-body
+    update); patch_room_open (older editor cannot patch).
   list — List/filter. Optional: collection, status, priority, parent, unparented,
     role, assign, all, limit, full. parent/unparented are mutually exclusive.
     Summary-shaped, no content bodies unless full=true.
@@ -443,10 +452,9 @@ Actions:
     Replaces any previous link; returns the item.
   unlink-pr — Remove PR link. Required: ref.
   remind — Arm a one-shot reminder. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused).
-    When fired, the item appears in pad_project next/ready carrying the reminder_id,
-    until acknowledged. Use when deferring work.
-    With start (plus any of every, deadline, window, anchor, audience, tz, floating) instead of
-    remind_at it arms a SCHEDULE: a check, deadline or window, once or repeating.
+    Use when deferring work. Fired items carry reminder_id in pad_project next/ready
+    until acknowledged. start replaces remind_at for a once/repeating check, deadline
+    or window; optional every, deadline, window, anchor, audience, tz, floating.
   schedule — Read the item's schedule. Required: ref.
   schedule-edit — Change it; only parameters given change. Required: ref, one of the schedule
     parameters (deadline soft or none clears the deadline and keeps any window).
@@ -455,21 +463,28 @@ Actions:
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
     series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a
     revision; preview=false with it applies. Hard deadline: assignee or owner only.
-  schedule-delete — Delete the schedule. Required: ref. Removes the schedule and its rule,
-    its history of resolved occurrences, and its managed reminder, so the pending occurrence
-    stops firing. Keeps the item, comments and one-shot reminders. Irreversible.
+  schedule-link — Preview a time link; apply=true commits. Create: ref (parent), child,
+    parent_role, child_role, link_offset. With link_id: edit link_offset and/or cancel_policy.
+    Optional: reason, revision, acknowledge_violations, cancel_policy. Read links/gates with schedule.
+  schedule-unlink — Remove a time link. Required: link_id. Keeps both commitments.
+  schedule-move — Preview linked date cascade; apply=true commits. Required: ref, role, to.
+    Optional: reason, revision, acknowledge_violations. Returns changes, violations, left_in_place,
+    renegotiates_deadline and revision. Deadline changes need reason and fresh revision;
+    bound crossings also need acknowledge_violations. Both ends must be readable and editable.
+  schedule-gate — Wait for blocker success (fixed occurrence if scheduled): ref, blocker.
+    With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
+  schedule-delete — Irreversibly delete schedule, rule, resolved history and managed
+    reminder; pending occurrence stops firing. Required: ref. Keeps item, comments, one-shot reminders.
   agenda — Schedule occurrences and dated items in a window. Required: from, to (RFC3339, at most 92 days). Optional: tz.
-  ack-reminder — Acknowledge a fired reminder so it leaves next/ready.
-    Required: reminder_id (from the fired suggestion or arming response, NOT item ref).
-    Nothing else acknowledges one: completing the item does not; it may fire after work is done.
+  ack-reminder — Acknowledge fired reminder; leaves next/ready. Required: reminder_id
+    (fired suggestion/arming response, NOT item ref). Only this acknowledges; completing
+    the item does not. Reminders may fire after work finishes.
   reminders — List armed/fired/acknowledged reminders. Required: ref.
     Each row's id is reminder_id for unremind (and ack-reminder, once that reminder has fired).
   unremind — Disarm/delete. Required: reminder_id (from reminders, or from the response when you armed it).
-  claim — Atomically claim an execution lease.
-    Required: ref. Optional: holder, worker_id, ttl (Go duration; default 15m, max 24h).
-    Returns your worker_id. One concurrent claimer wins; a loser's 409 names the live
-    holder and expiry: log it and skip, don't retry in a loop.
-    Re-claim to extend the expiry.
+  claim — Atomic execution lease. Required: ref. Optional: holder, worker_id, ttl
+    (Go duration; default 15m, max 24h). Returns worker_id. One claimer wins; loser's
+    409 names live holder/expiry: log and skip, never retry in a loop. Re-claim extends expiry.
   release — Release when you finish. Required: ref. Optional: holder, worker_id.
     Another holder's live lease is refused. Absent/expired leases return released:false, no error.
   star — Star. Required: ref.
@@ -491,13 +506,12 @@ Actions:
     Required: refs (array of refs), at least one of status / priority.
   note — Append implementation note. Required: ref, summary. Optional: details.
   decide — Record decision. Required: ref, decision. Optional: rationale.
-  export — Portable playbook/convention artifact TEXT: YAML frontmatter +
-    Markdown body, ready to hand to import in another workspace.
-    Required: ref (PLAYB-N / CONVE-N or slug). Only playbooks/conventions;
-    the server rejects any other item type. Read-only, side-effect-free.
-  import — Create a playbook/convention DRAFT (the server gates by the artifact's collection).
-    Required: artifact (full text from a prior export). Returns {ref, slug, warnings};
-    review and activate afterward. Mutating, not destructive (creates an item).
+  export — Read-only, side-effect-free artifact TEXT (YAML frontmatter + Markdown),
+    for import into another workspace. Required: ref (PLAYB-N/CONVE-N or slug).
+    Only playbooks/conventions; other types refuse.
+  import — Create playbook/convention DRAFT; artifact's collection gates type.
+    Required: artifact (full export text). Returns {ref,slug,warnings}; review/activate
+    afterward. Mutating, not destructive (creates item).
 
 ALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.
 When updating status, include comment="why" so the audit trail records WHY, not just THAT it changed.

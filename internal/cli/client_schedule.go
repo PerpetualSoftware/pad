@@ -3,6 +3,7 @@ package cli
 import (
 	"encoding/json"
 	"net/url"
+	"strings"
 )
 
 // --- Item schedules and the agenda ---
@@ -12,6 +13,25 @@ import (
 
 func commitmentBase(wsSlug, ref string) string {
 	return "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(ref) + "/commitment"
+}
+
+// IsCommitmentRoute identifies commitment API paths for the CLI and MCP error
+// contracts. The escaped path may include /api/v1, a mount prefix before it
+// (a server URL such as https://host/pad), and a query string.
+func IsCommitmentRoute(path string) bool {
+	path, _, _ = strings.Cut(path, "?")
+	// Slugs and refs are path-escaped, so the first /api/v1/ is the API root.
+	if _, rest, ok := strings.Cut(path, "/api/v1/"); ok {
+		path = "/" + rest
+	}
+	parts := strings.Split(strings.TrimPrefix(path, "/"), "/")
+	if len(parts) < 4 || parts[0] != "workspaces" || parts[1] == "" || parts[3] == "" {
+		return false
+	}
+	if parts[2] == "items" {
+		return len(parts) >= 5 && parts[4] == "commitment"
+	}
+	return len(parts) == 4 && (parts[2] == "commitment-links" || parts[2] == "commitment-gates")
 }
 
 // GetItemCommitment returns an item's schedule view.
@@ -73,4 +93,58 @@ func (c *Client) GetStaleAgenda(wsSlug, from, tz string) (json.RawMessage, error
 	}
 	var result json.RawMessage
 	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agenda?"+q.Encode(), &result)
+}
+
+// ListCommitmentLinks returns the readable links of an item.
+func (c *Client) ListCommitmentLinks(ws, ref string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.get(commitmentBase(ws, ref)+"/links", &raw)
+}
+
+// AddCommitmentLink previews or creates a link from the URL's parent item.
+func (c *Client) AddCommitmentLink(ws, ref string, body map[string]any) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.post(commitmentBase(ws, ref)+"/links", body, &raw)
+}
+
+func commitmentGraphPath(ws, kind, id string) string {
+	return "/workspaces/" + url.PathEscape(ws) + "/commitment-" + kind + "/" + url.PathEscape(id)
+}
+
+// EditCommitmentLink previews or applies an offset or cancellation policy edit.
+func (c *Client) EditCommitmentLink(ws, id string, body map[string]any) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.patch(commitmentGraphPath(ws, "links", id), body, &raw)
+}
+
+// RemoveCommitmentLink removes a link without deleting either commitment.
+func (c *Client) RemoveCommitmentLink(ws, id string) (json.RawMessage, error) {
+	return nil, c.delete(commitmentGraphPath(ws, "links", id))
+}
+
+// MoveLinkedCommitment previews or applies a cascade of linked dates.
+func (c *Client) MoveLinkedCommitment(ws, ref string, preview bool, body map[string]any) (json.RawMessage, error) {
+	path := "/move"
+	if preview {
+		path = "/move-preview"
+	}
+	var raw json.RawMessage
+	return raw, c.post(commitmentBase(ws, ref)+path, body, &raw)
+}
+
+// ListCommitmentGates returns the item's gate state and readable blockers.
+func (c *Client) ListCommitmentGates(ws, ref string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.get(commitmentBase(ws, ref)+"/gates", &raw)
+}
+
+// AddCommitmentGate waits for the blocker to succeed.
+func (c *Client) AddCommitmentGate(ws, ref, blocker string) (json.RawMessage, error) {
+	var raw json.RawMessage
+	return raw, c.post(commitmentBase(ws, ref)+"/gates", map[string]any{"blocker": blocker}, &raw)
+}
+
+// RemoveCommitmentGate removes the ordering constraint.
+func (c *Client) RemoveCommitmentGate(ws, id string) (json.RawMessage, error) {
+	return nil, c.delete(commitmentGraphPath(ws, "gates", id))
 }

@@ -8,6 +8,8 @@ import (
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/cli"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -42,6 +44,7 @@ import (
 type ErrorCode string
 
 const (
+	ErrInvalidBody               ErrorCode = "invalid_body"
 	ErrScheduleLinked            ErrorCode = "schedule_linked"
 	ErrDeadlineApprovalRequired  ErrorCode = "deadline_approval_required"
 	ErrLinkViolationAck          ErrorCode = "link_violation_ack"
@@ -516,6 +519,7 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
+	"invalid_body":                {},
 	"schedule_linked":             {},
 	"deadline_approval_required":  {},
 	"link_violation_ack":          {},
@@ -1059,7 +1063,7 @@ func classifyHTTPStatusKind(
 
 	if status == 400 || status == 403 || status == 404 || status == 409 || status == 503 {
 		up := extractUpstreamErrorEnvelope(bodyText)
-		if commitmentGraphCode(up.Code) || (up.Code == "validation_error" && commitmentValidationDetails(up.Details)) {
+		if commitmentGraphCode(up.Code, route) || (up.Code == "validation_error" && commitmentValidationDetails(up.Details)) {
 			hint := ""
 			if up.Code == string(ErrCommitmentChanged) {
 				hint = conflictHintFor(up.Message, route)
@@ -1888,8 +1892,10 @@ func upstreamHTTPErrorResult(
 }
 
 // commitmentGraphCode preserves graph refusals across both MCP transports.
-func commitmentGraphCode(code string) bool {
+func commitmentGraphCode(code, route string) bool {
 	switch ErrorCode(code) {
+	case ErrInvalidBody:
+		return cli.IsCommitmentRoute(route)
 	case ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired:
 		return true
 	}
@@ -1904,7 +1910,7 @@ func commitmentValidationDetails(raw json.RawMessage) bool {
 		return false
 	}
 	switch d.Field {
-	case "reason", "revision", "role", "to", "cancel_policy":
+	case "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker":
 		return true
 	}
 	return false

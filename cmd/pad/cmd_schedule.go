@@ -30,22 +30,24 @@ type scheduleOccurrence struct {
 // scheduleView decodes the fields the table output reads. Anything else the
 // server adds stays in the raw body, which --format json prints untouched.
 type scheduleView struct {
-	ItemRef         string                 `json:"item_ref"`
-	Roles           models.CommitmentRoles `json:"roles"`
-	Dtstart         string                 `json:"dtstart"`
-	Tz              *string                `json:"tz"`
-	Floating        bool                   `json:"floating"`
-	Rrule           *string                `json:"rrule"`
-	Anchor          string                 `json:"anchor"`
-	Audience        string                 `json:"audience"`
-	NextOccurrence  *scheduleOccurrence    `json:"next_occurrence"`
-	NextOverrideAt  *string                `json:"next_override_at"`
-	MissedCount     int                    `json:"missed_count"`
-	MissedTruncated bool                   `json:"missed_truncated"`
-	Stale           bool                   `json:"stale"`
-	EndedAt         *string                `json:"ended_at"`
-	ErrorCode       *string                `json:"error_code"`
-	TimezoneNote    string                 `json:"timezone_note"`
+	ItemRef         string                  `json:"item_ref"`
+	Roles           models.CommitmentRoles  `json:"roles"`
+	Dtstart         string                  `json:"dtstart"`
+	Tz              *string                 `json:"tz"`
+	Floating        bool                    `json:"floating"`
+	Rrule           *string                 `json:"rrule"`
+	Anchor          string                  `json:"anchor"`
+	Audience        string                  `json:"audience"`
+	NextOccurrence  *scheduleOccurrence     `json:"next_occurrence"`
+	NextOverrideAt  *string                 `json:"next_override_at"`
+	MissedCount     int                     `json:"missed_count"`
+	MissedTruncated bool                    `json:"missed_truncated"`
+	Stale           bool                    `json:"stale"`
+	EndedAt         *string                 `json:"ended_at"`
+	ErrorCode       *string                 `json:"error_code"`
+	TimezoneNote    string                  `json:"timezone_note"`
+	Links           []displayCommitmentLink `json:"links"`
+	Gates           models.ScheduleGateView `json:"gates"`
 }
 
 const instantLayout = "2006-01-02 15:04 MST"
@@ -225,6 +227,15 @@ whether the schedule is active, ended or in error.`,
 				fmt.Fprintf(w, "Missed:\t%s\n", missed)
 			}
 			fmt.Fprintf(w, "State:\t%s\n", state)
+			for _, link := range v.Links {
+				renderCommitmentLink(w, link)
+			}
+			if v.Gates.State != "" {
+				fmt.Fprintf(w, "Gates:\t%s\n", v.Gates.State)
+			}
+			for _, gate := range v.Gates.Gates {
+				renderCommitmentGate(w, gate, v.Gates.State)
+			}
 			if v.ErrorCode != nil {
 				fmt.Fprintf(w, "Error:\t%s\n", *v.ErrorCode)
 			}
@@ -249,7 +260,8 @@ var resolveVerbs = []resolveVerb{
 const commentHelp = "comment recorded on the item; optional"
 
 func remindResolveCmd(v resolveVerb) *cobra.Command {
-	var comment, occurrence, until, at string
+	var comment, occurrence, until, at, role, to string
+	var linked linkedWriteFlags
 	needsUntil := v.state == "snooze" || v.state == "move"
 	use := v.use + " <ref>"
 	long := "Resolve the schedule's outstanding occurrence as " + v.state + ".\n\n" +
@@ -266,6 +278,9 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	case "move":
 		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A move changes the target only; a hard deadline on a native schedule keeps its own date and changes through renegotiate with a reason (pad remind renegotiate). A legacy hard deadline cannot be moved: PATCH .../commitment naming a role converts it to native roles first."
 	}
+	if v.state == "move" {
+		long += "\n\nUse --role target|earliest|deadline|occupied_until with --to WHEN to preview a linked cascade. Repeat with --apply --revision TOKEN to commit; --reason records why, and --ack-violations accepts previewed bound crossings. This form refuses --until and --occurrence."
+	}
 	c := &cobra.Command{
 		Use:     use,
 		Short:   v.short,
@@ -273,6 +288,16 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		Long:    long,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			if v.state == "move" {
+				if cmd.Flags().Changed("role") {
+					return runLinkedMove(cmd, args[0], role, to, linked)
+				}
+				for _, flag := range []string{"to", "apply", "revision", "ack-violations", "reason"} {
+					if cmd.Flags().Changed(flag) {
+						return fmt.Errorf("--%s requires --role", flag)
+					}
+				}
+			}
 			req := schedule.CommitmentResolve{State: v.state, Comment: comment}
 			if cmd.Flags().Changed("at") {
 				if v.state != "done" {
@@ -317,7 +342,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			}
 			raw, err := client.ResolveItemCommitment(ws, args[0], req)
 			if err != nil {
-				return staleHint(err, args[0])
+				return linkedResolveHint(err, args[0], "target", req.Until)
 			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(raw)
@@ -329,6 +354,11 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			fmt.Println(resolveSentence(v.state, args[0], req, resp.Commitment))
 			return nil
 		},
+	}
+	if v.state == "move" {
+		c.Flags().StringVar(&role, "role", "", "preview or move a linked date: target | earliest | deadline | occupied_until")
+		c.Flags().StringVar(&to, "to", "", "linked move destination: RFC3339 or a wall time in your zone")
+		linked.addFlags(c)
 	}
 	c.Flags().StringVarP(&comment, "comment", "m", "", commentHelp)
 	c.Flags().StringVar(&at, "at", "", "when the work was really finished (done only): an RFC3339 instant or a wall time in your zone (2026-11-08T17:30)")
@@ -844,5 +874,5 @@ func addRemindSubcommands(cmd *cobra.Command) {
 	for _, v := range resolveVerbs {
 		cmd.AddCommand(remindResolveCmd(v))
 	}
-	cmd.AddCommand(remindRenegotiateCmd(), remindAgendaCmd(), remindEditCmd(), remindRmCmd())
+	cmd.AddCommand(remindLinkCmd(), remindGateCmd(), remindRenegotiateCmd(), remindAgendaCmd(), remindEditCmd(), remindRmCmd())
 }

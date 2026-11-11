@@ -151,7 +151,7 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "Collection management — list, create, update, archive (delete) and restore collection types.\n\nActions:\n  list    — List collections in the workspace with their schemas + counts.\n    Required: workspace.\n  create  — Create a new collection.\n    Required: workspace, name.\n    Optional: fields OR schema (mutually exclusive), icon, description, layout, default_view, board_group_by. DSL example:    fields=\"status:select:open,done; priority:select:high,medium,low\" Relation in the DSL: the third part is the TARGET COLLECTION slug, not an options list, and it is required — fields=\"reviewer:relation:people\". A relation with no target is refused, since such a field cannot accept any value. Schema example: schema={\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"options\":[\"new\",\"done\"],\"terminal_options\":[\"done\"]}]} Prefer schema when terminal_options matters (driving dashboard active/complete counts) or when fields need defaults, computed flags, or suffixes — the DSL cannot express those.\n  update  — Update an existing collection's name, icon, description, prefix, schema, or sort order. Workspace owner only.\n    Required: workspace, slug.\n    Optional: name, icon, description, prefix, fields OR schema (mutually exclusive), sort_order. Only fields you explicitly set are mutated; everything else is left untouched. This is the adaptation primitive for the onboarding playbook (/pad onboard): rewrite seeded collections to match the project's vocabulary, not template defaults. Removing a field or option that items hold is allowed; they keep the value, and warnings.orphaned says how many.\n  delete  — Archive a collection: it and its items leave every view. Owner-only. Reversible with restore. Required: workspace, slug.\n    Constraints:\n      - Cannot delete a default (template-seeded) collection. Adapt those via update instead (rename, reshape schema).\n      - Items in the collection are NOT deleted — they stay in the database, hidden with the collection, and come back with it.\n  list-archived — The workspace's archived collections, each with its slug, id, prefix, item_count and archived_at. Owner-only.\n    Required: workspace.\n  restore — Restore an archived collection, with its items. Owner-only.\n    Required: workspace, slug (the archived collection's slug from list-archived, or its id).\n\nAn individual collection's schema is in the list response: read it there\nrather than calling list again. v0.2 does not expose a dedicated\nread-by-slug action; if you need that, file a feature request.",
+      "description": "Manage collection types.\n\nActions:\n  list — Schemas + counts. Required: workspace. Read schemas here; no read-by-slug action.\n  create — Required: workspace, name. Optional: fields OR schema (mutually exclusive), icon, description, layout, default_view, board_group_by. DSL: fields=\"status:select:open,done; priority:select:high,medium,low\". Relations require a target collection slug in part 3, not options: fields=\"reviewer:relation:people\"; no target refuses (cannot accept values). Schema: {\"fields\":[{\"key\":\"status\",\"type\":\"select\",\"options\":[\"new\",\"done\"],\"terminal_options\":[\"done\"]}]}. Use schema for terminal_options (dashboard active/complete counts), defaults, computed flags or suffixes; the DSL cannot express them.\n  update — Owner-only. Required: workspace, slug. Optional: name, icon, description, prefix, fields OR schema (mutually exclusive), sort_order. Only supplied fields change. Adapt seeded collections to project vocabulary with /pad onboard. Removed fields/options keep item values; warnings.orphaned counts affected items.\n  delete — Owner-only archive; collection and items leave every view. Required: workspace, slug. Items stay stored, hidden until restore. Default (template-seeded) collections cannot be deleted: rename/reshape them via update. Reversible with restore.\n  list-archived — Owner-only. Required: workspace. Returns slug, id, prefix, item_count, archived_at.\n  restore — Owner-only; restores collection and items. Required: workspace, slug (archived slug or id from list-archived).",
       "inputSchema": {
         "properties": {
           "action": {
@@ -184,7 +184,7 @@
             "type": "string"
           },
           "fields": {
-            "description": "Compact field DSL: \"key:type[:options]; ...\". Optional for action=create. Example: \"status:select:open,done; priority:select:high,medium,low\". For a relation the third part is the TARGET COLLECTION slug rather than an options list, and it is required: \"reviewer:relation:people\" — a relation with no target is refused, since such a field cannot accept any value. Use `schema` instead when you need terminal_options, custom defaults, computed fields, or suffixes — the DSL cannot express those. Mutually exclusive with `schema`.",
+            "description": "Field DSL: \"key:type[:options]; ...\", e.g. \"status:select:open,done; priority:select:high,medium,low\". For create. relation part 3 is required TARGET COLLECTION, not options: \"reviewer:relation:people\"; no target refuses. For terminal_options, defaults, computed fields or suffixes use schema; DSL cannot express them. Mutually exclusive with schema.",
             "type": "string"
           },
           "icon": {
@@ -201,20 +201,20 @@
             "type": "string"
           },
           "name": {
-            "description": "Display name of the collection. Required for action=create. Optional for action=update — provide to rename.",
+            "description": "Collection display name. Required: create; update renames.",
             "type": "string"
           },
           "prefix": {
-            "description": "Issue-ID prefix (e.g. \"TASK\", \"BUG\"). Optional for action=update — provide to change how new items in this collection are numbered.",
+            "description": "Issue prefix (e.g. TASK, BUG). update changes numbering of new items.",
             "type": "string"
           },
           "schema": {
-            "description": "Structured CollectionSchema: {\"fields\":[{\"key\":\"...\",\"label\":\"...\",\"type\":\"...\",\"options\":[...],\"terminal_options\":[...],\"default\":\"...\",\"required\":bool,\"computed\":bool,\"suffix\":\"...\",\"collection\":\"...\"}]}. Optional for action=create. Use instead of `fields` when you need terminal_options or any FieldDef property the DSL cannot express. Missing `label` values are auto-filled from `key` using Title Case (e.g. due_date → Due Date). Mutually exclusive with `fields`.",
+            "description": "CollectionSchema: {\"fields\":[{\"key\":\"...\",\"label\":\"...\",\"type\":\"...\",\"options\":[...],\"terminal_options\":[...],\"default\":\"...\",\"required\":bool,\"computed\":bool,\"suffix\":\"...\",\"collection\":\"...\"}]}. For create. Use for terminal_options or other FieldDef properties absent from DSL. Missing label: Title Case of key (due_date → Due Date). Mutually exclusive with fields.",
             "properties": {},
             "type": "object"
           },
           "slug": {
-            "description": "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update, action=delete and action=restore; identifies which collection to mutate. For restore, the archived collection's slug (from list-archived) or its id.",
+            "description": "Collection slug (e.g. tasks, conventions). Required: update/delete/restore. Restore: archived slug from list-archived or id.",
             "type": "string"
           },
           "sort_order": {
@@ -244,9 +244,13 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "Item operations.\n\nActions:\n  create — Create an item.\n    Required: collection, title.\n    Optional: status, priority, category, content, parent, role, assign, tags, field, fields. Use dedicated params for those fields. 'field' is the escape hatch for SCHEMA-DECLARED custom fields without a dedicated param: [\"key=value\"]. The fields OBJECT (the shape reads return) is equivalent; a key with CONFLICTING values in two places is refused, not resolved. tags is a JSON array of strings, NOT a comma-separated string.\n  update — Update an item; fields MERGE server-side, only supplied keys change.\n    Required: ref, at least one mutable field.\n    Optional: title, status, priority, content, role, assign, parent, comment, tags, field, fields, expected_seq, expected_updated_at, overwrite_pending_edits, replace. Same placement as create. Pass expected_seq (last read seq): a stale value returns update_conflict with details.actual_seq. PREFER IT over expected_updated_at. content REPLACES the whole body: get, edit, send with the seq you read. On update_conflict with details.content_write, NEVER resend your stale body: re-read, apply your edit to CURRENT content, send with the new seq. replace=true overwrites instead of checking seq. Without either, warnings.unguarded_content_write is returned; a later release refuses it. content_outcome=\"applied_pending_flush\" means a browser tab holds the item: the read lags, the write did not fail. Re-read later, never re-send.\n  delete — Archive. Required: ref.\n  restore — Restore an archived item. Required: ref.\n  get — Read. Required: ref. Optional: lines (\"40-80\": numbered body lines + seq for anchors).\n  patch — Exact body edits.\n    Required: ref, edits ([{old, new, line_hint?}]) OR undo (a patch_id from an earlier patch answer, to invert it).\n    Optional: expected_seq. Each old must occur EXACTLY ONCE; quote more context or use line_hint to choose among exact matches. Edits apply in order, all or nothing. Read the diff: anchors fix position, not meaning; a rewritten anchor still lands. A moved expected_seq does not refuse: the patch applies and returns rebased=true with intervening writes (complete=false when some left no record). Refusals write nothing: patch_anchor_missing / patch_anchor_ambiguous (re-read, quote current text); patch_unstable_roundtrip (editor would change unrelated content: send a whole-body update); patch_room_open (an older editor cannot apply patches).\n  list — List/filter. Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full. parent/unparented are mutually exclusive. Summary-shaped, no content bodies unless full=true.\n  move — Change collection. Required: ref, target_collection.\n  link — Add relationship. Required: ref, target, link_type. link_type: blocks | blocked-by | supersedes | implements | split-from.\n  unlink — Remove relationship. Required: ref, target, link_type.\n  deps — Incoming/outgoing dependencies. Required: ref.\n  context — One brief before starting work: item, parents with acceptance criteria, matching conventions, deps, links. Required: ref. Optional: intent, role, budget.\n  link-pr — Link supplied GitHub metadata; nothing is fetched.\n    Required: ref, pr_number, pr_url. Optional: pr_title, pr_state, pr_branch, pr_repo. Replaces any previous link; returns the item.\n  unlink-pr — Remove PR link. Required: ref.\n  remind — Arm a one-shot reminder. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused). When fired, the item appears in pad_project next/ready carrying the reminder_id, until acknowledged. Use when deferring work. With start (plus any of every, deadline, window, anchor, audience, tz, floating) instead of remind_at it arms a SCHEDULE: a check, deadline or window, once or repeating.\n  schedule — Read the item's schedule. Required: ref.\n  schedule-edit — Change it; only parameters given change. Required: ref, one of the schedule parameters (deadline soft or none clears the deadline and keeps any window).\n  schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at. snooze and move also need until. Optional: comment, actual_done_at (done only).\n  schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339); series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a revision; preview=false with it applies. Hard deadline: assignee or owner only.\n  schedule-delete — Delete the schedule. Required: ref. Removes the schedule and its rule, its history of resolved occurrences, and its managed reminder, so the pending occurrence stops firing. Keeps the item, comments and one-shot reminders. Irreversible.\n  agenda — Schedule occurrences and dated items in a window. Required: from, to (RFC3339, at most 92 days). Optional: tz.\n  ack-reminder — Acknowledge a fired reminder so it leaves next/ready.\n    Required: reminder_id (from the fired suggestion or arming response, NOT item ref). Nothing else acknowledges one: completing the item does not; it may fire after work is done.\n  reminders — List armed/fired/acknowledged reminders. Required: ref. Each row's id is reminder_id for unremind (and ack-reminder, once that reminder has fired).\n  unremind — Disarm/delete. Required: reminder_id (from reminders, or from the response when you armed it).\n  claim — Atomically claim an execution lease.\n    Required: ref. Optional: holder, worker_id, ttl (Go duration; default 15m, max 24h). Returns your worker_id. One concurrent claimer wins; a loser's 409 names the live holder and expiry: log it and skip, don't retry in a loop. Re-claim to extend the expiry.\n  release — Release when you finish. Required: ref. Optional: holder, worker_id. Another holder's live lease is refused. Absent/expired leases return released:false, no error.\n  star — Star. Required: ref.\n  unstar — Unstar. Required: ref.\n  starred — List starred. Optional: all.\n  comment — Add comment. Required: ref, message. Optional: reply_to (parent comment ID).\n  list-comments — List with id and edited flag. Required: ref.\n  edit-comment — Replace body (author only). Required: ref, comment_id, message.\n  delete-comment — Delete (item editors may). Required: ref, comment_id. Replies retain a deleted:true, empty-body placeholder until the last reply is deleted.\n  backlinks — Inbound [[...]] references. Required: ref.\n    Optional: limit (default 50, max 300), offset. Same-workspace rows first, then cross-workspace rows carrying source_workspace_slug.\n  history — Read-only newest-first history.\n    Required: ref. Optional: limit (NEWEST 50 by default, max 300), full. Summaries: id, created_at, created_by, source, change_summary. full includes resolved content; restoring is web-only.\n  bulk-update — Set status/priority on several items.\n    Required: refs (array of refs), at least one of status / priority.\n  note — Append implementation note. Required: ref, summary. Optional: details.\n  decide — Record decision. Required: ref, decision. Optional: rationale.\n  export — Portable playbook/convention artifact TEXT: YAML frontmatter + Markdown body, ready to hand to import in another workspace.\n    Required: ref (PLAYB-N / CONVE-N or slug). Only playbooks/conventions; the server rejects any other item type. Read-only, side-effect-free.\n  import — Create a playbook/convention DRAFT (the server gates by the artifact's collection).\n    Required: artifact (full text from a prior export). Returns {ref, slug, warnings}; review and activate afterward. Mutating, not destructive (creates an item).\n\nALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.\nWhen updating status, include comment=\"why\" so the audit trail records WHY, not just THAT it changed.\nCross-item FTS: pad_search.action=query; pad_item.list only filters.",
+      "description": "Item operations.\n\nActions:\n  create — Create an item.\n    Required: collection, title.\n    Optional: status, priority, category, content, parent, role, assign, tags, field, fields. Use dedicated params; field=[\"key=value\"] handles other SCHEMA-DECLARED fields. fields OBJECT matches reads; conflicting values across placements refuse. tags: JSON string array, never comma-separated.\n  update — Update an item; fields MERGE server-side, only supplied keys change.\n    Required: ref, at least one mutable field.\n    Optional: title, status, priority, content, role, assign, parent, comment, tags, field, fields, expected_seq, expected_updated_at, overwrite_pending_edits, replace. Placement as create. Prefer expected_seq (last read seq) over expected_updated_at; stale returns update_conflict, details.actual_seq. content REPLACES the body: get, edit, send with read seq. On details.content_write conflict, NEVER resend stale content: re-read, edit CURRENT content, send new seq. replace=true skips seq checks. Neither: warnings.unguarded_content_write now, refusal in a later release. content_outcome=\"applied_pending_flush\": a browser holds the item; read lags, write succeeded. Re-read later, never re-send.\n  delete — Archive. Required: ref.\n  restore — Restore an archived item. Required: ref.\n  get — Read. Required: ref. Optional: lines (\"40-80\": numbered body lines + seq for anchors).\n  patch — Exact body edits.\n    Required: ref, edits ([{old,new,line_hint?}]) OR undo (invert a prior patch_id).\n    Optional: expected_seq. Each old must occur EXACTLY ONCE; quote context or use line_hint to choose exact matches. Ordered, atomic edits. Read the diff: anchors fix position, not meaning; rewritten anchors still land. A moved expected_seq applies with rebased=true and intervening writes (complete=false if records missing). Refusals write nothing: patch_anchor_missing/patch_anchor_ambiguous (re-read/quote current text); patch_unstable_roundtrip (unrelated editor changes: whole-body update); patch_room_open (older editor cannot patch).\n  list — List/filter. Optional: collection, status, priority, parent, unparented, role, assign, all, limit, full. parent/unparented are mutually exclusive. Summary-shaped, no content bodies unless full=true.\n  move — Change collection. Required: ref, target_collection.\n  link — Add relationship. Required: ref, target, link_type. link_type: blocks | blocked-by | supersedes | implements | split-from.\n  unlink — Remove relationship. Required: ref, target, link_type.\n  deps — Incoming/outgoing dependencies. Required: ref.\n  context — One brief before starting work: item, parents with acceptance criteria, matching conventions, deps, links. Required: ref. Optional: intent, role, budget.\n  link-pr — Link supplied GitHub metadata; nothing is fetched.\n    Required: ref, pr_number, pr_url. Optional: pr_title, pr_state, pr_branch, pr_repo. Replaces any previous link; returns the item.\n  unlink-pr — Remove PR link. Required: ref.\n  remind — Arm a one-shot reminder. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused). Use when deferring work. Fired items carry reminder_id in pad_project next/ready until acknowledged. start replaces remind_at for a once/repeating check, deadline or window; optional every, deadline, window, anchor, audience, tz, floating.\n  schedule — Read the item's schedule. Required: ref.\n  schedule-edit — Change it; only parameters given change. Required: ref, one of the schedule parameters (deadline soft or none clears the deadline and keeps any window).\n  schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at. snooze and move also need until. Optional: comment, actual_done_at (done only).\n  schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339); series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a revision; preview=false with it applies. Hard deadline: assignee or owner only.\n  schedule-link — Preview a time link; apply=true commits. Create: ref (parent), child, parent_role, child_role, link_offset. With link_id: edit link_offset and/or cancel_policy.\n    Optional: reason, revision, acknowledge_violations, cancel_policy. Read links/gates with schedule.\n  schedule-unlink — Remove a time link. Required: link_id. Keeps both commitments.\n  schedule-move — Preview linked date cascade; apply=true commits. Required: ref, role, to.\n    Optional: reason, revision, acknowledge_violations. Returns changes, violations, left_in_place, renegotiates_deadline and revision. Deadline changes need reason and fresh revision; bound crossings also need acknowledge_violations. Both ends must be readable and editable.\n  schedule-gate — Wait for blocker success (fixed occurrence if scheduled): ref, blocker. With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.\n  schedule-delete — Irreversibly delete schedule, rule, resolved history and managed reminder; pending occurrence stops firing. Required: ref. Keeps item, comments, one-shot reminders.\n  agenda — Schedule occurrences and dated items in a window. Required: from, to (RFC3339, at most 92 days). Optional: tz.\n  ack-reminder — Acknowledge fired reminder; leaves next/ready. Required: reminder_id (fired suggestion/arming response, NOT item ref). Only this acknowledges; completing the item does not. Reminders may fire after work finishes.\n  reminders — List armed/fired/acknowledged reminders. Required: ref. Each row's id is reminder_id for unremind (and ack-reminder, once that reminder has fired).\n  unremind — Disarm/delete. Required: reminder_id (from reminders, or from the response when you armed it).\n  claim — Atomic execution lease. Required: ref. Optional: holder, worker_id, ttl (Go duration; default 15m, max 24h). Returns worker_id. One claimer wins; loser's 409 names live holder/expiry: log and skip, never retry in a loop. Re-claim extends expiry.\n  release — Release when you finish. Required: ref. Optional: holder, worker_id. Another holder's live lease is refused. Absent/expired leases return released:false, no error.\n  star — Star. Required: ref.\n  unstar — Unstar. Required: ref.\n  starred — List starred. Optional: all.\n  comment — Add comment. Required: ref, message. Optional: reply_to (parent comment ID).\n  list-comments — List with id and edited flag. Required: ref.\n  edit-comment — Replace body (author only). Required: ref, comment_id, message.\n  delete-comment — Delete (item editors may). Required: ref, comment_id. Replies retain a deleted:true, empty-body placeholder until the last reply is deleted.\n  backlinks — Inbound [[...]] references. Required: ref.\n    Optional: limit (default 50, max 300), offset. Same-workspace rows first, then cross-workspace rows carrying source_workspace_slug.\n  history — Read-only newest-first history.\n    Required: ref. Optional: limit (NEWEST 50 by default, max 300), full. Summaries: id, created_at, created_by, source, change_summary. full includes resolved content; restoring is web-only.\n  bulk-update — Set status/priority on several items.\n    Required: refs (array of refs), at least one of status / priority.\n  note — Append implementation note. Required: ref, summary. Optional: details.\n  decide — Record decision. Required: ref, decision. Optional: rationale.\n  export — Read-only, side-effect-free artifact TEXT (YAML frontmatter + Markdown), for import into another workspace. Required: ref (PLAYB-N/CONVE-N or slug). Only playbooks/conventions; other types refuse.\n  import — Create playbook/convention DRAFT; artifact's collection gates type.\n    Required: artifact (full export text). Returns {ref,slug,warnings}; review/activate afterward. Mutating, not destructive (creates item).\n\nALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.\nWhen updating status, include comment=\"why\" so the audit trail records WHY, not just THAT it changed.\nCross-item FTS: pad_search.action=query; pad_item.list only filters.",
       "inputSchema": {
         "properties": {
+          "acknowledge_violations": {
+            "description": "schedule-link/move: accept previewed bound violations with its fresh revision; bounds and links remain.",
+            "type": "boolean"
+          },
           "action": {
             "description": "The action to perform. See tool description for required parameters per action.",
             "enum": [
@@ -281,8 +285,12 @@
               "schedule",
               "schedule-delete",
               "schedule-edit",
+              "schedule-gate",
+              "schedule-link",
+              "schedule-move",
               "schedule-renegotiate",
               "schedule-resolve",
+              "schedule-unlink",
               "star",
               "starred",
               "unlink",
@@ -294,7 +302,7 @@
             "type": "string"
           },
           "actual_done_at": {
-            "description": "RFC3339 instant the work really finished. Optional for: schedule-resolve, done only.",
+            "description": "RFC3339 instant the work really finished. For: schedule-resolve, done only.",
             "type": "string"
           },
           "agent": {
@@ -302,47 +310,67 @@
             "type": "boolean"
           },
           "all": {
-            "description": "Include archived/done items in list responses. Optional for: list, starred.",
+            "description": "Include archived/done items in list responses. For: list, starred.",
             "type": "boolean"
           },
           "anchor": {
             "description": "calendar (default) | completion: the next one falls an interval after you mark it done.",
             "type": "string"
           },
+          "apply": {
+            "description": "schedule-link/move: true commits; default previews without writes. Repeat preview inputs with revision; stale revision refuses.",
+            "type": "boolean"
+          },
           "artifact": {
-            "description": "Full portable artifact text (YAML frontmatter + Markdown body). Required for: import. NOT the same as `content` (which is just the item's Markdown body).",
+            "description": "Full portable artifact text (YAML frontmatter + Markdown body). Required: import. NOT the same as `content` (which is just the item's Markdown body).",
             "type": "string"
           },
           "assign": {
-            "description": "User name or email to assign. Optional for: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear.",
+            "description": "User name or email to assign. For: create, update, list filter. To UNASSIGN, use clear_assigned_user=true — an empty `assign` does NOT clear.",
             "type": "string"
           },
           "audience": {
             "description": "human | agent | both (default).",
             "type": "string"
           },
+          "blocker": {
+            "description": "schedule-gate: blocker ref; waits for success (fixed occurrence if scheduled).",
+            "type": "string"
+          },
           "budget": {
-            "description": "Optional for: context. Size cap in characters (default 40000); whole parts past it are listed as omitted.",
+            "description": "For: context. Size cap in characters (default 40000); whole parts past it are listed as omitted.",
             "type": "number"
           },
+          "cancel_policy": {
+            "description": "schedule-link: waiting_on (server default) | cancel_child_occurrence.",
+            "type": "string"
+          },
           "category": {
-            "description": "Item category. Optional for: create, update.",
+            "description": "Item category. For: create, update.",
+            "type": "string"
+          },
+          "child": {
+            "description": "Child ref for schedule-link creation; ref is the parent.",
+            "type": "string"
+          },
+          "child_role": {
+            "description": "schedule-link: child's target | earliest | deadline | occupied_until.",
             "type": "string"
           },
           "clear_agent_role": {
-            "description": "Clear the item's agent role (agent_role_id); THE canonical way. Optional for: update. Combining it with setting a role in the same call is REFUSED.",
+            "description": "update: clear agent_role_id. Refuses setting a role in the same call.",
             "type": "boolean"
           },
           "clear_assigned_user": {
-            "description": "Unassign the item (clear assigned_user_id); THE canonical way. Optional for: update. Combining it with assigning a user in the same call (`assign`, or assigned_user_id via `field`) is REFUSED.",
+            "description": "update: unassign (clear assigned_user_id). Refuses assignment in the same call via assign or assigned_user_id in field.",
             "type": "boolean"
           },
           "clear_parent": {
-            "description": "Detach the item from its parent; THE canonical way to un-parent. Optional for: update. An empty `parent` does NOT clear (it reads as \"not provided\"). Combining it with setting a parent in the same call is REFUSED.",
+            "description": "update: detach parent. Empty parent is inert. Refuses setting a parent in the same call.",
             "type": "boolean"
           },
           "collection": {
-            "description": "Collection slug (e.g. \"tasks\", \"ideas\"). Required for: create. Optional filter for: list.",
+            "description": "Collection slug (e.g. \"tasks\", \"ideas\"). Required: create. Optional filter for: list.",
             "type": "string"
           },
           "comment": {
@@ -350,11 +378,11 @@
             "type": "string"
           },
           "comment_id": {
-            "description": "ID of a comment on `ref` (from list-comments). Required for: edit-comment, delete-comment.",
+            "description": "ID of a comment on `ref` (from list-comments). Required: edit-comment, delete-comment.",
             "type": "string"
           },
           "content": {
-            "description": "Markdown body. Optional for: create, update.",
+            "description": "Markdown body. For: create, update.",
             "type": "string"
           },
           "deadline": {
@@ -374,15 +402,15 @@
             "type": "number"
           },
           "decision": {
-            "description": "Decision summary text. Required for: decide.",
+            "description": "Decision summary text. Required: decide.",
             "type": "string"
           },
           "details": {
-            "description": "Long-form note body. Optional for: note.",
+            "description": "Long-form note body. For: note.",
             "type": "string"
           },
           "edits": {
-            "description": "patch: the edits, applied in order, all or nothing. Required for: patch.",
+            "description": "patch: the edits, applied in order, all or nothing. Required: patch.",
             "items": {
               "properties": {
                 "line_hint": {
@@ -419,14 +447,14 @@
             "type": "string"
           },
           "field": {
-            "description": "Setters for SCHEMA-DECLARED fields without a dedicated param: an array of \"key=value\" strings (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). For status/priority/category/parent/role/assign/tags use the dedicated param. Optional for: create, update, list filter, move. Four keys are REFUSED on create, update and move, each with its own writer: implementation_notes -\u003e action=note, decision_log -\u003e action=decide, github_pr -\u003e action=link-pr / unlink-pr, convention -\u003e library activation only. On create/update the `fields` OBJECT param is an equivalent alternative.",
+            "description": "SCHEMA-DECLARED custom fields as [\"key=value\"] (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). Use dedicated status/priority/category/parent/role/assign/tags params. For create/update/list filter/move. create/update also accept fields OBJECT. create/update/move refuse implementation_notes (use note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library activation only).",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "fields": {
-            "description": "Field values as one OBJECT (e.g. {\"status\":\"done\",\"effort\":\"l\"}) — the same shape reads return. Only for: create, update. Merges as `field` and the dedicated params do; a key given here AND at the top level (or in `field`) with a DIFFERENT value is REFUSED. Values keep their JSON type; an object or array is written as-is to multi_select / json fields. Two exceptions: `null` is refused (omit the key to leave a field unchanged), and parent/plan must be a string ref.",
+            "description": "Field OBJECT matching reads, e.g. {\"status\":\"done\",\"effort\":\"l\"}. create/update only. Merges like field/dedicated params; conflicting values for a key across placements refuse. JSON types stay intact; objects/arrays write as-is to multi_select/json. null refuses (omit unchanged keys); parent/plan must be string refs.",
             "properties": {},
             "type": "object"
           },
@@ -435,19 +463,23 @@
             "type": "boolean"
           },
           "force": {
-            "description": "Override the open-children guard. Optional for: update, bulk-update, move. On code=open_children, details.open_children lists the blocking child refs: ship them and retry, or set force=true to orphan them on purpose.",
+            "description": "Override the open-children guard. For: update, bulk-update, move. On code=open_children, details.open_children lists the blocking child refs: ship them and retry, or set force=true to orphan them on purpose.",
             "type": "boolean"
           },
           "from": {
-            "description": "Window start, RFC3339 instant. Required for: agenda; with stale, resumes the list.",
+            "description": "Window start, RFC3339 instant. Required: agenda; with stale, resumes the list.",
             "type": "string"
           },
           "full": {
             "description": "list: complete content bodies instead of summaries. history: each version's content body. Token-expensive; prefer get for one item's body.",
             "type": "boolean"
           },
+          "gate_id": {
+            "description": "schedule-gate: remove this gate; omit blocker.",
+            "type": "string"
+          },
           "group_by": {
-            "description": "Group-by field. Optional for: list.",
+            "description": "Group-by field. For: list.",
             "type": "string"
           },
           "holder": {
@@ -455,16 +487,25 @@
             "type": "string"
           },
           "intent": {
-            "description": "Optional for: context. What you are about to do (implement, review, ...): picks the conventions whose trigger matches; without it, only always-on ones.",
+            "description": "For: context. What you are about to do (implement, review, ...): picks the conventions whose trigger matches; without it, only always-on ones.",
             "type": "string"
           },
           "limit": {
-            "description": "Maximum results. Optional for: list, backlinks, history; default 50, max 300. history returns the NEWEST N versions. starred takes no limit: at most 300, with has_more.",
+            "description": "Maximum results. For: list, backlinks, history; default 50, max 300. history returns the NEWEST N versions. starred takes no limit: at most 300, with has_more.",
             "type": "number"
           },
           "lines": {
             "description": "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch.",
             "type": "string"
+          },
+          "link_id": {
+            "description": "schedule-link: edit this link; schedule-unlink: remove it.",
+            "type": "string"
+          },
+          "link_offset": {
+            "description": "schedule-link API offset: {mode:elapsed,elapsed_secs} or {mode:civil,days,clock_secs,all_day,zone}. All chosen members required, including 0/false; no other-mode members. zone: pinned IANA, never Local.",
+            "properties": {},
+            "type": "object"
           },
           "link_type": {
             "description": "Type of relationship for action=link/unlink.",
@@ -478,19 +519,19 @@
             "type": "string"
           },
           "message": {
-            "description": "Comment body. Required for: comment, edit-comment.",
+            "description": "Comment body. Required: comment, edit-comment.",
             "type": "string"
           },
           "occurrence_at": {
-            "description": "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required for: schedule-resolve.",
+            "description": "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required: schedule-resolve.",
             "type": "string"
           },
           "offset": {
-            "description": "Skip the first N results (paging). Optional for: backlinks.",
+            "description": "Skip the first N results (paging). For: backlinks.",
             "type": "number"
           },
           "op_key": {
-            "description": "patch, create, comment, note, decide: an idempotency key you choose (e.g. a UUID). Retrying the SAME request with the same key returns the first answer, not a second write; use it when a retry could follow an unclear outcome. A key reused for a different request is refused (idempotency_key_reused).",
+            "description": "patch/create/comment/note/decide: caller-chosen idempotency key (e.g. UUID). Retry SAME request/key for its first answer without another write after unclear outcomes. Different request with reused key refuses: idempotency_key_reused.",
             "type": "string"
           },
           "overwrite_pending_edits": {
@@ -498,47 +539,51 @@
             "type": "boolean"
           },
           "parent": {
-            "description": "Parent item ref (e.g. PLAN-3). Optional for: create, update, list filter.",
+            "description": "Parent item ref (e.g. PLAN-3). For: create, update, list filter.",
+            "type": "string"
+          },
+          "parent_role": {
+            "description": "schedule-link: parent's target | earliest | deadline | occupied_until.",
             "type": "string"
           },
           "pr_branch": {
-            "description": "The pull request's head branch. Optional for: link-pr.",
+            "description": "The pull request's head branch. For: link-pr.",
             "type": "string"
           },
           "pr_number": {
-            "description": "The pull request's number (\u003e 0). Required for: link-pr.",
+            "description": "The pull request's number (\u003e 0). Required: link-pr.",
             "type": "number"
           },
           "pr_repo": {
-            "description": "The pull request's repository, owner/name. Optional for: link-pr.",
+            "description": "The pull request's repository, owner/name. For: link-pr.",
             "type": "string"
           },
           "pr_state": {
-            "description": "The pull request's state as you know it (e.g. open, merged, closed). Optional for: link-pr. Pad does not check it against GitHub.",
+            "description": "The pull request's state as you know it (e.g. open, merged, closed). For: link-pr. Pad does not check it against GitHub.",
             "type": "string"
           },
           "pr_title": {
-            "description": "The pull request's title. Optional for: link-pr.",
+            "description": "The pull request's title. For: link-pr.",
             "type": "string"
           },
           "pr_url": {
-            "description": "The pull request's absolute http(s) URL. Required for: link-pr.",
+            "description": "The pull request's absolute http(s) URL. Required: link-pr.",
             "type": "string"
           },
           "preview": {
-            "description": "schedule-renegotiate: true (default) writes nothing; false applies.",
+            "description": "Preview by default. schedule-renegotiate: false applies with revision. schedule-link: apply=true commits.",
             "type": "boolean"
           },
           "priority": {
-            "description": "Item priority. Optional for: create, update, list filter, bulk-update.",
+            "description": "Item priority. For: create, update, list filter, bulk-update.",
             "type": "string"
           },
           "rationale": {
-            "description": "Reasoning behind the decision. Optional for: decide.",
+            "description": "Reasoning behind the decision. For: decide.",
             "type": "string"
           },
           "reason": {
-            "description": "Required for: schedule-renegotiate.",
+            "description": "Why dates change; required for schedule-renegotiate and graph changes moving hard deadlines.",
             "type": "string"
           },
           "ref": {
@@ -546,18 +591,18 @@
             "type": "string"
           },
           "refs": {
-            "description": "Item references for batch operations. Required for: bulk-update (one or more refs).",
+            "description": "Item references for batch operations. Required: bulk-update (one or more refs).",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "remind_at": {
-            "description": "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset). Required for: remind as a one-shot (no schedule parameters). A bare date is REFUSED, not assumed to be midnight.",
+            "description": "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset). Required: remind as a one-shot (no schedule parameters). A bare date is REFUSED, not assumed to be midnight.",
             "type": "string"
           },
           "reminder_id": {
-            "description": "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required for: ack-reminder, unremind.",
+            "description": "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required: ack-reminder, unremind.",
             "type": "string"
           },
           "remove_deadline": {
@@ -569,15 +614,15 @@
             "type": "boolean"
           },
           "reply_to": {
-            "description": "Parent comment ID for threading replies. Optional for: comment.",
+            "description": "Parent comment ID for threading replies. For: comment.",
             "type": "string"
           },
           "revision": {
-            "description": "From a preview. Required for: schedule-renegotiate preview=false.",
+            "description": "Opaque preview token; return unchanged with graph applies. Required: schedule-renegotiate preview=false.",
             "type": "string"
           },
           "role": {
-            "description": "Agent role slug to assign (e.g. implementer). Optional for: create, update, list filter, context.",
+            "description": "Agent role slug for create/update/list/context. schedule-move: target | earliest | deadline | occupied_until.",
             "type": "string"
           },
           "scope": {
@@ -585,7 +630,7 @@
             "type": "string"
           },
           "sort": {
-            "description": "Sort field. Optional for: list.",
+            "description": "Sort field. For: list.",
             "type": "string"
           },
           "stale": {
@@ -593,42 +638,42 @@
             "type": "boolean"
           },
           "start": {
-            "description": "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required for: remind as a schedule. Optional for: schedule-edit.",
+            "description": "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required: remind as a schedule. For: schedule-edit.",
             "type": "string"
           },
           "state": {
-            "description": "done | skip | snooze | move. Required for: schedule-resolve.",
+            "description": "done | skip | snooze | move. Required: schedule-resolve.",
             "type": "string"
           },
           "status": {
-            "description": "Item status (collection-specific enum). Optional for: create, update, list filter, bulk-update.",
+            "description": "Item status (collection-specific enum). For: create, update, list filter, bulk-update.",
             "type": "string"
           },
           "summary": {
-            "description": "Short note headline. Required for: note.",
+            "description": "Short note headline. Required: note.",
             "type": "string"
           },
           "tags": {
-            "description": "Tags as a JSON array of strings, e.g. [\"v1\",\"frontend\"]. Optional for: create, update.",
+            "description": "Tags as a JSON array of strings, e.g. [\"v1\",\"frontend\"]. For: create, update.",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "target": {
-            "description": "The OTHER end of a relationship. Required for: link, unlink. blocks: the item being blocked; blocked-by: the blocker; supersedes: the superseded item.",
+            "description": "The OTHER end of a relationship. Required: link, unlink. blocks: the item being blocked; blocked-by: the blocker; supersedes: the superseded item.",
             "type": "string"
           },
           "target_collection": {
-            "description": "Destination collection slug for action=move. Required for: move.",
+            "description": "Destination collection slug for action=move. Required: move.",
             "type": "string"
           },
           "title": {
-            "description": "Item title. Required for: create. Optional rename for: update.",
+            "description": "Item title. Required: create. Optional rename for: update.",
             "type": "string"
           },
           "to": {
-            "description": "Window end, RFC3339 instant, at most 92 days after from. Required for: agenda; not with stale.",
+            "description": "RFC3339 instant: agenda end (\u003c=92 days from from; not with stale), or schedule-move destination. Required for both.",
             "type": "string"
           },
           "ttl": {
@@ -648,7 +693,7 @@
             "type": "boolean"
           },
           "until": {
-            "description": "RFC3339 instant to re-fire (snooze) or become due (move). Required for: snooze, move.",
+            "description": "RFC3339 instant to re-fire (snooze) or become due (move). Required: snooze, move.",
             "type": "string"
           },
           "window": {
@@ -656,7 +701,7 @@
             "type": "string"
           },
           "worker_id": {
-            "description": "Your lease worker id, as a claim answers it. Optional for: claim, release; pass it to resume your leases from a new connection.",
+            "description": "Your lease worker id, as a claim answers it. For: claim, release; pass it to resume your leases from a new connection.",
             "type": "string"
           },
           "workspace": {

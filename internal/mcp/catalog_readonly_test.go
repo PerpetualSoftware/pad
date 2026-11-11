@@ -142,6 +142,10 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
 		{"pad_item", "schedule-renegotiate"}: {"item", "remind", "renegotiate"},
+		{"pad_item", "schedule-link"}:        {"item", "remind", "link", "add"},
+		{"pad_item", "schedule-unlink"}:      {"item", "remind", "link", "rm"},
+		{"pad_item", "schedule-move"}:        {"item", "remind", "move"},
+		{"pad_item", "schedule-gate"}:        {"item", "remind", "gate", "add"},
 		{"pad_item", "agenda"}:               {"item", "remind", "agenda"},
 		{"pad_item", "ack-reminder"}:         {"item", "ack"},
 		{"pad_item", "reminders"}:            {"item", "reminders"},
@@ -327,6 +331,10 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
 		{"pad_item", "schedule-renegotiate"}: {"item", "remind", "renegotiate"},
+		{"pad_item", "schedule-link"}:        {"item", "remind", "link", "add"},
+		{"pad_item", "schedule-unlink"}:      {"item", "remind", "link", "rm"},
+		{"pad_item", "schedule-move"}:        {"item", "remind", "move"},
+		{"pad_item", "schedule-gate"}:        {"item", "remind", "gate", "add"},
 		{"pad_item", "agenda"}:               {"item", "remind", "agenda"},
 		{"pad_item", "ack-reminder"}:         {"item", "ack"},
 		{"pad_item", "reminders"}:            {"item", "reminders"},
@@ -773,7 +781,18 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			}()},
 			"item remind skip":   {Summary: "resolve skip", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence")},
 			"item remind snooze": {Summary: "resolve snooze", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "until")},
-			"item remind move":   {Summary: "resolve move", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "until")},
+			"item remind move": {Summary: "resolve or cascade move", Args: mkArgs("ref"), Flags: func() map[string]cmdhelp.Flag {
+				f := mkFlags("workspace", "comment", "occurrence", "until", "role", "to", "revision", "reason")
+				f["apply"], f["ack-violations"] = cmdhelp.Flag{Type: "bool"}, cmdhelp.Flag{Type: "bool"}
+				return f
+			}()},
+			"item remind link add":  {Args: mkArgs("parent-ref", "child-ref"), Flags: graphFixtureFlags(mkFlags("workspace", "parent-role", "child-role", "offset-json", "cancel-policy", "reason", "revision"))},
+			"item remind link edit": {Args: mkArgs("link-id"), Flags: graphFixtureFlags(mkFlags("workspace", "offset-json", "cancel-policy", "reason", "revision"))},
+			"item remind link rm":   {Args: mkArgs("link-id"), Flags: mkFlags("workspace")},
+			"item remind link list": {Args: mkArgs("ref"), Flags: mkFlags("workspace")},
+			"item remind gate add":  {Args: mkArgs("ref", "blocker-ref"), Flags: mkFlags("workspace")},
+			"item remind gate rm":   {Args: mkArgs("gate-id"), Flags: mkFlags("workspace")},
+			"item remind gate list": {Args: mkArgs("ref"), Flags: mkFlags("workspace")},
 			"item remind agenda": {Summary: "the agenda", Flags: func() map[string]cmdhelp.Flag {
 				f := mkFlags("workspace", "from", "to", "tz", "days")
 				f["stale"] = cmdhelp.Flag{Type: "bool"}
@@ -1038,4 +1057,9 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 func scheduleFlags(base map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
 	base["floating"] = cmdhelp.Flag{Type: "bool"}
 	return base
+}
+
+func graphFixtureFlags(f map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
+	f["apply"], f["ack-violations"] = cmdhelp.Flag{Type: "bool"}, cmdhelp.Flag{Type: "bool"}
+	return f
 }

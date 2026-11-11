@@ -26,6 +26,19 @@ import (
 // is refused before dispatch.
 func task4105FixtureFor(name string, in map[string]any) {
 	switch name {
+	case "pad_item.schedule-link", "item remind link add":
+		in["child"], in["parent_role"], in["child_role"] = "TASK-2", "target", "target"
+		in["link_offset"] = map[string]any{"mode": "elapsed", "elapsed_secs": 0}
+	case "item remind link edit":
+		in["link_id"], in["cancel_policy"] = "link-1", "waiting_on"
+	case "pad_item.schedule-unlink", "item remind link rm":
+		in["link_id"] = "link-1"
+	case "pad_item.schedule-gate", "item remind gate add":
+		in["blocker"] = "TASK-2"
+	case "item remind gate rm":
+		in["gate_id"] = "gate-1"
+	case "pad_item.schedule-move":
+		in["role"], in["to"] = "target", "2099-01-01T09:00:00Z"
 	case "pad_item.agenda", "item remind agenda":
 		in["from"], in["to"] = "2026-11-09T00:00:00Z", "2026-11-16T00:00:00Z"
 	case "pad_item.schedule-edit", "item remind edit":

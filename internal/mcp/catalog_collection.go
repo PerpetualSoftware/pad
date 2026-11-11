@@ -31,22 +31,22 @@ var padCollectionTool = ToolDef{
 			{
 				Name:        "slug",
 				Type:        "string",
-				Description: "Collection slug (e.g. \"tasks\", \"conventions\"). Required for action=update, action=delete and action=restore; identifies which collection to mutate. For restore, the archived collection's slug (from list-archived) or its id.",
+				Description: "Collection slug (e.g. tasks, conventions). Required: update/delete/restore. Restore: archived slug from list-archived or id.",
 			},
 			{
 				Name:        "name",
 				Type:        "string",
-				Description: "Display name of the collection. Required for action=create. Optional for action=update — provide to rename.",
+				Description: "Collection display name. Required: create; update renames.",
 			},
 			{
 				Name:        "fields",
 				Type:        "string",
-				Description: "Compact field DSL: \"key:type[:options]; ...\". Optional for action=create. Example: \"status:select:open,done; priority:select:high,medium,low\". For a relation the third part is the TARGET COLLECTION slug rather than an options list, and it is required: \"reviewer:relation:people\" — a relation with no target is refused, since such a field cannot accept any value. Use `schema` instead when you need terminal_options, custom defaults, computed fields, or suffixes — the DSL cannot express those. Mutually exclusive with `schema`.",
+				Description: "Field DSL: \"key:type[:options]; ...\", e.g. \"status:select:open,done; priority:select:high,medium,low\". For create. relation part 3 is required TARGET COLLECTION, not options: \"reviewer:relation:people\"; no target refuses. For terminal_options, defaults, computed fields or suffixes use schema; DSL cannot express them. Mutually exclusive with schema.",
 			},
 			{
 				Name:        "schema",
 				Type:        "object",
-				Description: "Structured CollectionSchema: {\"fields\":[{\"key\":\"...\",\"label\":\"...\",\"type\":\"...\",\"options\":[...],\"terminal_options\":[...],\"default\":\"...\",\"required\":bool,\"computed\":bool,\"suffix\":\"...\",\"collection\":\"...\"}]}. Optional for action=create. Use instead of `fields` when you need terminal_options or any FieldDef property the DSL cannot express. Missing `label` values are auto-filled from `key` using Title Case (e.g. due_date → Due Date). Mutually exclusive with `fields`.",
+				Description: "CollectionSchema: {\"fields\":[{\"key\":\"...\",\"label\":\"...\",\"type\":\"...\",\"options\":[...],\"terminal_options\":[...],\"default\":\"...\",\"required\":bool,\"computed\":bool,\"suffix\":\"...\",\"collection\":\"...\"}]}. For create. Use for terminal_options or other FieldDef properties absent from DSL. Missing label: Title Case of key (due_date → Due Date). Mutually exclusive with fields.",
 			},
 			{
 				Name:        "icon",
@@ -78,7 +78,7 @@ var padCollectionTool = ToolDef{
 			{
 				Name:        "prefix",
 				Type:        "string",
-				Description: "Issue-ID prefix (e.g. \"TASK\", \"BUG\"). Optional for action=update — provide to change how new items in this collection are numbered.",
+				Description: "Issue prefix (e.g. TASK, BUG). update changes numbering of new items.",
 			},
 			{
 				Name:        "sort_order",
@@ -103,50 +103,25 @@ var padCollectionTool = ToolDef{
 	},
 }
 
-const padCollectionToolDescription = `Collection management — list, create, update, archive (delete) and restore collection types.
+const padCollectionToolDescription = `Manage collection types.
 
 Actions:
-  list    — List collections in the workspace with their schemas + counts.
-            Required: workspace.
-  create  — Create a new collection.
-            Required: workspace, name.
-            Optional: fields OR schema (mutually exclusive), icon, description,
-                      layout, default_view, board_group_by.
-            DSL example:    fields="status:select:open,done; priority:select:high,medium,low"
-            Relation in the DSL: the third part is the TARGET COLLECTION slug,
-            not an options list, and it is required —
-            fields="reviewer:relation:people". A relation with no target is refused, since such a field cannot
-            accept any value.
-            Schema example: schema={"fields":[{"key":"status","type":"select","options":["new","done"],"terminal_options":["done"]}]}
-            Prefer schema when terminal_options matters (driving dashboard
-            active/complete counts) or when fields need defaults, computed
-            flags, or suffixes — the DSL cannot express those.
-  update  — Update an existing collection's name, icon, description, prefix,
-            schema, or sort order. Workspace owner only.
-            Required: workspace, slug.
-            Optional: name, icon, description, prefix, fields OR schema
-                      (mutually exclusive), sort_order. Only fields you
-                      explicitly set are mutated; everything else is left
-                      untouched.
-            This is the adaptation primitive for the onboarding playbook
-            (/pad onboard): rewrite seeded collections to match the
-            project's vocabulary, not template defaults.
-            Removing a field or option that items hold is allowed; they
-            keep the value, and warnings.orphaned says how many.
-  delete  — Archive a collection: it and its items leave every view. Owner-only.
-            Reversible with restore. Required: workspace, slug.
-            Constraints:
-              - Cannot delete a default (template-seeded) collection.
-                Adapt those via update instead (rename, reshape schema).
-              - Items in the collection are NOT deleted — they stay in the
-                database, hidden with the collection, and come back with it.
-  list-archived — The workspace's archived collections, each with its slug,
-            id, prefix, item_count and archived_at. Owner-only.
-            Required: workspace.
-  restore — Restore an archived collection, with its items. Owner-only.
-            Required: workspace, slug (the archived collection's slug from
-            list-archived, or its id).
-
-An individual collection's schema is in the list response: read it there
-rather than calling list again. v0.2 does not expose a dedicated
-read-by-slug action; if you need that, file a feature request.`
+  list — Schemas + counts. Required: workspace. Read schemas here; no read-by-slug action.
+  create — Required: workspace, name. Optional: fields OR schema (mutually exclusive),
+    icon, description, layout, default_view, board_group_by.
+    DSL: fields="status:select:open,done; priority:select:high,medium,low".
+    Relations require a target collection slug in part 3, not options:
+    fields="reviewer:relation:people"; no target refuses (cannot accept values).
+    Schema: {"fields":[{"key":"status","type":"select","options":["new","done"],"terminal_options":["done"]}]}.
+    Use schema for terminal_options (dashboard active/complete counts), defaults,
+    computed flags or suffixes; the DSL cannot express them.
+  update — Owner-only. Required: workspace, slug. Optional: name, icon, description,
+    prefix, fields OR schema (mutually exclusive), sort_order. Only supplied fields change.
+    Adapt seeded collections to project vocabulary with /pad onboard.
+    Removed fields/options keep item values; warnings.orphaned counts affected items.
+  delete — Owner-only archive; collection and items leave every view. Required: workspace, slug.
+    Items stay stored, hidden until restore. Default (template-seeded) collections
+    cannot be deleted: rename/reshape them via update. Reversible with restore.
+  list-archived — Owner-only. Required: workspace. Returns slug, id, prefix, item_count, archived_at.
+  restore — Owner-only; restores collection and items. Required: workspace, slug
+    (archived slug or id from list-archived).`
