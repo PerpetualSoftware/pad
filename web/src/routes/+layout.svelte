@@ -156,7 +156,8 @@
 		notifyNetworkUnreachable();
 	});
 
-	// Before any field can take focus: iOS zooms into small text on focus (BUG-4482).
+	// iOS zooms into small text when a tap focuses a field (BUG-4482). This runs
+	// after child mounts, so a script autofocus can come first, which iOS does not zoom.
 	onMount(() => stopIOSFocusZoom(document, navigator));
 
 	onMount(() => {
