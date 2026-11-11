@@ -138,6 +138,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "remind"}:  {"item", "remind"},
 		// Schedules ride `pad item remind <subcommand>` (TASK-4105).
 		{"pad_item", "schedule"}:             {"item", "remind", "show"},
+		{"pad_item", "schedule-forecast"}:    {"item", "remind", "forecast", "set"},
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
@@ -327,6 +328,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "remind"}:  {"item", "remind"},
 		// Schedules ride `pad item remind <subcommand>` (TASK-4105).
 		{"pad_item", "schedule"}:             {"item", "remind", "show"},
+		{"pad_item", "schedule-forecast"}:    {"item", "remind", "forecast", "set"},
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
@@ -757,6 +759,8 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Args:    mkArgs("ref"),
 				Flags:   scheduleFlags(mkFlags("workspace", "remind-at", "rearm", "every", "start", "deadline", "window", "anchor", "audience", "tz")),
 			},
+			"item remind forecast set":   {Summary: "set a forecast", Args: mkArgs("ref", "value"), Flags: mkFlags("workspace", "source")},
+			"item remind forecast clear": {Summary: "clear a forecast", Args: mkArgs("ref"), Flags: mkFlags("workspace")},
 			"item remind show": {
 				Summary: "show a schedule",
 				Args:    mkArgs("ref"),

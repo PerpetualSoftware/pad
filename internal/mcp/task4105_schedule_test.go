@@ -26,6 +26,10 @@ import (
 // is refused before dispatch.
 func task4105FixtureFor(name string, in map[string]any) {
 	switch name {
+	case "pad_item.schedule-forecast":
+		in["forecast"] = "2031-03-12"
+	case "item remind forecast set":
+		in["value"] = "2031-03-12"
 	case "pad_item.schedule-link", "item remind link add":
 		in["child"], in["parent_role"], in["child_role"] = "TASK-2", "target", "target"
 		in["link_offset"] = map[string]any{"mode": "elapsed", "elapsed_secs": 0}

@@ -1663,6 +1663,8 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"link_type":         true, // the relationship kind, not a field
 		"stale":             true, // agenda: a read filter (TASK-4237)
 
+		// Forecasts affect schedule forecast rows, never item fields.
+		"forecast": true, "clear_forecast": true, "forecast_source": true,
 		// Graph writes affect commitment/link/gate rows, never item fields.
 		"child": true, "parent_role": true, "child_role": true, "link_offset": true, "cancel_policy": true,
 		"link_id": true, "gate_id": true, "blocker": true, "apply": true, "acknowledge_violations": true,

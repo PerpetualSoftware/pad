@@ -2326,7 +2326,8 @@ const CmdhelpVersion = "0.1"
 // Existing catalog descriptions shortened without changing their rules.
 // v0.111 — TASK-4354: agenda and bootstrap return grouped date roles without
 // kind, independent actionable groups and per-section completeness.
-const ToolSurfaceVersion = "0.111"
+// v0.112 adds schedule-forecast: a hand-set estimate, set or clear, with provenance.
+const ToolSurfaceVersion = "0.112"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
