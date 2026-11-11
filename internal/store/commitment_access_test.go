@@ -69,7 +69,7 @@ func TestCommitmentAccessLoadersUsePinnedTransaction(t *testing.T) {
 
 func TestTASK4423_CommitmentAccessItems(t *testing.T) {
 	f := newLinkFix(t, 8)
-	// The request has no graph edges. Disconnected edges still belong to the set.
+	// The request has no graph edges. Only its own lineage belongs to the set.
 	f.linkRaw(t, 1, 2, "target", "target", oneDay)
 	if _, err := f.s.CreateScheduleGate(f.ws.ID, f.items[3].ID, f.items[4].ID, f.allEdit()); err != nil {
 		t.Fatal(err)
@@ -106,11 +106,11 @@ func TestTASK4423_CommitmentAccessItems(t *testing.T) {
 		}
 	}
 	want := map[string]bool{}
-	for _, it := range f.items[:7] {
-		want[it.ID] = true
+	for _, i := range []int{0, 5, 6} {
+		want[f.items[i].ID] = true
 	}
 	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("access candidates: got %d items, want exactly root, link ends, gate ends and lineage owners (7); unrelated included=%v", len(got), got[f.items[7].ID])
+		t.Fatalf("access candidates: got %d items, want exactly root and lineage owners (3); unrelated included=%v", len(got), got[f.items[7].ID])
 	}
 }
 

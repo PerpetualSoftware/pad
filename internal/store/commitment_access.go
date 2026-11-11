@@ -16,20 +16,26 @@ type CommitmentAccessItem struct {
 	DeletedAt    *string
 }
 
-// CommitmentAccessItemsQ returns the request item, all workspace graph ends,
-// and owners of its journal lineage. Deleted rows retain their policy marker.
+// CommitmentAccessItemsQ returns the seed component over links and gates,
+// plus owners of the seed journal lineage. Deleted rows retain their marker.
 func (s *Store) CommitmentAccessItemsQ(q Queryer, workspaceID, itemID string) ([]CommitmentAccessItem, error) {
-	rows, err := q.Query(s.q(`SELECT id,collection_id,deleted_at FROM items WHERE workspace_id=? AND id IN (
- SELECT ?
- UNION SELECT p.item_id FROM schedule_links l JOIN item_schedules p ON p.id=l.parent_schedule_id WHERE l.workspace_id=?
- UNION SELECT c.item_id FROM schedule_links l JOIN item_schedules c ON c.id=l.child_schedule_id WHERE l.workspace_id=?
- UNION SELECT blocked_item_id FROM schedule_gates WHERE workspace_id=?
- UNION SELECT blocker_item_id FROM schedule_gates WHERE workspace_id=?
+	rows, err := q.Query(s.q(`WITH RECURSIVE edges(a,b) AS (
+ SELECT p.item_id,c.item_id FROM schedule_links l
+ JOIN item_schedules p ON p.id=l.parent_schedule_id
+ JOIN item_schedules c ON c.id=l.child_schedule_id WHERE l.workspace_id=?
+ UNION SELECT blocked_item_id,blocker_item_id FROM schedule_gates WHERE workspace_id=?
+ ), component(id) AS (
+ SELECT id FROM items WHERE workspace_id=? AND id=?
+ UNION SELECT CASE WHEN e.a=c.id THEN e.b ELSE e.a END
+ FROM component c JOIN edges e ON e.a=c.id OR e.b=c.id
+ )
+ SELECT id,collection_id,deleted_at FROM items WHERE workspace_id=? AND id IN (
+ SELECT id FROM component
  UNION SELECT lineage.item_id FROM schedule_changes own JOIN schedule_changes lineage ON lineage.id=own.root_change_id
  WHERE own.workspace_id=? AND own.item_id=?
  UNION SELECT lineage.item_id FROM schedule_changes own JOIN schedule_changes lineage ON lineage.id=own.parent_change_id
  WHERE own.workspace_id=? AND own.item_id=?
-) ORDER BY id`), workspaceID, itemID, workspaceID, workspaceID, workspaceID, workspaceID, workspaceID, itemID, workspaceID, itemID)
+ ) ORDER BY id`), workspaceID, workspaceID, workspaceID, itemID, workspaceID, workspaceID, itemID, workspaceID, itemID)
 	if err != nil {
 		return nil, err
 	}
