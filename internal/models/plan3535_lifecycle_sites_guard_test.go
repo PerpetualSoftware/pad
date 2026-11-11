@@ -38,6 +38,9 @@ var lifecycleHelpers = map[string]bool{
 }
 
 var lifecycleSites = map[string]string{
+	"internal/store/agenda_roles.go::ExpandAgendaCut::buildChildrenDoneExpr":   "keep: selects recorded-only history for an explicitly attached commitment, not an open-work count (TASK-4354)",
+	"internal/store/agenda_roles.go::ExpandAgendaCut::doneFiltersForWorkspace": "keep: the terminal history decision for that same explicit commitment (TASK-4354)",
+	"internal/store/agenda_roles.go::ListAgendaWork::nonTerminalFilter":        "exclude: unplaced candidates require CollectionTracksWorkJSON; explicit commitments and gates on reference items remain deliberate (TASK-4354)",
 	// The helpers themselves, composed of each other.
 	"internal/models/close_state.go::ItemCloseState::IsTerminalItem":                      "keep: an item's own close state (open/done/abandoned), not a count",
 	"internal/models/close_state.go::ItemCloseState::IsAbandonedItem":                     "keep: an item's own close state, not a count",

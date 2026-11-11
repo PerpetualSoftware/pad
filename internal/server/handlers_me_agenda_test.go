@@ -564,3 +564,22 @@ func TestAgendaPriorityRankDeadlineTargetAndID(t *testing.T) {
 }
 func agendaInt(n int) *int          { return &n }
 func agendaString(s string) *string { return &s }
+
+func TestAgendaReferenceDocumentsAreNotUnplacedWork(t *testing.T) {
+	w := newAgendaWorld(t, "tasks", "reference")
+	if _, err := w.srv.store.DB().Exec(`UPDATE collections SET settings=? WHERE id=?`, `{"tracks_work":false}`, w.colls["reference"].ID); err != nil {
+		t.Fatal(err)
+	}
+	w.item(t, "reference", "Reference only", `{"status":"open"}`, nil)
+	w.item(t, "reference", "Deliberate commitment", `{"status":"open"}`, oneShot())
+	work := w.item(t, "tasks", "Unplaced work", `{"status":"open"}`, nil)
+	m := w.ok(t, w.owner, agendaWindow)
+	rows, _ := m["no_date"].([]any)
+	if len(rows) != 1 || rows[0].(map[string]any)["item_ref"] != work.Ref {
+		t.Fatalf("unplaced work: %v", rows)
+	}
+	priority, _ := m["priority_list"].([]any)
+	if len(priority) != 1 || priority[0].(map[string]any)["item_title"] != "Deliberate commitment" {
+		t.Fatalf("explicit reference commitment: %v", priority)
+	}
+}

@@ -14,7 +14,7 @@ import (
 func agendaPriority(c store.AgendaWorkCandidate) string {
 	var schema models.CollectionSchema
 	var fields map[string]any
-	if json.Unmarshal([]byte(c.Schema), &schema) != nil || json.Unmarshal([]byte(c.Fields), &fields) != nil {
+	if models.UnmarshalItemFieldSchema([]byte(c.Schema), &schema) != nil || json.Unmarshal([]byte(c.Fields), &fields) != nil {
 		return "unranked"
 	}
 	value, _ := fields["priority"].(string)

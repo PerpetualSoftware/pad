@@ -336,10 +336,27 @@ type AgendaWorkCandidate struct{ ItemID, ItemRef, ItemTitle, Collection, Fields,
 // ListAgendaWork applies visibility and recipient admission before the scan cap.
 // Empty recipient means the workspace agenda's entire visible work set.
 func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, recipient, audience string, limit int) ([]AgendaWorkCandidate, bool, error) {
+	// Reference documents are not unplaced work. An explicit commitment or
+	// gate remains deliberate even on a reference collection.
+	collections, err := s.ListCollectionsMinimal(workspaceID)
+	if err != nil {
+		return nil, false, err
+	}
+	var workIDs []any
+	for _, c := range collections {
+		if models.CollectionTracksWorkJSON(c.Settings) {
+			workIDs = append(workIDs, c.ID)
+		}
+	}
+	workSQL := "0=1"
+	if len(workIDs) > 0 {
+		workSQL = "i.collection_id IN (" + placeholders(len(workIDs)) + ")"
+	}
 	scopeSQL, args := scopeClause("i", scope)
 	open, oa := s.nonTerminalFilter(workspaceID, "i")
 	query := `SELECT i.id,i.slug,i.title,c.slug,c.prefix,i.item_number,i.fields,c.schema FROM items i JOIN collections c ON c.id=i.collection_id WHERE i.workspace_id=? AND i.deleted_at IS NULL AND c.deleted_at IS NULL AND ` + open + scopeSQL
-	params := append(append([]any{workspaceID}, oa...), args...)
+	query += ` AND (` + workSQL + ` OR EXISTS (SELECT 1 FROM item_schedules sc WHERE sc.item_id=i.id) OR EXISTS (SELECT 1 FROM schedule_gates g WHERE g.blocked_item_id=i.id))`
+	params := append(append(append([]any{workspaceID}, oa...), args...), workIDs...)
 	if recipient != "" {
 		query += ` AND (CASE WHEN i.assigned_user_id IS NULL OR i.assigned_user_id='' THEN i.created_by_user_id ELSE i.assigned_user_id END)=?`
 		params = append(params, recipient)
