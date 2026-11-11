@@ -86,6 +86,7 @@ func agendaRoleInWindow(e AgendaEntry, loc *time.Location, from, to time.Time) b
 
 // AgendaOutstanding reads one outstanding occurrence without a calendar window.
 // It shares the same role resolver with ExpandAgendaCut, never a recurrence walk.
+// Missed counts are read separately by chronological and bootstrap consumers.
 func (s *Store) AgendaOutstanding(sc *models.ItemSchedule, view *time.Location, now time.Time) (*AgendaEntry, error) {
 	if sc.EndedAt != nil || sc.NextWall == nil {
 		return nil, nil
@@ -120,9 +121,6 @@ func (s *Store) AgendaOutstanding(sc *models.ItemSchedule, view *time.Location, 
 			at = at.AddDate(0, 0, 1)
 		}
 		e.DeadlinePassed = !at.After(now)
-	}
-	if n, _, err := ScheduleMissed(sc, view, now); err == nil {
-		e.MissedCount, e.Stale = n, n >= 2
 	}
 	return &e, nil
 }
@@ -246,12 +244,14 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 			wall := parts[len(parts)-1]
 			w, err := schedule.ParseWall(wall)
 			if err != nil {
+				x.Unavailable = "internal"
 				continue
 			}
 			at := schedule.Resolve(loc, w)
 			if len(parts) == 2 {
 				at, err = time.Parse(time.RFC3339, parts[0])
 				if err != nil {
+					x.Unavailable = "internal"
 					continue
 				}
 			}
