@@ -97,12 +97,6 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 		if err != nil {
 			return nil, err
 		}
-		if !in.Access.Readable[itemID] {
-			return nil, ErrScheduleLinkNotFound
-		}
-		if !in.Access.Editable[itemID] {
-			return nil, ErrLinkEditRequired
-		}
 	}
 	// An ended schedule has no outstanding occurrence to move. Refuse it here,
 	// under the pin, before the plan or the revision comparison, so every scope

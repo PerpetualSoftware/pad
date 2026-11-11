@@ -195,12 +195,6 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if err != nil {
 			return nil, err
 		}
-		if !in.LinkAccess.Readable[itemID] {
-			return nil, ErrScheduleLinkNotFound
-		}
-		if !in.LinkAccess.Editable[itemID] {
-			return nil, ErrLinkEditRequired
-		}
 	}
 	var component *commitmentComponent
 	if in.State == "move" {

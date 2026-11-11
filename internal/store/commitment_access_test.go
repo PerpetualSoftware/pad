@@ -3,6 +3,7 @@ package store
 import (
 	"database/sql"
 	"errors"
+	"fmt"
 	"reflect"
 	"testing"
 
@@ -53,9 +54,6 @@ func TestCommitmentAccessLoadersUsePinnedTransaction(t *testing.T) {
 					want := ErrDeadlineApprovalRequired
 					if mode == "query failure" {
 						want = sentinel
-					}
-					if mode == "nil maps" {
-						want = ErrScheduleLinkNotFound
 					}
 					if !called || !errors.Is(err, want) {
 						t.Fatalf("loader called=%v err=%v want=%v", called, err, want)
@@ -113,5 +111,58 @@ func TestTASK4423_CommitmentAccessItems(t *testing.T) {
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("access candidates: got %d items, want exactly root, link ends, gate ends and lineage owners (7); unrelated included=%v", len(got), got[f.items[7].ID])
+	}
+}
+
+func TestTASK4423_UnlinkedAccessLoaderRoot(t *testing.T) {
+	for _, door := range []string{"resolve", "renegotiate"} {
+		for _, readable := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/readable=%v", door, readable), func(t *testing.T) {
+				f := newLinkFix(t, 1)
+				if door == "renegotiate" {
+					f.deadline(t, 0, "stays_owed")
+				}
+				calls := 0
+				loader := func(q Queryer) (models.CommitmentAccess, error) {
+					calls++
+					if _, ok := q.(*sql.Tx); !ok {
+						t.Fatal("loader received pool instead of pinned transaction")
+					}
+					return models.CommitmentAccess{Readable: map[string]bool{f.item.ID: readable}}, nil
+				}
+				to := "2030-03-10T09:00:00Z"
+				nowT := rt("2029-12-01T00:00:00Z")
+				if door == "resolve" {
+					until := rt(to)
+					_, err := f.s.resolveOccurrenceAt(f.ws.ID, f.item.ID, ResolveInput{Actor: "user", State: "move", OccurrenceAt: rt(*f.scheds[0].NextAt), Until: &until, CommitmentAccessLoader: loader}, nowT)
+					if err != nil {
+						t.Fatalf("authorized unlinked resolve refused root absent from access maps: %v", err)
+					}
+					if got := f.role(t, 0, "target"); got != to {
+						t.Fatalf("target=%s want %s", got, to)
+					}
+				} else {
+					in := models.CommitmentRenegotiateInput{Preview: true, Reason: "Replan", Deadline: &to, CommitmentAccessLoader: loader}
+					p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, nowT, nil)
+					if err != nil {
+						t.Fatalf("authorized unlinked renegotiate refused root absent from access maps: %v", err)
+					}
+					in.Preview, in.Revision = false, p.Revision
+					if _, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, nowT, nil); err != nil {
+						t.Fatal(err)
+					}
+					if got := f.role(t, 0, "deadline"); got != to {
+						t.Fatalf("deadline=%s want %s", got, to)
+					}
+				}
+				wantCalls := 1
+				if door == "renegotiate" {
+					wantCalls = 2
+				}
+				if calls != wantCalls {
+					t.Fatalf("loader calls=%d want %d", calls, wantCalls)
+				}
+			})
+		}
 	}
 }
