@@ -411,6 +411,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 				return nil, err
 			}
 			res.MissedRecorded += n
+			if err := s.openGatesForBlockerTx(tx, sc.WorkspaceID, sc.ItemID); err != nil {
+				return nil, err
+			}
 		} else if err := s.armManagedReminderTx(tx, sc, NormalizeInstant(fire)); err != nil {
 			return nil, err
 		}
