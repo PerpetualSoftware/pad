@@ -1947,6 +1947,11 @@ func (s *Server) setupRouter() {
 				r.Get("/export", s.handleExportAccount)
 
 				// User-scoped API tokens
+				r.Get("/step-up", s.handleStepUpStatus)
+				r.Post("/step-up/email", s.handleStepUpEmail)
+				r.Post("/step-up/verify", s.handleStepUpVerify)
+
+				r.Patch("/tokens/{tokenID}", s.handleUpdateUserToken)
 				r.Get("/tokens", s.handleListUserTokens)
 				r.Post("/tokens", s.handleCreateUserToken)
 				r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)

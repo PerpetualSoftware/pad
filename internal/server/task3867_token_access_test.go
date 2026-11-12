@@ -3,8 +3,6 @@ package server
 import (
 	"bufio"
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +15,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
 	"github.com/pquerna/otp/totp"
 
 	"github.com/PerpetualSoftware/pad/internal/email"
@@ -64,11 +63,10 @@ func task3867EnableTOTP(t *testing.T, e *tokenAuthEnv) string {
 	if err := e.srv.store.SetTOTPSecret(e.user.ID, secret); err != nil {
 		t.Fatal(err)
 	}
-	hash := sha256.Sum256([]byte("ABCDEFGHIJKLMNOP"))
-	raw, _ := json.Marshal([]string{hex.EncodeToString(hash[:])})
-	if err := e.srv.store.EnableTOTP(e.user.ID, secret, string(raw)); err != nil {
+	if err := e.srv.store.EnableTOTP(e.user.ID, secret, strings.Join(hashRecoveryCodes([]string{"ABCDEFGHIJKLMNOP"}), "\n")); err != nil {
 		t.Fatal(err)
 	}
+
 	return secret
 }
 
@@ -346,7 +344,6 @@ func TestTask3867AuditRecordsChange(t *testing.T) {
 	}
 }
 func TestTask3867TokenAccessWidensMatchesLevels(t *testing.T) {
-	e := setupTokenAuthEnv(t)
 	raw, err := os.ReadFile("testdata/token_scope_levels.json")
 	if err != nil {
 		t.Fatal(err)
@@ -357,20 +354,16 @@ func TestTask3867TokenAccessWidensMatchesLevels(t *testing.T) {
 	if err := json.Unmarshal(raw, &fixture); err != nil {
 		t.Fatal(err)
 	}
+	if len(fixture.Rows) == 0 {
+		t.Fatal("empty scope fixture")
+	}
 	rank := map[string]int{"none": 0, "read": 1, "write": 2}
 	for _, old := range fixture.Rows {
-		for _, next := range []struct{ scopes, level string }{{`["*"]`, "write"}, {`["write"]`, "write"}, {`["pad:write"]`, "write"}, {`["pad:admin"]`, "write"}, {`["read"]`, "read"}, {`["pad:read"]`, "read"}} {
-			task3867Scopes(t, e, old.Scopes)
-			rr := task3867Patch(e, map[string]any{"scopes": next.scopes})
-			want := 200
-			if rank[next.level] > rank[old.Level] {
-				want = 403
-			}
-			if rr.Code != want {
-				t.Fatalf("old %q (%s), new %s: %d, want %d", old.Scopes, old.Level, next.scopes, rr.Code, want)
-			}
-			if want == 403 && errorCode(t, rr) != "step_up_required" {
-				t.Fatal(rr.Body.String())
+		for _, next := range fixture.Rows {
+			got := tokenAccessWidens(tokenAccess{Scopes: old.Scopes}, tokenAccess{Scopes: next.Scopes})
+			want := rank[next.Level] > rank[old.Level]
+			if got != want {
+				t.Fatalf("old %q (%s), new %q (%s): widening %v, want %v", old.Scopes, old.Level, next.Scopes, next.Level, got, want)
 			}
 		}
 	}
@@ -484,5 +477,40 @@ func TestTask3867LivenessClosesOnScopeChange(t *testing.T) {
 				t.Fatal("stream stayed open after scope change")
 			}
 		})
+	}
+}
+
+func TestTask3867VerifyRateLimits(t *testing.T) {
+	for _, factor := range []string{"password", "totp", "recovery"} {
+		t.Run(factor, func(t *testing.T) {
+			e := setupTokenAuthEnv(t)
+			body := map[string]string{"password": "wrong"}
+			code := "invalid_password"
+			if factor != "password" {
+				task3867EnableTOTP(t, e)
+				code = "invalid_code"
+				if factor == "totp" {
+					body = map[string]string{"code": "wrong"}
+				} else {
+					body = map[string]string{"recovery_code": "wrong"}
+				}
+			}
+			for i := 0; i < 6; i++ {
+				task3867Want(t, task3867Verify(e, body), 403, code)
+			}
+			task3867Want(t, task3867Verify(e, body), 429, "rate_limited")
+		})
+	}
+}
+
+func TestTask3867AnonymousRefused(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	for _, route := range []struct{ method, path string }{
+		{"PATCH", "/api/v1/auth/tokens/" + e.patID},
+		{"GET", "/api/v1/auth/step-up"},
+		{"POST", "/api/v1/auth/step-up/email"},
+		{"POST", "/api/v1/auth/step-up/verify"},
+	} {
+		task3867Want(t, doRequest(e.srv, route.method, route.path, map[string]string{"name": "Name"}), 401, "unauthorized")
 	}
 }

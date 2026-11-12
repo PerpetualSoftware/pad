@@ -344,3 +344,11 @@ func (s *Sender) SendTest(ctx context.Context, to string) error {
 
 	return s.Send(ctx, to, "", subject, htmlBody, plainBody)
 }
+
+// SendStepUpCode sends a single-use code for an API key access change.
+func (s *Sender) SendStepUpCode(ctx context.Context, to, code string) error {
+	body := fmt.Sprintf(`<p>Use this code to verify an API key access change:</p><p style="font-size: 24px; font-weight: bold;">%s</p><p>This code expires in 10 minutes and can be used once.</p>`, html.EscapeString(code))
+	note := "If you did not request this code, do not share it."
+	cloud := s.CloudMode()
+	return s.Send(ctx, to, "", "Verify your API key access change", buildHTMLShell(body, note, cloud), buildPlainShell(fmt.Sprintf("Your verification code is: %s\n\nThis code expires in 10 minutes and can be used once.", code), note, cloud))
+}

@@ -535,6 +535,15 @@ func NULProtectedColumns() []nulColumn {
 // dispatcher's claim and send columns (TASK-3939) do not exist yet.
 // user_notification_settings is written by PutNotificationSettings.
 var nulExcluded = map[string]string{
+	"sessions.step_up_until":   "server value: RFC3339 grant deadline (TASK-3867)",
+	"step_up_codes.id":         "server value: UUID (TASK-3867)",
+	"step_up_codes.user_id":    "server value: user UUID (TASK-3867)",
+	"step_up_codes.session_id": "server value: session UUID (TASK-3867)",
+	"step_up_codes.code_hash":  "server value: salted SHA256 hex (TASK-3867)",
+	"step_up_codes.expires_at": "server value: RFC3339 expiry (TASK-3867)",
+	"step_up_codes.used_at":    "server value: RFC3339 consume time (TASK-3867)",
+	"step_up_codes.created_at": "server value: RFC3339 creation time (TASK-3867)",
+
 	"schedule_links.id":                           "server UUID (TASK-4353, migration 172)",
 	"schedule_links.workspace_id":                 "workspace UUID foreign key (TASK-4353, migration 172)",
 	"schedule_links.parent_schedule_id":           "schedule UUID foreign key (TASK-4353, migration 172)",

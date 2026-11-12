@@ -238,6 +238,7 @@ var migratedRefusalTables = []string{
 // table is classified when it is added rather than found missing later
 // (BUG-3958: workspace_read_cursors and app_installs were never classified).
 var migratedExcludedTables = map[string]string{
+	"step_up_codes": "auth",
 	// DERIVED-FROM-CONTENT: written only inside a protected table's write.
 	// Also written by BackfillStatusTransitions (status_transitions_backfill.go:192),
 	// which runs only at server start (cmd/pad/cmd_server.go:313). Same as above.

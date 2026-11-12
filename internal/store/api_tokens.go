@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"time"
 
@@ -448,4 +449,61 @@ func scanAPIToken(s scanner) (*models.APIToken, error) {
 	t.ExpiresAt = parseTimePtr(expiresAt)
 	t.LastUsedAt = parseTimePtr(lastUsedAt)
 	return &t, nil
+}
+
+// ErrTokenScopesChanged refuses an edit judged against scopes that another
+// edit has since replaced. The caller must reload and judge widening again.
+var ErrTokenScopesChanged = errors.New("token scopes changed")
+
+// GetUserAPIToken gives foreign, revoked and unknown ids the same result.
+// Expiry is deliberately ignored, as it is for token rotation.
+func (s *Store) GetUserAPIToken(id, userID string) (*models.APIToken, error) {
+	token, err := scanAPIToken(s.db.QueryRow(s.q(`SELECT id,COALESCE(workspace_id, ''),COALESCE(user_id, ''),name,prefix,scopes,expires_at,last_used_at,created_at FROM api_tokens WHERE id=? AND user_id=?`), id, userID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	return token, err
+}
+
+// UpdateUserAPIToken compares scopes in the write so a concurrent edit cannot
+// make the widening decision stale. Read-back shares the update transaction.
+func (s *Store) UpdateUserAPIToken(id, userID string, name, scopes *string, expectScopes string) (*models.APIToken, error) {
+	if err := s.refuseAppPrincipalQ(s.db, userID); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("update api token: begin: %w", err)
+	}
+	defer tx.Rollback()
+	result, err := tx.Exec(s.q(`UPDATE api_tokens SET name=COALESCE(?,name),scopes=COALESCE(?,scopes) WHERE id=? AND user_id=? AND scopes=?`), name, scopes, id, userID, expectScopes)
+	if err != nil {
+		return nil, fmt.Errorf("update api token: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return nil, err
+	}
+	if n == 0 {
+		var owner string
+		err := tx.QueryRow(s.q(`SELECT user_id FROM api_tokens WHERE id=? AND user_id=?`), id, userID).Scan(&owner)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, sql.ErrNoRows
+		}
+		if err != nil {
+			return nil, fmt.Errorf("update api token: check owner: %w", err)
+		}
+		return nil, ErrTokenScopesChanged
+	}
+	token, err := s.getAPITokenQ(tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if token == nil {
+		return nil, sql.ErrNoRows
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("update api token: commit: %w", err)
+	}
+	return token, nil
 }

@@ -33,6 +33,8 @@ type SessionInfo struct {
 	// RenewTTL is the session's sliding window (renew_ttl_seconds); zero for a
 	// legacy row that never slides. A rotation keeps it (BUG-3978).
 	RenewTTL time.Duration
+	// StepUpUntil is the fixed deadline for sensitive edits in this session.
+	StepUpUntil *time.Time
 }
 
 // Session kinds (BUG-3350). A CLI session is a bearer credential only; a web
@@ -252,9 +254,10 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 
 	var sessionID, userID, expiresAt, ipAddress, uaHash, createdAt, kind string
 	var renewSeconds int64
+	var stepUpUntil *string
 	err := s.db.QueryRowContext(ctx, s.q(`
-		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds)
+		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds, step_up_until FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds, &stepUpUntil)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -278,13 +281,14 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 	}
 
 	return &SessionInfo{
-		ID:        sessionID,
-		User:      user,
-		IPAddress: ipAddress,
-		UAHash:    uaHash,
-		CreatedAt: parseTime(createdAt),
-		Kind:      kind,
-		RenewTTL:  time.Duration(renewSeconds) * time.Second,
+		ID:          sessionID,
+		User:        user,
+		IPAddress:   ipAddress,
+		UAHash:      uaHash,
+		CreatedAt:   parseTime(createdAt),
+		Kind:        kind,
+		RenewTTL:    time.Duration(renewSeconds) * time.Second,
+		StepUpUntil: parseTimePtr(stepUpUntil),
 	}, nil
 }
 
