@@ -244,8 +244,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		r.Item.DeletedAt = parseTimePtr(deletedAt)
 		hydrateItemComputedMetadata(&r.Item)
 		r.Item.Content = ""
-		// Ref and comment snippets do not derive from the item body.
-		if leg != 1 {
+		// Only a content snippet is body text. Ref, title, tags and comment
+		// snippets must not carry the body's staleness marker.
+		if r.MatchedIn != "content" {
 			r.Item.ContentState = ""
 		}
 		results = append(results, r)
