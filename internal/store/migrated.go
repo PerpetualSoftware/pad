@@ -270,6 +270,7 @@ var migratedExcludedTables = map[string]string{
 	"users":                       "auth",
 	"sessions":                    "auth",
 	"api_tokens":                  "auth",
+	"calendar_feeds":              "auth", // bearer URLs are re-created with account credentials
 	"oauth_access_tokens":         "auth",
 	"oauth_authorization_codes":   "auth",
 	"oauth_clients":               "auth",

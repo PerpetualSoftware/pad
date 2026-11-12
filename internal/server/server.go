@@ -57,6 +57,8 @@ type Server struct {
 	// agendaClock, when set, replaces time.Now for agenda and needs reads.
 	// Tests use it to fix occurrence times and budget deadlines.
 	agendaClock func() time.Time
+	// calendarFeedHook injects feed panics in tests; nil in production.
+	calendarFeedHook func()
 	// agendaScanLimit, when positive, lowers the request-wide schedule scan cap.
 	agendaScanLimit int
 	// agendaCountsLimit, when positive, lowers the rows the counts series may read.
@@ -1838,6 +1840,13 @@ func (s *Server) setupRouter() {
 	// Identity proofs precede credentials and bypass the auth and CORS stack.
 	r.Get("/api/v1/server/identity", s.handleServerIdentity)
 
+	// Public feed URLs authenticate with their path credential alone.
+	r.Group(func(r chi.Router) {
+		r.Use(calendarFeedRecoverer)
+		r.Use(s.RateLimit)
+		r.Get("/api/v1/feeds/ics/{token}", s.handleICSFeed)
+	})
+
 	// All other routes — full middleware stack
 	r.Group(func(r chi.Router) {
 		r.Use(corsMW)
@@ -2139,6 +2148,9 @@ func (s *Server) setupRouter() {
 			// 404, where it used to be 412 claim_disabled.
 			r.With(s.requireOAuthAvailable).Post("/oauth/claim", s.handleOAuthClaim)
 
+			r.Post("/me/calendar-feeds", s.handleCreateCalendarFeed)
+			r.Get("/me/calendar-feeds", s.handleListCalendarFeeds)
+			r.Delete("/me/calendar-feeds/{id}", s.handleDeleteCalendarFeed)
 			r.Get("/me/workspace-groups", s.handleListWorkspaceGroups)
 			r.Post("/me/workspace-groups", s.handleCreateWorkspaceGroup)
 			r.Get("/me/workspace-groups/{id}", s.handleGetWorkspaceGroup)

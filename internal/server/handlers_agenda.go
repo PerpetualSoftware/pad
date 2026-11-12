@@ -63,6 +63,7 @@ type agendaEntry struct {
 	OwnerUsername string `json:"owner_username,omitempty"`
 
 	instant time.Time // sort key, with Type, Workspace, ItemRef and subKey
+	itemID  string    // internal identity for calendar UIDs; never serialized
 	subKey  string
 }
 
@@ -231,6 +232,9 @@ type agendaRead struct {
 	recipient, audience     string
 	listNoDate              bool
 	scanCut                 bool
+	// skipDated reads schedule occurrences only, for a reader that would
+	// discard dated-field entries (the agent calendar feed).
+	skipDated bool
 	// A set cut cannot promise a resume instant. A time cut can.
 	setCut  bool
 	timeCut time.Time
@@ -278,6 +282,9 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 	run.setCut = run.setCut || sch.SetCut
 	if !sch.TimeCut.IsZero() && (run.timeCut.IsZero() || sch.TimeCut.Before(run.timeCut)) {
 		run.timeCut = sch.TimeCut
+	}
+	if run.skipDated {
+		return nil
 	}
 
 	// The dated half: ListItems carries the scope, archived and terminal clauses.
@@ -328,7 +335,7 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 			}
 			resp.Entries = append(resp.Entries, agendaEntry{
 				Type: "date", At: at.In(loc).Format(time.RFC3339), Day: v[:10], Field: key, Date: v, Overdue: v < today,
-				ItemRef: ref, ItemTitle: it.Title, Collection: it.CollectionSlug, instant: at, subKey: key,
+				ItemRef: ref, ItemTitle: it.Title, Collection: it.CollectionSlug, instant: at, subKey: key, itemID: it.ID,
 			})
 		}
 	}

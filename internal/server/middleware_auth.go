@@ -434,7 +434,10 @@ func isPublicAPIPath(path string) bool {
 		path == "/api/v1/server/capabilities" ||
 		// Server identity proof. A client calls it before sending any
 		// credential, and its route is mounted ahead of this stack.
-		path == "/api/v1/server/identity"
+		path == "/api/v1/server/identity" ||
+		// Calendar feeds authenticate with the secret in their own path,
+		// and their route is mounted ahead of this stack.
+		strings.HasPrefix(path, "/api/v1/feeds/ics/")
 }
 
 // legacyTokenRoutes are the global routes a user-less legacy workspace token

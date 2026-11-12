@@ -1242,6 +1242,7 @@ func (s *Store) disableUserAndRevokeAccessTx(tx *sql.Tx, userID string) error {
 	}{
 		{"disable", `UPDATE users SET disabled_at = ?, updated_at = ?, credential_epoch = credential_epoch + 1 WHERE id = ?`, []any{ts, ts, userID}},
 		{"delete sessions", `DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
+		{"revoke calendar feeds", `UPDATE calendar_feeds SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, []any{ts, userID}},
 		{"delete api tokens", `DELETE FROM api_tokens WHERE user_id = ?`, []any{userID}},
 		{"revoke oauth access tokens", `UPDATE oauth_access_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},
 		{"revoke oauth refresh tokens", `UPDATE oauth_refresh_tokens SET active = ? WHERE subject = ?`, []any{s.dialect.BoolToInt(false), userID}},

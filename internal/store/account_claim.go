@@ -380,6 +380,9 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		{"delete provider bindings", `DELETE FROM user_oauth_identities WHERE user_id = ?`, []any{userID}},
 		{"delete sessions", `DELETE FROM sessions WHERE user_id = ?`, []any{userID}},
 		{"delete api tokens", `DELETE FROM api_tokens WHERE user_id = ?`, []any{userID}},
+		// Feeds are evaluated as the account at fetch time, so a feed URL the
+		// previous holder kept would show the new holder's workspaces.
+		{"revoke calendar feeds", `UPDATE calendar_feeds SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL`, []any{ts, userID}},
 		// The old owner's registered devices would otherwise receive the new
 		// person's pushes, and their queued pushes describe items the new
 		// person was never told about (TASK-3937). The sessions delete above

@@ -47,3 +47,6 @@ package-lock.json   -diff
 # Keep generated output out of PR diffs / GitHub linguist stats.
 web/build/**         linguist-generated=true
 web/.svelte-kit/**   linguist-generated=true
+
+# iCalendar golden files preserve the protocol's required CRLF bytes.
+internal/ics/testdata/*.ics -text whitespace=cr-at-eol

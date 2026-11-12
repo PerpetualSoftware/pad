@@ -48,6 +48,7 @@ compress /api/v1/connected-apps/{id}/audit
 compress /api/v1/convention-library
 skip /api/v1/events
 skip /api/v1/events/stream
+compress /api/v1/feeds/ics/{token}
 compress /api/v1/health
 compress /api/v1/health/live
 compress /api/v1/health/ready
@@ -55,6 +56,7 @@ compress /api/v1/invitations/{code}/preview
 compress /api/v1/library/entry
 compress /api/v1/mcp/tool-surface
 compress /api/v1/me/agenda
+compress /api/v1/me/calendar-feeds
 compress /api/v1/me/chat/unread
 compress /api/v1/me/conversations
 compress /api/v1/me/conversations/{n}
