@@ -54,6 +54,11 @@
 	let manageGroups = $state(false);
 	let groupsTicket = 0;
 	let ticket = 0;
+	// What the agenda request depends on: whether groups loaded, the selected id and its members.
+	// A primitive, so a refetched groups array that changes neither (e.g. renaming another group) does not reload.
+	const groupKey = $derived(workspaceGroups
+		? `${selectedGroup}:${workspaceGroups.find(group => group.id === selectedGroup)?.workspace_ids.join(',') ?? ''}`
+		: '');
 	const emptyGroup = $derived(workspaces !== null && !!workspaceGroups?.some(group =>
 		group.id === selectedGroup && group.kind === 'named' && !group.workspace_ids.some(id => workspaces!.some(workspace => workspace.id === id))));
 	let loadedUser: string | undefined;
@@ -179,7 +184,7 @@
 	$effect(() => {
 		const date = day;
 		const timeZone = zone;
-		mode; authStore.user?.id; authStore.identityEpoch; selectedGroup; workspaceGroups;
+		mode; authStore.user?.id; authStore.identityEpoch; groupKey;
 		const ready = groupsReady;
 		untrack(() => {
 			clearDrag();

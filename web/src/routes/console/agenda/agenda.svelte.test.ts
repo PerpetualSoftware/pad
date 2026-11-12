@@ -666,6 +666,27 @@ describe('workspace groups and daily counts', () => {
  it.each(['week', 'day'])('renders daily counts in %s mode', async mode => {
   localStorage.setItem('pad-agenda-mode:user-a', mode);
   h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); render(Agenda);
-  await screen.findByRole('img', { name: 'Daily counts' });
+  const chart = await screen.findByRole('img', { name: 'Daily counts' });
+  // One day of counts: each line series still shows its value as a dot.
+  expect(chart.querySelectorAll('circle[data-series="open"]')).toHaveLength(1);
+  expect(chart.querySelectorAll('circle[data-series="burndown"]')).toHaveLength(1);
+ });
+ it('does not reload the agenda when a group other than the selected one is renamed', async () => {
+  await mount(); const calls = h.agenda.mock.calls.length;
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], name: 'Renamed' }] });
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Renamed' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await screen.findByRole('option', { name: 'Renamed' }); await settle();
+  expect(h.agenda.mock.calls.length).toBe(calls); expect(screen.getByText('First item')).toBeTruthy();
+ });
+ it('reloads the agenda when the selected group changes its workspaces', async () => {
+  await mount(); await fireEvent.change(picker(), { target: { value: 'group-1' } });
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1')); const calls = h.agenda.mock.calls.length;
+  h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', name: 'Second' }]);
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-1', 'ws-2'] }] });
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await waitFor(() => expect(h.agenda.mock.calls.length).toBe(calls + 1));
  });
 });
