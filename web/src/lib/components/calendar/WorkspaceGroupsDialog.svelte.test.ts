@@ -121,3 +121,17 @@ describe('WorkspaceGroupsDialog edit step', () => {
 		expect(await within(dialog).findByRole('alert')).toHaveTextContent('Name is already used.'); expect(button('Save group')).not.toBeDisabled();
 	});
 });
+
+describe('WorkspaceGroupsDialog edit step focus', () => {
+	it('moves focus to the Name field when Edit opens the edit step', async () => {
+		mount();
+		button('Edit Client work').focus();
+		await fireEvent.click(button('Edit Client work')); await settle();
+		expect(document.activeElement).toBe(screen.getByLabelText('Name'));
+	});
+	it('moves focus to the Name field when New group opens the edit step', async () => {
+		mount();
+		await fireEvent.click(button('New group')); await settle();
+		expect(document.activeElement).toBe(screen.getByLabelText('Name'));
+	});
+});

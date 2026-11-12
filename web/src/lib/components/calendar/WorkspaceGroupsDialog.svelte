@@ -32,6 +32,8 @@
 	function edit(group?: WorkspaceGroup) {
 		editing = group?.id ?? null; name = group?.name ?? ''; workspaceIds = [...(group?.workspace_ids ?? [])];
 		error = ''; step = 'edit';
+		// The button that opened the step leaves with the list, so focus moves to the first field.
+		void tick().then(() => document.getElementById(`${uid}-name`)?.focus());
 	}
 	untrack(() => {
 		const group = initialEdit ? namedGroups.find(candidate => candidate.id === initialEdit) : undefined;
