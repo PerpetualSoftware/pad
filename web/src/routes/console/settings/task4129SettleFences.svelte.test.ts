@@ -92,6 +92,7 @@ vi.mock('$lib/stores/auth.svelte', async () => {
 			get cloudMode() { return state.cloud; },
 			get emailConfigured() { return true; },
 			get pushAvailable() { return false; },
+			get authenticated() { return true; },
 			get user() { return { id: 'u1', name: 'Pat', email: 'pat@example.com' }; },
 			get userId() { return state.userId; },
 			get identityEpoch() { signal.get('epoch'); return state.epoch; },
