@@ -493,10 +493,13 @@ func init() {
 			pathTemplate: "/api/v1/workspaces/{workspace}/agenda",
 			queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz", "stale": "stale"},
 		}.toRouteMapper(),
-		"item ack": routeSpec{
-			method:       http.MethodPost,
-			pathTemplate: "/api/v1/workspaces/{workspace}/reminders/{reminder_id}/ack",
-		}.toRouteMapper(),
+		"item ack": func(input map[string]any) (string, string, []byte, error) {
+			path := "/api/v1/workspaces/{workspace}/reminders/{reminder_id}/ack"
+			if ref, _ := input["ref"].(string); ref != "" {
+				path = "/api/v1/workspaces/{workspace}/items/{ref}/reminders/ack"
+			}
+			return (routeSpec{method: http.MethodPost, pathTemplate: path}).toRouteMapper()(input)
+		},
 		// TASK-3611: list an item's reminders, and disarm one by id.
 		"item reminders": routeSpec{
 			method:       http.MethodGet,

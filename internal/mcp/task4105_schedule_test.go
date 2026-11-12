@@ -26,6 +26,8 @@ import (
 // is refused before dispatch.
 func task4105FixtureFor(name string, in map[string]any) {
 	switch name {
+	case "pad_item.ack-reminder":
+		delete(in, "ref") // BUG-4501: ref and reminder_id are alternatives.
 	case "pad_item.schedule-forecast":
 		in["forecast"] = "2031-03-12"
 	case "item remind forecast set":

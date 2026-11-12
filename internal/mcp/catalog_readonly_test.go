@@ -391,8 +391,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		"code": "123456",
 		// pad_attachment.show needs an attachment_id positional.
 		"attachment_id": "att-1",
-		// pad_item.ack-reminder addresses a REMINDER, not an item — an item
-		// can carry several, so `ref` cannot name one (IDEA-2641).
+		// Exercise the by-id ack form; the per-action fixture removes ref.
 		"reminder_id": "rem-1",
 		"remind_at":   "2026-08-01T09:00:00Z",
 		// pad_item.schedule-resolve needs the state and the occurrence it
@@ -804,7 +803,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			}()},
 			"item ack": {
 				Summary: "acknowledge a fired reminder",
-				Args:    mkArgs("reminder-id"),
+				Args:    mkArgs("reminder-id-or-ref"),
 				Flags:   mkFlags("workspace"),
 			},
 			"item reminders": {

@@ -2,6 +2,7 @@ package server
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 	"time"
 
@@ -174,6 +175,43 @@ func (s *Server) handleRearmReminder(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, updated)
 }
 
+// handleAckItemReminder acknowledges the sole pending, unmanaged reminder on an item.
+// POST /api/v1/workspaces/{slug}/items/{itemSlug}/reminders/ack
+func (s *Server) handleAckItemReminder(w http.ResponseWriter, r *http.Request) {
+	workspaceID, ok := s.getWorkspaceID(w, r)
+	if !ok {
+		return
+	}
+	item := s.resolveVisibleItem(w, r, workspaceID)
+	if item == nil {
+		return
+	}
+	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+		return
+	}
+	reminders, err := s.store.ListRemindersForItem(workspaceID, item.ID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	var ids []string
+	for _, reminder := range reminders {
+		if reminder.PendingAck() && reminder.ScheduleID == nil {
+			ids = append(ids, reminder.ID)
+		}
+	}
+	switch len(ids) {
+	case 0:
+		writeError(w, http.StatusNotFound, "not_found", "No fired, unacknowledged reminder on "+item.Ref)
+	case 1:
+		s.ackReminder(w, workspaceID, ids[0])
+	default:
+		writeError2(w, http.StatusConflict, "ambiguous_reminder",
+			fmt.Sprintf("%d fired, unacknowledged reminders on %s; acknowledge by id instead", len(ids), item.Ref),
+			map[string]interface{}{"reminder_ids": ids})
+	}
+}
+
 // handleAckReminder acknowledges a fired reminder.
 // POST /api/v1/workspaces/{slug}/reminders/{reminderID}/ack
 func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
@@ -186,7 +224,12 @@ func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	acked, err := s.store.AckReminder(workspaceID, reminder.ID)
+	s.ackReminder(w, workspaceID, reminder.ID)
+}
+
+// ackReminder keeps the by-id and by-item doors' store and race handling identical.
+func (s *Server) ackReminder(w http.ResponseWriter, workspaceID, reminderID string) {
+	acked, err := s.store.AckReminder(workspaceID, reminderID)
 	if errors.Is(err, store.ErrReminderManaged) {
 		writeReminderManaged(w, "")
 		return
@@ -202,9 +245,8 @@ func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
 		// fresh read tells apart. The earlier form decided 409-vs-200 from the
 		// row resolveReminderForWrite read before the UPDATE, and a fire or
 		// re-arm landing in between made it answer for a state that had
-		// already stopped holding. The variable is still called `reminder`
-		// above only because the resolver's permission checks need it.
-		current, err := s.store.GetReminder(workspaceID, reminder.ID)
+		// already stopped holding.
+		current, err := s.store.GetReminder(workspaceID, reminderID)
 		if err != nil {
 			writeInternalError(w, err)
 			return

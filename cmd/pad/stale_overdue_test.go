@@ -92,7 +92,7 @@ func TestReminderCommandsExposeTheArgsMCPExpects(t *testing.T) {
 		// declaring it required would be a machine-readable claim the command
 		// contradicts.
 		{"item remind", []string{"ref"}, []bool{false}},
-		{"item ack", []string{"reminder-id"}, []bool{true}},
+		{"item ack", []string{"reminder-id-or-ref"}, []bool{true}},
 		{"item reminders", []string{"ref"}, []bool{true}},
 		{"item unremind", []string{"reminder-id"}, []bool{true}},
 	} {

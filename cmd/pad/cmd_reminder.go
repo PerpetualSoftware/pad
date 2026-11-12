@@ -5,9 +5,11 @@ import (
 	"text/tabwriter"
 
 	"github.com/fatih/color"
+	"github.com/google/uuid"
 	"github.com/spf13/cobra"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 // `pad remind` (alias `pad item remind`) and friends — the CLI half of IDEA-2641 / GitHub #1010.
@@ -191,10 +193,15 @@ reminder existed and went out.`,
 
 func ackCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:     "ack <reminder-id>",
-		Short:   "Acknowledge a fired reminder",
-		Example: `  pad item ack <reminder-id>`,
+		Use:   "ack <reminder-id-or-ref>",
+		Short: "Acknowledge a fired reminder by id or item ref",
+		Example: `  pad item ack 67ec8261-505f-4ddc-8d40-fbb1393bb649
+  pad item ack TASK-9`,
 		Long: `Acknowledge a reminder that has fired, removing it from 'pad project next'.
+
+Pass a reminder UUID or an item ref. An item ref acknowledges its sole fired,
+unacknowledged reminder that is not managed by a schedule. If several match,
+nothing is acknowledged: use a reminder id from the refusal instead.
 
 Nothing else acknowledges a reminder. In particular, completing the item does
 NOT: a reminder may have been armed precisely to fire after the work was done,
@@ -206,7 +213,13 @@ table, still unacknowledged, exactly as you left it.`,
 			client, _ := getClient()
 			ws := getWorkspace()
 
-			r, err := client.AckReminder(ws, args[0])
+			var r *models.Reminder
+			var err error
+			if _, parseErr := uuid.Parse(args[0]); parseErr == nil {
+				r, err = client.AckReminder(ws, args[0])
+			} else {
+				r, err = client.AckItemReminder(ws, args[0])
+			}
 			if err != nil {
 				return err
 			}

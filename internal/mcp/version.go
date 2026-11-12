@@ -2327,7 +2327,9 @@ const CmdhelpVersion = "0.1"
 // v0.111 — TASK-4354: agenda and bootstrap return grouped date roles without
 // kind, independent actionable groups and per-section completeness.
 // v0.112 adds schedule-forecast: a hand-set estimate, set or clear, with provenance.
-const ToolSurfaceVersion = "0.112"
+// v0.113 — BUG-4501: additive ack-reminder by ref when exactly one unmanaged
+// fired reminder is unacknowledged; reminder_id remains supported, both refuse.
+const ToolSurfaceVersion = "0.113"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

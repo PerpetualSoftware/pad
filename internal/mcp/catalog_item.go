@@ -100,7 +100,7 @@ var padItemTool = ToolDef{
 		// parameter makes it one. The rest of the schedule surface rides
 		// `pad item remind <subcommand>`; see catalog_item_schedule.go.
 		"remind":       actionItemRemind,
-		"ack-reminder": passThrough([]string{"item", "ack"}),
+		"ack-reminder": actionItemAckReminder,
 		"reminders":    passThrough([]string{"item", "reminders"}),
 		"unremind":     passThrough([]string{"item", "unremind"}),
 
@@ -191,7 +191,7 @@ var padItemTool = ToolDef{
 // keeping the schema simple to maintain.
 var padItemSchemaParams = []ParamDef{
 	// ── Targeting ──
-	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5, PLAYB-3). Required for every action naming one item, except create, list, starred, import, agenda, bulk-update (use `refs`) and ack-reminder / unremind (use `reminder_id`: an item can carry several reminders)."},
+	{Name: "ref", Type: "string", Description: "Item reference (e.g. TASK-5). Required for actions naming one item, except create, list, starred, import, agenda, bulk-update (use refs) and unremind. ack-reminder: ref OR reminder_id; multiple fired reminders require an id."},
 	{Name: "refs", Type: "array<string>", Description: "Item references for batch operations. Required: bulk-update (one or more refs)."},
 	{Name: "target", Type: "string", Description: "The OTHER end of a relationship. Required: link, unlink. blocks: the item being blocked; blocked-by: the blocker; supersedes: the superseded item."},
 	{Name: "link_type", Type: "string", Description: "Type of relationship for action=link/unlink.", Enum: []string{"blocks", "blocked-by", "supersedes", "implements", "split-from"}},
@@ -218,7 +218,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "pr_state", Type: "string", Description: "The pull request's state as you know it (e.g. open, merged, closed). For: link-pr. Pad does not check it against GitHub."},
 	{Name: "pr_branch", Type: "string", Description: "The pull request's head branch. For: link-pr."},
 	{Name: "pr_repo", Type: "string", Description: "The pull request's repository, owner/name. For: link-pr."},
-	{Name: "reminder_id", Type: "string", Description: "A reminder's id: the `id` returned when it was armed, or a row's `id` from action=reminders. Required: ack-reminder, unremind."},
+	{Name: "reminder_id", Type: "string", Description: "Reminder id from arming or action=reminders. Required for unremind. ack-reminder accepts reminder_id OR ref, never both."},
 
 	// ── Schedules ── (TASK-4105)
 	{Name: "every", Type: "string", Description: "Repeat rule: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE. For remind (schedule) and schedule-edit."},
@@ -480,9 +480,9 @@ Actions:
   schedule-delete — Irreversibly delete schedule/rule/history/managed reminder; stops pending firing. ref required. Keeps item/comments/one-shot reminders.
   agenda — Occurrences/dated items: from, to (RFC3339, <=92 days); tz optional.
     no_date_scope:personal_only means undated work is not listed, never empty. /me/agenda priority_list/waiting_on/no_date contain work assigned to the caller, else created by them, for their human/agent audience.
-  ack-reminder — Acknowledge fired reminder; leaves next/ready. Required: reminder_id
-    (fired suggestion/arming response, NOT item ref). Only this acknowledges; completing
-    the item does not. Reminders may fire after work finishes.
+  ack-reminder — Acknowledge by reminder_id OR ref, never both; leaves next/ready.
+    ref requires one fired, unacknowledged unmanaged reminder; multiple refuse, ack by id.
+    Only this acknowledges; completing the item does not. Reminders may fire after work finishes.
   reminders — Armed/fired/acknowledged reminders; ref required. Row id is reminder_id for unremind/ack-reminder (fired only).
   unremind — Disarm/delete by reminder_id (from reminders or arming response).
   claim — Atomic execution lease. Required: ref. Optional: holder, worker_id, ttl
@@ -605,6 +605,25 @@ var itemLinkRoutes = map[string]itemLinkRoute{
 		link:   itemLinkOp{cmdPath: []string{"item", "split-from"}, firstArg: "child_ref", secondArg: "parent_ref"},
 		unlink: itemLinkOp{cmdPath: []string{"item", "unsplit"}, firstArg: "child_ref", secondArg: "parent_ref"},
 	},
+}
+
+func actionItemAckReminder(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	ref, _ := input["ref"].(string)
+	id, _ := input["reminder_id"].(string)
+	if (ref == "") == (id == "") {
+		return errStructured("pad_item.ack-reminder", fmt.Errorf("provide either reminder_id or ref, never both")), nil
+	}
+	out := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+	// The CLI positional is <reminder-id-or-ref>. Keep the original parameter
+	// too, so HTTP dispatch routes on which one the caller gave.
+	out["reminder_id_or_ref"] = id
+	if ref != "" {
+		out["reminder_id_or_ref"] = ref
+	}
+	return env.Dispatch(ctx, []string{"item", "ack"}, out)
 }
 
 // actionItemLink dispatches pad_item.action=link to the appropriate

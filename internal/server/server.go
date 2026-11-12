@@ -2466,6 +2466,7 @@ func (s *Server) setupRouter() {
 						// about the item it names.
 						r.Get("/reminders", s.handleListItemReminders)
 						r.Post("/reminders", s.handleCreateItemReminder)
+						r.Post("/reminders/ack", s.handleAckItemReminder)
 						// Item schedules (TASK-4102): the time trigger whose
 						// outstanding occurrence is a managed reminder row.
 						r.Get("/commitment/links", s.handleListCommitmentLinks)

@@ -304,6 +304,8 @@ func TestChatArmHasNoMCPPath(t *testing.T) {
 								// no window before they dispatch (TASK-4105); the shared `to` is a
 								// number for chat read.
 								switch action {
+								case "ack-reminder":
+									delete(input, "ref") // ref and reminder_id are alternatives.
 								case "schedule-forecast":
 									input["forecast"] = "2031-03-12"
 								case "schedule-edit":
