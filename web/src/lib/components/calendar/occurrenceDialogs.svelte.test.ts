@@ -92,22 +92,22 @@ describe('AgendaDayDialog', () => {
 		expect(dialog.textContent).not.toContain('Time zone'); expect(dialog.querySelector('footer')).toBeNull();
 		expect([...dialog.querySelectorAll('[data-ref]')].map(row => row.getAttribute('data-ref'))).toEqual(['TASK-9', 'TASK-10']);
 	});
-	it('counts commitments only, says "1 entry", and ends with a collapsed disclosure of the created and completed events', async () => {
-		const events = [{ ...entry, type: 'created' as const, item_ref: 'TASK-20', state: undefined }, { ...entry, type: 'completed' as const, item_ref: 'TASK-21', state: undefined }];
-		mount({ entries: [entry], events });
+	it('counts commitments only, says "1 entry", and ends with a collapsed disclosure of the completed entries', async () => {
+		const completed = [{ ...entry, type: 'completed' as const, item_ref: 'TASK-20', state: undefined }, { ...entry, type: 'completed' as const, item_ref: 'TASK-21', state: undefined }];
+		mount({ entries: [entry], completed });
 		const dialog = screen.getByRole('dialog');
 		expect(dialog.querySelector('.subject')).toHaveTextContent(/^1 entry · 1 owed$/);
 		expect([...dialog.querySelectorAll('[data-ref]')].map(row => row.getAttribute('data-ref'))).toEqual(['TASK-9']);
-		const toggle = within(dialog).getByRole('button', { name: '1 created · 1 completed' });
+		const toggle = within(dialog).getByRole('button', { name: '2 completed' });
 		expect(toggle).toHaveAttribute('aria-expanded', 'false');
 		await fireEvent.click(toggle);
 		expect([...dialog.querySelectorAll('[data-ref]')].map(row => row.getAttribute('data-ref'))).toEqual(['TASK-9', 'TASK-20', 'TASK-21']);
 	});
-	it('shows the events alone on a day with no commitments, with no subject and no empty line', () => {
-		mount({ entries: [], events: [{ ...entry, type: 'created' as const, item_ref: 'TASK-20', state: undefined }] });
+	it('shows the completed entries alone on a day with no commitments, with no subject and no empty line', () => {
+		mount({ entries: [], completed: [{ ...entry, type: 'completed' as const, item_ref: 'TASK-20', state: undefined }] });
 		const dialog = screen.getByRole('dialog');
 		expect(dialog.querySelector('.subject')).toBeNull(); expect(within(dialog).queryByText('No entries on this day.')).toBeNull();
-		expect(within(dialog).getByRole('button', { name: '1 created' })).toBeInTheDocument();
+		expect(within(dialog).getByRole('button', { name: '1 completed' })).toBeInTheDocument();
 	});
 	it('leaves Today out on another day and keeps the incomplete and error lines', () => {
 		mount({ today: '2026-11-13', entries: [], incomplete: true, error: 'Could not update this occurrence. Try again.' });

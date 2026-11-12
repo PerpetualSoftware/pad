@@ -3,14 +3,14 @@
 	import { dayLabel, entryCount } from '$lib/calendar/monthGrid';
 	import { daySummary, entryKey, type AgendaAction } from '$lib/calendar/presentation';
 	import DialogShell from '../common/DialogShell.svelte';
-	import AgendaEvents from './AgendaEvents.svelte';
+	import AgendaCompleted from './AgendaCompleted.svelte';
 	import AgendaRow from './AgendaRow.svelte';
-	let { day, today, entries, events = [], zone, now, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
+	let { day, today, entries, completed = [], zone, now, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
 		day: string | null; today: string;
 		/** The day's commitment rows in display order: what needs attention first. */
 		entries: AgendaEntry[];
-		/** The day's created and completed entries, folded into one line under the rows and left out of the count. */
-		events?: AgendaEntry[];
+		/** The day's completed entries, folded into one line under the rows and left out of the count. */
+		completed?: AgendaEntry[];
 		zone: string; now?: Date; mobile: boolean; incomplete: boolean; error?: string;
 		pending: Record<string, boolean>; saved: Record<string, boolean>;
 		onclose: () => void; onaction: (entry: AgendaEntry, action: AgendaAction) => void;
@@ -22,13 +22,13 @@
 <DialogShell open={!!day} {mobile} {title} {subject} maxWidth="800px" {onclose}>
 	{#if error}<p class="notice bad" role="alert">{error}</p>{/if}
 	{#if incomplete}<p class="notice">Not fully loaded</p>{/if}
-	{#if !incomplete && entries.length + events.length === 0}<p class="none">No entries on this day.</p>{/if}
-	{#if day && entries.length + events.length}
+	{#if !incomplete && entries.length + completed.length === 0}<p class="none">No entries on this day.</p>{/if}
+	{#if day && entries.length + completed.length}
 		<ul>
 			{#each entries as entry (entryKey(entry))}
 				<AgendaRow {entry} {zone} {now} compact={mobile} pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} />
 			{/each}
-			<AgendaEvents {events} {zone} {now} compact={mobile} {onaction} />
+			<AgendaCompleted {completed} {zone} {now} compact={mobile} {onaction} />
 		</ul>
 	{/if}
 </DialogShell>

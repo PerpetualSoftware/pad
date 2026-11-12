@@ -25,19 +25,21 @@ describe('AgendaDayGroup', () => {
 		expect(within(section).getByText('Today')).toBeTruthy(); expect(within(section).getByText('1 owed')).toBeTruthy();
 		cleanup(); expect(within(mount({ today: '2031-03-11' }).section).queryByText('Today')).toBeNull();
 	});
-	it('folds created and completed into one disclosure that expands in place', async () => {
-		const events = [entry({ type: 'created', item_ref: 'TASK-2', item_title: 'Made one' }), entry({ type: 'created', item_ref: 'TASK-3', item_title: 'Made two' }), entry({ type: 'completed', item_ref: 'TASK-4', item_title: 'Closed one' })];
-		const { section } = mount({ entries: [entry(), ...events] });
-		const toggle = within(section).getByRole('button', { name: '2 created · 1 completed' });
+	it('folds the completed entries into one "N completed" disclosure that expands in place', async () => {
+		const completed = [entry({ type: 'completed', item_ref: 'TASK-2', item_title: 'Closed one' }), entry({ type: 'completed', item_ref: 'TASK-3', item_title: 'Closed two' })];
+		const { section } = mount({ entries: [entry(), ...completed] });
+		const toggle = within(section).getByRole('button', { name: '2 completed' });
+		// The chevron follows the words: "2 completed ›".
+		expect(toggle.textContent?.trim()).toBe('2 completed'); expect(toggle.lastElementChild?.tagName.toLowerCase()).toBe('svg');
 		expect(toggle).toHaveAttribute('aria-expanded', 'false');
-		expect(screen.queryByText('Made one')).toBeNull(); expect(section.querySelectorAll('li.agenda-row')).toHaveLength(1);
+		expect(screen.queryByText('Closed one')).toBeNull(); expect(section.querySelectorAll('li.agenda-row')).toHaveLength(1);
 		await fireEvent.click(toggle);
 		expect(toggle).toHaveAttribute('aria-expanded', 'true');
-		for (const title of ['Made one', 'Made two', 'Closed one']) expect(within(section).getByText(title)).toBeTruthy();
-		expect(section.querySelectorAll('li.agenda-row[data-density="quiet"]')).toHaveLength(3);
-		await fireEvent.click(toggle); expect(screen.queryByText('Made one')).toBeNull();
+		for (const title of ['Closed one', 'Closed two']) expect(within(section).getByText(title)).toBeTruthy();
+		expect(section.querySelectorAll('li.agenda-row[data-density="quiet"]')).toHaveLength(2);
+		await fireEvent.click(toggle); expect(screen.queryByText('Closed one')).toBeNull();
 	});
-	it('names only the kinds of event the day has', () => {
+	it('says "1 completed" for one, the same word as for many', () => {
 		mount({ entries: [entry({ type: 'completed', item_ref: 'TASK-4' })] });
 		expect(screen.getByRole('button', { name: '1 completed' })).toBeTruthy();
 	});
