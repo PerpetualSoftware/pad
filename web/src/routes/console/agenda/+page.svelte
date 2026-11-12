@@ -6,6 +6,7 @@
 	import { agendaRows, roleDay, canMove, canResolve, dateTime, dayLabel, dayWindow, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localDate, shiftDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import WorkspaceGroupsDialog from '$lib/components/calendar/WorkspaceGroupsDialog.svelte';
 	import DailyCountsChart from '$lib/components/charts/DailyCountsChart.svelte';
@@ -443,11 +444,8 @@
 			</label>
 			<Button size="sm" onclick={() => manageGroups = true}>Manage groups</Button>
 		{/if}
-		<div class="mode">
-			<Button size="sm" aria-pressed={mode === 'week'} onclick={() => setMode('week')}>Week</Button>
-			<Button size="sm" aria-pressed={mode === 'day'} onclick={() => setMode('day')}>Day</Button>
-			<Button size="sm" aria-pressed={mode === 'month'} onclick={() => setMode('month')}>Month</Button>
-		</div>
+		<SegmentedControl label="Range" value={mode} onchange={setMode}
+			options={[{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }]} />
 		<div class="period">
 			<Button size="sm" aria-label={`Previous ${mode}`} onclick={() => movePeriod(-1)}>&lt;</Button>
 			<Button size="sm" aria-label={`Next ${mode}`} onclick={() => movePeriod(1)}>&gt;</Button>
@@ -557,7 +555,7 @@
 	@media (pointer: coarse) { .more { min-height: 44px; min-width: 44px; } }
 	.controls { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-4); }
 	.period { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-	.mode, .surface-switch { display: flex; gap: var(--space-2); }
+	.surface-switch { display: flex; gap: var(--space-2); }
 	.surface-switch { margin: var(--space-3) 0; }
 	.period-heading { font-size: 1rem; margin: 0; }
 	.week-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(15rem, 20rem); gap: var(--space-4); margin-top: var(--space-3); align-items: start; }

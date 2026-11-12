@@ -1,5 +1,5 @@
 import type { CalendarRow } from './monthGrid';
-import type { AgendaEntry, CommitmentForecastSummary } from '$lib/types';
+import type { AgendaEntry, AgendaWorkEntry, CommitmentForecastSummary, CommitmentRoles } from '$lib/types';
 
 const DAY = 86_400_000;
 
@@ -116,6 +116,36 @@ export function canMove(entry: AgendaEntry): boolean {
 	return canResolve(entry) && !(entry.roles?.deadline != null && entry.roles_origin !== 'native');
 }
 
+export type OccurrenceState = NonNullable<AgendaEntry['state']>;
+
+/** The shape StateMark draws for a state. Colour follows the shape, not the chip tone. */
+export type StateMarkShape = 'ring' | 'ring-thin' | 'ring-dashed' | 'check' | 'dash' | 'arrow' | 'cross';
+
+export interface OccurrenceStateRow {
+	/** Text for chips and the accessible name of the mark. */
+	label: string;
+	/** Chip colour, as an app.css custom property name. */
+	tone: `--${string}`;
+	mark: StateMarkShape;
+}
+
+/** The one table of occurrence states. Every chip, mark and label reads it. */
+export const OCCURRENCE_STATES = {
+	outstanding: { label: 'Outstanding', tone: '--accent-amber', mark: 'ring' },
+	scheduled: { label: 'Scheduled', tone: '--status-blue', mark: 'ring-thin' },
+	done: { label: 'Done', tone: '--accent-green', mark: 'check' },
+	skipped: { label: 'Skipped', tone: '--accent-gray', mark: 'dash' },
+	moved: { label: 'Moved', tone: '--accent-purple', mark: 'arrow' },
+	missed: { label: 'Missed', tone: '--accent-red', mark: 'cross' },
+	lapsed: { label: 'Lapsed', tone: '--accent-red', mark: 'cross' },
+	unrecorded: { label: 'Not recorded', tone: '--accent-gray', mark: 'ring-dashed' }
+} as const satisfies Record<OccurrenceState, OccurrenceStateRow>;
+
+/** The table row for a loosely typed state value, or undefined when it is not a known state. */
+export function occurrenceState(state: string | null | undefined): OccurrenceStateRow | undefined {
+	return state != null && Object.hasOwn(OCCURRENCE_STATES, state) ? OCCURRENCE_STATES[state as OccurrenceState] : undefined;
+}
+
 export function entryChips(entry: AgendaEntry): { text: string; color: string }[] {
 	const chip = (text: string, color = '--accent-gray') => ({ text, color: `var(${color})` });
 	if (entry.type === 'created') return [chip('Created')];
@@ -124,12 +154,7 @@ export function entryChips(entry: AgendaEntry): { text: string; color: string }[
 		const label = entry.field === 'due_date' ? 'Due' : entry.field === 'end_date' ? 'Ends' : entry.field ?? '';
 		return [chip(label), ...(entry.overdue ? [chip('Overdue', '--accent-amber')] : [])];
 	}
-	const states = {
-		outstanding: chip('Outstanding', '--accent-amber'), scheduled: chip('Scheduled', '--status-blue'),
-		done: chip('Done', '--accent-green'), skipped: chip('Skipped'), moved: chip('Moved', '--accent-purple'),
-		missed: chip('Missed', '--accent-amber'), lapsed: chip('Lapsed'), unrecorded: chip('No recorded state')
-	};
-	const chips = entry.state ? [states[entry.state]] : [];
+	const chips = entry.state ? [chip(OCCURRENCE_STATES[entry.state].label, OCCURRENCE_STATES[entry.state].tone)] : [];
 	if (entry.state === 'outstanding') {
 		if (entry.overdue) chips.push(chip('Overdue', '--accent-amber'));
 		if (entry.missed_count && entry.missed_count > 0) chips.push(chip(`${entry.missed_count} missed occurrence${entry.missed_count === 1 ? '' : 's'}`, '--accent-amber'));
@@ -201,4 +226,131 @@ export function agendaRows(entries: AgendaEntry[]): CalendarRow[] {
    ? { state: entry.state, overdue: entry.overdue, missedCount: entry.missed_count, stale: entry.stale, forecast: entry.forecast }
    : { label: entryChips(entry)[0]?.text, overdue: entry.overdue })
  })));
+}
+
+export type AttentionReason = 'deadline_still_owed' | 'target_passed' | 'lapsed' | 'missed';
+
+export interface AttentionEntry {
+	key: string;
+	reason: AttentionReason;
+	/** The window entry when the occurrence is in the window, else the priority-list row. */
+	entry: AgendaEntry | AgendaWorkEntry;
+	inWindow: boolean;
+}
+
+const ATTENTION_ORDER: AttentionReason[] = ['deadline_still_owed', 'target_passed', 'lapsed', 'missed'];
+
+/** One schedule has at most one outstanding occurrence, so that occurrence is keyed by its schedule. */
+function attentionKey(entry: AgendaEntry | AgendaWorkEntry): string {
+	const occurrence = entry.state === 'outstanding' ? 'outstanding' : entry.occurrence_key ?? entry.at ?? '';
+	return `${entry.workspace ?? ''}|${entry.owner_username ?? ''}|${entry.item_ref}|${entry.schedule_id ?? ''}|${occurrence}`;
+}
+
+/**
+ * What needs attention: priority-list rows whose target has passed or whose deadline passed
+ * while still owed, plus window occurrences that lapsed, were missed or carry missed occurrences.
+ * Each occurrence is listed once, under its most severe reason.
+ */
+export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWorkEntry[]): AttentionEntry[] {
+	const found = new Map<string, AttentionEntry>();
+	const add = (reason: AttentionReason, entry: AgendaEntry | AgendaWorkEntry, inWindow: boolean) => {
+		const key = attentionKey(entry);
+		const seen = found.get(key);
+		if (!seen) { found.set(key, { key, reason, entry, inWindow }); return; }
+		if (ATTENTION_ORDER.indexOf(reason) < ATTENTION_ORDER.indexOf(seen.reason)) seen.reason = reason;
+		if (inWindow && !seen.inWindow) { seen.entry = entry; seen.inWindow = true; }
+	};
+	for (const row of priorityList) {
+		if (row.type !== 'schedule') continue;
+		if (row.reason === 'deadline_still_owed' || row.reason === 'target_passed') add(row.reason, row, false);
+	}
+	for (const entry of entries) {
+		if (entry.type !== 'schedule') continue;
+		if (entry.state === 'lapsed') add('lapsed', entry, true);
+		else if (entry.state === 'missed') add('missed', entry, true);
+		else if (entry.missed_count && entry.missed_count > 0) add('missed', entry, true);
+		else if (found.has(attentionKey(entry))) add(found.get(attentionKey(entry))!.reason, entry, true);
+	}
+	return [...found.values()].sort((a, b) => ATTENTION_ORDER.indexOf(a.reason) - ATTENTION_ORDER.indexOf(b.reason));
+}
+
+/** One line for a day heading: "2 owed · 1 done". Empty when the day has nothing owed, done or missed. */
+export function daySummary(entries: AgendaEntry[]): string {
+	const count = (...states: OccurrenceState[]) => entries.filter(entry => entry.type === 'schedule' && entry.state !== undefined && states.includes(entry.state)).length;
+	return ([[count('outstanding'), 'owed'], [count('done'), 'done'], [count('lapsed', 'missed'), 'missed']] as const)
+		.filter(([n]) => n > 0).map(([n, word]) => `${n} ${word}`).join(' · ');
+}
+
+function dayNumber(day: string): number {
+	return Date.parse(`${day}T00:00:00Z`) / DAY;
+}
+
+/**
+ * A calendar day in the fewest words that stay unambiguous from `today`:
+ * "Mon 16" within a week either side, "Fri 20 Nov" in the same year, else "Wed 20 Jan 2027".
+ */
+export function shortDay(day: string, today: string): string {
+	const near = Math.abs(dayNumber(day) - dayNumber(today)) <= 7;
+	const parts = new Intl.DateTimeFormat('en-GB', {
+		timeZone: 'UTC', weekday: 'short', day: 'numeric',
+		...(near ? {} : { month: 'short' }), ...(near || day.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' })
+	}).formatToParts(new Date(`${day}T12:00:00Z`));
+	const part = (type: string) => parts.find(p => p.type === type)?.value;
+	return [part('weekday'), part('day'), part('month'), part('year')].filter(Boolean).join(' ');
+}
+
+/** A role value in short form: a date-only value is its own date, an instant is read in the viewer zone. */
+export function shortRoleDate(value: string, zone: string, now = new Date(Date.now())): string {
+	const day = shortDay(roleDay(value, zone), todayIn(zone, now));
+	return isDateOnly(value) ? day : `${day}, ${localTime(value, zone)}`;
+}
+
+export type DeadlineTone = 'far' | 'soon' | 'passed';
+
+const SOON = 2 * DAY;
+
+/** The instant a deadline passes. A date-only deadline holds through its whole local day. */
+function deadlineInstant(deadline: string, zone: string): number {
+	return Date.parse(isDateOnly(deadline) ? startOfDay(shiftDay(deadline, 1), zone) : deadline);
+}
+
+export function deadlineTone(deadline: string, zone: string, now = new Date(Date.now())): DeadlineTone {
+	const left = deadlineInstant(deadline, zone) - now.getTime();
+	return left <= 0 ? 'passed' : left <= SOON ? 'soon' : 'far';
+}
+
+function elapsedText(ms: number): string {
+	if (ms < 3_600_000) return `${Math.max(1, Math.floor(ms / 60_000))} min`;
+	if (ms < DAY) return `${Math.floor(ms / 3_600_000)} h`;
+	const days = Math.floor(ms / DAY);
+	return `${days} day${days === 1 ? '' : 's'}`;
+}
+
+/** Tone and wording of the deadline pill. The behaviour is appended only once it matters. */
+export function deadlinePill(deadline: string, behavior: CommitmentRoles['deadline_behavior'], zone: string, now = new Date(Date.now())): { tone: DeadlineTone; text: string } {
+	const tone = deadlineTone(deadline, zone, now);
+	if (tone === 'passed') {
+		return { tone, text: `Deadline passed ${elapsedText(now.getTime() - deadlineInstant(deadline, zone))} ago${behavior === 'stays_owed' ? ' · still owed' : ''}` };
+	}
+	const suffix = tone === 'soon' ? (behavior === 'lapses' ? ' · lapses' : behavior === 'stays_owed' ? ' · still owed after' : '') : '';
+	return { tone, text: `${shortRoleDate(deadline, zone, now)}${suffix}` };
+}
+
+/**
+ * How many viewer-local days a forecast lands after its deadline, or null when it is not late.
+ * Two instants compare exactly, so 0 means later on the deadline day. A date-only side compares whole days.
+ */
+export function forecastLate(forecast: string, deadline: string | null | undefined, zone: string): number | null {
+	if (!deadline) return null;
+	const days = dayNumber(roleDay(forecast, zone)) - dayNumber(roleDay(deadline, zone));
+	if (isDateOnly(forecast) || isDateOnly(deadline)) return days > 0 ? days : null;
+	return Date.parse(forecast) > Date.parse(deadline) ? Math.max(0, days) : null;
+}
+
+/** Wording of the forecast pill, and whether it lands after the deadline. */
+export function forecastPill(forecast: string, deadline: string | null | undefined, zone: string, now = new Date(Date.now())): { late: boolean; text: string } {
+	const days = forecastLate(forecast, deadline, zone);
+	const text = shortRoleDate(forecast, zone, now);
+	if (days === null) return { late: false, text };
+	return { late: true, text: `${text} · ${days === 0 ? 'late' : `${days} day${days === 1 ? '' : 's'} late`}` };
 }

@@ -51,8 +51,8 @@ describe('agenda timezone presentation', () => {
  it.each([
   ['outstanding', 'Outstanding', '--accent-amber'], ['scheduled', 'Scheduled', '--status-blue'],
   ['done', 'Done', '--accent-green'], ['skipped', 'Skipped', '--accent-gray'],
-  ['moved', 'Moved', '--accent-purple'], ['missed', 'Missed', '--accent-amber'],
-  ['lapsed', 'Lapsed', '--accent-gray'], ['unrecorded', 'No recorded state', '--accent-gray']
+  ['moved', 'Moved', '--accent-purple'], ['missed', 'Missed', '--accent-red'],
+  ['lapsed', 'Lapsed', '--accent-red'], ['unrecorded', 'Not recorded', '--accent-gray']
  ])('maps %s without inferring overdue', (state, text, color) => {
   expect(entryChips(row({ state: state as AgendaEntry['state'] }))).toEqual([{ text, color: `var(${color})` }]);
  });
@@ -119,4 +119,190 @@ it('maps agenda rows on authoritative days, all-day first in stable server order
  expect(rows[2]).toMatchObject({ href: '/alice/work/tasks/EX-30', workspaceName: 'Work', state: 'outstanding', overdue: true, missedCount: 2, stale: true, forecast });
  expect(rows[0].label).toBe('Due'); expect(rows[3].label).toBe('Created'); expect(rows[4].label).toBe('Completed'); expect(rows[4].href).toBeNull();
  expect(new Set(rows.map(r => r.key)).size).toBe(5);
+});
+
+
+import type { AgendaWorkEntry } from '$lib/types';
+import { OCCURRENCE_STATES, attentionEntries, daySummary, shortDay, shortRoleDate, deadlineTone, deadlinePill, forecastLate, forecastPill, type OccurrenceState } from './presentation';
+
+describe('the one occurrence state table', () => {
+ const ALL = ['outstanding', 'scheduled', 'done', 'skipped', 'moved', 'missed', 'lapsed', 'unrecorded'] as const satisfies readonly OccurrenceState[];
+ // Type-level: a state added to the AgendaEntry union fails the check until it is listed and given a row.
+ type Unlisted = Exclude<OccurrenceState, (typeof ALL)[number]>;
+ type Rowless = Exclude<OccurrenceState, keyof typeof OCCURRENCE_STATES>;
+ const listed: [Unlisted] extends [never] ? true : false = true;
+ const rowed: [Rowless] extends [never] ? true : false = true;
+ it('has exactly one complete row per state in the entry union', () => {
+  expect(listed && rowed).toBe(true);
+  expect(Object.keys(OCCURRENCE_STATES).sort()).toEqual([...ALL].sort());
+  for (const state of ALL) {
+   const { label, tone, mark } = OCCURRENCE_STATES[state];
+   expect(label).toMatch(/\S/);
+   expect(tone).toMatch(/^--[a-z-]+$/);
+   expect(mark).toMatch(/^(ring|ring-thin|ring-dashed|check|dash|arrow|cross)$/);
+  }
+  expect(new Set(ALL.map(state => OCCURRENCE_STATES[state].label)).size).toBe(ALL.length);
+ });
+ it('labels the unrecorded state "Not recorded"', () => {
+  expect(OCCURRENCE_STATES.unrecorded.label).toBe('Not recorded');
+ });
+ it('feeds entryChips from the table', () => {
+  for (const state of ALL) expect(entryChips(row({ state }))[0]).toEqual({ text: OCCURRENCE_STATES[state].label, color: `var(${OCCURRENCE_STATES[state].tone})` });
+ });
+});
+
+describe('attentionEntries', () => {
+ const work = (extra: Partial<AgendaWorkEntry> = {}): AgendaWorkEntry => ({ type: 'schedule', item_ref: 'EX-1', item_title: 'Owed', collection: 'tasks', workspace: 'work', owner_username: 'alice', schedule_id: 's1', occurrence_key: 'k1', state: 'outstanding', reason: 'outstanding', ...extra });
+ it('picks passed-target, still-owed, lapsed and missed rows and nothing else', () => {
+  const window = [
+   row({ item_ref: 'EX-10', schedule_id: 'a', state: 'lapsed' }),
+   row({ item_ref: 'EX-11', schedule_id: 'b', state: 'outstanding', missed_count: 2 }),
+   row({ item_ref: 'EX-12', schedule_id: 'c', state: 'outstanding' }),
+   row({ item_ref: 'EX-13', schedule_id: 'd', state: 'outstanding', missed_count: 0 }),
+   row({ item_ref: 'EX-14', schedule_id: 'e', state: 'scheduled' }),
+   row({ item_ref: 'EX-15', schedule_id: 'f', state: 'done' }),
+   row({ item_ref: 'EX-16', schedule_id: 'g', state: 'missed' }),
+   row({ item_ref: 'EX-17', type: 'date', field: 'due_date', overdue: true, state: undefined }),
+   row({ item_ref: 'EX-18', type: 'completed', state: undefined })
+  ];
+  const priority = [
+   work({ item_ref: 'EX-20', schedule_id: 'p1', occurrence_key: 'o1', reason: 'target_passed' }),
+   work({ item_ref: 'EX-21', schedule_id: 'p2', occurrence_key: 'o2', reason: 'deadline_still_owed' }),
+   work({ item_ref: 'EX-22', schedule_id: 'p3', occurrence_key: 'o3', reason: 'outstanding' }),
+   work({ item_ref: 'EX-23', type: 'item', schedule_id: undefined, occurrence_key: undefined, reason: 'unplaced' })
+  ];
+  expect(attentionEntries(window, priority).map(a => [a.entry.item_ref, a.reason])).toEqual([
+   ['EX-21', 'deadline_still_owed'], ['EX-20', 'target_passed'], ['EX-10', 'lapsed'], ['EX-11', 'missed'], ['EX-16', 'missed']
+  ]);
+ });
+ it('lists an occurrence once when it is in both the priority list and the window, keeping the window entry', () => {
+  const inWindow = row({ item_ref: 'EX-30', schedule_id: 's1', occurrence_key: 'k1', missed_count: 1, overdue: true });
+  const other = row({ item_ref: 'EX-30', schedule_id: 's1', occurrence_key: 'k0', state: 'lapsed', at: '2026-03-07T04:00:00Z' });
+  const result = attentionEntries([inWindow, other], [work({ item_ref: 'EX-30', reason: 'target_passed' }), work({ item_ref: 'EX-30', reason: 'target_passed' })]);
+  expect(result.map(a => a.reason)).toEqual(['target_passed', 'lapsed']);
+  expect(result[0].entry).toBe(inWindow);
+  expect(result[0].inWindow).toBe(true);
+  expect(new Set(result.map(a => a.key)).size).toBe(2);
+ });
+ it('keeps apart the same ref in two workspaces and marks rows outside the window', () => {
+  const result = attentionEntries([], [work({ reason: 'target_passed' }), work({ workspace: 'other', reason: 'target_passed' })]);
+  expect(result).toHaveLength(2);
+  expect(result.every(a => !a.inWindow)).toBe(true);
+ });
+ it('is empty when nothing needs attention', () => {
+  expect(attentionEntries([row(), row({ state: 'done' })], [work()])).toEqual([]);
+ });
+});
+
+describe('daySummary', () => {
+ it.each([
+  [[], ''],
+  [['scheduled'], ''],
+  [['outstanding'], '1 owed'],
+  [['outstanding', 'outstanding', 'done'], '2 owed · 1 done'],
+  [['done', 'done', 'skipped'], '2 done'],
+  [['outstanding', 'lapsed', 'missed', 'done'], '1 owed · 1 done · 2 missed']
+ ] as [OccurrenceState[], string][])('words %j as "%s"', (states, text) => {
+  expect(daySummary(states.map(state => row({ state })))).toBe(text);
+ });
+ it('counts schedule occurrences only', () => {
+  expect(daySummary([row({ type: 'completed', state: undefined }), row({ type: 'date', overdue: true, state: undefined }), row()])).toBe('1 owed');
+ });
+});
+
+describe('short dates', () => {
+ it.each([
+  ['2026-11-16', '2026-11-12', 'Mon 16'],
+  ['2026-11-12', '2026-11-12', 'Thu 12'],
+  ['2026-11-19', '2026-11-12', 'Thu 19'],
+  ['2026-11-05', '2026-11-12', 'Thu 5'],
+  ['2026-11-20', '2026-11-12', 'Fri 20 Nov'],
+  ['2026-11-04', '2026-11-12', 'Wed 4 Nov'],
+  ['2027-01-02', '2026-12-30', 'Sat 2'],
+  ['2026-12-28', '2027-01-02', 'Mon 28'],
+  ['2027-01-20', '2026-12-30', 'Wed 20 Jan 2027'],
+  ['2026-12-10', '2027-01-02', 'Thu 10 Dec 2026']
+ ])('shortDay %s seen from %s is "%s"', (day, today, text) => {
+  expect(shortDay(day, today)).toBe(text);
+ });
+ it('formats a date-only value as its own date and an instant in the viewer zone', () => {
+  const now = new Date('2026-11-12T18:00:00Z');
+  expect(shortRoleDate('2026-11-16', 'Pacific/Auckland', now)).toBe('Mon 16');
+  expect(shortRoleDate('2026-11-16T10:00:00Z', 'Europe/London', now)).toBe('Mon 16, 10:00');
+  // 03:30Z on the 16th is still the 15th in New York.
+  expect(shortRoleDate('2026-11-16T03:30:00Z', 'America/New_York', now)).toBe('Sun 15, 22:30');
+  expect(shortRoleDate('2027-01-01T03:30:00Z', 'America/New_York', new Date('2026-12-30T12:00:00Z'))).toBe('Thu 31, 22:30');
+  expect(shortRoleDate('2027-02-01T12:00:00Z', 'America/New_York', new Date('2026-12-30T12:00:00Z'))).toBe('Mon 1 Feb 2027, 07:00');
+ });
+});
+
+describe('deadline and forecast tone outside UTC', () => {
+ const NY = 'America/New_York';
+ it.each([
+  ['2026-11-12T17:00:00Z', 'far'],
+  ['2026-11-14T14:59:59Z', 'far'],
+  ['2026-11-14T15:00:00Z', 'soon'],
+  ['2026-11-16T14:59:59Z', 'soon'],
+  ['2026-11-16T15:00:00Z', 'passed'],
+  ['2026-11-20T00:00:00Z', 'passed']
+ ])('an instant deadline seen at %s is %s', (now, tone) => {
+  expect(deadlineTone('2026-11-16T15:00:00Z', NY, new Date(now))).toBe(tone);
+ });
+ it.each([
+  // A date-only deadline holds through its whole local day: it passes at local midnight after it (05:00Z in New York).
+  ['2026-11-15T04:59:59Z', 'far'],
+  ['2026-11-15T05:00:00Z', 'soon'],
+  ['2026-11-17T04:59:59Z', 'soon'],
+  ['2026-11-17T05:00:00Z', 'passed']
+ ])('a date-only deadline seen at %s is %s', (now, tone) => {
+  expect(deadlineTone('2026-11-16', NY, new Date(now))).toBe(tone);
+ });
+ it('reads the same date-only deadline differently in a zone ahead of UTC', () => {
+  const now = new Date('2026-11-16T12:00:00Z');
+  expect(deadlineTone('2026-11-16', 'Pacific/Auckland', now)).toBe('passed');
+  expect(deadlineTone('2026-11-16', NY, now)).toBe('soon');
+ });
+ it('words the deadline pill by tone and behaviour', () => {
+  const at = '2026-11-16T15:00:00Z';
+  expect(deadlinePill(at, null, NY, new Date('2026-11-12T17:00:00Z'))).toEqual({ tone: 'far', text: 'Mon 16, 10:00' });
+  expect(deadlinePill(at, 'lapses', NY, new Date('2026-11-12T17:00:00Z'))).toEqual({ tone: 'far', text: 'Mon 16, 10:00' });
+  expect(deadlinePill(at, 'lapses', NY, new Date('2026-11-16T03:00:00Z'))).toEqual({ tone: 'soon', text: 'Mon 16, 10:00 · lapses' });
+  expect(deadlinePill(at, 'stays_owed', NY, new Date('2026-11-16T03:00:00Z'))).toEqual({ tone: 'soon', text: 'Mon 16, 10:00 · still owed after' });
+  expect(deadlinePill(at, 'stays_owed', NY, new Date('2026-11-17T00:00:00Z'))).toEqual({ tone: 'passed', text: 'Deadline passed 9 h ago · still owed' });
+  expect(deadlinePill(at, null, NY, new Date('2026-11-16T15:20:00Z'))).toEqual({ tone: 'passed', text: 'Deadline passed 20 min ago' });
+  expect(deadlinePill(at, 'lapses', NY, new Date('2026-11-17T15:00:00Z'))).toEqual({ tone: 'passed', text: 'Deadline passed 1 day ago' });
+  expect(deadlinePill('2026-11-16', 'stays_owed', NY, new Date('2026-11-20T05:00:00Z'))).toEqual({ tone: 'passed', text: 'Deadline passed 3 days ago · still owed' });
+ });
+ it.each([
+  // instant vs instant: exact comparison, days counted on viewer-local dates
+  ['2026-11-17T21:00:00Z', '2026-11-16T17:00:00Z', 1],
+  ['2026-11-16T17:00:00Z', '2026-11-16T17:00:00Z', null],
+  ['2026-11-16T16:59:00Z', '2026-11-16T17:00:00Z', null],
+  ['2026-11-16T20:00:00Z', '2026-11-16T17:00:00Z', 0],
+  // 03:00Z on the 17th is still the 16th in New York
+  ['2026-11-17T03:00:00Z', '2026-11-16T17:00:00Z', 0],
+  ['2026-11-19T15:00:00Z', '2026-11-17T15:00:00Z', 2],
+  // a date-only side compares whole local days
+  ['2026-11-17', '2026-11-16', 1],
+  ['2026-11-16', '2026-11-16', null],
+  ['2026-11-17', '2026-11-16T17:00:00Z', 1],
+  ['2026-11-16', '2026-11-16T17:00:00Z', null],
+  ['2026-11-17T03:00:00Z', '2026-11-16', null],
+  ['2026-11-17T05:00:00Z', '2026-11-16', 1],
+  ['2027-01-02', '2026-12-31', 2]
+ ] as [string, string, number | null][])('forecast %s against deadline %s is late by %s', (forecast, deadline, days) => {
+  expect(forecastLate(forecast, deadline, NY)).toBe(days);
+ });
+ it('is never late without a deadline', () => {
+  expect(forecastLate('2026-11-17', null, NY)).toBeNull();
+  expect(forecastLate('2026-11-17', undefined, NY)).toBeNull();
+ });
+ it('words the forecast pill', () => {
+  const now = new Date('2026-11-12T17:00:00Z');
+  expect(forecastPill('2026-11-17T21:00:00Z', '2026-11-16T17:00:00Z', NY, now)).toEqual({ late: true, text: 'Tue 17, 16:00 · 1 day late' });
+  expect(forecastPill('2026-11-19', '2026-11-17', NY, now)).toEqual({ late: true, text: 'Thu 19 · 2 days late' });
+  expect(forecastPill('2026-11-16T20:00:00Z', '2026-11-16T17:00:00Z', NY, now)).toEqual({ late: true, text: 'Mon 16, 15:00 · late' });
+  expect(forecastPill('2026-11-15', '2026-11-16', NY, now)).toEqual({ late: false, text: 'Sun 15' });
+  expect(forecastPill('2026-11-15', null, NY, now)).toEqual({ late: false, text: 'Sun 15' });
+ });
 });

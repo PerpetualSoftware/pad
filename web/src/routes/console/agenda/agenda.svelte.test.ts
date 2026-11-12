@@ -236,6 +236,18 @@ describe('resolve identity and dialogs', () => {
 });
 
 describe('agenda Week and priority', () => {
+ it('offers Day, Week and Month as one group with exactly one selected, switched by arrow keys', async () => {
+  h.agenda.mockResolvedValue(response([])); render(Agenda);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  const range = within(screen.getByRole('group', { name: 'Range' }));
+  const pressed = () => range.getAllByRole('button').filter(button => button.getAttribute('aria-pressed') === 'true').map(button => button.textContent?.trim());
+  expect(range.getAllByRole('button').map(button => button.textContent?.trim())).toEqual(['Day', 'Week', 'Month']);
+  expect(pressed()).toEqual(['Week']);
+  await fireEvent.keyDown(range.getByRole('button', { name: 'Week' }), { key: 'ArrowRight' });
+  await waitFor(() => expect(pressed()).toEqual(['Month']));
+  expect(range.getByRole('button', { name: 'Month' })).toHaveFocus();
+  expect(screen.getByRole('button', { name: 'Next month' })).toBeInTheDocument();
+ });
  it('an incomplete week never says a day is empty', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false, truncated: true }));
   render(Agenda);
