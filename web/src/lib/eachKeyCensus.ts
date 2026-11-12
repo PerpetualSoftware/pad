@@ -29,6 +29,13 @@ export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: stri
  "lib/components/collections/CalendarView.svelte :: each (byDay.get(day) ?? []).slice(0,3) as row (row.key)": { reason: 'db-primary-key', note: 'calendarRows uses item primary key plus day, or a separately prefixed schedule response position; grouping and slicing preserve uniqueness.' },
  "lib/components/calendar/CalendarFieldPicker.svelte :: each fields as field (field.key)": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
  "lib/components/calendar/CalendarFieldPicker.svelte :: each fields as field (field.key) #2": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
+ "lib/components/calendar/WorkspaceGroupsDialog.svelte :: each namedGroups as group (group.id)": { reason: 'db-primary-key', note: 'GET /me/workspace-groups: named groups keyed by the workspace_groups primary key, filtered to kind named. Each refetch replaces the list.' },
+ "lib/components/calendar/WorkspaceGroupsDialog.svelte :: each workspaces as workspace (workspace.id)": { reason: 'db-primary-key', note: 'GET /workspaces: one answer keyed by the workspaces primary key, loaded once per identity.' },
+ "lib/components/charts/DailyCountsChart.svelte :: each series as item (item.key)": { reason: 'static-literal', note: 'Three literal series keys: completed, open, burndown.' },
+ "lib/components/charts/DailyCountsChart.svelte :: each series as item (item.key) #2": { reason: 'static-literal', note: 'Three literal series keys: completed, open, burndown.' },
+ "lib/components/charts/DailyCountsChart.svelte :: each data as item (item.day)": { reason: 'strictly-increasing', note: 'AgendaResponse.counts: the server emits one object per consecutive viewer-local day of the window (agenda counts series).' },
+ "lib/components/charts/layers/Lines.svelte :: each series as item (item.key)": { reason: 'static-literal', note: 'DailyCountsChart passes a slice of its three literal series (open, burndown).' },
+ "routes/console/agenda/+page.svelte :: each workspaceGroups as group (group.id)": { reason: 'db-primary-key', note: 'GET /me/workspace-groups: computed ids all and mine, then named groups by the workspace_groups primary key (uuid, never all or mine). Each refetch replaces the list.' },
 
 	"lib/components/calendar/AgendaDayList.svelte :: each entries as entry (entryKey(entry))": { reason: 'db-primary-key', note: "One agenda answer: type, workspace, owner, item ref, schedule id or field, and instant identify each entry." },
 	"routes/console/agenda/+page.svelte :: each groups as group (group.day)": { reason: 'grouped-by-key', note: "groupEntries creates one Map entry per server day." },

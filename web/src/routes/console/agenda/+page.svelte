@@ -6,6 +6,9 @@
 	import { canMove, canResolve, dateTime, dayLabel, dayWindow, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localDate, shiftDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import EmptyState from '$lib/components/common/EmptyState.svelte';
+	import WorkspaceGroupsDialog from '$lib/components/calendar/WorkspaceGroupsDialog.svelte';
+	import DailyCountsChart from '$lib/components/charts/DailyCountsChart.svelte';
 	import ContentError from '$lib/components/common/ContentError.svelte';
 	import AgendaDayList from '$lib/components/calendar/AgendaDayList.svelte';
 	import AgendaWeek from '$lib/components/calendar/AgendaWeek.svelte';
@@ -13,7 +16,7 @@
 	import ForecastDialog from '$lib/components/calendar/ForecastDialog.svelte';
 	import MoveImpactDialog from '$lib/components/calendar/MoveImpactDialog.svelte';
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
-	import type { AgendaEntry, AgendaResponse, ScheduleResolveState, CommitmentMoveResult } from '$lib/types';
+	import type { AgendaEntry, AgendaResponse, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
 
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
@@ -44,7 +47,21 @@
 	let linkedTitles = $state<Record<string, string>>({});
 	let review = $state<{ entry: AgendaEntry; to: string; preview: CommitmentMoveResult; reason?: string; sameIdentity: () => boolean } | null>(null);
 	let committing = $state(false);
+	let workspaceGroups = $state<WorkspaceGroup[] | null>(null);
+	let workspaces = $state<Workspace[] | null>(null);
+	let groupsReady = $state(false);
+	let selectedGroup = $state('all');
+	let manageGroups = $state(false);
+	let groupsTicket = 0;
+	let workspacesTicket = 0;
 	let ticket = 0;
+	// What the agenda request depends on: whether groups loaded, the selected id and its members.
+	// A primitive, so a refetched groups array that changes neither (e.g. renaming another group) does not reload.
+	const groupKey = $derived(workspaceGroups
+		? `${selectedGroup}:${workspaceGroups.find(group => group.id === selectedGroup)?.workspace_ids.join(',') ?? ''}`
+		: '');
+	const emptyGroup = $derived(workspaces !== null && !!workspaceGroups?.some(group =>
+		group.id === selectedGroup && group.kind === 'named' && !group.workspace_ids.some(id => workspaces!.some(workspace => workspace.id === id))));
 	let loadedUser: string | undefined;
 	let preferenceUser: string | undefined;
 	let dragSerial = 0;
@@ -89,9 +106,63 @@
 		if (!userId || userId !== preferenceUser) return;
 		try { localStorage.setItem(`${preferencePrefix}${userId}`, value ? '1' : '0'); } catch { /* Keep the in-memory choice. */ }
 	}
+	function setGroup(id: string) {
+		selectedGroup = id;
+		const userId = authStore.user?.id;
+		if (!userId || userId !== preferenceUser) return;
+		try { localStorage.setItem(`pad-agenda-group:${userId}`, id); } catch { /* Keep the in-memory choice. */ }
+	}
+	async function loadGroupContext() {
+		const mine = ++groupsTicket;
+		const sameIdentity = authStore.identityFence();
+		const userId = authStore.user?.id;
+		const current = () => mine === groupsTicket && sameIdentity();
+		workspaceGroups = null; workspaces = null; groupsReady = false; selectedGroup = 'all'; manageGroups = false;
+		if (!userId) { groupsReady = true; return; }
+		let remembered = 'all';
+		try { remembered = localStorage.getItem(`pad-agenda-group:${userId}`) || 'all'; } catch { /* Storage is optional. */ }
+		// The workspace list only feeds the empty-group check and the dialog, so the agenda never waits on it.
+		void loadWorkspaces();
+		try {
+			const response = await api.workspaceGroups.list();
+			if (!current()) return;
+			workspaceGroups = response.groups;
+			selectedGroup = workspaceGroups.some(group => group.id === remembered) ? remembered : 'all';
+		} catch { /* No picker; the agenda loads without a group. */ }
+		if (current()) groupsReady = true;
+	}
+	// Refetched with the groups after each write, so members added elsewhere are known before the empty-group check reads them.
+	async function loadWorkspaces() {
+		const mine = ++workspacesTicket;
+		const sameIdentity = authStore.identityFence();
+		try {
+			const response = await api.workspaces.list();
+			if (mine === workspacesTicket && sameIdentity()) workspaces = response;
+		} catch { /* Keep the last list; with none, the empty-group check is skipped. */ }
+	}
+	async function refreshGroups(resetGroup?: string) {
+		const mine = ++groupsTicket;
+		const sameIdentity = authStore.identityFence();
+		const current = () => mine === groupsTicket && sameIdentity();
+		void loadWorkspaces();
+		try {
+			const response = await api.workspaceGroups.list();
+			if (!current()) return;
+			if (selectedGroup === resetGroup || !response.groups.some(group => group.id === selectedGroup)) setGroup('all');
+			workspaceGroups = response.groups;
+		} catch {
+			if (current() && selectedGroup === resetGroup) setGroup('all');
+		}
+	}
+	$effect(() => {
+		authStore.user?.id; authStore.identityEpoch;
+		untrack(() => { void loadGroupContext(); });
+	});
+
 	async function load(date: string, timeZone: string, quiet = false): Promise<boolean | undefined> {
 		const mine = ++ticket;
 		const viewMode = mode;
+		const requestedGroup = selectedGroup;
 		const sameIdentity = authStore.identityFence();
 		const userId = authStore.user?.id;
 		const current = () => mine === ticket && sameIdentity();
@@ -106,12 +177,17 @@
 		if (!quiet) { data = null; savedRefreshError = false; announcement = ''; }
 		try {
 			const { from, to } = viewMode === 'week' ? weekWindow(date, timeZone) : dayWindow(date, timeZone);
-			const response = await api.getMyAgenda(from, to, timeZone);
+			const response = await (workspaceGroups ? api.getMyAgenda(from, to, timeZone, requestedGroup) : api.getMyAgenda(from, to, timeZone));
 			if (!current()) return;
 			data = response; saved = {}; savedRefreshError = false;
 			return true;
-		} catch {
+		} catch (error) {
 			if (!current()) return;
+			if ((error as { code?: string })?.code === 'not_found' && workspaceGroups?.some(group => group.id === requestedGroup && group.kind === 'named')) {
+				await refreshGroups(requestedGroup);
+				return;
+			}
+			if (emptyGroup) { data = null; savedRefreshError = false; return true; }
 			loadError = true; return false;
 		} finally {
 			if (current()) { loading = false; updating = false; }
@@ -120,10 +196,15 @@
 	$effect(() => {
 		const date = day;
 		const timeZone = zone;
-		mode; authStore.user?.id; authStore.identityEpoch;
-		untrack(() => { clearDrag(); void load(date, timeZone); });
+		mode; authStore.user?.id; authStore.identityEpoch; groupKey;
+		const ready = groupsReady;
+		untrack(() => {
+			clearDrag();
+			if (ready) void load(date, timeZone);
+			else { ticket++; data = null; loading = true; updating = false; loadError = false; }
+		});
 	});
-	$effect(() => () => { ticket++; dragSerial++; });
+	$effect(() => () => { ticket++; groupsTicket++; workspacesTicket++; dragSerial++; });
 	function today() {
 		clearDrag();
 		const next = todayIn(zone);
@@ -306,6 +387,14 @@
 <svelte:window onkeydown={event => { if (event.key === 'Escape') clearDrag(); }} />
 <PageHeader title="Agenda" description="Commitments across your workspaces.">
 	<div class="controls">
+		{#if workspaceGroups}
+			<label>Workspace group
+				<select value={selectedGroup} onchange={event => setGroup(event.currentTarget.value)}>
+					{#each workspaceGroups as group (group.id)}<option value={group.id}>{group.name}</option>{/each}
+				</select>
+			</label>
+			<Button size="sm" onclick={() => manageGroups = true}>Manage groups</Button>
+		{/if}
 		<div class="mode">
 			<Button size="sm" aria-pressed={mode === 'week'} onclick={() => setMode('week')}>Week</Button>
 			<Button size="sm" aria-pressed={mode === 'day'} onclick={() => setMode('day')}>Day</Button>
@@ -323,18 +412,22 @@
 
 <div role="status" aria-live="polite" aria-atomic="true">{status}</div>
 {#if actionError && !dialogEntry && !review}<p role="alert">{actionError}</p>{/if}
-{#if savedRefreshError}
+{#if !emptyGroup && savedRefreshError}
 	<p role="alert">Saved. Could not refresh the view.</p>
 	<Button onclick={() => load(day, zone, true)}>Try again</Button>
-{:else if loadError}
+{:else if !emptyGroup && loadError}
 	<ContentError title="Could not load agenda." />
 	<Button onclick={() => load(day, zone, !!data)}>Try again</Button>
 {/if}
-{#if incomplete}
+{#if !emptyGroup && incomplete}
 	<p>Agenda is incomplete.</p>
 	{#if data?.next_from}<p>more after {localDate(data.next_from, zone)}</p>{/if}
 {/if}
-{#if mode === 'week'}
+{#if emptyGroup}
+	<EmptyState message="No workspaces in this group.">
+		{#snippet actions()}<Button onclick={() => manageGroups = true}>Manage groups</Button>{/snippet}
+	</EmptyState>
+{:else if mode === 'week'}
 	{#if !showEvents && data && entries.length === 0 && data.entries.length > 0}
 		<p>Created and completed entries are hidden.</p>
 		<Button onclick={() => setShowEvents(true)}>Show created and completed</Button>
@@ -365,6 +458,16 @@
 		{:else}<p>No entries on this day.</p>{/if}
 	{/if}
 {/if}
+{#if !emptyGroup}
+	{#if data?.counts_truncated}
+		<p>Counts unavailable for this window: too much activity to count.</p>
+	{:else if data?.counts?.length}
+		<DailyCountsChart data={data.counts} />
+	{/if}
+{/if}
+{#if manageGroups && workspaceGroups}
+	<WorkspaceGroupsDialog groups={workspaceGroups} {workspaces} onclose={() => manageGroups = false} onchanged={refreshGroups} />
+{/if}
 <ForecastDialog open={!!forecastEntry} entry={forecastEntry} {zone} {permissionCopy}
  onclose={() => forecastEntry = null}
  onsaved={() => { forecastEntry = null; void load(day, zone, true); }} />
@@ -389,6 +492,7 @@
 	.controls a { color: var(--text-secondary); overflow-wrap: anywhere; }
 	label { display: flex; align-items: center; gap: var(--space-2); color: var(--text-primary); }
 	input { flex-shrink: 0; }
+	select { max-width: 100%; min-width: 0; padding: var(--space-2); color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; }
 	[role="status"] { color: var(--text-secondary); }
 	@media (max-width: 768px) { .week-layout { grid-template-columns: minmax(0, 1fr); } }
 	@media (max-width: 767px) { .controls { align-items: flex-start; flex-direction: column; } }

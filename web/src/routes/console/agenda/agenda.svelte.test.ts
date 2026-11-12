@@ -1,10 +1,10 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult } from '$lib/types';
+import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
-const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
-vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, items: { get: h.item } } }));
+const h = vi.hoisted(() => ({ agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, items: { get: h.item } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/auth.svelte', async () => {
  const { SvelteMap } = await import('svelte/reactivity');
@@ -18,6 +18,8 @@ vi.mock('$lib/stores/auth.svelte', async () => {
 import Agenda from './+page.svelte';
 
 const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-11-05T14:00:00Z', day: '2026-11-05', wall: '2026-11-05T09:00:00', floating: true, item_ref: 'EX-30', item_title: 'First item', collection: 'tasks', workspace: 'work', workspace_name: 'First workspace', owner_username: 'alice', state: 'outstanding', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, schedule_id: 'schedule-1', ...extra });
+const workspaceGroups: WorkspaceGroup[] = [{ id: 'all', name: 'All', kind: 'all', workspace_ids: [] }, { id: 'mine', name: 'Mine', kind: 'mine', workspace_ids: [] }, { id: 'group-1', name: 'Team', kind: 'named', workspace_ids: ['ws-1'] }];
+const workspace = { id: 'ws-1', name: 'First workspace', slug: 'work', owner_username: 'alice' };
 const frozenAt = '2026-11-05T17:00:00Z';
 const response = (entries: AgendaEntry[] = [row()], extra: Partial<AgendaResponse> = {}): AgendaResponse => ({ from: '', to: '', tz: 'America/New_York', entries, window_complete:true,priority_list:[],priority_list_complete:true,waiting_on:[],waiting_on_complete:true,no_date:[],no_date_complete:true, ...extra });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
@@ -41,9 +43,11 @@ async function drag(day = '2026-11-06', ref = 'EX-30') {
 async function drop(day = '2026-11-06', ref = 'EX-30') { await drag(day, ref); await fireEvent.drop(daySection(day)); }
 
 beforeEach(() => {
- vi.resetAllMocks(); localStorage.clear(); h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch = 0; h.browserZone = 'Europe/London';
+ vi.resetAllMocks(); localStorage.clear(); h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch = 0; h.browserZone = 'Europe/London'; h.signal?.set('auth', 0);
  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-05T12:00:00Z'));
  h.agenda.mockResolvedValue(response());
+ h.groups.mockResolvedValue({ groups: workspaceGroups }); h.workspaces.mockResolvedValue([workspace]);
+ h.createGroup.mockResolvedValue({}); h.updateGroup.mockResolvedValue({}); h.removeGroup.mockResolvedValue({});
  h.view.mockResolvedValue({ item_ref: 'EX-30', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, floating: true, next_occurrence: { at: frozenAt, wall: row().wall } });
  h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to)));
  h.move.mockResolvedValue(preview()); h.item.mockResolvedValue({ title: 'Linked child' });
@@ -77,7 +81,7 @@ describe('agenda Day page', () => {
   await mount(); await fireEvent.click(screen.getByRole('checkbox'));
   h.user = { id: 'user-a', timezone: 'Asia/Tokyo' }; h.signal?.set('auth', 1);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo']);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', 'all']);
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 2);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
   expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
@@ -243,14 +247,14 @@ describe('agenda Week and priority', () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-30T16:00:00Z'));
   h.agenda.mockResolvedValue(response([])); render(Agenda);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
-  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York']);
+  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', 'all']);
   expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
   expect(document.querySelectorAll('[data-day]')).toHaveLength(7);
   expect(within(daySection('2026-10-30')).getByRole('heading')).toHaveTextContent(/Friday.*30.*Today/);
   expect(await screen.findAllByText('Nothing on this day.')).toHaveLength(7);
   await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York']);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', 'all']);
   expect(screen.getByRole('heading', { name: '6–12 November 2026' })).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Previous week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
@@ -529,5 +533,173 @@ describe('forecast actions', () => {
   await fireEvent.click(within(d).getByRole('button',{name:'Clear forecast'}));
   await waitFor(()=>expect(h.clearForecast).toHaveBeenCalledWith('work','EX-30'));
   await waitFor(()=>expect(h.agenda).toHaveBeenCalledTimes(2));
+ });
+});
+
+
+describe('workspace groups and daily counts', () => {
+ const picker = () => screen.getByRole('combobox', { name: 'Workspace group' });
+ const choose = async (id: string) => { await fireEvent.change(picker(), { target: { value: id } }); };
+ const manage = async () => { await fireEvent.click(screen.getAllByRole('button', { name: 'Manage groups' })[0]); return screen.getByRole('dialog', { name: 'Workspace groups' }); };
+ it('lists groups in server order, selects and remembers a group', async () => {
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups, { id: 'group-2', name: 'Another', kind: 'named', workspace_ids: ['ws-1'] }] });
+  await mount();
+  expect(within(picker()).getAllByRole('option').map(el => el.textContent)).toEqual(['All', 'Mine', 'Team', 'Another']);
+  await choose('group-1');
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
+  expect(localStorage.getItem('pad-agenda-group:user-a')).toBe('group-1');
+ });
+ it.each(['group-1', 'deleted'])('restores a saved group or falls back to all: %s', async saved => {
+  localStorage.setItem('pad-agenda-group:user-a', saved); await mount();
+  expect((picker() as HTMLSelectElement).value).toBe(saved === 'deleted' ? 'all' : saved);
+  expect(h.agenda.mock.calls[0][3]).toBe(saved === 'deleted' ? 'all' : saved);
+  if (saved === 'deleted') {
+   await choose('mine'); expect(localStorage.getItem('pad-agenda-group:user-a')).toBe('mine');
+  }
+ });
+ it('recovers from a saved named group deleted elsewhere without a load error', async () => {
+  localStorage.setItem('pad-agenda-group:user-a', 'group-1');
+  h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockResolvedValue(response());
+  h.groups.mockResolvedValueOnce({ groups: workspaceGroups }).mockResolvedValue({ groups: workspaceGroups.slice(0, 2) });
+  await mount();
+  expect(h.agenda.mock.calls.map(call => call[3])).toEqual(['group-1', 'all']);
+  expect(h.groups).toHaveBeenCalledTimes(2); expect((picker() as HTMLSelectElement).value).toBe('all');
+  expect(screen.queryByText('Could not load agenda.')).toBeNull();
+ });
+ it('loads the original agenda without a group when the groups list fails', async () => {
+  h.groups.mockRejectedValue(new Error('Unavailable')); await mount();
+  expect(screen.queryByRole('combobox', { name: 'Workspace group' })).toBeNull();
+  expect(h.agenda.mock.calls[0]).toHaveLength(3); expect(screen.queryByRole('alert')).toBeNull();
+ });
+ it.each([{ ids: [] }, { ids: ['gone'] }])('renders an empty named group with no accessible workspaces: %j', async ({ ids }) => {
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ids }] });
+  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] }));
+  render(Agenda); await screen.findByRole('combobox', { name: 'Workspace group' }); await choose('group-1');
+  await screen.findByText('No workspaces in this group.');
+  expect(screen.queryByText('Could not load agenda.')).toBeNull(); expect(document.querySelector('.week-layout')).toBeNull();
+  expect(screen.queryByRole('img', { name: 'Daily counts' })).toBeNull();
+  expect(screen.getAllByRole('button', { name: 'Manage groups' })).toHaveLength(2);
+ });
+ it('renders normal surfaces for a populated group with no entries', async () => {
+  h.agenda.mockResolvedValue(response([])); render(Agenda);
+  await screen.findByRole('combobox', { name: 'Workspace group' }); await choose('group-1');
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
+  expect(screen.queryByText('No workspaces in this group.')).toBeNull(); expect(document.querySelector('.week-layout')).toBeTruthy();
+ });
+ it('skips the empty-group check when workspaces fail to load', async () => {
+  h.workspaces.mockRejectedValue(new Error('Unavailable')); await mount(); await choose('group-1');
+  expect(screen.queryByText('No workspaces in this group.')).toBeNull(); expect(document.querySelector('.week-layout')).toBeTruthy();
+ });
+ it('creates a trimmed group with a workspace and refreshes the picker', async () => {
+  await mount(); const d = await manage();
+  expect(within(d).queryByText('All')).toBeNull(); expect(within(d).queryByText('Mine')).toBeNull();
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: '  New team  ' } });
+  await fireEvent.click(within(d).getByRole('checkbox', { name: 'First workspace' }));
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups, { id: 'new', name: 'New team', kind: 'named', workspace_ids: ['ws-1'] }] });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Create group' }));
+  await waitFor(() => expect(h.createGroup).toHaveBeenCalledWith({ name: 'New team', workspace_ids: ['ws-1'] }));
+  await screen.findByRole('option', { name: 'New team' }); expect(h.groups).toHaveBeenCalledTimes(2);
+ });
+ it('renames and edits workspaces, disambiguating duplicate workspace names', async () => {
+  h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', owner_username: 'bob' }]);
+  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: ' Renamed ' } });
+  await fireEvent.click(within(d).getByRole('checkbox', { name: 'alice/First workspace' }));
+  await fireEvent.click(within(d).getByRole('checkbox', { name: 'bob/First workspace' }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await waitFor(() => expect(h.updateGroup).toHaveBeenCalledWith('group-1', { name: 'Renamed', workspace_ids: ['ws-2'] }));
+  expect(h.groups).toHaveBeenCalledTimes(2);
+ });
+ it('renames by name only when the workspace list failed, leaving membership untouched', async () => {
+  h.workspaces.mockRejectedValue(new Error('Unavailable'));
+  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Renamed' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await waitFor(() => expect(h.updateGroup).toHaveBeenCalledWith('group-1', { name: 'Renamed' }));
+ });
+ it('requires inline confirmation to delete the selected group and reloads all', async () => {
+  localStorage.setItem('pad-agenda-group:user-a', 'group-1'); await mount(); const d = await manage();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Delete' })); expect(h.removeGroup).not.toHaveBeenCalled();
+  h.groups.mockResolvedValue({ groups: workspaceGroups.slice(0, 2) });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Confirm delete' }));
+  await waitFor(() => expect(h.removeGroup).toHaveBeenCalledWith('group-1'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('all'));
+  expect((picker() as HTMLSelectElement).value).toBe('all'); expect(h.groups).toHaveBeenCalledTimes(2);
+ });
+ it.each([{ message: 'Name is already used.' }, {}])('shows save failures inside the open dialog: %j', async error => {
+  h.createGroup.mockRejectedValue(error); await mount(); const d = await manage();
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Team' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Create group' }));
+  await within(d).findByText('message' in error ? error.message : 'Could not save the group. Try again.');
+  expect(screen.getByRole('dialog', { name: 'Workspace groups' })).toBe(d);
+ });
+ it('rejects a whitespace-only group name', async () => {
+  await mount(); const d = await manage();
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: '   ' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Create group' })); expect(h.createGroup).not.toHaveBeenCalled();
+ });
+ it('discards group and workspace results after the identity changes', async () => {
+  const old = deferred<WorkspaceGroupsResponse>(); const oldWorkspaces = deferred<typeof workspace[]>();
+  h.groups.mockReturnValueOnce(old.promise); h.workspaces.mockReturnValueOnce(oldWorkspaces.promise);
+  render(Agenda); await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(1));
+  h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1);
+  await screen.findByText('First item');
+  old.resolve({ groups: [...workspaceGroups, { id: 'private', name: 'Private group', kind: 'named', workspace_ids: [] }] }); oldWorkspaces.resolve([]);
+  await settle(); expect(screen.queryByRole('option', { name: 'Private group' })).toBeNull();
+  expect(localStorage.getItem('pad-agenda-group:user-b')).toBeNull();
+ });
+ it('loads the agenda without waiting for the workspace list', async () => {
+  h.workspaces.mockReturnValue(new Promise(() => {}));
+  await mount(); expect(picker()).toBeTruthy();
+ });
+ it('refetches workspaces with the groups, so members added elsewhere do not read as an empty group', async () => {
+  await mount(); await fireEvent.change(picker(), { target: { value: 'group-1' } });
+  h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-new', name: 'Added elsewhere' }]);
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-new'] }] });
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await waitFor(() => expect(h.workspaces).toHaveBeenCalledTimes(2)); await settle();
+  expect(screen.queryByText('No workspaces in this group.')).toBeNull();
+ });
+ it('discards a pending group write after identity changes', async () => {
+  const write = deferred<object>(); h.createGroup.mockReturnValueOnce(write.promise);
+  await mount(); const d = await manage();
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Private' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Create group' }));
+  h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1);
+  await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2));
+  write.resolve({}); await settle(); expect(h.groups).toHaveBeenCalledTimes(2);
+  expect(screen.queryByRole('dialog', { name: 'Workspace groups' })).toBeNull();
+ });
+ it('shows the counts-unavailable sentence for a truncated window', async () => {
+  h.agenda.mockResolvedValue(response([], { counts_truncated: true })); render(Agenda);
+  await screen.findByText('Counts unavailable for this window: too much activity to count.');
+  expect(screen.queryByRole('img', { name: 'Daily counts' })).toBeNull();
+ });
+ it.each(['week', 'day'])('renders daily counts in %s mode', async mode => {
+  localStorage.setItem('pad-agenda-mode:user-a', mode);
+  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); render(Agenda);
+  const chart = await screen.findByRole('img', { name: 'Daily counts' });
+  // One day of counts: each line series still shows its value as a dot.
+  expect(chart.querySelectorAll('circle[data-series="open"]')).toHaveLength(1);
+  expect(chart.querySelectorAll('circle[data-series="burndown"]')).toHaveLength(1);
+ });
+ it('does not reload the agenda when a group other than the selected one is renamed', async () => {
+  await mount(); const calls = h.agenda.mock.calls.length;
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], name: 'Renamed' }] });
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Renamed' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await screen.findByRole('option', { name: 'Renamed' }); await settle();
+  expect(h.agenda.mock.calls.length).toBe(calls); expect(screen.getByText('First item')).toBeTruthy();
+ });
+ it('reloads the agenda when the selected group changes its workspaces', async () => {
+  await mount(); await fireEvent.change(picker(), { target: { value: 'group-1' } });
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1')); const calls = h.agenda.mock.calls.length;
+  h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', name: 'Second' }]);
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-1', 'ws-2'] }] });
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await waitFor(() => expect(h.agenda.mock.calls.length).toBe(calls + 1));
  });
 });

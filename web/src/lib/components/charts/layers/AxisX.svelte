@@ -4,9 +4,10 @@
 
 	interface Props {
 		maxTicks?: number;
+		format?: (value: string | number) => string;
 	}
 
-	let { maxTicks = 8 }: Props = $props();
+	let { maxTicks = 8, format = String }: Props = $props();
 
 	// Held whole, read at each use site — see the note in AxisY.svelte (TASK-3093).
 	const k = getLayerCakeContext() as unknown as LayerCakeContext;
@@ -31,7 +32,7 @@
 				fill="var(--text-muted, #6b7280)"
 				font-size="11"
 			>
-				{k.x(d)}
+				{format(k.x(d))}
 			</text>
 		{/if}
 	{/each}
