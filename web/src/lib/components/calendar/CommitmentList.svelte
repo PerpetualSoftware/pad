@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
-	import { forecastText, canMove, entryHref, entryKey, isDateOnly, roleDay, roleText, todayIn, wallToInstant, type AgendaAction } from '$lib/calendar/presentation';
+	import { forecastText, canMove, entryHref, entryKey, roleText, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry } from '$lib/types';
 	let { data, zone, pending, saved, onaction }: {
 		data: AgendaResponse; zone: string; pending: Record<string, boolean>; saved: Record<string, boolean>;
@@ -10,12 +10,7 @@
 	const id = $props.id();
 	const ranks = ['high', 'normal', 'low', 'unranked'] as const;
 	const reasons: Record<string, string> = { target_passed: 'Target passed', deadline_still_owed: 'Missed deadline · Still owed', waiting: 'Waiting on', blocked_needs_decision: 'Needs a decision' };
-	function occurrence(row: AgendaWorkEntry): AgendaEntry | null {
-		if (row.type !== 'schedule' || !row.roles?.target) return null;
-		const target = row.roles.target;
-		const at = isDateOnly(target) ? wallToInstant(`${target}T00:00`, zone) : target;
-		return { ...row, type: 'schedule', state: 'outstanding', at, day: roleDay(target, zone), all_day: row.all_day ?? isDateOnly(target) };
-	}
+	const occurrence = (row: AgendaWorkEntry) => workOccurrence(row, zone);
 </script>
 
 {#snippet rows(entries: AgendaWorkEntry[])}

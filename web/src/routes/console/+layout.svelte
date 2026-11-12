@@ -240,7 +240,7 @@
 				<button class="logout-btn" onclick={logout}>Sign out</button>
 			</div>
 		</nav>
-		<main class="console-main">
+		<main class="console-main" class:wide={isActive('/console/agenda')}>
 			{@render children()}
 		</main>
 	</div>
@@ -426,6 +426,11 @@
 		max-width: 960px;
 		margin: 0 auto;
 		padding: var(--space-8) var(--space-6);
+	}
+
+	/* The agenda sets a day list beside a rail, so it opts out of the reading-width cap. */
+	.console-main.wide {
+		max-width: 1240px;
 	}
 
 	@keyframes dropdown-in {

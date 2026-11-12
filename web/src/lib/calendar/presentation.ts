@@ -74,6 +74,13 @@ export function dayLabel(day: string): string {
 	return localDate(`${day}T12:00:00Z`, 'UTC');
 }
 
+/** A day as a heading: "Thursday 12 November", or "Thu 12 Nov" with both parts short. It never carries the year. */
+export function longDay(day: string, weekday: 'long' | 'short' = 'long', month: 'long' | 'short' = 'long'): string {
+	const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday, day: 'numeric', month }).formatToParts(new Date(`${day}T12:00:00Z`));
+	const part = (type: string) => parts.find(p => p.type === type)?.value;
+	return `${part('weekday')} ${part('day')} ${part('month')}`;
+}
+
 export function instantPreview(at: string, zone: string): string {
 	const offset = new Intl.DateTimeFormat('en-US', { timeZone: zone, timeZoneName: 'longOffset' }).formatToParts(new Date(at)).find(p => p.type === 'timeZoneName')?.value;
 	return `Will be ${localDate(at, zone)}, ${localTime(at, zone)} (${offset})`;
@@ -169,11 +176,13 @@ export function weekWindow(start: string, zone: string): { from: string; to: str
 	return { from: dayWindow(start, zone).from, to: dayWindow(shiftDay(start, 7), zone).from };
 }
 
-export function weekLabel(start: string): string {
+/** The week from `start`. `short` abbreviates the months and leaves the year out, for narrow screens. */
+export function weekLabel(start: string, short = false): string {
 	const end = shiftDay(start, 6);
 	const [year, month, date] = start.split('-');
 	const [endYear, endMonth, endDate] = end.split('-');
-	const monthName = (day: string) => new Intl.DateTimeFormat('en-GB', { month: 'long', timeZone: 'UTC' }).format(new Date(`${day}T12:00Z`));
+	const monthName = (day: string) => new Intl.DateTimeFormat('en-GB', { month: short ? 'short' : 'long', timeZone: 'UTC' }).format(new Date(`${day}T12:00Z`));
+	if (short) return month === endMonth ? `${+date}–${+endDate} ${monthName(end)}` : `${+date} ${monthName(start)} – ${+endDate} ${monthName(end)}`;
 	if (year !== endYear) return `${+date} ${monthName(start)} ${year} – ${+endDate} ${monthName(end)} ${endYear}`;
 	if (month !== endMonth) return `${+date} ${monthName(start)} – ${+endDate} ${monthName(end)} ${year}`;
 	return `${+date}–${+endDate} ${monthName(end)} ${year}`;
@@ -353,4 +362,33 @@ export function forecastPill(forecast: string, deadline: string | null | undefin
 	const text = shortRoleDate(forecast, zone, now);
 	if (days === null) return { late: false, text };
 	return { late: true, text: `${text} · ${days === 0 ? 'late' : `${days} day${days === 1 ? '' : 's'} late`}` };
+}
+
+/** A rail row as the outstanding occurrence it stands for, or null when it has no target to act on. */
+export function workOccurrence(row: AgendaWorkEntry, zone: string): AgendaEntry | null {
+	if (row.type !== 'schedule' || !row.roles?.target) return null;
+	const target = row.roles.target;
+	const at = isDateOnly(target) ? wallToInstant(`${target}T00:00`, zone) : target;
+	return { ...row, type: 'schedule', state: 'outstanding', at, day: roleDay(target, zone), all_day: row.all_day ?? isDateOnly(target) };
+}
+
+export interface RoleMarkers { deadlines: AgendaEntry[]; forecasts: AgendaEntry[] }
+
+/**
+ * Deadlines and forecasts that land on a different day from their target, keyed by the day they land on.
+ * Deadlines come from live occurrences only; a schedule's forecast is marked once.
+ */
+export function roleMarkers(entries: AgendaEntry[], zone: string): Map<string, RoleMarkers> {
+	const markers = new Map<string, RoleMarkers>();
+	const on = (day: string) => markers.get(day) ?? markers.set(day, { deadlines: [], forecasts: [] }).get(day)!;
+	const forecast = new Set<string>();
+	for (const entry of entries) {
+		const deadline = entry.type === 'schedule' && (entry.state === 'outstanding' || entry.state === 'scheduled') ? entry.roles?.deadline : null;
+		if (deadline && roleDay(deadline, zone) !== entry.day) on(roleDay(deadline, zone)).deadlines.push(entry);
+		if (!entry.forecast || roleDay(entry.forecast.value, zone) === entry.day) continue;
+		const schedule = JSON.stringify([entry.workspace, entry.owner_username, entry.schedule_id]);
+		if (forecast.has(schedule)) continue;
+		forecast.add(schedule); on(roleDay(entry.forecast.value, zone)).forecasts.push(entry);
+	}
+	return markers;
 }

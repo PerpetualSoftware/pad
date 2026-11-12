@@ -2,26 +2,27 @@
 	import { onMount, tick, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { agendaRows, roleDay, canMove, canResolve, dateTime, dayLabel, dayWindow, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localDate, shiftDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
-	import PageHeader from '$lib/components/common/PageHeader.svelte';
+	import { agendaRows, attentionEntries, roleDay, roleMarkers, canMove, canResolve, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import WorkspaceGroupsDialog from '$lib/components/calendar/WorkspaceGroupsDialog.svelte';
 	import DailyCountsChart from '$lib/components/charts/DailyCountsChart.svelte';
-	import ContentError from '$lib/components/common/ContentError.svelte';
 	import { dayLabel as calendarDayLabel, monthLabel, monthWindow, moveMonth } from '$lib/calendar/monthGrid';
 	import MonthGrid from '$lib/components/calendar/MonthGrid.svelte';
 	import CalendarEntry from '$lib/components/calendar/CalendarEntry.svelte';
+	import AgendaAttention from '$lib/components/calendar/AgendaAttention.svelte';
 	import AgendaDayDialog from '$lib/components/calendar/AgendaDayDialog.svelte';
-	import AgendaDayList from '$lib/components/calendar/AgendaDayList.svelte';
-	import AgendaWeek from '$lib/components/calendar/AgendaWeek.svelte';
+	import AgendaDayGroup from '$lib/components/calendar/AgendaDayGroup.svelte';
+	import AgendaToolbar from '$lib/components/calendar/AgendaToolbar.svelte';
+	import AgendaWeekStrip from '$lib/components/calendar/AgendaWeekStrip.svelte';
 	import CommitmentList from '$lib/components/calendar/CommitmentList.svelte';
 	import ForecastDialog from '$lib/components/calendar/ForecastDialog.svelte';
 	import MoveImpactDialog from '$lib/components/calendar/MoveImpactDialog.svelte';
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
-	import type { AgendaEntry, AgendaResponse, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
+	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
 
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
@@ -32,14 +33,28 @@
 	const day = $derived(selectedDay || todayIn(zone));
 	let mode = $state<'week' | 'day' | 'month'>('week');
 	const month = $derived(day.slice(0, 7));
-	const periodLabel = $derived(mode === 'month' ? monthLabel(month) : mode === 'week' ? weekLabel(day) : dayLabel(day));
+	let mobile = $state(false);
+	const periodLabel = $derived(mode === 'month' ? monthLabel(month) : mode === 'week' ? weekLabel(day, mobile) : mobile ? longDay(day, 'short', 'short') : dayLabel(day));
+	// One clock for every deadline and forecast pill, so an open page moves them from soon to passed.
+	let now = $state(new Date(Date.now()));
+	const today = $derived(todayIn(zone, now));
+	// The strip holds still while Day range steps through it; it follows the selected day otherwise.
+	let stripAnchor = $state('');
+	// Past either end of the anchored week it pages by whole weeks, so it never creeps a day at a time.
+	const stripStart = $derived(mode === 'day' && stripAnchor
+		? shiftDay(stripAnchor, 7 * Math.floor((Date.parse(`${day}T00:00:00Z`) - Date.parse(`${stripAnchor}T00:00:00Z`)) / 604_800_000))
+		: day);
+	const stripDays = $derived(Array.from({ length: 7 }, (_, index) => shiftDay(stripStart, index)));
 	let openedDay = $state<string | null>(null);
 	let monthGrid = $state<{ cancelFocus: () => void }>();
 	let lastFocusScope = '';
 	let lastAnnouncedMonth = '';
-	let mobile = $state(false);
 	let surface = $state<'agenda' | 'list'>('agenda');
-	let periodHeading: HTMLHeadingElement | undefined;
+	let periodHeading = $state<HTMLHeadingElement>();
+	let loadingRest = $state(false);
+	// Whether "Load the rest" was asked for in the window on screen; a quiet reload of that window then pages on too.
+	let wantRest = false;
+	const REST_PAGES = 10;
 	let showEvents = $state(true);
 	let data = $state<AgendaResponse | null>(null);
 	let loading = $state(true);
@@ -76,14 +91,59 @@
 	let loadedUser: string | undefined;
 	let preferenceUser: string | undefined;
 	let dragSerial = 0;
-	let hoverDay = '';
+	let hoverDay = $state('');
+	let toastedError = '';
 	const dragCache = new Map<string, { to: string; promise: Promise<CommitmentMoveResult> }>();
 	const entries = $derived(filterEntries(data?.entries ?? [], showEvents));
 	const groups = $derived(groupEntries(entries));
 	const incomplete = $derived(!!(data?.window_complete === false || data?.truncated || data?.unavailable?.length || data?.unexpanded?.length || data?.next_from));
 	const status = $derived(loading ? 'Loading agenda…' : updating ? 'Updating agenda…' : announcement);
+	const selectedGroupName = $derived.by(() => {
+		const group = workspaceGroups?.find(candidate => candidate.id === selectedGroup);
+		return !group || group.kind === 'all' ? '' : group.kind === 'mine' ? 'My workspaces' : group.name;
+	});
 
-	const nextDay = $derived(data?.next_from ? roleDay(data.next_from, zone) : null);
+	// What needs attention is listed once, above the days, and left out of its own day's rows.
+	const attention = $derived.by(() => {
+		if (!data || mode === 'month') return [];
+		return attentionEntries(entries, data.priority_list).flatMap(item => {
+			const row = item.entry as AgendaWorkEntry;
+			const entry = item.inWindow ? item.entry as AgendaEntry
+				: workOccurrence(row, zone) ?? (row.at && row.day ? { ...row, type: 'schedule' as const, state: 'outstanding' as const, at: row.at, day: row.day } : null);
+			return entry ? [{ key: item.key, entry, inWindow: item.inWindow }] : [];
+		});
+	});
+	const lifted = $derived(new Set(attention.filter(item => item.inWindow).map(item => entryKey(item.entry))));
+	const markers = $derived(roleMarkers(entries, zone));
+	const dayRows = (date: string) => groups.find(group => group.day === date)?.entries ?? [];
+	function summary(date: string) {
+		const deadlines = markers.get(date)?.deadlines.length ?? 0;
+		return [daySummary(dayRows(date)), ...(deadlines ? [`${deadlines} deadline${deadlines === 1 ? '' : 's'}`] : [])].filter(Boolean).join(' · ');
+	}
+	const listDays = $derived(mode === 'week' ? stripDays : groups.map(group => group.day));
+	const hiddenEvents = $derived(!showEvents && !!data && entries.length === 0 && data.entries.length > 0);
+	const nothing = $derived(!!data && !loading && !loadError && !incomplete && !hiddenEvents && entries.length === 0 && attention.length === 0);
+	// What a drag over a day would do, in words.
+	const dragNote = $derived.by(() => {
+		if (!dragging || !hoverDay || unchanged(dragging, targetOnDay(dragging, hoverDay, zone))) return null;
+		const linked = dragImpact?.changes.filter(change => !change.root).length ?? 0;
+		const deadline = dragging.roles?.deadline;
+		return {
+			headline: `Moving “${dragging.item_title}” to ${shortDay(hoverDay, today)}${isAllDay(dragging) ? '' : `, ${localTime(dragging.at, zone)}`}.`,
+			review: !!dragImpact?.renegotiates_deadline,
+			detail: !dragImpact ? '' : [
+				...(linked ? [`${linked} linked item${linked === 1 ? ' follows' : 's follow'}`] : []),
+				...(deadline && !dragImpact.renegotiates_deadline ? [`deadline ${shortRoleDate(deadline, zone, now)} unchanged`] : [])
+			].join(' · ')
+		};
+	});
+
+	const windowOf = (viewMode: 'week' | 'day' | 'month', date: string, timeZone: string) =>
+		viewMode === 'month' ? monthWindow(date.slice(0, 7), timeZone) : viewMode === 'week' ? weekWindow(date, timeZone) : dayWindow(date, timeZone);
+	// next_from is a place to continue from only while it is before the window's end; at the end, the window was read through.
+	const cursorIn = (next: string | undefined, to: string) => next && Date.parse(next) < Date.parse(to) ? next : null;
+	const cursor = $derived(cursorIn(data?.next_from, windowOf(mode, day, zone).to));
+	const nextDay = $derived(cursor ? roleDay(cursor, zone) : null);
 	const monthEntries = $derived(entries.filter(entry => !nextDay || entry.day <= nextDay));
 	const monthGroups = $derived(groupEntries(monthEntries));
 	const monthRows = $derived.by(() => {
@@ -96,12 +156,20 @@
 	function dayIncomplete(date: string) {
 		return incomplete && (!nextDay || date >= nextDay || !!data?.unavailable?.length || !!data?.unexpanded?.length);
 	}
+	// How much of a strip day is on screen. Day range loads the selected day alone; a cut window stops on the next_from day.
+	function stripLoad(date: string): 'full' | 'partial' | 'none' {
+		if (!data || (mode === 'day' && date !== day)) return 'none';
+		if (!dayIncomplete(date)) return 'full';
+		return nextDay && date > nextDay ? 'none' : 'partial';
+	}
 	function monthCellLabel(date: string) {
 		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${monthRows.get(date)?.length ?? 0} entries${dayIncomplete(date) ? ', Incomplete' : ''}`;
 	}
 	function openDay(date: string) { selectedDay = date; openedDay = date; }
 	function movePeriod(delta: number) {
-		clearDrag(); selectedDay = mode === 'month' ? moveMonth(day, delta) : shiftDay(day, delta * (mode === 'week' ? 7 : 1));
+		clearDrag();
+		if (mode === 'day') stripAnchor = stripStart;
+		selectedDay = mode === 'month' ? moveMonth(day, delta) : shiftDay(day, delta * (mode === 'week' ? 7 : 1));
 	}
 	async function dayAction(entry: AgendaEntry, state: AgendaAction) {
 		const sameIdentity = authStore.identityFence();
@@ -116,8 +184,23 @@
 		mobile = query.matches;
 		const update = (event: MediaQueryListEvent) => { mobile = event.matches; };
 		query.addEventListener('change', update);
-		return () => query.removeEventListener('change', update);
+		const clock = setInterval(() => { now = new Date(Date.now()); }, 60_000);
+		return () => { query.removeEventListener('change', update); clearInterval(clock); };
 	});
+	// An action error with no dialog open to show it goes to the toast container, once.
+	$effect(() => {
+		const message = actionError;
+		// A dialog shows the error itself, and that counts as shown: closing the dialog does not repeat it.
+		const shown = !!(dialogEntry || review || openedDay);
+		untrack(() => {
+			if (message && !shown && message !== toastedError) toastStore.show(message, 'error');
+			toastedError = message;
+		});
+	});
+	// The toast container is a polite live region, so a success is announced there and not in the page status as well.
+	function succeed(message: string) {
+		toastStore.show(message, 'success');
+	}
 	$effect(() => {
 		const userId = authStore.user?.id;
 		untrack(() => {
@@ -135,7 +218,9 @@
 		});
 	});
 	function setMode(value: 'week' | 'day' | 'month') {
-		clearDrag(); mode = value;
+		clearDrag();
+		if (value === 'day') stripAnchor = stripStart;
+		mode = value;
 		if (value !== 'month') lastAnnouncedMonth = '';
 		const userId = authStore.user?.id;
 		if (!userId || userId !== preferenceUser) return;
@@ -146,6 +231,13 @@
 		const userId = authStore.user?.id;
 		if (!userId || userId !== preferenceUser) return;
 		try { localStorage.setItem(`${preferencePrefix}${userId}`, value ? '1' : '0'); } catch { /* Keep the in-memory choice. */ }
+	}
+	async function pickDay(date: string) {
+		if (mode === 'day') { clearDrag(); stripAnchor = stripStart; selectedDay = date; return; }
+		await tick();
+		const heading = document.querySelector<HTMLElement>(`[data-day-heading="${date}"]`);
+		heading?.focus({ preventScroll: true });
+		heading?.scrollIntoView?.({ block: 'start' });
 	}
 	function setGroup(id: string) {
 		selectedGroup = id;
@@ -207,6 +299,8 @@
 		const sameIdentity = authStore.identityFence();
 		const userId = authStore.user?.id;
 		const current = () => mine === ticket && sameIdentity();
+		if (!quiet) wantRest = false;
+		const resume = quiet && wantRest;
 		await Promise.resolve();
 		if (!current()) return;
 		if (loadedUser !== userId) {
@@ -214,13 +308,22 @@
 			review = null; committing = false; linkedTitles = {}; clearDrag(); loadedUser = userId;
 		}
 		if (!userId) { data = null; loading = false; updating = false; return; }
-		loading = !quiet; updating = quiet; loadError = false;
+		loading = !quiet; updating = quiet; loadError = false; loadingRest = false;
 		if (!quiet) { data = null; savedRefreshError = false; announcement = ''; }
 		else if (announcement === lastAnnouncedMonth) announcement = '';
 		try {
-			const { from, to } = viewMode === 'month' ? monthWindow(date.slice(0, 7), timeZone) : viewMode === 'week' ? weekWindow(date, timeZone) : dayWindow(date, timeZone);
-			const response = await (workspaceGroups ? api.getMyAgenda(from, to, timeZone, requestedGroup) : api.getMyAgenda(from, to, timeZone));
+			const { from, to } = windowOf(viewMode, date, timeZone);
+			const read = (start: string) => workspaceGroups ? api.getMyAgenda(start, to, timeZone, requestedGroup) : api.getMyAgenda(start, to, timeZone);
+			let response = await read(from);
 			if (!current()) return;
+			// The rest was on screen before this reload: page on before publishing, so its rows never drop out.
+			for (let page = 0, next = resume && cursorIn(response.next_from, to); next && page < REST_PAGES; page++, next = cursorIn(response.next_from, to)) {
+				let rest: AgendaResponse;
+				// A page that fails leaves what was joined so far, and its next_from offers the rest again.
+				try { rest = await read(next); } catch { break; }
+				if (!current()) return;
+				response = joinRest(response, rest);
+			}
 			data = response; saved = {}; savedRefreshError = false;
 			if (!quiet && viewMode === 'month' && lastAnnouncedMonth !== monthLabel(date.slice(0, 7))) {
 				lastAnnouncedMonth = monthLabel(date.slice(0, 7)); announcement = lastAnnouncedMonth;
@@ -249,18 +352,48 @@
 			openedDay = null;
 			clearDrag();
 			if (ready) void load(date, timeZone);
-			else { ticket++; data = null; loading = true; updating = false; loadError = false; }
+			else { ticket++; wantRest = false; data = null; loading = true; updating = false; loadError = false; }
 		});
 	});
 	$effect(() => () => { ticket++; groupsTicket++; workspacesTicket++; dragSerial++; });
-	function today() {
+	// The window stopped at next_from: ask for the remainder and join it to what is shown.
+	function joinRest(shown: AgendaResponse, rest: AgendaResponse): AgendaResponse {
+		const seen = new Set(shown.entries.map(entryKey));
+		return {
+			...shown, entries: [...shown.entries, ...rest.entries.filter(entry => !seen.has(entryKey(entry)))],
+			window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from,
+			unavailable: [...(shown.unavailable ?? []), ...(rest.unavailable ?? [])], unexpanded: [...(shown.unexpanded ?? []), ...(rest.unexpanded ?? [])]
+		};
+	}
+	async function loadRest() {
+		const from = cursor;
+		if (!from || loadingRest) return;
+		wantRest = true;
+		const mine = ticket;
+		const sameIdentity = authStore.identityFence();
+		const current = () => mine === ticket && sameIdentity();
+		const { to } = windowOf(mode, day, zone);
+		loadingRest = true; actionError = '';
+		try {
+			const rest = await (workspaceGroups ? api.getMyAgenda(from, to, zone, selectedGroup) : api.getMyAgenda(from, to, zone));
+			if (!current() || !data) return;
+			data = joinRest(data, rest);
+		} catch {
+			if (current()) actionError = 'Could not load the rest. Try again.';
+		} finally {
+			if (current()) loadingRest = false;
+		}
+	}
+	function goToday() {
 		clearDrag();
 		const next = todayIn(zone);
 		if (day === next) void load(day, zone);
 		else selectedDay = next;
 	}
+	// A lapsed occurrence is history, and the one thing it still takes is being recorded as done.
+	const lapsed = (entry: AgendaEntry) => entry.type === 'schedule' && entry.state === 'lapsed';
 	function action(entry: AgendaEntry, state: AgendaAction) {
-		if (pending[entryKey(entry)] || saved[entryKey(entry)] || !canResolve(entry)) return;
+		if (pending[entryKey(entry)] || saved[entryKey(entry)] || !(canResolve(entry) || (lapsed(entry) && state === 'done'))) return;
 		actionError = '';
 		if (state === 'forecast') { forecastEntry = entry; return; }
 		if (state === 'today') { if (canMove(entry)) void moveTarget(entry, targetOnDay(entry, todayIn(zone), zone)); return; }
@@ -270,22 +403,28 @@
 	}
 	async function resolve(entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string) {
 		const key = entryKey(entry);
-		if (pending[key] || saved[key] || !canResolve(entry)) return;
+		const history = lapsed(entry) && state === 'done';
+		if (pending[key] || saved[key] || !(canResolve(entry) || history)) return;
 		const sameIdentity = authStore.identityFence();
 		pending = { ...pending, [key]: true };
 		actionError = ''; announcement = '';
-		let viewing = true;
+		let viewing = !history;
 		try {
-			const view = await api.getCommitment(entry.workspace!, entry.item_ref);
-			if (!sameIdentity()) return;
-			if (view.ended_at || !view.next_occurrence || !entry.wall || view.next_occurrence.wall !== entry.wall) {
-				actionError = staleCopy;
-				await load(day, zone, true);
-				return;
+			// The outstanding occurrence is named by the instant the schedule holds now; a lapsed one by its own.
+			let occurrenceAt = entry.at;
+			if (!history) {
+				const view = await api.getCommitment(entry.workspace!, entry.item_ref);
+				if (!sameIdentity()) return;
+				if (view.ended_at || !view.next_occurrence || !entry.wall || view.next_occurrence.wall !== entry.wall) {
+					actionError = staleCopy;
+					await load(day, zone, true);
+					return;
+				}
+				occurrenceAt = view.next_occurrence.at;
 			}
 			viewing = false;
 			await api.resolveCommitment(entry.workspace!, entry.item_ref, {
-				occurrence_at: view.next_occurrence.at, state,
+				occurrence_at: occurrenceAt, state,
 				...(until !== undefined ? { until } : {}),
 				...(comment !== undefined ? { comment } : {})
 			});
@@ -298,7 +437,7 @@
 				savedRefreshError = true;
 				loadError = false;
 			} else {
-				announcement = { done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.' }[state];
+				succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.' }[state]);
 			}
 		} catch (error) {
 			if (!sameIdentity()) return;
@@ -390,7 +529,7 @@
 			const refreshed = await load(day, zone, true);
 			if (!sameIdentity()) return;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
-			else announcement = `Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`;
+			else succeed(`Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`);
 			pending = { ...pending, [key]: false };
 			await focusMoved(entry);
 		} catch (error) {
@@ -434,48 +573,63 @@
 
 <svelte:head><title>Agenda</title></svelte:head>
 <svelte:window onkeydown={event => { if (event.key === 'Escape') clearDrag(); }} />
-<PageHeader title="Agenda" description="Commitments across your workspaces.">
-	<div class="controls">
-		{#if workspaceGroups}
-			<label>Workspace group
-				<select value={selectedGroup} onchange={event => setGroup(event.currentTarget.value)}>
-					{#each workspaceGroups as group (group.id)}<option value={group.id}>{group.name}</option>{/each}
-				</select>
-			</label>
-			<Button size="sm" onclick={() => manageGroups = true}>Manage groups</Button>
-		{/if}
-		<SegmentedControl label="Range" value={mode} onchange={setMode}
-			options={[{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }]} />
-		<div class="period">
-			<Button size="sm" aria-label={`Previous ${mode}`} onclick={() => movePeriod(-1)}>&lt;</Button>
-			<Button size="sm" aria-label={`Next ${mode}`} onclick={() => movePeriod(1)}>&gt;</Button>
-			<Button size="sm" onclick={today}>Today</Button>
-			<h2 class="period-heading" tabindex="-1" bind:this={periodHeading}>{periodLabel}</h2>
+<AgendaToolbar {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selectedGroup} {workspaces} {showEvents} bind:heading={periodHeading}
+	onmode={setMode} onmove={movePeriod} ontoday={goToday} ongroup={setGroup} onmanage={() => manageGroups = true} onshowevents={setShowEvents} />
+
+<div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{status}</div>
+<div class="progress" class:busy={updating || loadingRest} aria-hidden="true"></div>
+
+{#snippet failed()}
+	<div class="card state" role="alert">
+		<h3>Could not load this {mode}</h3>
+		<p>The server did not answer.</p>
+		<div class="acts">
+			<Button variant="primary" onclick={() => load(mode === 'month' ? `${month}-01` : day, zone, !!data)}>Try again</Button>
+			{#if mode === 'month' ? month !== today.slice(0, 7) : day !== today}<Button variant="ghost" onclick={goToday}>Back to this {mode}</Button>{/if}
 		</div>
-		<a href="/console/settings">{zone}</a>
-		<label><input type="checkbox" checked={showEvents} onchange={event => setShowEvents(event.currentTarget.checked)} /> Show created and completed</label>
 	</div>
-</PageHeader>
+{/snippet}
+{#snippet counts()}
+	{#if data?.counts_truncated}
+		<p class="quiet-note">Counts unavailable for this window: too much activity to count.</p>
+	{:else if data?.counts?.length}
+		<DailyCountsChart data={data.counts} />
+	{/if}
+{/snippet}
 
-<div role="status" aria-live="polite" aria-atomic="true">{status}</div>
-{#if actionError && !dialogEntry && !review && !openedDay}<p role="alert">{actionError}</p>{/if}
-{#if !emptyGroup && savedRefreshError}
-	<p role="alert">Saved. Could not refresh the view.</p>
-	<Button onclick={() => load(day, zone, true)}>Try again</Button>
-{:else if !emptyGroup && loadError}
-	<ContentError title="Could not load agenda." />
-	<Button onclick={() => load(day, zone, !!data)}>Try again</Button>
+{#if !emptyGroup}
+	{#if savedRefreshError}
+		<div class="notice info">
+			<span>Saved. Could not refresh the view.</span><span class="spacer"></span>
+			<Button size="sm" onclick={() => load(day, zone, true)}>Try again</Button>
+		</div>
+	{/if}
+	{#if incomplete}
+		<div class="notice">
+			{#if cursor && nextDay}
+				<span><b>Showing entries up to {longDay(nextDay, 'short')}.</b> This {mode} has more than the agenda can load at once.</span><span class="spacer"></span>
+				<Button size="sm" disabled={loadingRest} onclick={loadRest}>Load the rest</Button>
+			{:else if data?.window_complete === false || data?.truncated}
+				<span>Too much to load at once. Choose a smaller range or a workspace group.</span>
+			{:else}
+				<span>Some schedules could not be shown.</span>
+			{/if}
+		</div>
+	{/if}
+	{#if hiddenEvents}
+		<div class="notice info">
+			<span>Created and completed items are hidden.</span><span class="spacer"></span>
+			<Button size="sm" variant="ghost" onclick={() => setShowEvents(true)}>Show them</Button>
+		</div>
+	{/if}
 {/if}
-{#if !emptyGroup && incomplete}
-	<p>Agenda is incomplete.</p>
-	{#if data?.next_from}<p>more after {localDate(data.next_from, zone)}</p>{/if}
-{/if}
+
 {#if emptyGroup}
-	<EmptyState message="No workspaces in this group.">
-		{#snippet actions()}<Button onclick={() => manageGroups = true}>Manage groups</Button>{/snippet}
+	<EmptyState title="No workspaces in this group." message="Add a workspace to see its commitments here.">
+		{#snippet actions()}<Button variant="primary" onclick={() => manageGroups = true}>Add workspaces</Button>{/snippet}
 	</EmptyState>
-
 {:else if mode === 'month'}
+	{#if loadError && !savedRefreshError}{@render failed()}{/if}
 	<MonthGrid bind:this={monthGrid} {month} today={todayIn(zone)} selected={day} {mobile} loaded={data}
 		cellLabel={monthCellLabel} summary={(date) => dayIncomplete(date) ? 'Not fully loaded' : monthRows.get(date)?.length ? `${monthRows.get(date)!.length} entries` : 'No entries'}
 		onopen={openDay} onchoose={(date) => selectedDay = date}>
@@ -485,51 +639,66 @@
 			{#if dayIncomplete(date)}<p class="incomplete-day">Not fully loaded</p>{/if}
 		{/snippet}
 	</MonthGrid>
-	{#if !loading && !loadError && !savedRefreshError && data && entries.length === 0}
-		{#if !showEvents && data.entries.length > 0}
-			<p>Created and completed entries are hidden.</p>
-			<Button onclick={() => setShowEvents(true)}>Show created and completed</Button>
-		{:else if !incomplete}<p>No entries this month.</p>{/if}
-	{/if}
-	<AgendaDayDialog day={openedDay} entries={monthGroups.find(group => group.day === openedDay)?.entries ?? []} {zone} {mobile}
+	{#if nothing}<p class="quiet-note">No entries this month.</p>{/if}
+	<AgendaDayDialog day={openedDay} entries={monthGroups.find(group => group.day === openedDay)?.entries ?? []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
-{:else if mode === 'week'}
-	{#if !showEvents && data && entries.length === 0 && data.entries.length > 0}
-		<p>Created and completed entries are hidden.</p>
-		<Button onclick={() => setShowEvents(true)}>Show created and completed</Button>
-	{/if}
-	{#if mobile}
+	{@render counts()}
+{:else}
+	{@const schedule = !mobile || mode === 'day' || surface === 'agenda'}
+	{#if mobile && mode === 'week'}
 		<div class="surface-switch">
-			<Button size="sm" aria-pressed={surface === 'agenda'} onclick={() => surface = 'agenda'}>Agenda</Button>
-			<Button size="sm" aria-pressed={surface === 'list'} onclick={() => surface = 'list'}>List</Button>
+			<SegmentedControl label="Show" fill value={surface} onchange={value => surface = value}
+				options={[{ value: 'agenda', label: 'Schedule' }, { value: 'list', label: 'Outstanding' }]} />
 		</div>
 	{/if}
-	<div class="week-layout">
-		{#if !mobile || surface === 'agenda'}
-			<div class="week-surface">
-				<AgendaWeek start={day} {entries} {zone} complete={!incomplete && !!data} {pending} {saved} {dragging} impact={dragImpact} titles={linkedTitles}
-					onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />
+	{#if schedule}
+		<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} loadState={stripLoad} {zone} {now} compact={mobile}
+			{dragging} {hoverDay} onselect={pickDay} onenter={enterDay} ondrop={dropDay} />
+	{/if}
+	<div class="layout">
+		{#if schedule}
+			<div class="main" aria-busy={loading ? 'true' : undefined}>
+				{#if loading}
+					{#each [[62, 48, 55], [70, 44, 58, 50], [52, 66]] as rows, index (index)}
+						<div class="skeleton" aria-hidden="true">
+							<i class="bar head"></i>
+							<div class="card">{#each rows as width, at (at)}<div class="sk"><i class="bar"></i><i class="dot"></i><i class="bar" style:width={`${width}%`}></i><i class="bar"></i></div>{/each}</div>
+						</div>
+					{/each}
+				{:else if loadError && !savedRefreshError}
+					{@render failed()}
+				{:else if nothing}
+					<div class="card">
+						<EmptyState icon="📅" title={`Nothing scheduled for ${mode === 'week' ? weekLabel(day) : longDay(day)}`}
+							message={`No commitments or dated items${selectedGroupName ? ` in “${selectedGroupName}”` : ''} this ${mode}.`}>
+							{#snippet actions()}
+								{#if selectedGroupName}<Button onclick={() => setGroup('all')}>Show all workspaces</Button>{/if}
+							{/snippet}
+						</EmptyState>
+					</div>
+				{:else if data && (entries.length > 0 || attention.length > 0)}
+					{#if attention.length}<AgendaAttention items={attention} {zone} {now} {pending} {saved} compact={mobile} onaction={action} />{/if}
+					{#each listDays as date (date)}
+						<AgendaDayGroup day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
+							deadlines={markers.get(date)?.deadlines} forecasts={markers.get(date)?.forecasts} {zone} {now} complete={!dayIncomplete(date)}
+							{pending} {saved} compact={mobile} movable={mode === 'week' && !mobile} {dragging} hover={hoverDay === date} impact={dragImpact} titles={linkedTitles}
+							onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />
+					{/each}
+				{/if}
+				{#if dragNote && !mobile}
+					<div class="dragbar">
+						<span class="what"><b>{dragNote.headline}</b>{#if dragNote.detail}{' '}{dragNote.detail}{/if}</span>
+						{#if dragNote.review}<span class="review">Review needed: this move changes a hard deadline.</span>{/if}
+						<span class="esc"><kbd>Esc</kbd> to cancel</span>
+					</div>
+				{/if}
 			</div>
 		{/if}
-		{#if data && (!mobile || surface === 'list')}<CommitmentList {data} {zone} {pending} {saved} onaction={action} />{/if}
+		<aside class="rail">
+			{#if data?.counts_truncated || data?.counts?.length}<div class="card chart">{@render counts()}</div>{/if}
+			{#if mode === 'week' && data && (!mobile || surface === 'list')}<CommitmentList {data} {zone} {pending} {saved} onaction={action} />{/if}
+		</aside>
 	</div>
-{:else}
-	{#each groups as group (group.day)}
-		<AgendaDayList day={group.day} entries={group.entries} {zone} {pending} {saved} onaction={action} />
-	{/each}
-	{#if !loading && !loadError && !savedRefreshError && !incomplete && entries.length === 0 && data}
-		{#if !showEvents && data.entries.length > 0}
-			<p>Created and completed entries are hidden.</p>
-			<Button onclick={() => setShowEvents(true)}>Show created and completed</Button>
-		{:else}<p>No entries on this day.</p>{/if}
-	{/if}
-{/if}
-{#if !emptyGroup}
-	{#if data?.counts_truncated}
-		<p>Counts unavailable for this window: too much activity to count.</p>
-	{:else if data?.counts?.length}
-		<DailyCountsChart data={data.counts} />
-	{/if}
 {/if}
 {#if manageGroups && workspaceGroups}
 	<WorkspaceGroupsDialog groups={workspaceGroups} {workspaces} onclose={() => manageGroups = false} onchanged={refreshGroups} />
@@ -553,18 +722,53 @@
 	.more:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
 	.incomplete-day { color: var(--text-secondary); font-size: 12px; margin: var(--space-2) 0; }
 	@media (pointer: coarse) { .more { min-height: 44px; min-width: 44px; } }
-	.controls { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-4); }
-	.period { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-	.surface-switch { display: flex; gap: var(--space-2); }
-	.surface-switch { margin: var(--space-3) 0; }
-	.period-heading { font-size: 1rem; margin: 0; }
-	.week-layout { display: grid; grid-template-columns: minmax(0, 1fr) minmax(15rem, 20rem); gap: var(--space-4); margin-top: var(--space-3); align-items: start; }
-	.week-surface { min-width: 0; }
-	.controls a { color: var(--text-secondary); overflow-wrap: anywhere; }
-	label { display: flex; align-items: center; gap: var(--space-2); color: var(--text-primary); }
-	input { flex-shrink: 0; }
-	select { max-width: 100%; min-width: 0; padding: var(--space-2); color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; }
-	[role="status"] { color: var(--text-secondary); }
-	@media (max-width: 768px) { .week-layout { grid-template-columns: minmax(0, 1fr); } }
-	@media (max-width: 767px) { .controls { align-items: flex-start; flex-direction: column; } }
+
+	/* A quiet reload keeps the content and runs a thin line under the toolbar. */
+	.progress { height: 2px; margin-top: calc(-1 * var(--space-4)); border-radius: 1px; overflow: hidden; }
+	.progress.busy { background: linear-gradient(90deg, transparent, var(--accent-primary), transparent) 0 0 / 40% 100% no-repeat; animation: slide 1.2s linear infinite; }
+	@keyframes slide { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+	@media (prefers-reduced-motion: reduce) { .progress.busy { animation: none; background: var(--accent-primary); opacity: 0.5; } }
+
+	.layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-6); margin-top: var(--space-5); align-items: start; }
+	.main { min-width: 0; }
+	.rail { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; position: sticky; top: var(--space-4); }
+	.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
+	.chart { padding: var(--space-4); min-width: 0; }
+	.surface-switch { margin-top: var(--space-2); }
+	.quiet-note { color: var(--text-secondary); font-size: 13px; margin: var(--space-3) 0; }
+
+	.notice { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2) var(--space-3); margin-top: var(--space-4); padding: 10px var(--space-4); border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-amber) 10%, transparent); font-size: 13px; }
+	.notice.info { border-color: var(--border); background: var(--bg-secondary); }
+	.spacer { flex: 1; }
+
+	.state { padding: var(--space-10) var(--space-6); text-align: center; color: var(--text-secondary); }
+	.state h3 { margin: 0 0 4px; font-size: 15px; color: var(--text-primary); }
+	.state p { margin: 0; }
+	.acts { display: flex; flex-wrap: wrap; justify-content: center; gap: var(--space-2); margin-top: var(--space-4); }
+
+	.skeleton { margin-bottom: var(--space-5); }
+	.bar, .dot { display: block; height: 10px; border-radius: 5px; background: var(--bg-tertiary); }
+	.bar.head { width: 120px; height: 12px; margin: 0 0 12px 4px; }
+	.dot { width: 16px; height: 16px; border-radius: 50%; }
+	.sk { display: grid; grid-template-columns: 64px 20px 1fr 90px; align-items: center; column-gap: var(--space-3); padding: 14px var(--space-4); }
+	.sk + .sk { border-top: 1px solid var(--border-subtle); }
+	.sk .bar:first-child { width: 36px; }
+
+	.dragbar { position: sticky; bottom: var(--space-4); z-index: 2; display: flex; align-items: center; gap: var(--space-3); margin-top: var(--space-4); padding: 10px var(--space-4); border: 1px solid var(--accent-primary); border-radius: var(--radius); background: var(--bg-raised); box-shadow: var(--shadow-lg); font-size: 13px; }
+	.dragbar .what { flex: 1; min-width: 0; }
+	.dragbar b { font-weight: 600; }
+	.dragbar .review { color: var(--accent-red); font-weight: 600; }
+	.dragbar .esc { color: var(--text-muted); white-space: nowrap; }
+	kbd { font-family: var(--font-mono); font-size: 11px; padding: 1px 5px; border: 1px solid var(--border); border-radius: 4px; }
+
+	@media (max-width: 1099px) {
+		.layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
+		.rail { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+	}
+	@media (max-width: 768px) {
+		.layout { margin-top: var(--space-4); }
+		.rail { grid-template-columns: minmax(0, 1fr); }
+		.sk { grid-template-columns: 18px 1fr 60px; }
+		.sk .bar:first-child { display: none; }
+	}
 </style>
