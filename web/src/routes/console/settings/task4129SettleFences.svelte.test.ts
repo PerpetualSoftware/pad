@@ -1,5 +1,5 @@
 import { expect, it, vi, beforeEach, afterEach, describe } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/svelte';
 import { readFileSync } from 'node:fs';
 
 it('BUG-4337: export belongs to a neutral Your data card directly before Danger Zone', () => {
@@ -63,6 +63,8 @@ vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
 	isPlanLimitError: () => state.planLimit,
 	api: {
+		calendarFeeds: { list: vi.fn(async () => []), create: vi.fn(), revoke: vi.fn() },
+		workspaces: { list: vi.fn(async () => []) },
 		notificationSettings: {
 			get: vi.fn(async () => ({ push_enabled: true, notify_assigned: true, notify_comments: true, notify_replies: true, notify_reminders: true, notify_mentions: true, include_agent_activity: false })),
 			put: vi.fn()
@@ -744,6 +746,32 @@ describe('per-identity form state reset', () => {
 		await screen.findByText('pad_SECRETTOKEN');
 		await bump();
 		expect(text()).not.toContain('pad_SECRETTOKEN');
+	});
+	it.each([false, true])('a calendar feed create does not survive an identity change (pending: %s)', async (pending) => {
+		const held = deferred();
+		vi.mocked(api.calendarFeeds.create).mockReturnValueOnce(held.promise as Promise<never>);
+		await ready();
+		const section = document.getElementById('calendar-feeds')!;
+		await waitFor(() => expect(within(section).getByRole('button', { name: 'New feed' })).toBeEnabled());
+		await fireEvent.click(within(section).getByRole('button', { name: 'New feed' }));
+		await fireEvent.click(button('Create feed'));
+		const result = {
+			feed: { id: 'f1', name: 'Previous identity feed', layer: 'mine', workspace_ids: [], created_at: '2026-11-01T00:00:00Z', last_used_at: null },
+			token: 'padics_TEST_OLD_IDENTITY', url: 'https://calendar.example.test/padics_TEST_OLD_IDENTITY'
+		};
+		if (!pending) {
+			held.resolve(result);
+			await screen.findByText(result.url);
+		}
+		await bump();
+		if (pending) {
+			held.resolve(result);
+			await flush();
+		}
+		expect(text()).not.toContain(result.token);
+		expect(text()).not.toContain(result.feed.name);
+		expect(screen.queryByRole('dialog')).toBeNull();
+		expect(within(section).getByRole('button', { name: 'New feed' })).toBeEnabled();
 	});
 	it('shown recovery codes and a typed 2FA code do not survive an identity change', async () => {
 		state.extra = { totp_enabled: false };

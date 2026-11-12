@@ -20,6 +20,8 @@ vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
 	isPlanLimitError: () => false,
 	api: {
+		calendarFeeds: { list: vi.fn(async () => []), create: vi.fn(), revoke: vi.fn() },
+		workspaces: { list: vi.fn(async () => []) },
 		notificationSettings: { get: vi.fn(async () => ({})), put: vi.fn() },
 		auth: {
 			me: vi.fn(async () => ({ id: 'u1', name: 'Pat', email: 'pat@example.com', username: 'pat', password_set: true, totp_enabled: false, oauth_providers: [], timezone: null })),
