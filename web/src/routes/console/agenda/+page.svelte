@@ -9,7 +9,6 @@
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import WorkspaceGroupsDialog from '$lib/components/calendar/WorkspaceGroupsDialog.svelte';
-	import DailyCountsChart from '$lib/components/charts/DailyCountsChart.svelte';
 	import { dayLabel as calendarDayLabel, monthLabel, monthWindow, moveMonth } from '$lib/calendar/monthGrid';
 	import MonthGrid from '$lib/components/calendar/MonthGrid.svelte';
 	import CalendarEntry from '$lib/components/calendar/CalendarEntry.svelte';
@@ -18,10 +17,11 @@
 	import AgendaDayGroup from '$lib/components/calendar/AgendaDayGroup.svelte';
 	import AgendaToolbar from '$lib/components/calendar/AgendaToolbar.svelte';
 	import AgendaWeekStrip from '$lib/components/calendar/AgendaWeekStrip.svelte';
-	import CommitmentList from '$lib/components/calendar/CommitmentList.svelte';
 	import ForecastDialog from '$lib/components/calendar/ForecastDialog.svelte';
 	import MoveImpactDialog from '$lib/components/calendar/MoveImpactDialog.svelte';
+	import OutstandingPanel from '$lib/components/calendar/OutstandingPanel.svelte';
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
+	import WeekSummary from '$lib/components/calendar/WeekSummary.svelte';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
 
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
@@ -50,6 +50,9 @@
 	let lastFocusScope = '';
 	let lastAnnouncedMonth = '';
 	let surface = $state<'agenda' | 'list'>('agenda');
+	// Where each phone surface was scrolled to when it was last left. Plain storage: nothing renders from it.
+	const surfaceScroll = { agenda: 0, list: 0 };
+	const surfaceId = $props.id();
 	let periodHeading = $state<HTMLHeadingElement>();
 	let loadingRest = $state(false);
 	// Whether "Load the rest" was asked for in the window on screen; a quiet reload of that window then pages on too.
@@ -164,6 +167,13 @@
 	}
 	function monthCellLabel(date: string) {
 		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${monthRows.get(date)?.length ?? 0} entries${dayIncomplete(date) ? ', Incomplete' : ''}`;
+	}
+	async function setSurface(value: 'agenda' | 'list') {
+		if (value === surface) return;
+		surfaceScroll[surface] = window.scrollY;
+		surface = value;
+		await tick();
+		window.scrollTo(0, surfaceScroll[value]);
 	}
 	function openDay(date: string) { selectedDay = date; openedDay = date; }
 	function movePeriod(delta: number) {
@@ -589,13 +599,6 @@
 		</div>
 	</div>
 {/snippet}
-{#snippet counts()}
-	{#if data?.counts_truncated}
-		<p class="quiet-note">Counts unavailable for this window: too much activity to count.</p>
-	{:else if data?.counts?.length}
-		<DailyCountsChart data={data.counts} />
-	{/if}
-{/snippet}
 
 {#if !emptyGroup}
 	{#if savedRefreshError}
@@ -642,62 +645,83 @@
 	{#if nothing}<p class="quiet-note">No entries this month.</p>{/if}
 	<AgendaDayDialog day={openedDay} entries={monthGroups.find(group => group.day === openedDay)?.entries ?? []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
-	{@render counts()}
+	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} /></div>{/if}
 {:else}
-	{@const schedule = !mobile || mode === 'day' || surface === 'agenda'}
-	{#if mobile && mode === 'week'}
+	{@const switching = mobile && mode === 'week'}
+	{@const schedule = !switching || surface === 'agenda'}
+	{#if switching}
 		<div class="surface-switch">
-			<SegmentedControl label="Show" fill value={surface} onchange={value => surface = value}
-				options={[{ value: 'agenda', label: 'Schedule' }, { value: 'list', label: 'Outstanding' }]} />
+			<SegmentedControl mode="tablist" label="Show" fill value={surface} onchange={setSurface}
+				options={[
+					{ value: 'agenda', label: 'Schedule', id: `${surfaceId}-tab-agenda`, controls: `${surfaceId}-surface` },
+					{ value: 'list', label: 'Outstanding', count: data ? `${data.priority_list.length}${data.priority_list_complete ? '' : '+'}` : undefined, id: `${surfaceId}-tab-list`, controls: `${surfaceId}-surface` }
+				]} />
 		</div>
 	{/if}
-	{#if schedule}
-		<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} loadState={stripLoad} {zone} {now} compact={mobile}
-			{dragging} {hoverDay} onselect={pickDay} onenter={enterDay} ondrop={dropDay} />
-	{/if}
-	<div class="layout">
+	<!-- On a phone in Week range this is the one panel the two tabs show; elsewhere it is a plain wrapper. -->
+	<div id={`${surfaceId}-surface`} role={switching ? 'tabpanel' : undefined} aria-labelledby={switching ? `${surfaceId}-tab-${surface}` : undefined}>
 		{#if schedule}
-			<div class="main" aria-busy={loading ? 'true' : undefined}>
-				{#if loading}
-					{#each [[62, 48, 55], [70, 44, 58, 50], [52, 66]] as rows, index (index)}
-						<div class="skeleton" aria-hidden="true">
-							<i class="bar head"></i>
-							<div class="card">{#each rows as width, at (at)}<div class="sk"><i class="bar"></i><i class="dot"></i><i class="bar" style:width={`${width}%`}></i><i class="bar"></i></div>{/each}</div>
-						</div>
-					{/each}
-				{:else if loadError && !savedRefreshError}
-					{@render failed()}
-				{:else if nothing}
-					<div class="card">
-						<EmptyState icon="📅" title={`Nothing scheduled for ${mode === 'week' ? weekLabel(day) : longDay(day)}`}
-							message={`No commitments or dated items${selectedGroupName ? ` in “${selectedGroupName}”` : ''} this ${mode}.`}>
-							{#snippet actions()}
-								{#if selectedGroupName}<Button onclick={() => setGroup('all')}>Show all workspaces</Button>{/if}
-							{/snippet}
-						</EmptyState>
-					</div>
-				{:else if data && (entries.length > 0 || attention.length > 0)}
-					{#if attention.length}<AgendaAttention items={attention} {zone} {now} {pending} {saved} compact={mobile} onaction={action} />{/if}
-					{#each listDays as date (date)}
-						<AgendaDayGroup day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
-							deadlines={markers.get(date)?.deadlines} forecasts={markers.get(date)?.forecasts} {zone} {now} complete={!dayIncomplete(date)}
-							{pending} {saved} compact={mobile} movable={mode === 'week' && !mobile} {dragging} hover={hoverDay === date} impact={dragImpact} titles={linkedTitles}
-							onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />
-					{/each}
-				{/if}
-				{#if dragNote && !mobile}
-					<div class="dragbar">
-						<span class="what"><b>{dragNote.headline}</b>{#if dragNote.detail}{' '}{dragNote.detail}{/if}</span>
-						{#if dragNote.review}<span class="review">Review needed: this move changes a hard deadline.</span>{/if}
-						<span class="esc"><kbd>Esc</kbd> to cancel</span>
-					</div>
-				{/if}
-			</div>
+			<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} loadState={stripLoad} {zone} {now} compact={mobile}
+				{dragging} {hoverDay} onselect={pickDay} onenter={enterDay} ondrop={dropDay} />
 		{/if}
-		<aside class="rail">
-			{#if data?.counts_truncated || data?.counts?.length}<div class="card chart">{@render counts()}</div>{/if}
-			{#if mode === 'week' && data && (!mobile || surface === 'list')}<CommitmentList {data} {zone} {pending} {saved} onaction={action} />{/if}
-		</aside>
+		<div class="layout">
+			{#if schedule}
+				<div class="main" aria-busy={loading ? 'true' : undefined}>
+					{#if loading}
+						{#each [[62, 48, 55], [70, 44, 58, 50], [52, 66]] as rows, index (index)}
+							<div class="skeleton" aria-hidden="true">
+								<i class="bar head"></i>
+								<div class="card">{#each rows as width, at (at)}<div class="sk"><i class="bar"></i><i class="dot"></i><i class="bar" style:width={`${width}%`}></i><i class="bar"></i></div>{/each}</div>
+							</div>
+						{/each}
+					{:else if loadError && !savedRefreshError}
+						{@render failed()}
+					{:else if nothing}
+						<div class="card">
+							<EmptyState icon="📅" title={`Nothing scheduled for ${mode === 'week' ? weekLabel(day) : longDay(day)}`}
+								message={`No commitments or dated items${selectedGroupName ? ` in “${selectedGroupName}”` : ''} this ${mode}.`}>
+								{#snippet actions()}
+									{#if selectedGroupName}<Button onclick={() => setGroup('all')}>Show all workspaces</Button>{/if}
+								{/snippet}
+							</EmptyState>
+						</div>
+					{:else if data && (entries.length > 0 || attention.length > 0)}
+						{#if attention.length}<AgendaAttention items={attention} {zone} {now} {pending} {saved} compact={mobile} onaction={action} />{/if}
+						{#each listDays as date (date)}
+							<AgendaDayGroup day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
+								deadlines={markers.get(date)?.deadlines} forecasts={markers.get(date)?.forecasts} {zone} {now} complete={!dayIncomplete(date)}
+								{pending} {saved} compact={mobile} movable={mode === 'week' && !mobile} {dragging} hover={hoverDay === date} impact={dragImpact} titles={linkedTitles}
+								onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />
+						{/each}
+					{/if}
+					{#if dragNote && !mobile}
+						<div class="dragbar">
+							<span class="what"><b>{dragNote.headline}</b>{#if dragNote.detail}{' '}{dragNote.detail}{/if}</span>
+							{#if dragNote.review}<span class="review">Review needed: this move changes a hard deadline.</span>{/if}
+							<span class="esc"><kbd>Esc</kbd> to cancel</span>
+						</div>
+					{/if}
+				</div>
+			{/if}
+			<!-- On a phone in Week range the rail is the Outstanding surface; the schedule surface is the schedule alone. -->
+			{#if !switching || surface === 'list'}
+				<aside class="rail" class:single={mode === 'day'}>
+					{#if loading}
+						{#each (mode === 'week' ? [[70, 52], [64, 80, 58, 72]] : [[70, 52]]) as rows, index (index)}
+							<div class="card rail-skeleton" aria-hidden="true">
+								<i class="bar head"></i>
+								{#each rows as width, at (at)}<i class="bar" style:width={`${width}%`}></i>{/each}
+							</div>
+						{/each}
+					{:else if loadError && !savedRefreshError}
+						<div class="card rail-note">Not loaded.</div>
+					{:else if data}
+						<div class="card"><WeekSummary range={mode} {data} {today} /></div>
+						{#if mode === 'week'}<div class="card"><OutstandingPanel {data} {zone} {now} {pending} {saved} compact={mobile} onaction={action} /></div>{/if}
+					{/if}
+				</aside>
+			{/if}
+		</div>
 	</div>
 {/if}
 {#if manageGroups && workspaceGroups}
@@ -731,9 +755,14 @@
 
 	.layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-6); margin-top: var(--space-5); align-items: start; }
 	.main { min-width: 0; }
-	.rail { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; position: sticky; top: var(--space-4); }
+	/* Sticky, so a rail taller than the window scrolls inside itself; otherwise its lower rows are reachable only at the page end. */
+	.rail { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; position: sticky; top: var(--space-4); max-height: calc(100vh - 2 * var(--space-4)); overflow-y: auto; overscroll-behavior: contain; }
 	.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
-	.chart { padding: var(--space-4); min-width: 0; }
+	.card.below { margin-top: var(--space-5); max-width: 420px; }
+	.rail .card { min-width: 0; }
+	.rail-note { padding: var(--space-4); color: var(--text-muted); font-size: 13px; }
+	.rail-skeleton { display: grid; gap: 12px; padding: var(--space-4); }
+	.rail-skeleton .bar.head { margin: 0 0 2px; width: 90px; }
 	.surface-switch { margin-top: var(--space-2); }
 	.quiet-note { color: var(--text-secondary); font-size: 13px; margin: var(--space-3) 0; }
 
@@ -763,11 +792,13 @@
 
 	@media (max-width: 1099px) {
 		.layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
-		.rail { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+		.rail { position: static; max-height: none; overflow: visible; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+		.rail.single { grid-template-columns: minmax(0, 1fr); max-width: 420px; }
 	}
 	@media (max-width: 768px) {
 		.layout { margin-top: var(--space-4); }
-		.rail { grid-template-columns: minmax(0, 1fr); }
+		.rail, .rail.single { grid-template-columns: minmax(0, 1fr); max-width: none; }
+		.card.below { max-width: none; }
 		.sk { grid-template-columns: 18px 1fr 60px; }
 		.sk .bar:first-child { display: none; }
 	}

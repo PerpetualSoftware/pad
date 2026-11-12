@@ -3,8 +3,8 @@
 	import OccurrenceActions from './OccurrenceActions.svelte';
 	import RolePill from './RolePill.svelte';
 	import StateMark from './StateMark.svelte';
+	import WorkspaceTile from './WorkspaceTile.svelte';
 	import { OCCURRENCE_STATES, canMove, canResolve, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
-	import { avatarColor, avatarInitial } from '$lib/utils/avatar';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
@@ -95,7 +95,7 @@
 			{#if density === 'full' || compact}
 				<div class="meta">
 					{#if compact}<span class="ptime">{times.join(' ')}</span>{/if}
-					{#if entry.workspace_name}<span class="ws"><i aria-hidden="true" style:background={avatarColor(entry.workspace_name)}>{avatarInitial(entry.workspace_name)}</i>{entry.workspace_name}</span>{/if}
+					{#if entry.workspace_name}<WorkspaceTile name={entry.workspace_name} />{/if}
 					<span class="ref">{entry.item_ref}</span>
 					{#if entry.audience === 'agent'}<span>· for agents</span>{/if}
 					{#if compact}{@render pills()}{/if}
@@ -128,8 +128,6 @@
 	.title a:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; border-radius: var(--radius-sm); }
 	.meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); margin-top: 1px; }
 	.ref { font-family: var(--font-mono); font-size: 11.5px; }
-	.ws { display: inline-flex; align-items: center; gap: 5px; color: var(--text-secondary); }
-	.ws i { width: 14px; height: 14px; border-radius: 4px; display: inline-grid; place-items: center; font-style: normal; font-size: 9px; font-weight: 800; color: #1a1a22; }
 	.inline-meta { flex: 0 0 auto; font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
 	.trail { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
 	.chips { display: contents; }

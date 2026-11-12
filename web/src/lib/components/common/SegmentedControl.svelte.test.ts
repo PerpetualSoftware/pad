@@ -117,3 +117,16 @@ describe('SegmentedControl, tablist mode', () => {
 		expect(screen.getByRole('tab', { name: 'B' })).not.toHaveAttribute('aria-controls');
 	});
 });
+
+describe('SegmentedControl, tab identity and counts', () => {
+	it('gives a tab the id it is asked for, so a panel can be labelled by it', () => {
+		show({ mode: 'tablist', options: [{ value: 'day', label: 'Day', id: 'tab-day', controls: 'panel' }, { value: 'week', label: 'Week' }] });
+		expect(screen.getByRole('tab', { name: 'Day' })).toHaveAttribute('id', 'tab-day');
+		expect(screen.getByRole('tab', { name: 'Week' })).not.toHaveAttribute('id');
+	});
+	it('shows a count given as text, such as an open-ended one', () => {
+		show({ options: [{ value: 'day', label: 'Day', count: '12+' }, { value: 'week', label: 'Week', count: 0 }] });
+		expect(screen.getByRole('button', { name: 'Day 12+' })).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Week 0' })).toBeInTheDocument();
+	});
+});
