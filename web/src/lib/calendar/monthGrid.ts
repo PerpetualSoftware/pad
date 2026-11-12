@@ -84,6 +84,7 @@ export function calendarError(error: unknown): string {
 }
 export interface CalendarRow {
  kind?: 'forecast'; forecast?: CommitmentForecastSummary;
+ href?: string | null; workspaceName?: string;
  key: string; day: string; ref: string; target: string; title: string; allDay: boolean;
  item?: Item; at?: string; label?: string; terminal?: string; abandoned?: boolean; state?: string; overdue?: boolean;
  start?: string; end?: string; continues?: boolean; missedCount?: number; stale?: boolean;

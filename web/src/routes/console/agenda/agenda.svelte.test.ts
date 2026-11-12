@@ -67,7 +67,7 @@ describe('agenda Day page', () => {
   expect(screen.getAllByRole('status')).toHaveLength(1);
   expect(screen.getByRole('link', { name: 'America/New_York' }).getAttribute('href')).toBe('/console/settings');
   expect(h.agenda.mock.calls[0][2]).toBe('America/New_York');
-  expect(screen.queryByRole('button', { name: 'Month' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'false');
  });
  it('hides only events locally, persists per user, and another user defaults to checked', async () => {
   h.agenda.mockResolvedValue(response([row(), row({ type: 'created', item_title: 'Created item' }), row({ type: 'completed', item_title: 'Completed item' })]));
@@ -676,7 +676,7 @@ describe('workspace groups and daily counts', () => {
   await screen.findByText('Counts unavailable for this window: too much activity to count.');
   expect(screen.queryByRole('img', { name: 'Daily counts' })).toBeNull();
  });
- it.each(['week', 'day'])('renders daily counts in %s mode', async mode => {
+ it.each(['week', 'day', 'month'])('renders daily counts in %s mode', async mode => {
   localStorage.setItem('pad-agenda-mode:user-a', mode);
   h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); render(Agenda);
   const chart = await screen.findByRole('img', { name: 'Daily counts' });
@@ -701,5 +701,149 @@ describe('workspace groups and daily counts', () => {
   const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
   await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
   await waitFor(() => expect(h.agenda.mock.calls.length).toBe(calls + 1));
+ });
+});
+
+
+describe('agenda Month page', () => {
+ beforeEach(() => localStorage.setItem('pad-agenda-mode:user-a', 'month'));
+ const dateButton = (day: string) => document.querySelector(`button.date[data-day="${day}"]`) as HTMLButtonElement;
+ it('selects Month with aria-pressed and requests the local month through the DST fold', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'week'); await mount();
+  expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'false');
+  await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all'));
+  expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
+  expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('month');
+ });
+ it('restores saved Month and renders workspace previews with their own routes and three-entry limit', async () => {
+  h.agenda.mockResolvedValue(response(Array.from({ length: 4 }, (_, i) => row({ item_ref: `EX-${30+i}`, schedule_id: `s${i}`, item_title: `Month item ${i}` }))));
+  render(Agenda); const grid = await screen.findByRole('grid', { name: 'November 2026' });
+  expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
+  expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all');
+  const cell = dateButton('2026-11-05').parentElement!;
+  expect(within(grid).getByRole('link', { name: /Month item 0/ })).toHaveAttribute('href', '/alice/work/tasks/EX-30');
+  expect(within(cell).getAllByText('First workspace')).toHaveLength(3);
+  expect(within(cell).getAllByRole('link')).toHaveLength(3);
+  expect(screen.queryByText('Month item 3')).toBeNull();
+  expect(document.querySelector('[draggable="true"]')).toBeNull();
+  expect(screen.getAllByRole('status')).toHaveLength(1);
+  await fireEvent.click(within(cell).getByRole('button', { name: '+1 more' }));
+  expect(within(screen.getByRole('dialog')).getAllByRole('button', { name: /^Done / })).toHaveLength(4);
+ });
+ it('opens a day and resolves Done in place with the existing commitment identity and announcement', async () => {
+  await mount(); await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog');
+  h.agenda.mockResolvedValue(response([row({ state: 'done' })]));
+  await fireEvent.click(within(detail).getByRole('button', { name: 'Done EX-30' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done' }));
+  await screen.findByText('Occurrence marked done.');
+  expect(screen.getByRole('dialog')).toBe(detail);
+  expect(within(detail).queryByRole('button', { name: 'Done EX-30' })).toBeNull();
+  expect(within(detail).getByLabelText('Done')).toBeTruthy();
+ });
+ it('shows a failed Done inside day detail, not behind it', async () => {
+  await mount(); await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog');
+  h.resolve.mockRejectedValueOnce(new Error('boom'));
+  await fireEvent.click(within(detail).getByRole('button', { name: 'Done EX-30' }));
+  expect(await within(detail).findByRole('alert')).toHaveTextContent('Could not update this occurrence. Try again.');
+  expect(screen.getAllByRole('alert')).toHaveLength(1);
+ });
+ it('names the day once in day detail', async () => {
+  await mount(); await fireEvent.click(dateButton('2026-11-05'));
+  expect(within(screen.getByRole('dialog')).getAllByRole('heading', { level: 2 })).toHaveLength(1);
+ });
+ it.each(['Snooze…', 'Move target…', 'Set forecast…'])('closes day detail before opening %s', async name => {
+  await mount(); await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog');
+  await fireEvent.click(within(detail).getByRole('button', { name: 'Actions EX-30' }));
+  await fireEvent.click(screen.getByRole('menuitem', { name }));
+  await waitFor(() => expect(screen.getAllByRole('dialog')).toHaveLength(1));
+  expect(screen.getByRole('dialog')).not.toBe(detail);
+ });
+ it('keeps Skip pending and saved state in day detail until the quiet refresh lands', async () => {
+  await mount(); await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog'); const refresh = deferred<AgendaResponse>();
+  h.agenda.mockReturnValueOnce(refresh.promise);
+  await fireEvent.click(within(detail).getByRole('button', { name: 'Actions EX-30' }));
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Skip' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'skip' }));
+  await screen.findByText('Updating agenda…');
+  expect(within(detail).getByRole('button', { name: 'Done EX-30' })).toBeDisabled();
+  refresh.resolve(response([row({ state: 'skipped' })]));
+  await screen.findByText('Occurrence skipped.'); expect(screen.getByRole('dialog')).toBe(detail);
+  expect(within(detail).getByText('Skipped')).toBeTruthy();
+ });
+ it('refocuses a keyboard month destination after data lands and cancels focus after a failed load', async () => {
+  await mount(); const next = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(next.promise);
+  const last = dateButton('2026-11-30'); last.focus(); await fireEvent.keyDown(last, { key: 'PageDown' });
+  await screen.findByText('Loading agenda…'); next.resolve(response([]));
+  await waitFor(() => expect(document.activeElement).toBe(dateButton('2026-12-30')));
+  h.agenda.mockRejectedValueOnce(new Error('offline'));
+  await fireEvent.keyDown(document.activeElement!, { key: 'PageDown' }); await screen.findByText('Could not load agenda.');
+  const outside = document.createElement('input'); document.body.appendChild(outside); outside.focus();
+  h.agenda.mockResolvedValue(response([])); await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+  await screen.findByRole('grid', { name: 'January 2027' }); await settle(); expect(document.activeElement).toBe(outside); outside.remove();
+ });
+ it('keeps the focused date when switching between desktop and phone', async () => {
+  let change: ((event: MediaQueryListEvent) => void) | undefined;
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: false, media: query,
+   addEventListener: (_name: string, callback: (event: MediaQueryListEvent) => void) => { if (query === '(max-width: 768px)') change = callback; },
+   removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  await mount(); dateButton('2026-11-05').focus();
+  change!({ matches: true } as MediaQueryListEvent);
+  await waitFor(() => expect(document.activeElement).toBe(document.querySelector('button.day-header[data-day="2026-11-05"]')));
+  expect(screen.queryByRole('grid')).toBeNull();
+  change!({ matches: false } as MediaQueryListEvent);
+  await waitFor(() => expect(document.activeElement).toBe(dateButton('2026-11-05')));
+  expect(h.agenda).toHaveBeenCalledTimes(1);
+ });
+ it('moves one month at a time and clamps March 31 to February 28 while keeping the selected day across modes', async () => {
+  vi.mocked(Date.now).mockReturnValue(Date.parse('2026-03-31T12:00:00Z'));
+  h.agenda.mockResolvedValue(response([row({ day: '2026-03-31' })]));
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Previous month' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all'));
+  expect(dateButton('2026-02-28')).toHaveAttribute('tabindex', '0');
+  await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-28T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all'));
+  await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Next month' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', 'all'));
+  expect(dateButton('2026-03-28')).toHaveAttribute('tabindex', '0');
+  await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+  expect(dateButton('2026-03-31')).toHaveAttribute('tabindex', '0');
+ });
+ it('marks an incomplete tail and hides previews after next_from without claiming an empty month', async () => {
+  h.agenda.mockResolvedValue(response([row({ day: '2026-11-16', item_title: 'Unexamined tail' })], { truncated: true, next_from: '2026-11-15T17:00:00Z' }));
+  render(Agenda); await screen.findByText('Agenda is incomplete.');
+  expect(within(dateButton('2026-11-14').parentElement!).queryByText('Not fully loaded')).toBeNull();
+  for (const day of ['2026-11-15', '2026-11-16', '2026-11-30']) {
+   expect(within(dateButton(day).parentElement!).getByText('Not fully loaded')).toBeTruthy();
+   expect(dateButton(day).getAttribute('aria-label')).toMatch(/, Incomplete$/);
+  }
+  expect(screen.queryByText('Unexamined tail')).toBeNull(); expect(screen.queryByText('No entries this month.')).toBeNull();
+  await fireEvent.click(dateButton('2026-11-16')); expect(within(screen.getByRole('dialog')).getByText('Not fully loaded')).toBeTruthy();
+  expect(within(screen.getByRole('dialog')).queryByText('No entries on this day.')).toBeNull();
+ });
+ it('shows the complete empty month and complete empty day detail', async () => {
+  h.agenda.mockResolvedValue(response([])); render(Agenda); await screen.findByText('No entries this month.');
+  await fireEvent.click(dateButton('2026-11-05'));
+  expect(within(screen.getByRole('dialog')).getByText('No entries on this day.')).toBeTruthy();
+ });
+ it('offers to reveal hidden created and completed entries in Month', async () => {
+  h.agenda.mockResolvedValue(response([row({ type: 'created' }), row({ type: 'completed', item_ref: 'EX-31' })]));
+  render(Agenda); await screen.findByRole('grid'); await fireEvent.click(screen.getByRole('checkbox', { name: 'Show created and completed' }));
+  expect(screen.getByText('Created and completed entries are hidden.')).toBeTruthy();
+  expect(screen.queryByText('No entries this month.')).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show created and completed' })); expect(screen.getAllByText('First item')).toHaveLength(2);
+ });
+ it('uses the phone day list and its summaries instead of the desktop grid', async () => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  h.agenda.mockResolvedValue(response([row()], { unavailable: [{ item_ref: 'EX-99', code: 'internal' }] }));
+  await mount(); expect(screen.queryByRole('grid')).toBeNull();
+  const list = screen.getByRole('list', { name: 'November 2026' }); expect(list.children).toHaveLength(30);
+  const header = within(list).getByRole('button', { name: /Thursday, 5 November 2026 · Today.*Not fully loaded/ });
+  await fireEvent.click(header); expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done EX-30' })).toBeTruthy();
  });
 });

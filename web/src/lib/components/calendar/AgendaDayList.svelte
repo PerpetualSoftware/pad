@@ -3,15 +3,15 @@
 	import { dayLabel, entryKey, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
-	let { day, entries, zone, pending, saved, onaction }: {
-		day: string; entries: AgendaEntry[]; zone: string;
+	let { day, entries, zone, pending, saved, onaction, heading = true }: {
+		day: string; entries: AgendaEntry[]; zone: string; heading?: boolean;
 		pending: Record<string, boolean>; saved: Record<string, boolean>;
 		onaction: (entry: AgendaEntry, state: AgendaAction) => void;
 	} = $props();
 </script>
 
 <section>
-	<h2>{dayLabel(day)}</h2>
+	{#if heading}<h2>{dayLabel(day)}</h2>{/if}
 	<ul>
 		{#each entries as entry (entryKey(entry))}
 			<AgendaRow {entry} {zone} pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} />

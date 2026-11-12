@@ -4,16 +4,17 @@
  import { canonicalValueColor, formatFieldLabel } from '$lib/utils/fieldColors';
  import { forecastText } from '$lib/calendar/presentation';
  import Chip from '../common/Chip.svelte';
- let {row, zone, basePath, onopen, preview = false, keyboard = true}: {row:CalendarRow;zone:string;basePath:string;onopen:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
+ let {row, zone, basePath = '', onopen, preview = false, keyboard = true}: {row:CalendarRow;zone:string;basePath?:string;onopen?:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
  const states: Record<string,[string,string]> = {done:['Done','green'],skipped:['Skipped','gray'],moved:['Moved','purple'],missed:['Missed','amber'],lapsed:['Lapsed','gray'],outstanding:['Outstanding','amber'],scheduled:['Scheduled','blue'],unrecorded:['No recorded state','gray']};
  let state = $derived(row.state ? states[row.state] : undefined);
  let done = $derived((!!row.terminal && !row.abandoned) || row.state === 'done');
  let closed = $derived(done || !!row.abandoned);
 </script>
-<a class="entry" class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:preview class:done={closed} href="{basePath}/{encodeURIComponent(row.target)}" tabindex={keyboard ? 0 : -1} onclick={(e) => { if (shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }}>
+<a class="entry" class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:preview class:done={closed} href={row.href === undefined ? `${basePath}/${encodeURIComponent(row.target)}` : row.href ?? undefined} tabindex={keyboard ? 0 : -1} onclick={(e) => { if (onopen && shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }}>
  <span class="title">{#if done}<span aria-label="Done">✓ </span>{:else if row.abandoned}<span aria-hidden="true">– </span>{/if}<span class="ref">{row.ref}</span> <span class="name">{row.continues && preview ? 'Continues' : row.title}</span></span>
  <span class="meta">
   {#if row.allDay}<span>All day</span>{:else if row.at}<span>{timeLabel(row.at,zone)}</span>{/if}
+  {#if row.workspaceName}<span>{row.workspaceName}</span>{/if}
   {#if row.label}<span>{row.label}</span>{/if}
   {#if row.terminal}<Chip size="sm" color={row.abandoned ? 'var(--accent-gray)' : (canonicalValueColor(row.terminal) ?? 'var(--accent-green)')}>{formatFieldLabel(row.terminal)}</Chip>{/if}
   {#if state}<Chip size="sm" color={row.state === 'scheduled' ? 'var(--status-blue)' : `var(--accent-${state[1]})`}>{state[0]}</Chip>{/if}

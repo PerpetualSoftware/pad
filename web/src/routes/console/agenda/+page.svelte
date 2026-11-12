@@ -3,13 +3,17 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { canMove, canResolve, dateTime, dayLabel, dayWindow, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localDate, shiftDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { agendaRows, roleDay, canMove, canResolve, dateTime, dayLabel, dayWindow, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localDate, shiftDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import WorkspaceGroupsDialog from '$lib/components/calendar/WorkspaceGroupsDialog.svelte';
 	import DailyCountsChart from '$lib/components/charts/DailyCountsChart.svelte';
 	import ContentError from '$lib/components/common/ContentError.svelte';
+	import { dayLabel as calendarDayLabel, monthLabel, monthWindow, moveMonth } from '$lib/calendar/monthGrid';
+	import MonthGrid from '$lib/components/calendar/MonthGrid.svelte';
+	import CalendarEntry from '$lib/components/calendar/CalendarEntry.svelte';
+	import AgendaDayDialog from '$lib/components/calendar/AgendaDayDialog.svelte';
 	import AgendaDayList from '$lib/components/calendar/AgendaDayList.svelte';
 	import AgendaWeek from '$lib/components/calendar/AgendaWeek.svelte';
 	import CommitmentList from '$lib/components/calendar/CommitmentList.svelte';
@@ -25,7 +29,13 @@
 	const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
 	let selectedDay = $state('');
 	const day = $derived(selectedDay || todayIn(zone));
-	let mode = $state<'week' | 'day'>('week');
+	let mode = $state<'week' | 'day' | 'month'>('week');
+	const month = $derived(day.slice(0, 7));
+	const periodLabel = $derived(mode === 'month' ? monthLabel(month) : mode === 'week' ? weekLabel(day) : dayLabel(day));
+	let openedDay = $state<string | null>(null);
+	let monthGrid = $state<{ cancelFocus: () => void }>();
+	let lastFocusScope = '';
+	let lastAnnouncedMonth = '';
 	let mobile = $state(false);
 	let surface = $state<'agenda' | 'list'>('agenda');
 	let periodHeading: HTMLHeadingElement | undefined;
@@ -72,6 +82,34 @@
 	const incomplete = $derived(!!(data?.window_complete === false || data?.truncated || data?.unavailable?.length || data?.unexpanded?.length || data?.next_from));
 	const status = $derived(loading ? 'Loading agenda…' : updating ? 'Updating agenda…' : announcement);
 
+	const nextDay = $derived(data?.next_from ? roleDay(data.next_from, zone) : null);
+	const monthEntries = $derived(entries.filter(entry => !nextDay || entry.day <= nextDay));
+	const monthGroups = $derived(groupEntries(monthEntries));
+	const monthRows = $derived.by(() => {
+		const byDay = new Map<string, ReturnType<typeof agendaRows>>();
+		for (const row of agendaRows(monthEntries)) {
+			const rows = byDay.get(row.day) ?? []; rows.push(row); byDay.set(row.day, rows);
+		}
+		return byDay;
+	});
+	function dayIncomplete(date: string) {
+		return incomplete && (!nextDay || date >= nextDay || !!data?.unavailable?.length || !!data?.unexpanded?.length);
+	}
+	function monthCellLabel(date: string) {
+		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${monthRows.get(date)?.length ?? 0} entries${dayIncomplete(date) ? ', Incomplete' : ''}`;
+	}
+	function openDay(date: string) { selectedDay = date; openedDay = date; }
+	function movePeriod(delta: number) {
+		clearDrag(); selectedDay = mode === 'month' ? moveMonth(day, delta) : shiftDay(day, delta * (mode === 'week' ? 7 : 1));
+	}
+	async function dayAction(entry: AgendaEntry, state: AgendaAction) {
+		const sameIdentity = authStore.identityFence();
+		if (state === 'snooze' || state === 'move' || state === 'forecast') {
+			openedDay = null; await tick();
+		}
+		if (sameIdentity()) action(entry, state);
+	}
+
 	onMount(() => {
 		const query = window.matchMedia('(max-width: 768px)');
 		mobile = query.matches;
@@ -84,18 +122,20 @@
 		untrack(() => {
 			preferenceUser = userId;
 			let value = true;
-			let savedMode: 'week' | 'day' = 'week';
+			let savedMode: 'week' | 'day' | 'month' = 'week';
 			if (userId) {
 				try {
 					value = localStorage.getItem(`${preferencePrefix}${userId}`) !== '0';
-					savedMode = localStorage.getItem(`pad-agenda-mode:${userId}`) === 'day' ? 'day' : 'week';
+					const stored = localStorage.getItem(`pad-agenda-mode:${userId}`);
+					savedMode = stored === 'day' || stored === 'month' ? stored : 'week';
 				} catch { /* Storage is optional. */ }
 			}
 			showEvents = value; mode = savedMode;
 		});
 	});
-	function setMode(value: 'week' | 'day') {
+	function setMode(value: 'week' | 'day' | 'month') {
 		clearDrag(); mode = value;
+		if (value !== 'month') lastAnnouncedMonth = '';
 		const userId = authStore.user?.id;
 		if (!userId || userId !== preferenceUser) return;
 		try { localStorage.setItem(`pad-agenda-mode:${userId}`, value); } catch { /* Keep the in-memory choice. */ }
@@ -169,17 +209,21 @@
 		await Promise.resolve();
 		if (!current()) return;
 		if (loadedUser !== userId) {
-			data = null; pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; actionError = ''; announcement = '';
+			data = null; openedDay = null; lastAnnouncedMonth = ''; pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; actionError = ''; announcement = '';
 			review = null; committing = false; linkedTitles = {}; clearDrag(); loadedUser = userId;
 		}
 		if (!userId) { data = null; loading = false; updating = false; return; }
 		loading = !quiet; updating = quiet; loadError = false;
 		if (!quiet) { data = null; savedRefreshError = false; announcement = ''; }
+		else if (announcement === lastAnnouncedMonth) announcement = '';
 		try {
-			const { from, to } = viewMode === 'week' ? weekWindow(date, timeZone) : dayWindow(date, timeZone);
+			const { from, to } = viewMode === 'month' ? monthWindow(date.slice(0, 7), timeZone) : viewMode === 'week' ? weekWindow(date, timeZone) : dayWindow(date, timeZone);
 			const response = await (workspaceGroups ? api.getMyAgenda(from, to, timeZone, requestedGroup) : api.getMyAgenda(from, to, timeZone));
 			if (!current()) return;
 			data = response; saved = {}; savedRefreshError = false;
+			if (!quiet && viewMode === 'month' && lastAnnouncedMonth !== monthLabel(date.slice(0, 7))) {
+				lastAnnouncedMonth = monthLabel(date.slice(0, 7)); announcement = lastAnnouncedMonth;
+			}
 			return true;
 		} catch (error) {
 			if (!current()) return;
@@ -188,17 +232,20 @@
 				return;
 			}
 			if (emptyGroup) { data = null; savedRefreshError = false; return true; }
-			loadError = true; return false;
+			monthGrid?.cancelFocus(); loadError = true; return false;
 		} finally {
 			if (current()) { loading = false; updating = false; }
 		}
 	}
 	$effect(() => {
-		const date = day;
+		const date = mode === 'month' ? `${month}-01` : day;
 		const timeZone = zone;
 		mode; authStore.user?.id; authStore.identityEpoch; groupKey;
 		const ready = groupsReady;
+		const focusScope = JSON.stringify([mode, timeZone, authStore.user?.id, authStore.identityEpoch, groupKey]);
 		untrack(() => {
+			if (focusScope !== lastFocusScope) { monthGrid?.cancelFocus(); lastFocusScope = focusScope; }
+			openedDay = null;
 			clearDrag();
 			if (ready) void load(date, timeZone);
 			else { ticket++; data = null; loading = true; updating = false; loadError = false; }
@@ -367,6 +414,7 @@
 				actionError = staleCopy; dialogEntry = null; await load(day, zone, true); return;
 			}
 			if (preview.renegotiates_deadline || preview.violations?.length) {
+				if (openedDay) { openedDay = null; await tick(); if (!sameIdentity()) return; }
 				dialogEntry = null;
 				review = { entry, to, preview, reason, sameIdentity }; reviewing = true;
 				void loadTitles(entry, preview);
@@ -398,12 +446,13 @@
 		<div class="mode">
 			<Button size="sm" aria-pressed={mode === 'week'} onclick={() => setMode('week')}>Week</Button>
 			<Button size="sm" aria-pressed={mode === 'day'} onclick={() => setMode('day')}>Day</Button>
+			<Button size="sm" aria-pressed={mode === 'month'} onclick={() => setMode('month')}>Month</Button>
 		</div>
 		<div class="period">
-			<Button size="sm" aria-label={mode === 'week' ? 'Previous week' : 'Previous day'} onclick={() => { clearDrag(); selectedDay = shiftDay(day, mode === 'week' ? -7 : -1); }}>&lt;</Button>
-			<Button size="sm" aria-label={mode === 'week' ? 'Next week' : 'Next day'} onclick={() => { clearDrag(); selectedDay = shiftDay(day, mode === 'week' ? 7 : 1); }}>&gt;</Button>
+			<Button size="sm" aria-label={`Previous ${mode}`} onclick={() => movePeriod(-1)}>&lt;</Button>
+			<Button size="sm" aria-label={`Next ${mode}`} onclick={() => movePeriod(1)}>&gt;</Button>
 			<Button size="sm" onclick={today}>Today</Button>
-			<h2 class="period-heading" tabindex="-1" bind:this={periodHeading}>{mode === 'week' ? weekLabel(day) : dayLabel(day)}</h2>
+			<h2 class="period-heading" tabindex="-1" bind:this={periodHeading}>{periodLabel}</h2>
 		</div>
 		<a href="/console/settings">{zone}</a>
 		<label><input type="checkbox" checked={showEvents} onchange={event => setShowEvents(event.currentTarget.checked)} /> Show created and completed</label>
@@ -411,7 +460,7 @@
 </PageHeader>
 
 <div role="status" aria-live="polite" aria-atomic="true">{status}</div>
-{#if actionError && !dialogEntry && !review}<p role="alert">{actionError}</p>{/if}
+{#if actionError && !dialogEntry && !review && !openedDay}<p role="alert">{actionError}</p>{/if}
 {#if !emptyGroup && savedRefreshError}
 	<p role="alert">Saved. Could not refresh the view.</p>
 	<Button onclick={() => load(day, zone, true)}>Try again</Button>
@@ -427,6 +476,25 @@
 	<EmptyState message="No workspaces in this group.">
 		{#snippet actions()}<Button onclick={() => manageGroups = true}>Manage groups</Button>{/snippet}
 	</EmptyState>
+
+{:else if mode === 'month'}
+	<MonthGrid bind:this={monthGrid} {month} today={todayIn(zone)} selected={day} {mobile} loaded={data}
+		cellLabel={monthCellLabel} summary={(date) => dayIncomplete(date) ? 'Not fully loaded' : monthRows.get(date)?.length ? `${monthRows.get(date)!.length} entries` : 'No entries'}
+		onopen={openDay} onchoose={(date) => selectedDay = date}>
+		{#snippet cell(date: string, phone: boolean)}
+			{#each (monthRows.get(date) ?? []).slice(0, 3) as row (row.key)}<CalendarEntry {row} {zone} preview keyboard={phone} />{/each}
+			{#if (monthRows.get(date)?.length ?? 0) > 3}<button class="more" tabindex={phone ? 0 : -1} onclick={() => openDay(date)}>+{monthRows.get(date)!.length - 3} more</button>{/if}
+			{#if dayIncomplete(date)}<p class="incomplete-day">Not fully loaded</p>{/if}
+		{/snippet}
+	</MonthGrid>
+	{#if !loading && !loadError && !savedRefreshError && data && entries.length === 0}
+		{#if !showEvents && data.entries.length > 0}
+			<p>Created and completed entries are hidden.</p>
+			<Button onclick={() => setShowEvents(true)}>Show created and completed</Button>
+		{:else if !incomplete}<p>No entries this month.</p>{/if}
+	{/if}
+	<AgendaDayDialog day={openedDay} entries={monthGroups.find(group => group.day === openedDay)?.entries ?? []} {zone} {mobile}
+		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
 {:else if mode === 'week'}
 	{#if !showEvents && data && entries.length === 0 && data.entries.length > 0}
 		<p>Created and completed entries are hidden.</p>
@@ -482,6 +550,11 @@
 {/if}
 
 <style>
+	.more { font: inherit; color: var(--text-primary); border: 0; background: transparent; cursor: pointer; border-radius: var(--radius-sm); text-align: left; font-size: 12px; padding: var(--space-1); }
+	.more:hover { background: var(--bg-hover); }
+	.more:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
+	.incomplete-day { color: var(--text-secondary); font-size: 12px; margin: var(--space-2) 0; }
+	@media (pointer: coarse) { .more { min-height: 44px; min-width: 44px; } }
 	.controls { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-3); margin-top: var(--space-4); }
 	.period { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
 	.mode, .surface-switch { display: flex; gap: var(--space-2); }

@@ -107,3 +107,16 @@ it('renders forecast provenance and date-only values without zone shifts',()=>{
  expect(forecastSetter({...f,set_by_name:'Alex'})).toBe('Alex (agent)');
  expect(forecastText({...f,set_by_name:'Alex'},'America/Los_Angeles')).toBe('Forecast March 12, 2031 · set by Alex (agent)');
 });
+
+
+import { agendaRows } from './presentation';
+it('maps agenda rows on authoritative days, all-day first in stable server order, with routes, workspace and chips', () => {
+ const forecast = { value: '2026-03-10', set_by: 'u1', set_by_kind: 'user' as const, set_at: 'now', source: '' };
+ const entries = [row({ overdue: true, missed_count: 2, stale: true, forecast }), row({ type: 'created', item_ref: 'EX-31' }), row({ type: 'date', date: '2026-03-07', field: 'due_date', item_ref: 'EX-32' }), row({ all_day: true, item_ref: 'EX-33' }), row({ type: 'completed', item_ref: 'EX-34', owner_username: '' })];
+ const rows = agendaRows(entries);
+ expect(rows.map(r => r.ref)).toEqual(['EX-32', 'EX-33', 'EX-30', 'EX-31', 'EX-34']);
+ expect(rows.every(r => r.day === '2026-03-07')).toBe(true);
+ expect(rows[2]).toMatchObject({ href: '/alice/work/tasks/EX-30', workspaceName: 'Work', state: 'outstanding', overdue: true, missedCount: 2, stale: true, forecast });
+ expect(rows[0].label).toBe('Due'); expect(rows[3].label).toBe('Created'); expect(rows[4].label).toBe('Completed'); expect(rows[4].href).toBeNull();
+ expect(new Set(rows.map(r => r.key)).size).toBe(5);
+});
