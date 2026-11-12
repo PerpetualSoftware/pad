@@ -285,3 +285,35 @@ func TestUpdateUserAPITokenCASAndOwnerScope(t *testing.T) {
 		}
 	})
 }
+
+func TestStepUpEnableTOTPRecordsEnrolment(t *testing.T) {
+	stepUpBackends(t, func(t *testing.T, s *store.Store) {
+		u, _, _ := stepUpUser(t, s, "totp-pin@example.com")
+		for _, secret := range []string{"JBSWY3DPEHPK3PXP", "JBSWY3DPEHPK3PXQ"} {
+			if err := s.SetTOTPSecret(u.ID, secret); err != nil {
+				t.Fatal(err)
+			}
+			start := time.Now().UTC().Truncate(time.Second)
+			if err := s.EnableTOTP(u.ID, secret, ""); err != nil {
+				t.Fatal(err)
+			}
+			var raw sql.NullString
+			if err := s.DB().QueryRow(s.D().Rebind(`SELECT totp_enabled_at FROM users WHERE id=?`), u.ID).Scan(&raw); err != nil {
+				t.Fatal(err)
+			}
+			enabledAt, err := time.Parse(time.RFC3339, raw.String)
+			if err != nil || enabledAt.Before(start) || enabledAt.After(time.Now()) || enabledAt.Location() != time.UTC {
+				t.Fatalf("enrolment timestamp: %q %v", raw.String, err)
+			}
+			read, err := s.GetUser(u.ID)
+			if err != nil || read == nil || read.TOTPEnabledAt == nil || !read.TOTPEnabledAt.Equal(enabledAt) || !read.TOTPEnabled {
+				t.Fatalf("read enrolled user: %+v %v", read, err)
+			}
+			if err := s.DisableTOTP(u.ID); err != nil {
+				t.Fatal(err)
+			}
+			// A stale timestamp must be overwritten on the next enrolment.
+			stepUpExec(t, s, `UPDATE users SET totp_enabled_at=? WHERE id=?`, start.Add(-time.Hour).Format(time.RFC3339), u.ID)
+		}
+	})
+}

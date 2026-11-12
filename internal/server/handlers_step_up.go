@@ -13,12 +13,12 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// stepUpFactor selects the strongest configured factor. A sender needs no
+// stepUpFactor selects the strongest factor established before the session. A sender needs no
 // public base URL because the email carries a code rather than a link.
-func (s *Server) stepUpFactor(user *models.User) (string, *email.Sender) {
+func (s *Server) stepUpFactor(user *models.User, session *store.SessionInfo) (string, *email.Sender) {
 	sender := s.email
 	switch {
-	case user.TOTPEnabled:
+	case user.TOTPEnabled && (user.TOTPEnabledAt == nil || session.CreatedAt.After(*user.TOTPEnabledAt)):
 		return "totp", sender
 	case sender != nil:
 		return "email", sender
@@ -46,7 +46,7 @@ func (s *Server) handleStepUpStatus(w http.ResponseWriter, r *http.Request) {
 	if session == nil {
 		return
 	}
-	factor, _ := s.stepUpFactor(session.User)
+	factor, _ := s.stepUpFactor(session.User, session)
 	active := session.StepUpUntil
 	if active != nil && !active.After(time.Now()) {
 		active = nil
@@ -65,7 +65,7 @@ func (s *Server) handleStepUpEmail(w http.ResponseWriter, r *http.Request) {
 	if session == nil {
 		return
 	}
-	factor, sender := s.stepUpFactor(session.User)
+	factor, sender := s.stepUpFactor(session.User, session)
 	if factor != "email" {
 		writeError(w, http.StatusConflict, "step_up_factor_mismatch", "Email is not the current verification factor")
 		return
@@ -111,7 +111,7 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	user := session.User
-	factor, _ := s.stepUpFactor(user)
+	factor, _ := s.stepUpFactor(user, session)
 	if factor == "unavailable" {
 		writeError(w, http.StatusConflict, "step_up_unavailable", "Turn on two-factor authentication to change key access.")
 		return

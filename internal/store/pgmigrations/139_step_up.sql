@@ -1,3 +1,5 @@
+ALTER TABLE users ADD COLUMN IF NOT EXISTS totp_enabled_at TEXT;
+
 ALTER TABLE sessions ADD COLUMN IF NOT EXISTS step_up_until TEXT;
 
 CREATE TABLE IF NOT EXISTS step_up_codes (

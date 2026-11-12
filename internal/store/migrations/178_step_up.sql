@@ -1,3 +1,5 @@
+ALTER TABLE users ADD COLUMN totp_enabled_at TEXT;
+
 ALTER TABLE sessions ADD COLUMN step_up_until TEXT;
 
 CREATE TABLE step_up_codes (

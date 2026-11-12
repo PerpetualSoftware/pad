@@ -36,9 +36,11 @@ func TestTASK4423_R05Migration(t *testing.T) {
 func checkGraphNoticeMigration(t *testing.T, s *Store, pg bool) {
 	t.Helper()
 	ws := createTestWorkspace(t, s, "Graph migration")
-	u := notifyUser(t, s, "graph-migration@example.com")
+	// Seed the historical schema without the current user-column reader.
+	userID := newID()
+	s.mustExec(t, `INSERT INTO users (id, email, name, password_hash, created_at, updated_at) VALUES (?, ?, 'Migration', '', ?, ?)`, userID, "graph-migration@example.com", now(), now())
 	insert := func(id, kind string) error {
-		_, err := s.db.Exec(s.q(`INSERT INTO user_notifications (id,user_id,workspace_id,item_id,comment_id,kind,actor_user_id,actor_is_agent,dedupe_key,created_at,push_state,skip_reason,claim_token,claimed_at,attempts,sent_at) VALUES (?,?,?,'subject','comment',?,?,?,?,'2026-11-01T00:00:00Z','sent','reason','claim','2026-11-01T00:00:00Z',3,'2026-11-01T00:00:01Z')`), id, u.ID, ws.ID, kind, u.ID, s.dialect.BoolToInt(true), kind)
+		_, err := s.db.Exec(s.q(`INSERT INTO user_notifications (id,user_id,workspace_id,item_id,comment_id,kind,actor_user_id,actor_is_agent,dedupe_key,created_at,push_state,skip_reason,claim_token,claimed_at,attempts,sent_at) VALUES (?,?,?,'subject','comment',?,?,?,?,'2026-11-01T00:00:00Z','sent','reason','claim','2026-11-01T00:00:00Z',3,'2026-11-01T00:00:01Z')`), id, userID, ws.ID, kind, userID, s.dialect.BoolToInt(true), kind)
 		return err
 	}
 	old := []string{"assigned", "comment", "reply", "reminder", "mention", "unassigned", "renegotiation_refused"}

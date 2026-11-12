@@ -67,6 +67,9 @@ func task3867EnableTOTP(t *testing.T, e *tokenAuthEnv) string {
 		t.Fatal(err)
 	}
 
+	if _, err := e.srv.store.DB().Exec(`UPDATE users SET totp_enabled_at=? WHERE id=?`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), e.user.ID); err != nil {
+		t.Fatal(err)
+	}
 	return secret
 }
 
@@ -521,6 +524,160 @@ func TestTask3867AnonymousRefused(t *testing.T) {
 		e.srv.ServeHTTP(rr, req)
 		task3867Want(t, rr, 401, "unauthorized")
 	}
+}
+
+func task3867EnrolTOTP(t *testing.T, e *tokenAuthEnv) string {
+	t.Helper()
+	rr := doRequestWithBearer(e.srv, "POST", "/api/v1/auth/2fa/setup", e.sessTok, nil)
+	task3867Want(t, rr, 200, "")
+	var setup struct {
+		Secret string `json:"secret"`
+	}
+	parseJSON(t, rr, &setup)
+	code, err := totp.GenerateCode(setup.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	task3867Want(t, doRequestWithBearer(e.srv, "POST", "/api/v1/auth/2fa/verify", e.sessTok, map[string]string{"secret": setup.Secret, "code": code}), 200, "")
+	return setup.Secret
+}
+
+func TestTask3867StolenSessionEnrolStillUsesEarlierFactor(t *testing.T) {
+	for _, factor := range []string{"email", "password"} {
+		t.Run(factor, func(t *testing.T) {
+			e := setupTokenAuthEnv(t)
+			if factor == "email" {
+				task3867Mail(t, e)
+			}
+			secret := task3867EnrolTOTP(t, e)
+			task3867Factor(t, e, factor)
+			code, err := totp.GenerateCode(secret, time.Now())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if factor == "email" {
+				task3867Want(t, task3867Verify(e, map[string]string{"code": code}), 403, "invalid_code")
+			} else {
+				task3867Want(t, task3867Verify(e, map[string]string{"code": code}), 400, "validation_error")
+				task3867Want(t, task3867Send(e), 409, "step_up_factor_mismatch")
+			}
+			task3867Scopes(t, e, `["read"]`)
+			task3867Want(t, task3867Patch(e, map[string]any{"scopes": `["*"]`}), 403, "step_up_required")
+			if factor == "email" {
+				m := task3867Mail(t, e)
+				task3867Want(t, task3867Send(e), 200, "")
+				task3867Want(t, task3867Verify(e, map[string]string{"code": <-m.codes}), 200, "")
+			}
+		})
+	}
+}
+
+func TestTask3867ReEnrolOverExistingSecretResetsPin(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	task3867Mail(t, e)
+	task3867EnableTOTP(t, e)
+	if _, err := e.srv.store.DB().Exec(`UPDATE users SET totp_enabled_at=? WHERE id=?`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), e.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	task3867Factor(t, e, "totp")
+	rr := doRequestWithBearer(e.srv, "POST", "/api/v1/auth/2fa/disable", e.sessTok, map[string]string{"password": "correct-horse-battery-staple"})
+	task3867Want(t, rr, 200, "")
+	var disabled struct {
+		Token string `json:"token"`
+	}
+	parseJSON(t, rr, &disabled)
+	if disabled.Token == "" {
+		t.Fatal("disable did not rotate the session")
+	}
+	e.sessTok = disabled.Token
+	task3867EnrolTOTP(t, e)
+	task3867Factor(t, e, "email")
+}
+
+func TestTask3867PostEnrolSessionUsesTOTP(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	secret := task3867EnrolTOTP(t, e)
+	// Store timestamps have second precision; the new login must be strictly later.
+	time.Sleep(time.Until(time.Now().Truncate(time.Second).Add(time.Second)))
+	rr := doRequestWithBearer(e.srv, "POST", "/api/v1/auth/login", "", map[string]string{"email": e.user.Email, "password": "correct-horse-battery-staple"})
+	task3867Want(t, rr, 200, "")
+	var login struct {
+		ChallengeToken string `json:"challenge_token"`
+	}
+	parseJSON(t, rr, &login)
+	code, err := totp.GenerateCode(secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rr = doRequestWithBearer(e.srv, "POST", "/api/v1/auth/2fa/login-verify", "", map[string]string{"challenge_token": login.ChallengeToken, "code": code})
+	task3867Want(t, rr, 200, "")
+	var signedIn struct {
+		Token string `json:"token"`
+	}
+	parseJSON(t, rr, &signedIn)
+	if signedIn.Token == "" {
+		t.Fatal("login did not issue a session")
+	}
+	e.sessTok = signedIn.Token
+	task3867Factor(t, e, "totp")
+	// A different accepted time-step avoids replaying the login proof.
+	code, err = totp.GenerateCode(secret, time.Now().Add(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task3867Want(t, task3867Verify(e, map[string]string{"code": code}), 200, "")
+	task3867Scopes(t, e, `["read"]`)
+	task3867Want(t, task3867Patch(e, map[string]any{"scopes": `["*"]`}), 200, "")
+}
+
+func TestTask3867NullBackfillUsesTOTP(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	task3867EnableTOTP(t, e)
+	if _, err := e.srv.store.DB().Exec(`UPDATE users SET totp_enabled_at=NULL WHERE id=?`, e.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	task3867Factor(t, e, "totp")
+}
+
+func TestTask3867EnrolAtSessionCreationKeepsEarlierFactor(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	task3867Mail(t, e)
+	task3867EnrolTOTP(t, e)
+	if _, err := e.srv.store.DB().Exec(`UPDATE sessions SET created_at=(SELECT totp_enabled_at FROM users WHERE id=?) WHERE user_id=?`, e.user.ID, e.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	task3867Factor(t, e, "email")
+}
+
+func TestTask3867CLIApprovalKeepsEnrolmentPin(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	task3867Mail(t, e)
+	if _, err := e.srv.store.DB().Exec(`UPDATE sessions SET created_at=? WHERE user_id=?`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), e.user.ID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := e.srv.store.ValidateSession(e.sessTok)
+	if err != nil || before == nil {
+		t.Fatalf("approver: %v", err)
+	}
+	task3867EnrolTOTP(t, e)
+	pending, err := e.srv.store.CreateCLIAuthSession()
+	if err != nil {
+		t.Fatal(err)
+	}
+	task3867Want(t, doRequestWithBearer(e.srv, "POST", "/api/v1/auth/cli/sessions/"+pending.Code+"/approve", e.sessTok, nil), 200, "")
+	approved, err := e.srv.store.GetCLIAuthSession(pending.Code)
+	if err != nil || approved == nil || approved.Token == "" {
+		t.Fatalf("approval: %v", err)
+	}
+	info, err := e.srv.store.ValidateSession(approved.Token)
+	if err != nil || info == nil {
+		t.Fatalf("CLI session: %v", err)
+	}
+	if !info.CreatedAt.Equal(before.CreatedAt) {
+		t.Fatalf("CLI approval refreshed created_at: %s -> %s", before.CreatedAt, info.CreatedAt)
+	}
+	e.sessTok = approved.Token
+	task3867Factor(t, e, "email")
 }
 
 func TestTask3867RenameDoesNotInvalidateUserAccess(t *testing.T) {

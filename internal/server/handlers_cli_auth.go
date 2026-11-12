@@ -184,21 +184,17 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// Create a new session token for the CLI (long-lived, 30 days sliding,
-	// capped at 90 days from this approval). It is a new credential on another
-	// device, so it gets its own lifetime (TASK-3975): inheriting the approving
-	// web session's age would hand a CLI approved from an 85-day-old session
-	// only 5 days. It still must not read as a fresh sign-in (BUG-3336); the
-	// confirm-only account delete refuses CLI-kind sessions outright.
+	// The CLI session inherits the approving sign-in time and maximum lifetime.
+	// Approval proves only an existing session, so it must not turn a TOTP
+	// enrolment made from that session into an eligible step-up factor.
 	approver := s.requestSessionInfo(r)
 	if approver == nil || approver.User.ID != user.ID {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "You must be logged in to approve a CLI session")
 		return
 	}
 	// Only a browser session approves (TASK-3975 r2). The token minted here
-	// starts its own 90-day cap, so a CLI token that could approve could mint
-	// its own successor, and a chain of them would never expire. The web
-	// client approves on its cookie; nothing else calls this.
+	// is a new credential on another device. The web client approves on its
+	// cookie; nothing else calls this.
 	if approver.Kind != store.SessionKindWeb {
 		writeError(w, http.StatusForbidden, "session_required",
 			"Approving a CLI sign-in requires a browser session")
@@ -206,7 +202,7 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 	}
 	// Fenced on the approver's credential epoch as this request was admitted
 	// (BUG-3382): a claim or reset since then makes the approval mint nothing.
-	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour, time.Time{})
+	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, "cli-browser-auth", clientIP(r), "", 30*24*time.Hour, approver.CreatedAt)
 	if errors.Is(err, store.ErrUserDisabled) {
 		// Disabled between this request's admission and the mint (BUG-3349).
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")

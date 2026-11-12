@@ -11,9 +11,8 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// TASK-3975: a CLI token minted by approving from a web session gets its own
-// lifetime (30-day slide, 90-day cap from the approval), not the approving
-// session's remaining age.
+// A CLI token approved from a web session keeps the approving sign-in time.
+// Its 30-day sliding window is capped by that sign-in's 90-day lifetime.
 
 func within(t *testing.T, what string, got, want time.Time, tol time.Duration) {
 	t.Helper()
@@ -36,7 +35,7 @@ func sessionExpiry(t *testing.T, srv *Server, token string) time.Time {
 	return exp
 }
 
-func TestTASK3975_CLIApprovalFromAnEightyFiveDayWebSession_GetsFullWindow(t *testing.T) {
+func TestTASK3975_CLIApprovalFromAnEightyFiveDayWebSession_KeepsSignInLifetime(t *testing.T) {
 	t.Parallel()
 	srv, u, token := oauthOnlyCloud(t)
 	ageAllSessions(t, srv, u.ID, 85*24*time.Hour)
@@ -56,22 +55,22 @@ func TestTASK3975_CLIApprovalFromAnEightyFiveDayWebSession_GetsFullWindow(t *tes
 		t.Fatalf("validate: %v", err)
 	}
 	now := time.Now()
-	within(t, "created_at", info.CreatedAt, now, time.Minute)
-	within(t, "expires_at", sessionExpiry(t, srv, approved.Token), now.Add(30*24*time.Hour), time.Minute)
+	within(t, "created_at", info.CreatedAt, now.Add(-85*24*time.Hour), time.Minute)
+	within(t, "expires_at", sessionExpiry(t, srv, approved.Token), now.Add(5*24*time.Hour), time.Minute)
 
-	// Sliding renewal reaches the full 30 days, not the approver's remaining 5.
+	// Sliding renewal cannot extend past the approver's remaining 5 days.
 	if _, err := srv.store.DB().Exec(`UPDATE sessions SET expires_at = ? WHERE user_id = ? AND kind = ?`,
-		now.Add(10*24*time.Hour).UTC().Format(time.RFC3339), u.ID, store.SessionKindCLI); err != nil {
+		now.Add(2*24*time.Hour).UTC().Format(time.RFC3339), u.ID, store.SessionKindCLI); err != nil {
 		t.Fatal(err)
 	}
 	newExp, renewed, err := srv.store.RenewSessionIfStale(approved.Token)
 	if err != nil || !renewed {
 		t.Fatalf("renew: renewed=%v err=%v", renewed, err)
 	}
-	within(t, "renewed expiry", newExp, now.Add(30*24*time.Hour), time.Minute)
+	within(t, "renewed expiry", newExp, now.Add(5*24*time.Hour), time.Minute)
 }
 
-// Dating the CLI token from the approval must not make it a fresh sign-in
+// Approving a CLI token must not make it a fresh sign-in
 // for the confirm-only delete recency check (BUG-3336).
 func TestTASK3975_CLITokenFromOldSessionStillCannotConfirmDelete(t *testing.T) {
 	t.Parallel()
@@ -115,10 +114,8 @@ func TestTASK3975_RotationKeepsParentCap(t *testing.T) {
 	within(t, "rotated expiry", sessionExpiry(t, srv, rotated), time.Now().Add(5*24*time.Hour), time.Minute)
 }
 
-// TASK-3975 r2: only a browser session approves. A CLI token that could
-// approve would mint its own successor with a fresh 90-day cap, and a chain
-// of them would never expire. An 85-day-old CLI bearer is refused and mints
-// nothing.
+// Only a browser session approves. An 85-day-old CLI bearer is refused
+// and mints nothing.
 func TestTASK3975_CLIBearerCannotApprove(t *testing.T) {
 	t.Parallel()
 	srv, u, _ := oauthOnlyCloud(t)
