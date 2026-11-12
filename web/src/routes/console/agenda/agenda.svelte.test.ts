@@ -463,44 +463,135 @@ describe('agenda Week and priority', () => {
   expect(screen.getByText('Moved')).toBeTruthy();
   expect(screen.queryByText(/size|effort|capacity/i)).toBeNull(); expect(screen.queryByLabelText(/size|effort|capacity/i)).toBeNull();
  });
- it('renders ranks in server order, reason chips, group completeness and target/deadline text', async () => {
+ it('lists outstanding work in the rail: ranks in order, chips, short dates and group completeness', async () => {
   h.agenda.mockResolvedValue(response([], { priority_list: [workRow({ item_title: 'High B', rank: 'high', reason: 'target_passed' }), workRow({ item_ref: 'EX-31', item_title: 'High A', rank: 'high', reason: 'deadline_still_owed' }), workRow({ item_ref: 'EX-32', item_title: 'Normal row', roles: { ...row().roles!, target: row().at, deadline: '2026-11-06T14:00:00Z' } }), workRow({ item_ref: 'EX-33', item_title: 'Low row', rank: 'low' }), workRow({ item_ref: 'EX-34', item_title: 'Unranked row', rank: undefined })], waiting_on: [workRow({ type: 'item', item_ref: 'W-1', item_title: 'Blocked work', reason: 'blocked_needs_decision' }), workRow({ type: 'item', item_ref: 'W-2', item_title: 'Waiting work', reason: 'waiting' })], no_date_complete: false })); render(Agenda);
-  const list = await screen.findByRole('region', { name: 'Priority' });
-  expect(within(list).getAllByRole('heading').map(el => el.textContent)).toEqual(['Priority', 'High', 'Normal', 'Low', 'Unranked', 'Waiting on', 'No date']);
+  const list = await screen.findByRole('region', { name: 'Outstanding' });
+  expect(list.closest('aside')).toBeTruthy();
+  expect(within(list).getAllByRole('heading').map(el => el.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Outstanding', 'High 2', 'Normal 1', 'Low 1', 'Unranked 1']);
+  expect(within(list).getAllByRole('tab').map(el => el.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['By priority 5', 'Waiting 2', 'No date 0+']);
   expect(within(list).getAllByRole('link').slice(0, 2).map(el => el.textContent)).toEqual(['High B', 'High A']);
-  for (const text of ['Showing all outstanding', 'Target passed', 'Missed deadline · Still owed', 'Needs a decision', 'This list is incomplete.']) expect(within(list).getByText(text)).toBeTruthy();
-  expect(within(list).getByText(/Target November 5.*09:00/)).toBeTruthy(); expect(within(list).getByText(/Deadline November 6.*09:00/)).toBeTruthy();
-  expect(within(list).queryByText('No undated work.')).toBeNull(); expect(within(list).queryByRole('button', { name: /^Done/ })).toBeNull();
+  for (const text of ['Your work, any date', 'Still owed', 'Deadline passed']) expect(within(list).getByText(text)).toBeTruthy();
+  const normal = list.querySelector('li[data-work="EX-32"]') as HTMLElement;
+  expect(normal.querySelector('.when')?.textContent).toBe('Thu 5, 09:00'); expect(normal.querySelector('[data-kind="deadline"]')?.textContent).toContain('Fri 6, 09:00');
+  expect(within(list).queryByRole('button', { name: /^Done/ })).toBeNull();
+  await fireEvent.click(within(list).getByRole('tab', { name: 'Waiting 2' }));
+  expect(within(list).getByText('Needs a decision')).toBeTruthy(); expect(within(list).queryByRole('button', { name: /^(Done|Actions)/ })).toBeNull();
+  await fireEvent.click(within(list).getByRole('tab', { name: 'No date 0+' }));
+  expect(within(list).getByText('This list is incomplete.')).toBeTruthy(); expect(within(list).queryByText('No undated work.')).toBeNull();
   expect(screen.queryByText(/Showing entries up to|Too much to load|could not be shown/)).toBeNull();
+ });
+ it('puts the summary first in the rail and the outstanding list under it, in Week', async () => {
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); await mount();
+  const rail = document.querySelector('aside.rail') as HTMLElement;
+  expect(within(rail).getAllByRole('region').map(el => el.getAttribute('aria-labelledby') && document.getElementById(el.getAttribute('aria-labelledby')!)?.textContent)).toEqual(['This week', 'Outstanding']);
+  expect(rail.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1'); expect(rail.querySelector('[data-stat="completed"] b')?.textContent).toBe('1');
+ });
+ it('Day range keeps the summary in the rail, named for the day, without the outstanding list', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'day');
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()] })); await mount();
+  expect(within(document.querySelector('aside.rail') as HTMLElement).getByRole('region', { name: 'This day' })).toBeTruthy();
+  expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull();
+ });
+ it('the rail is a skeleton while the agenda loads and says so when it did not load', async () => {
+  const first = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(first.promise); render(Agenda);
+  await waitFor(() => expect(document.querySelectorAll('aside.rail .rail-skeleton')).toHaveLength(2));
+  expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull(); expect(screen.queryByText('Not loaded.')).toBeNull();
+  first.resolve(response()); await screen.findByRole('region', { name: 'Outstanding' }); expect(document.querySelector('.rail-skeleton')).toBeNull();
+  h.agenda.mockRejectedValue(new Error('offline')); await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
+  await screen.findByText('Could not load this week');
+  expect(within(document.querySelector('aside.rail') as HTMLElement).getByText('Not loaded.')).toBeTruthy();
+  expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull(); expect(screen.queryByRole('region', { name: 'This week' })).toBeNull();
+ });
+ it('an empty week still lists outstanding work in the rail', async () => {
+  h.agenda.mockResolvedValue(response([], { no_date: [workRow({ type: 'item', item_title: 'Undated' })] })); render(Agenda);
+  await screen.findByText(/Nothing scheduled for/);
+  const list = screen.getByRole('region', { name: 'Outstanding' });
+  expect(within(list).getByText('Nothing outstanding.')).toBeTruthy();
+  await fireEvent.click(within(list).getByRole('tab', { name: 'No date 1' })); expect(within(list).getByText('Undated')).toBeTruthy();
  });
  it('renders complete empty groups and keeps window incompleteness independent', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false })); render(Agenda);
-  for (const text of ['Nothing outstanding.', 'Nothing waiting.', 'No undated work.', 'Too much to load at once. Choose a smaller range or a workspace group.']) expect(await screen.findByText(text)).toBeTruthy();
+  for (const text of ['Nothing outstanding.', 'Too much to load at once. Choose a smaller range or a workspace group.']) expect(await screen.findByText(text)).toBeTruthy();
+  await fireEvent.click(screen.getByRole('tab', { name: 'Waiting 0' })); expect(screen.getByText('Nothing waiting.')).toBeTruthy();
+  await fireEvent.click(screen.getByRole('tab', { name: 'No date 0' })); expect(screen.getByText('No undated work.')).toBeTruthy();
  });
  it('never calls an incomplete empty group empty', async () => {
   h.agenda.mockResolvedValue(response([], { priority_list_complete: false, waiting_on_complete: false, no_date_complete: false })); render(Agenda);
-  await waitFor(() => expect(screen.getAllByText('This list is incomplete.')).toHaveLength(3));
-  for (const text of ['Nothing outstanding.', 'Nothing waiting.', 'No undated work.']) expect(screen.queryByText(text)).toBeNull();
+  await screen.findByRole('region', { name: 'Outstanding' });
+  for (const name of ['By priority 0+', 'Waiting 0+', 'No date 0+']) {
+   await fireEvent.click(screen.getByRole('tab', { name }));
+   expect(screen.getAllByText('This list is incomplete.')).toHaveLength(1);
+   for (const text of ['Nothing outstanding.', 'Nothing waiting.', 'No undated work.']) expect(screen.queryByText(text)).toBeNull();
+  }
  });
  it('moves list schedules through their own target and ref, without Done', async () => {
   h.agenda.mockResolvedValue(response([], { priority_list: [workRow({ day: undefined, at: undefined, roles: { ...row().roles!, target: row().at } })] })); render(Agenda);
-  await screen.findByRole('region', { name: 'Priority' });
-  await fireEvent.click(screen.getByRole('button', { name: 'Move target…' }));
+  const list = await screen.findByRole('region', { name: 'Outstanding' });
+  expect(within(list).queryByRole('button', { name: /^Done/ })).toBeNull();
+  await fireEvent.click(within(list).getByRole('button', { name: 'Actions for EX-30' }));
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Move target…' }));
   const d = screen.getByRole('dialog', { name: 'Move target' }); await fillTime(d, '2026-11-06T09:00');
   await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1' }));
  });
+ it('Bring to today from the rail menu moves the target through the shared flow', async () => {
+  const at = '2026-11-07T14:00:00Z';
+  h.agenda.mockResolvedValue(response([], { priority_list: [workRow({ day: undefined, at: undefined, roles: { ...row().roles!, target: at } })] }));
+  h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to, { changes: [{ item_id: 'root', role: 'target', from: at, to: body.to, root: true }] })));
+  render(Agenda);
+  await fireEvent.click(await screen.findByRole('button', { name: 'Actions for EX-30' }));
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Bring to today' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-05T14:00:00.000Z', revision: 'revision-1' }));
+ });
+ it('a rail row shows a spinner while its move is in flight, and no menu', async () => {
+  const held = deferred<CommitmentMoveResult>(); h.preview.mockReturnValue(held.promise);
+  h.agenda.mockResolvedValue(response([], { priority_list: [workRow({ day: undefined, at: undefined, roles: { ...row().roles!, target: '2026-11-07T14:00:00Z' } })] })); render(Agenda);
+  await fireEvent.click(await screen.findByRole('button', { name: 'Actions for EX-30' }));
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Bring to today' }));
+  await waitFor(() => expect(document.querySelector('li[data-work="EX-30"] .spinner')).toBeTruthy());
+  expect(screen.queryByRole('button', { name: 'Actions for EX-30' })).toBeNull();
+ });
  it('switches between Schedule and Outstanding in place at mobile widths without fetching', async () => {
   vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow({ item_ref: 'EX-40', item_title: 'Owed item' }), workRow({ item_ref: 'EX-41', item_title: 'Other owed' })], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] }));
   await mount();
-  expect(screen.getByRole('button', { name: 'Schedule' })).toHaveAttribute('aria-pressed', 'true');
+  const tabs = within(screen.getByRole('tablist', { name: 'Show' })).getAllByRole('tab');
+  expect(tabs.map(el => el.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Schedule', 'Outstanding 2']);
+  expect(tabs[0]).toHaveAttribute('aria-selected', 'true');
+  const panel = () => document.getElementById(tabs[0].getAttribute('aria-controls')!)!;
+  expect(panel()).toHaveAttribute('role', 'tabpanel'); expect(panel()).toHaveAttribute('aria-labelledby', tabs[0].id); expect(tabs[1]).toHaveAttribute('aria-controls', panel().id);
   expect(document.querySelector('li[data-ref="EX-30"]')?.classList.contains('compact')).toBe(true);
+  // The schedule surface is the schedule alone: the rail belongs to the other tab.
+  expect(panel().contains(screen.getByText('First item'))).toBe(true); expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull(); expect(screen.queryByRole('region', { name: 'This week' })).toBeNull();
   expect(screen.getByRole('button', { name: 'Range: Week' })).toBeTruthy(); expect(screen.queryByRole('group', { name: 'Range' })).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Outstanding' }));
-  expect(screen.getByRole('region', { name: 'Priority' })).toBeVisible(); expect(screen.queryByText('First item')).toBeNull(); expect(stripDays()).toHaveLength(0);
-  await fireEvent.click(screen.getByRole('button', { name: 'Schedule' })); await screen.findByText('First item'); expect(h.agenda).toHaveBeenCalledTimes(1);
+  await fireEvent.click(tabs[1]);
+  expect(tabs[1]).toHaveAttribute('aria-selected', 'true'); expect(panel()).toHaveAttribute('aria-labelledby', tabs[1].id);
+  expect(screen.getByRole('region', { name: 'Outstanding' })).toBeVisible(); expect(screen.queryByText('First item')).toBeNull(); expect(stripDays()).toHaveLength(0);
+  // Summary first, then the list, both inside the panel.
+  expect(within(panel()).getAllByRole('region').map(el => document.getElementById(el.getAttribute('aria-labelledby')!)?.textContent)).toEqual(['This week', 'Outstanding']);
+  expect(document.querySelector('.outstanding')?.classList.contains('compact')).toBe(true);
+  await fireEvent.click(tabs[0]); await screen.findByText('First item'); expect(h.agenda).toHaveBeenCalledTimes(1);
   await fireEvent.click(screen.getByRole('button', { name: 'Range: Week' })); await fireEvent.click(screen.getByRole('menuitemradio', { name: 'Day' }));
   expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('day'); expect(screen.getByRole('button', { name: 'Range: Day' })).toBeTruthy();
+  expect(screen.queryByRole('tablist', { name: 'Show' })).toBeNull(); expect(document.querySelector('[role="tabpanel"]')).toBeNull();
+ });
+ it('the phone switch keeps each surface where it was scrolled to', async () => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  const scrollTo = vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
+  const at = (y: number) => Object.defineProperty(window, 'scrollY', { value: y, configurable: true, writable: true });
+  try {
+   await mount();
+   const [schedule, outstanding] = screen.getAllByRole('tab');
+   at(420); await fireEvent.click(outstanding);
+   await waitFor(() => expect(scrollTo).toHaveBeenLastCalledWith(0, 0));
+   at(130); await fireEvent.click(schedule);
+   await waitFor(() => expect(scrollTo).toHaveBeenLastCalledWith(0, 420));
+   expect(screen.getByText('First item')).toBeTruthy();
+   at(55); await fireEvent.click(outstanding);
+   await waitFor(() => expect(scrollTo).toHaveBeenLastCalledWith(0, 130));
+   expect(scrollTo).toHaveBeenCalledTimes(3);
+  } finally { at(0); }
  });
 });
 
@@ -616,7 +707,7 @@ describe('week strip, attention band and states', () => {
   expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all']);
   expect(screen.getAllByText('First item')).toHaveLength(2); expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
   expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
-  expect(within(screen.getByRole('region', { name: 'Priority' })).getByText('First item')).toBeTruthy();
+  expect(within(screen.getByRole('region', { name: 'Outstanding' })).getByText('First item')).toBeTruthy();
  });
  it('Load the rest keeps the notice when the rest fails or the identity changed', async () => {
   h.agenda.mockResolvedValueOnce(response([row()], { truncated: true, next_from: '2026-11-08T17:00:00Z' })).mockRejectedValueOnce(new Error('offline'));
@@ -828,7 +919,7 @@ describe('forecast actions', () => {
   h.agenda.mockResolvedValue(response([row()],{priority_list:[workRow({roles:{...row().roles!,target:row().at},forecast:{value:'2026-11-10',set_by:'u1',set_by_kind:'agent',set_at:'now',source:''}})]}));
   h.view.mockResolvedValue({forecast:{value:'2026-11-10',set_by:'u1',set_by_kind:'agent',set_at:'now',source:'',passed:false},milestone});
   h.clearForecast.mockResolvedValue({});
-  render(Agenda);await screen.findByRole('button',{name:'Forecast…'});await fireEvent.click(screen.getByRole('button',{name:'Forecast…'}));
+  render(Agenda);await fireEvent.click(await screen.findByRole('button',{name:'Actions for EX-30'}));await fireEvent.click(screen.getByRole('menuitem',{name:'Forecast…'}));
   const d=await screen.findByRole('dialog',{name:'Forecast'});await within(d).findByRole('button',{name:'Clear forecast'});
   await fireEvent.click(within(d).getByRole('button',{name:'Clear forecast'}));
   await waitFor(()=>expect(h.clearForecast).toHaveBeenCalledWith('work','EX-30'));
@@ -880,7 +971,7 @@ describe('workspace groups and daily counts', () => {
   render(Agenda); await screen.findByRole('button', { name: /^Workspaces: / }); await choose('Team');
   await screen.findByText('No workspaces in this group.');
   expect(screen.queryByText(/Could not load/)).toBeNull(); expect(document.querySelector('.layout')).toBeNull(); expect(stripDays()).toHaveLength(0);
-  expect(screen.queryByRole('img', { name: 'Daily counts' })).toBeNull();
+  expect(screen.queryByRole('table', { name: 'Daily counts' })).toBeNull(); expect(document.querySelector('[data-stat]')).toBeNull();
   await fireEvent.click(screen.getByRole('button', { name: 'Add workspaces' })); expect(screen.getByRole('dialog', { name: 'Workspace groups' })).toBeTruthy();
  });
  it('renders normal surfaces for a populated group with no entries', async () => {
@@ -978,18 +1069,20 @@ describe('workspace groups and daily counts', () => {
   write.resolve({}); await settle(); expect(h.groups).toHaveBeenCalledTimes(2);
   expect(screen.queryByRole('dialog', { name: 'Workspace groups' })).toBeNull();
  });
- it('shows the counts-unavailable sentence for a truncated window', async () => {
-  h.agenda.mockResolvedValue(response([], { counts_truncated: true })); render(Agenda);
+ it('shows the counts-unavailable sentence for a truncated window, with the list numbers kept', async () => {
+  h.agenda.mockResolvedValue(response([], { counts_truncated: true, priority_list: [workRow()] })); render(Agenda);
   await screen.findByText('Counts unavailable for this window: too much activity to count.');
-  expect(screen.queryByRole('img', { name: 'Daily counts' })).toBeNull();
+  expect(screen.queryByRole('table', { name: 'Daily counts' })).toBeNull();
+  expect(document.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1'); expect(document.querySelector('[data-stat="completed"]')).toBeNull();
  });
- it.each(['week', 'day', 'month'])('renders daily counts in %s mode', async mode => {
+ it.each([['week', 'This week'], ['day', 'This day'], ['month', 'This month']])('summarises the counts in %s mode', async (mode, title) => {
   localStorage.setItem('pad-agenda-mode:user-a', mode);
-  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); render(Agenda);
-  const chart = await screen.findByRole('img', { name: 'Daily counts' });
-  // One day of counts: each line series still shows its value as a dot.
-  expect(chart.querySelectorAll('circle[data-series="open"]')).toHaveLength(1);
-  expect(chart.querySelectorAll('circle[data-series="burndown"]')).toHaveLength(1);
+  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }, { day: '2026-11-06', completed: 4, open: 2, burndown: 2 }] })); render(Agenda);
+  const summary = await screen.findByRole('region', { name: title });
+  // Tomorrow has no bar and adds nothing to the completed figure.
+  expect(summary.querySelectorAll('svg rect[data-day]')).toHaveLength(1); expect(summary.querySelector('[data-stat="completed"] b')?.textContent).toBe('1');
+  expect(within(summary).getByRole('table', { name: 'Daily counts' }).querySelectorAll('tbody tr')).toHaveLength(2);
+  expect(screen.queryByRole('img', { name: 'Daily counts' })).toBeNull();
  });
  it('does not reload the agenda when a group other than the selected one is renamed', async () => {
   await mount(); const calls = h.agenda.mock.calls.length;
@@ -1145,6 +1238,13 @@ describe('agenda Month page', () => {
   expect(screen.getByText('Created and completed items are hidden.')).toBeTruthy();
   expect(screen.queryByText('No entries this month.')).toBeNull();
   await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.getAllByText('First item')).toHaveLength(2);
+ });
+ it('shows the summary below the grid, named for the month, and no outstanding list', async () => {
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); await mount();
+  const summary = screen.getByRole('region', { name: 'This month' });
+  expect(screen.getByRole('grid').compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  expect(summary.closest('aside')).toBeNull(); expect(summary.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1');
+  expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull();
  });
  it('uses the phone day list and its summaries instead of the desktop grid', async () => {
   vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);

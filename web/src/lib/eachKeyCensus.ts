@@ -37,10 +37,6 @@ export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: stri
  "lib/components/calendar/CalendarFieldPicker.svelte :: each fields as field (field.key) #2": { reason: 'deduped', note: 'dateFields reads parseSchema, which normalizes duplicate field keys.' },
  "lib/components/calendar/WorkspaceGroupsDialog.svelte :: each namedGroups as group (group.id)": { reason: 'db-primary-key', note: 'GET /me/workspace-groups: named groups keyed by the workspace_groups primary key, filtered to kind named. Each refetch replaces the list.' },
  "lib/components/calendar/WorkspaceGroupsDialog.svelte :: each workspaces as workspace (workspace.id)": { reason: 'db-primary-key', note: 'GET /workspaces: one answer keyed by the workspaces primary key, loaded once per identity.' },
- "lib/components/charts/DailyCountsChart.svelte :: each series as item (item.key)": { reason: 'static-literal', note: 'Three literal series keys: completed, open, burndown.' },
- "lib/components/charts/DailyCountsChart.svelte :: each series as item (item.key) #2": { reason: 'static-literal', note: 'Three literal series keys: completed, open, burndown.' },
- "lib/components/charts/DailyCountsChart.svelte :: each data as item (item.day)": { reason: 'strictly-increasing', note: 'AgendaResponse.counts: the server emits one object per consecutive viewer-local day of the window (agenda counts series).' },
- "lib/components/charts/layers/Lines.svelte :: each series as item (item.key)": { reason: 'static-literal', note: 'DailyCountsChart passes a slice of its three literal series (open, burndown).' },
 
 	"routes/console/agenda/+page.svelte :: each (monthRows.get(date) ?? []).slice(0, 3) as row (row.key)": { reason: 'db-primary-key', note: 'agendaRows uses entryKey (type, workspace, owner, item ref, schedule or field, instant) from one agenda response; grouping and slicing preserve uniqueness.' },
 	"lib/components/chat/ChatInboxView.svelte :: each startable as entry (entry.key)": { reason: 'object-or-map-keys', note: "startable filters chatInbox.roster, which is built by iterating the `presences` Map (rollupPresence), keyed by agent name | Map keys cannot repeat." },
