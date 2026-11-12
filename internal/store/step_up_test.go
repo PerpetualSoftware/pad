@@ -317,3 +317,43 @@ func TestStepUpEnableTOTPRecordsEnrolment(t *testing.T) {
 		}
 	})
 }
+
+func TestStepUpSessionSignedInAt(t *testing.T) {
+	stepUpBackends(t, func(t *testing.T, s *store.Store) {
+		u, session, tok := stepUpUser(t, s, "sign-in@example.com")
+		var raw sql.NullString
+		if err := s.DB().QueryRow(s.D().Rebind(`SELECT signed_in_at FROM sessions WHERE id=?`), session.ID).Scan(&raw); err != nil {
+			t.Fatal(err)
+		}
+		if !raw.Valid || raw.String != session.CreatedAt.UTC().Format(time.RFC3339) || !session.SignedInAt.Equal(session.CreatedAt) {
+			t.Fatalf("new session sign-in: raw=%v session=%+v", raw, session)
+		}
+
+		// Pre-migration rows read their own creation time as the sign-in time.
+		stepUpExec(t, s, `UPDATE sessions SET signed_in_at=NULL WHERE id=?`, session.ID)
+		legacy, err := s.ValidateSession(tok)
+		if err != nil || legacy == nil || !legacy.SignedInAt.Equal(legacy.CreatedAt) {
+			t.Fatalf("legacy sign-in: %+v %v", legacy, err)
+		}
+
+		for _, legacyRow := range []bool{true, false} {
+			t.Run(fmt.Sprintf("rotation_legacy_%t", legacyRow), func(t *testing.T) {
+				var signedInAt any
+				want := session.CreatedAt
+				if !legacyRow {
+					want = session.CreatedAt.Add(-time.Hour)
+					signedInAt = want.UTC().Format(time.RFC3339)
+				}
+				stepUpExec(t, s, `UPDATE sessions SET signed_in_at=? WHERE id=?`, signedInAt, session.ID)
+				replacement, err := s.RotateUserSessions(u.ID, u.CredentialEpoch, session.ID, "web", "", "", time.Hour, session.CreatedAt)
+				if err != nil {
+					t.Fatal(err)
+				}
+				session, err = s.ValidateSession(replacement)
+				if err != nil || session == nil || !session.SignedInAt.Equal(want) {
+					t.Fatalf("rotated sign-in: %+v want %v: %v", session, want, err)
+				}
+			})
+		}
+	})
+}

@@ -536,6 +536,7 @@ func NULProtectedColumns() []nulColumn {
 // user_notification_settings is written by PutNotificationSettings.
 var nulExcluded = map[string]string{
 	"users.totp_enabled_at":    "server value: RFC3339 enrolment time (TASK-3867)",
+	"sessions.signed_in_at":    "server value: RFC3339 sign-in time (TASK-3867)",
 	"sessions.step_up_until":   "server value: RFC3339 grant deadline (TASK-3867)",
 	"step_up_codes.id":         "server value: UUID (TASK-3867)",
 	"step_up_codes.user_id":    "server value: user UUID (TASK-3867)",

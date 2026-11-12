@@ -643,23 +643,43 @@ func TestTask3867EnrolAtSessionCreationKeepsEarlierFactor(t *testing.T) {
 	e := setupTokenAuthEnv(t)
 	task3867Mail(t, e)
 	task3867EnrolTOTP(t, e)
-	if _, err := e.srv.store.DB().Exec(`UPDATE sessions SET created_at=(SELECT totp_enabled_at FROM users WHERE id=?) WHERE user_id=?`, e.user.ID, e.user.ID); err != nil {
+	if _, err := e.srv.store.DB().Exec(`UPDATE sessions SET signed_in_at=(SELECT totp_enabled_at FROM users WHERE id=?) WHERE user_id=?`, e.user.ID, e.user.ID); err != nil {
 		t.Fatal(err)
 	}
 	task3867Factor(t, e, "email")
 }
 
 func TestTask3867CLIApprovalKeepsEnrolmentPin(t *testing.T) {
-	e := setupTokenAuthEnv(t)
-	task3867Mail(t, e)
-	if _, err := e.srv.store.DB().Exec(`UPDATE sessions SET created_at=? WHERE user_id=?`, time.Now().Add(-time.Hour).UTC().Format(time.RFC3339), e.user.ID); err != nil {
-		t.Fatal(err)
+	for _, tc := range []struct {
+		name, factor string
+		age          time.Duration
+	}{
+		{"before_enrolment", "email", 85 * 24 * time.Hour},
+		{"after_enrolment", "totp", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e := setupTokenAuthEnv(t)
+			task3867Mail(t, e)
+			task3867EnableTOTP(t, e)
+			var err error
+			e.sessTok, err = e.srv.store.CreateSessionIssuedAt(e.user.ID, "web", "", "", 90*24*time.Hour, time.Now().Add(-tc.age))
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.sessTok = task3867ApproveCLI(t, e)
+			task3867Factor(t, e, tc.factor)
+			info, err := e.srv.store.ValidateSession(e.sessTok)
+			if err != nil || info == nil {
+				t.Fatalf("CLI session: %v", err)
+			}
+			within(t, "CLI created_at", info.CreatedAt, time.Now(), time.Minute)
+			within(t, "CLI expiry", sessionExpiry(t, e.srv, e.sessTok), time.Now().Add(30*24*time.Hour), time.Minute)
+		})
 	}
-	before, err := e.srv.store.ValidateSession(e.sessTok)
-	if err != nil || before == nil {
-		t.Fatalf("approver: %v", err)
-	}
-	task3867EnrolTOTP(t, e)
+}
+
+func task3867ApproveCLI(t *testing.T, e *tokenAuthEnv) string {
+	t.Helper()
 	pending, err := e.srv.store.CreateCLIAuthSession()
 	if err != nil {
 		t.Fatal(err)
@@ -669,14 +689,32 @@ func TestTask3867CLIApprovalKeepsEnrolmentPin(t *testing.T) {
 	if err != nil || approved == nil || approved.Token == "" {
 		t.Fatalf("approval: %v", err)
 	}
-	info, err := e.srv.store.ValidateSession(approved.Token)
-	if err != nil || info == nil {
-		t.Fatalf("CLI session: %v", err)
+	return approved.Token
+}
+
+func TestTask3867PasswordRotationKeepsEnrolmentPin(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	task3867Mail(t, e)
+	task3867EnableTOTP(t, e)
+	var err error
+	e.sessTok, err = e.srv.store.CreateSessionIssuedAt(e.user.ID, "web", "", "", 90*24*time.Hour, time.Now().Add(-85*24*time.Hour))
+	if err != nil {
+		t.Fatal(err)
 	}
-	if !info.CreatedAt.Equal(before.CreatedAt) {
-		t.Fatalf("CLI approval refreshed created_at: %s -> %s", before.CreatedAt, info.CreatedAt)
+	// A CLI session has its own lifetime but inherits the earlier sign-in.
+	e.sessTok = task3867ApproveCLI(t, e)
+	rr := doRequestWithBearer(e.srv, "PATCH", "/api/v1/auth/me", e.sessTok, map[string]string{
+		"current_password": "correct-horse-battery-staple",
+		"new_password":     "second-strong-test-passphrase-42",
+	})
+	task3867Want(t, rr, 200, "")
+	var response struct {
+		Token string `json:"token"`
 	}
-	e.sessTok = approved.Token
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil || response.Token == "" || response.Token == e.sessTok {
+		t.Fatalf("password change did not rotate the session: %v", err)
+	}
+	e.sessTok = response.Token
 	task3867Factor(t, e, "email")
 }
 

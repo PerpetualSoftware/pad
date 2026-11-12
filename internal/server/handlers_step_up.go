@@ -18,7 +18,7 @@ import (
 func (s *Server) stepUpFactor(user *models.User, session *store.SessionInfo) (string, *email.Sender) {
 	sender := s.email
 	switch {
-	case user.TOTPEnabled && (user.TOTPEnabledAt == nil || session.CreatedAt.After(*user.TOTPEnabledAt)):
+	case user.TOTPEnabled && (user.TOTPEnabledAt == nil || session.SignedInAt.After(*user.TOTPEnabledAt)):
 		return "totp", sender
 	case sender != nil:
 		return "email", sender
