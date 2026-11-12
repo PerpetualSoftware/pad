@@ -300,6 +300,7 @@ func TestMCP_BUG3837_DeletedUserIsNotStillValid(t *testing.T) {
 	req.Header.Set("Authorization", "Bearer "+f.pat.Token)
 	ctx := WithCurrentUser(req.Context(), &models.User{ID: "no-such-user"})
 	ctx = context.WithValue(ctx, ctxAuthKind, authKindAPIToken)
+	ctx = WithTokenScopes(ctx, f.pat.Scopes)
 	req = req.WithContext(ctx)
 	if !f.srv.streamCredentialStillValid(req) {
 		t.Fatal("instrument: the PAT itself must still be live")
