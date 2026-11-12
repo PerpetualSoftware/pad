@@ -803,7 +803,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			}()},
 			"item ack": {
 				Summary: "acknowledge a fired reminder",
-				Args:    mkArgs("value"),
+				Args:    mkArgs("reminder-id-or-ref"),
 				Flags:   mkFlags("workspace"),
 			},
 			"item reminders": {

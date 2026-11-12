@@ -617,11 +617,11 @@ func actionItemAckReminder(ctx context.Context, input map[string]any, env Action
 	for k, v := range input {
 		out[k] = v
 	}
-	// cmdhelp names an alternation (<reminder-id|ref>) "value".
-	// Keep the original parameter so HTTP dispatch preserves its meaning.
-	out["value"] = id
+	// The CLI positional is <reminder-id-or-ref>. Keep the original parameter
+	// too, so HTTP dispatch routes on which one the caller gave.
+	out["reminder_id_or_ref"] = id
 	if ref != "" {
-		out["value"] = ref
+		out["reminder_id_or_ref"] = ref
 	}
 	return env.Dispatch(ctx, []string{"item", "ack"}, out)
 }

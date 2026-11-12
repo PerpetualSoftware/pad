@@ -193,7 +193,7 @@ reminder existed and went out.`,
 
 func ackCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "ack <reminder-id|ref>",
+		Use:   "ack <reminder-id-or-ref>",
 		Short: "Acknowledge a fired reminder by id or item ref",
 		Example: `  pad item ack 67ec8261-505f-4ddc-8d40-fbb1393bb649
   pad item ack TASK-9`,
