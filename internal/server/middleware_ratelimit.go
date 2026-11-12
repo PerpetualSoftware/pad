@@ -321,6 +321,8 @@ type RateLimiters struct {
 	// force is already infeasible; this is defense in depth. Per-IP because
 	// the caller is unauthenticated.
 	InvitationPreview *ipRateLimiter
+	// ICSFeed bounds unauthenticated calendar polls per source IP.
+	ICSFeed *ipRateLimiter
 	// RecoveryCode caps how many recovery codes can be tried against a
 	// single 2FA challenge token. Without it an attacker who captures a
 	// valid challenge_token can grind through the small recovery-code
@@ -541,6 +543,7 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(20),
 			Burst: 300,
 		}),
+		ICSFeed: newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(20.0 / 60.0), Burst: 10}),
 		// InvitationPreview: 20 requests per minute per IP (= 20/60 per second,
 		// burst 20). The /join page fetches this once on mount, so the ceiling
 		// is generous enough for a shared-NAT team onboarding in a batch while
@@ -697,6 +700,7 @@ func (rls *RateLimiters) Stop() {
 		rls.Search,
 		rls.Health,
 		rls.InvitationPreview,
+		rls.ICSFeed,
 		rls.RecoveryCode,
 		rls.SharePasswordIP,
 		rls.SharePasswordShare,
@@ -819,6 +823,16 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 				}
 			}
 			// Other admin endpoints fall through to general API limit below
+		}
+
+		if strings.HasPrefix(path, "/api/v1/feeds/ics/") {
+			if !s.rateLimiters.ICSFeed.allow(addr) {
+				slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", "ics_feed")
+				writeRateLimitResponse(w, s.rateLimiters.ICSFeed.config)
+				return
+			}
+			next.ServeHTTP(w, r)
+			return
 		}
 
 		// Invitation preview (BUG-1934): public, pre-auth,

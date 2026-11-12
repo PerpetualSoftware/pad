@@ -57,6 +57,8 @@ type nulColumn struct {
 // login when the trigger refuses — which is why S2 also maps the trigger's
 // error, and why those columns are marked in the comments below.
 var nulColumns = []nulColumn{
+	{"calendar_feeds", "name", classText},
+	{"calendar_feeds", "workspace_ids", classJSON},
 	// items
 	{"items", "fields", classJSON},
 	{"items", "tags", classJSON},
@@ -383,12 +385,16 @@ var nulTriggerMigrations = []string{
 	"166_nul_invariant_triggers_post165.sql",
 	"168_nul_invariant_triggers_post167.sql",
 	"171_nul_invariant_triggers_post170.sql",
+	"177_nul_invariant_triggers_post176.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
 // first. Every column not named here is in nulTriggerMigrations[0].
 var nulColumnTriggerFile = map[string]string{
-	// 165 introduced the table (TASK-4243).
+	// 176 introduced calendar feeds (TASK-4246).
+	"calendar_feeds.name":          "177_nul_invariant_triggers_post176.sql",
+	"calendar_feeds.workspace_ids": "177_nul_invariant_triggers_post176.sql",
+	// 165 introduced workspace groups (TASK-4243).
 	"user_workspace_groups.name": "166_nul_invariant_triggers_post165.sql",
 
 	"items.lease_holder":   "094_nul_invariant_triggers_post084.sql",
@@ -611,6 +617,13 @@ var nulExcluded = map[string]string{
 	"milestone_completion_evidence.transition_seq": "integer mark read from status_transitions (TASK-4358)",
 	"milestone_completion_evidence.recorded_at":    "server timestamp (TASK-4358)",
 
+	"calendar_feeds.id":                         "server-minted feed UUID (TASK-4246)",
+	"calendar_feeds.user_id":                    "authenticated user UUID, foreign key to users(id) (TASK-4246)",
+	"calendar_feeds.token_hash":                 "hex SHA-256 of a server-minted random credential (TASK-4246)",
+	"calendar_feeds.layer":                      "CHECK-constrained mine or agent enum (TASK-4246)",
+	"calendar_feeds.created_at":                 "server timestamp from nowNano() (TASK-4246)",
+	"calendar_feeds.revoked_at":                 "nullable server timestamp from nowNano() (TASK-4246)",
+	"calendar_feeds.last_used_at":               "nullable server timestamp (TASK-4246)",
 	"user_workspace_groups.id":                  "server-minted group UUID (TASK-4243)",
 	"user_workspace_groups.user_id":             "authenticated user UUID, a foreign key to users(id) (TASK-4243)",
 	"user_workspace_groups.created_at":          "server timestamp from nowNano() (TASK-4243)",

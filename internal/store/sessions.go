@@ -190,7 +190,7 @@ func (s *Store) RotateUserSessions(userID string, epoch int64, oldSessionID, dev
 	if err == nil {
 		return token, nil
 	}
-	if delErr := s.DeleteUserSessions(userID); delErr != nil {
+	if delErr := s.DeleteUserSessionsAndRevokeCalendarFeeds(userID); delErr != nil {
 		slog.Error("failed to revoke sessions after a failed rotation",
 			"user_id", userID, "rotation_error", err, "error", delErr)
 	}
@@ -218,6 +218,9 @@ func (s *Store) rotateUserSessions(userID string, epoch int64, oldSessionID, dev
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM sessions WHERE user_id = ? AND id <> ?`), userID, replacementID); err != nil {
 		return "", fmt.Errorf("rotate sessions: delete other sessions: %w", err)
+	}
+	if err := s.RevokeUserCalendarFeedsTx(tx, userID); err != nil {
+		return "", fmt.Errorf("rotate sessions: revoke calendar feeds: %w", err)
 	}
 	if s.rotateFault != nil {
 		if err := s.rotateFault(); err != nil {

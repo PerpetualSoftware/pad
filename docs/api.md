@@ -254,7 +254,7 @@ A user-owned API token minted with a `workspace_id` is confined to that workspac
 
 - **Workspace routes** (`/workspaces/{slug}/...`, by slug or id), the collab socket, `/events?workspace=`, the `/-/r/{workspace}/{ref}` resolver (its ordinary 404), cross-workspace item copy and move, and backlinks answer a pinned token for its own workspace only. A refusal is `403 permission_denied` with `details.reason: "token_workspace_pinned"` and `details.token_workspace` (the slug; absent when the pinned workspace has been deleted); the message names the workspace and says to mint an unscoped token (`pad token create --name <name>`, or Account settings, API Tokens). On the doors that take a workspace by name (`/workspaces/{slug}/...`, `/events?workspace=`, `/search?workspace=`, the copy and preflight `target_workspace`, and the `/-/r/{workspace}` resolver, whose answer is its 404) the refusal is decided before the name is resolved, so it is byte-identical for a workspace that does not exist, one the user is not in, and one the user is in.
 - **Cross-workspace reads narrow.** `GET /workspaces` lists the pinned workspace only, and an unscoped `GET /search` searches only it. `GET /search?workspace=<other>` is the one search refusal (403, decided before the slug is looked up).
-- **Global routes are refused**: anything not workspace-scoped other than the permitted doors below (workspace create, import, deleted and restore; `/auth/export`; `PATCH /auth/me`; invitations; workspace tabs; UI dismissals; `/events/stream` and `/watches`; sessions; connected apps; admin; the rest). The five `/me/workspace-groups` routes are refused too. The allow list is `pinnedTokenRouteAllowed` in `internal/server/pinned_token.go`, deny by default, so a new global route is closed to a pinned token until it is listed.
+- **Global routes are refused**: anything not workspace-scoped other than the permitted doors below (workspace create, import, deleted and restore; `/auth/export`; `PATCH /auth/me`; invitations; workspace tabs; UI dismissals; `/events/stream` and `/watches`; sessions; connected apps; admin; the rest). The five `/me/workspace-groups` routes and all three calendar feed management routes (`POST /me/calendar-feeds`, `GET /me/calendar-feeds`, `DELETE /me/calendar-feeds/{id}`) are refused too. The allow list is `pinnedTokenRouteAllowed` in `internal/server/pinned_token.go`, deny by default, so a new global route is closed to a pinned token until it is listed.
 - **Stays open**: `GET /auth/me`, `GET /auth/session`, `GET /auth/tokens` and `DELETE /auth/tokens/{id}` (revoking is the incident path), `GET /me/needs`, `GET /me/agenda`, the pre-auth flows, and the public routes. A public route that reads the caller (an email-restricted share link, the invitation preview) treats a token pinned to another workspace as signed out. The token doors are narrowed to the tokens pinned to the same workspace, the caller included: `GET /auth/tokens` lists only those, and `DELETE` of any other id (the user's unpinned tokens, tokens pinned elsewhere) is the same `404 not_found` as a missing id.
 - **Remote MCP** (`/mcp` with a PAT) meets the same gates: tools, `pad_set_workspace` and `pad://` resources see the pinned workspace only.
 - **A pin whose workspace was deleted** fails closed: every workspace door is refused (the message says the workspace no longer exists) and lists and searches are empty.
@@ -536,6 +536,46 @@ Outstanding schedule entries and admitted priority/waiting rows may carry `forec
 - **Ordering.** Instant, then type (`schedule`, `date`, `created`, `completed`), then workspace slug, item reference, and schedule id/field/item id. Workspaces are processed in slug order so a scan or budget cut is deterministic. The chronological windows, counts and item events run across all admitted workspaces before actionable groups run workspace by workspace on the remaining shared deadline. A deadline cut during the group pass lowers only group completeness; it does not change `window_complete`.
 - **Bounds.** One request-wide limit of 500 entries after merging and sorting, 1000 schedules scanned across all workspaces, and a 1.5-second budget. The workspace agenda's expansion bounds also apply, including 100 entries per schedule. Each workspace's dated, created and completed halves reads at most 501 items in SQL; created and completed rows are ordered by time and id before that bound. Each overflowing half sets `truncated`.
 - **Truncation and resuming.** The workspace agenda's inclusive `next_from` contract applies. A time-ordered cut on a schedule, created or completed entry resumes at the first unshown instant; repeat with `from=<next_from>`. Entries tied at that instant may repeat, so deduplicate them. A cut on a date entry, an overflowing dated/created/completed half, the request-wide schedule scan cap or the budget sets `truncated` and omits `next_from`; narrow the window. Per-schedule expansion cuts retain the workspace agenda's rules, including `next_from = to` when unexpanded schedules are the only cut, and no cursor for an unpromised time/stall cut. `next_from`, when present, is after `from` and no later than `to`.
+
+### Calendar feeds (TASK-4246)
+
+The feed URL is a bearer secret: your calendar provider stores it, and anyone who holds it can see the titles in that feed.
+
+Only authenticated human users can manage their own feeds. App principals receive
+`404`; workspace-pinned tokens are refused with the same `403 permission_denied`
+response as a grouped personal-agenda request, before reading any feed id.
+
+- `POST /api/v1/me/calendar-feeds` accepts `{"layer":"mine"|"agent","workspace_ids":["<uuid>"],"name":"optional label"}`. Workspace UUIDs are canonicalised and must be admitted to the caller; `[]` means all admitted workspaces at fetch time. Names contain at most 100 characters. Returns `201 {feed,token,url?}`; the full `padics_` token is returned exactly once. The URL is omitted without a usable server base URL.
+- `GET /api/v1/me/calendar-feeds` returns `200 {feeds:[...]}`, live feeds newest first. Feed metadata is `{id,layer,workspace_ids,name,created_at,last_used_at}`; `last_used_at` is nullable. Neither tokens nor hashes can be retrieved. There is no update route: the layer is immutable.
+- `DELETE /api/v1/me/calendar-feeds/{id}` revokes an owned live feed and returns `204`. Another user's id, an unknown id and an already revoked id receive identical `404` responses. At most 10 live feeds are allowed across both layers; creating an eleventh returns `400 validation_error` with `details: {field:"feeds",code:"range"}` and message "At most 10 calendar feeds are allowed". Revoking frees a slot.
+- `GET /api/v1/feeds/ics/{token}` is public and authenticates only with the URL token; it does not read or set session cookies. It returns `text/calendar; charset=utf-8`, `Cache-Control: private`, and `X-Content-Type-Options: nosniff`. The token is not an API bearer token and cannot authenticate other endpoints. This route has a separate per-IP rate limit of 20/minute, burst 10.
+
+Each feed is one layer. `mine` contains `human` and `both` schedule occurrences
+plus dated-field entries. `agent` contains only `agent` schedule occurrences:
+no `both` occurrences and no dated-field entries. Created and completed item
+events are excluded from both. Calendar names are `Pad (<username>)`, optionally
+followed by `: <feed name>`; agent names end with ` Agent calendar` and carry
+`COLOR:mediumpurple`. Events expose only item references, titles, web links and
+effective dates, with separate hard-deadline events when distinct from targets.
+They never expose bodies, comments, attendees or locations.
+
+Fetches evaluate current workspace admission and item visibility as the feed's
+user. Explicit workspace ids intersect that admitted set, so lost access drops
+out silently. The window is UTC midnight 90 days before today through UTC midnight
+365 days after today (exclusive), walked in consecutive chunks of at most 92
+days through the agenda expansion path. Each chunk retains the agenda's 500-entry,
+1000-schedule scan and 1.5-second bounds. The whole feed stops at 2000 VEVENTs
+(including deadline events) or five seconds. `X-Pad-Feed-Complete: true` means the
+window was fully read; any cap, truncation, unexpanded schedule or unavailable
+entry produces `200` with gathered events and `X-Pad-Feed-Complete: false`.
+`last_used_at` is updated at most once per hour.
+
+Malformed and unknown tokens, revoked feeds, disabled users and non-human owners
+all receive byte-identical `404` responses. Password reset (including local and
+admin temporary-password resets), password change and other credential changes
+that rotate sessions revoke all feeds. Admin disable revokes feeds permanently;
+account deletion cascades their rows. A new feed is needed after revocation.
+Only SHA-256 hashes of tokens are stored; request and error logs redact feed URLs.
 
 ### Bootstrap agenda and the stale list (TASK-4237)
 

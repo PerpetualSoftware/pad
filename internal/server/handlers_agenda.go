@@ -63,6 +63,7 @@ type agendaEntry struct {
 	OwnerUsername string `json:"owner_username,omitempty"`
 
 	instant time.Time // sort key, with Type, Workspace, ItemRef and subKey
+	itemID  string    // internal identity for calendar UIDs; never serialized
 	subKey  string
 }
 
@@ -328,7 +329,7 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 			}
 			resp.Entries = append(resp.Entries, agendaEntry{
 				Type: "date", At: at.In(loc).Format(time.RFC3339), Day: v[:10], Field: key, Date: v, Overdue: v < today,
-				ItemRef: ref, ItemTitle: it.Title, Collection: it.CollectionSlug, instant: at, subKey: key,
+				ItemRef: ref, ItemTitle: it.Title, Collection: it.CollectionSlug, instant: at, subKey: key, itemID: it.ID,
 			})
 		}
 	}

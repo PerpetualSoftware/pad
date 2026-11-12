@@ -153,7 +153,7 @@ func TestBUG3349_MintWaitsForAConcurrentDisable_Postgres(t *testing.T) {
 // minting door fails this test until it is gated or justified.
 func TestEveryCredentialInsertRequiresAnActiveUser(t *testing.T) {
 	tables := []string{"sessions", "api_tokens", "oauth_access_tokens", "oauth_refresh_tokens", "oauth_authorization_codes",
-		"oauth_connections", "workspace_invitations", "share_links"}
+		"oauth_connections", "workspace_invitations", "share_links", "calendar_feeds"}
 	exempt := map[string]string{
 		"insertOAuthRequestRowTx": "its two callers gate in the same transaction: insertOAuthRequestRow by subject (requireActiveUserTx), and installIssuanceBarrierTx, the ONE door through which a bot holds a credential (a service token of its own install's client, TASK-3394). TestTask3394_TheExemptInsertHasExactlyTwoGatedCallers pins the caller set",
 		"backfillOneChain":        "migration-time backfill for grants that already exist; mints nothing new",

@@ -24,7 +24,7 @@ const maxScrubBytes = 64 << 10
 
 // The credential path prefixes, shared by RedactPath (which masks the whole
 // tail of a request path) and the text scrubber (which masks one segment).
-const credentialPathPrefix = `/(?:api/v1/(?:auth/cli/sessions|invitations|s)|auth/cli|reset-password|verify-email|join|s)/`
+const credentialPathPrefix = `/(?:api/v1/(?:auth/cli/sessions|invitations|feeds/ics|s)|auth/cli|reset-password|verify-email|join|s)/`
 
 var (
 	// scheme://userinfo@host: the userinfo is a credential whether or not it
@@ -37,7 +37,7 @@ var (
 	// Credentials with a recognisable shape, whatever surrounds them: a Pad
 	// personal access token, a Pad session token, a JWT, a Stripe key, a
 	// GitHub token.
-	reShapes = regexp.MustCompile(`\bpad_[0-9a-f]{64,}|\bpad(?:sess|res|ver|wh|app|ic|ctx)_[A-Za-z0-9_\-]{8,}|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*|\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{16,}|\bgh[pousr]_[A-Za-z0-9]{36,}`)
+	reShapes = regexp.MustCompile(`\bpad_[0-9a-f]{64,}|\bpad(?:sess|res|ver|wh|app|ic|ics|ctx)_[A-Za-z0-9_\-]{8,}|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*|\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{16,}|\bgh[pousr]_[A-Za-z0-9]{36,}`)
 	// A credential path that STARTS a path: after whitespace, a quote, or a
 	// scheme://host. A directory called s inside a filesystem path
 	// (/var/lib/pad/s/pad.db) is not one.

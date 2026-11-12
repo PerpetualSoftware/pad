@@ -358,7 +358,7 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 	// and the caller signs in again, rather than receiving a session that
 	// would read as freshly signed in.
 	if info == nil || info.User.ID != user.ID {
-		delErr := s.store.DeleteUserSessions(user.ID)
+		delErr := s.store.DeleteUserSessionsAndRevokeCalendarFeeds(user.ID)
 		if delErr != nil {
 			slog.Error("failed to invalidate sessions after credential change",
 				"user_id", user.ID, "error", delErr)
@@ -1862,7 +1862,7 @@ func (s *Server) handleLocalReset(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		// Force re-login everywhere with the new credential.
-		if err := s.store.DeleteUserSessions(user.ID); err != nil {
+		if err := s.store.DeleteUserSessionsAndRevokeCalendarFeeds(user.ID); err != nil {
 			writeInternalError(w, err)
 			return
 		}
@@ -1982,7 +1982,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Invalidate all existing sessions (force logout everywhere)
-	if err := s.store.DeleteUserSessions(user.ID); err != nil {
+	if err := s.store.DeleteUserSessionsAndRevokeCalendarFeeds(user.ID); err != nil {
 		slog.Error("failed to invalidate sessions after password reset", "error", err)
 	}
 	// TASK-3365: their live connections re-check now.

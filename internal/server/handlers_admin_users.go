@@ -631,7 +631,7 @@ func (s *Server) handleAdminResetPassword(w http.ResponseWriter, r *http.Request
 	}
 
 	// Invalidate all existing sessions so the user must log in with the new password
-	if err := s.store.DeleteUserSessions(userID); err != nil {
+	if err := s.store.DeleteUserSessionsAndRevokeCalendarFeeds(userID); err != nil {
 		writeInternalError(w, err)
 		return
 	}
