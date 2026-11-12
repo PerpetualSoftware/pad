@@ -3,6 +3,7 @@ package server
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
@@ -13,6 +14,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // tokenExpiryWarningDays is the threshold for adding near-expiry warning
@@ -36,7 +38,7 @@ func (s *Server) getTokenExpirySettings() (defaultDays, maxDays int) {
 }
 
 // requireInteractiveSession refuses a request authenticated by a long-lived
-// API token, and is the gate on every door that MINTS or ROTATES one
+// API token, and is the gate on every door that mints, rotates or edits one
 // (BUG-2890).
 //
 // The escalation it closes: a PAT that can reach a mint door issues further
@@ -62,7 +64,7 @@ func (s *Server) getTokenExpirySettings() (defaultDays, maxDays int) {
 func requireInteractiveSession(w http.ResponseWriter, r *http.Request) bool {
 	if isAPITokenAuth(r) {
 		writeError(w, http.StatusForbidden, "session_required",
-			"Creating or rotating API tokens requires an interactive session, not an API token")
+			"Creating, rotating or changing API tokens requires an interactive session, not an API token")
 		return false
 	}
 	return true
@@ -404,49 +406,153 @@ type apiTokenCreateRequest struct {
 // not a JSON array of strings (including "null"), and any value outside
 // the vocabulary.
 func normalizeTokenScopesInput(w http.ResponseWriter, input *models.APITokenCreate, raw json.RawMessage) bool {
+	var ok bool
+	input.Scopes, ok = normalizeTokenScopes(w, raw)
+	return ok
+}
+
+func normalizeTokenScopes(w http.ResponseWriter, raw json.RawMessage) (string, bool) {
 	allowed := strings.Join(apiTokenScopeVocabulary, ", ")
-	input.Scopes = ""
 	if len(raw) == 0 {
-		return true
+		return "", true
 	}
 	// Into a pointer, so null is nil however it is spaced.
 	var field *string
 	if err := json.Unmarshal(raw, &field); err != nil || field == nil {
 		writeError(w, http.StatusBadRequest, "validation_error",
 			fmt.Sprintf("scopes must be a string holding a JSON array of: %s (got %s); omit scopes for full access", allowed, raw))
-		return false
+		return "", false
 	}
 	// "" is the stored legacy unrestricted form, refused for the reason []
 	// is: only an omitted field gets the default.
 	if *field == "" {
 		writeError(w, http.StatusBadRequest, "validation_error",
 			fmt.Sprintf("scopes must name at least one of: %s; omit scopes for full access", allowed))
-		return false
+		return "", false
 	}
-	input.Scopes = *field
+	scopesJSON := *field
 	var scopes []string
-	if err := json.Unmarshal([]byte(input.Scopes), &scopes); err != nil || scopes == nil {
+	if err := json.Unmarshal([]byte(scopesJSON), &scopes); err != nil || scopes == nil {
 		writeError(w, http.StatusBadRequest, "validation_error",
-			fmt.Sprintf("scopes must be a JSON array of: %s (got %q)", allowed, input.Scopes))
-		return false
+			fmt.Sprintf("scopes must be a JSON array of: %s (got %q)", allowed, scopesJSON))
+		return "", false
 	}
 	if len(scopes) == 0 {
 		writeError(w, http.StatusBadRequest, "validation_error",
 			fmt.Sprintf("scopes must name at least one of: %s; omit scopes for full access", allowed))
-		return false
+		return "", false
 	}
 	for _, scope := range scopes {
 		if !slices.Contains(apiTokenScopeVocabulary, scope) {
 			writeError(w, http.StatusBadRequest, "validation_error",
 				fmt.Sprintf("unknown scope %q; allowed values: %s", scope, allowed))
-			return false
+			return "", false
 		}
 	}
 	encoded, err := json.Marshal(scopes)
 	if err != nil {
 		writeInternalError(w, err)
-		return false
+		return "", false
 	}
-	input.Scopes = string(encoded)
-	return true
+	scopesJSON = string(encoded)
+	return scopesJSON, true
+}
+
+// tokenAccess keeps widening defined in terms of the request-time scope gate.
+type tokenAccess struct{ Scopes string }
+
+func tokenAccessWidens(old, new tokenAccess) bool {
+	for _, method := range []string{http.MethodGet, http.MethodHead, http.MethodOptions, http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		if tokenScopeAllows(new.Scopes, method, "/api/v1/x") && !tokenScopeAllows(old.Scopes, method, "/api/v1/x") {
+			return true
+		}
+	}
+	const run = "/api/v1/workspaces/w/playbooks/p/run"
+	return tokenScopeAllows(new.Scopes, http.MethodPost, run) && !tokenScopeAllows(old.Scopes, http.MethodPost, run)
+}
+
+func (s *Server) handleUpdateUserToken(w http.ResponseWriter, r *http.Request) {
+	if !requireInteractiveSession(w, r) {
+		return
+	}
+	userID := currentUserID(r)
+	if userID == "" {
+		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
+		return
+	}
+	var input struct {
+		Name   json.RawMessage `json:"name"`
+		Scopes json.RawMessage `json:"scopes"`
+	}
+	if err := decodeJSON(r, &input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if len(input.Name) == 0 && len(input.Scopes) == 0 {
+		writeError(w, http.StatusBadRequest, "validation_error", "name or scopes is required")
+		return
+	}
+	var name, scopes *string
+	if len(input.Name) > 0 {
+		if err := json.Unmarshal(input.Name, &name); err != nil || name == nil || strings.TrimSpace(*name) == "" {
+			writeError(w, http.StatusBadRequest, "validation_error", "name must be a non-empty string")
+			return
+		}
+		*name = strings.TrimSpace(*name)
+	}
+	if len(input.Scopes) > 0 {
+		normalized, ok := normalizeTokenScopes(w, input.Scopes)
+		if !ok {
+			return
+		}
+		scopes = &normalized
+	}
+	tokenID := chi.URLParam(r, "tokenID")
+	old, err := s.store.GetUserAPIToken(tokenID, userID)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if old == nil {
+		writeError(w, http.StatusNotFound, "not_found", "Token not found")
+		return
+	}
+	widens := scopes != nil && tokenAccessWidens(tokenAccess{Scopes: old.Scopes}, tokenAccess{Scopes: *scopes})
+	if widens {
+		session := s.requestSessionInfo(r)
+		if session == nil || session.User == nil || session.User.ID != userID || session.StepUpUntil == nil || !session.StepUpUntil.After(time.Now()) {
+			writeError(w, http.StatusForbidden, "step_up_required", "Verify your identity before increasing this key's access")
+			return
+		}
+	}
+	updated, err := s.store.UpdateUserAPIToken(tokenID, userID, name, scopes, old.Scopes)
+	if err != nil {
+		switch {
+		case errors.Is(err, sql.ErrNoRows):
+			writeError(w, http.StatusNotFound, "not_found", "Token not found")
+		case errors.Is(err, store.ErrTokenScopesChanged):
+			writeError(w, http.StatusConflict, "conflict", "Token scopes changed; reload and try again")
+		default:
+			writeInternalError(w, err)
+		}
+		return
+	}
+	if updated.Name != old.Name || updated.Scopes != old.Scopes {
+		// A rename changes no access, so only a scope change re-checks the
+		// user's open connections.
+		if updated.Scopes != old.Scopes {
+			s.invalidateUserAccess(userID)
+		}
+		stepUp := "not_needed"
+		if widens {
+			stepUp = "used"
+		}
+		meta := map[string]string{"token_id": tokenID, "old_scopes": old.Scopes, "new_scopes": updated.Scopes, "step_up": stepUp}
+		if updated.Name != old.Name {
+			meta["old_name"] = old.Name
+			meta["name"] = updated.Name
+		}
+		s.logAuditEvent(models.ActionTokenUpdated, r, auditMeta(meta))
+	}
+	writeJSON(w, http.StatusOK, updated)
 }

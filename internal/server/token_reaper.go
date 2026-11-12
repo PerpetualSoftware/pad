@@ -96,6 +96,9 @@ func (s *Server) stopTokenReaper() {
 // in one is logged and does not skip the others. Quiet on success (operators
 // don't want hourly no-op log lines).
 func (s *Server) runTokenReaperTick() {
+	if err := s.store.CleanExpiredStepUpCodes(); err != nil {
+		slog.Warn("token reaper: clean expired step-up codes failed", "error", err)
+	}
 	if err := s.store.CleanExpiredEmailVerifications(); err != nil {
 		slog.Warn("token reaper: clean expired email verifications failed", "error", err)
 	}

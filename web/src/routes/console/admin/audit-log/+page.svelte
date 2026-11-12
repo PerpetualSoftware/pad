@@ -25,7 +25,7 @@
 	const ACTION_TYPES = [
 		'login', 'login_failed', 'logout', 'bootstrap', 'register',
 		'password_changed', 'password_reset', 'token_created', 'token_revoked',
-		'token_rotated', 'totp_enabled', 'totp_disabled', 'member_invited',
+		'token_rotated', 'token_updated', 'step_up_verified', 'step_up_failed', 'totp_enabled', 'totp_disabled', 'member_invited',
 		'member_removed', 'role_changed', 'settings_changed', 'oauth_login',
 		'oauth_login_failed', 'plan_changed', 'password_reset_by_admin',
 		'user_disabled', 'user_enabled', 'account_deleted',
@@ -43,6 +43,9 @@
 		token_created: 'Token Created',
 		token_revoked: 'Token Revoked',
 		token_rotated: 'Token Rotated',
+		token_updated: 'Token Updated',
+		step_up_verified: 'Step-up Verified',
+		step_up_failed: 'Step-up Failed',
 		totp_enabled: 'TOTP Enabled',
 		totp_disabled: 'TOTP Disabled',
 		member_invited: 'Member Invited',

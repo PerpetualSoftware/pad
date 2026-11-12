@@ -8,22 +8,23 @@ import (
 
 // User represents a registered user in the system.
 type User struct {
-	ID               string `json:"id"`
-	Email            string `json:"email"`
-	Username         string `json:"username"` // Unique handle; empty until set
-	Name             string `json:"name"`
-	PasswordHash     string `json:"-"`    // Never serialized
-	Role             string `json:"role"` // "admin" or "member"
-	AvatarURL        string `json:"avatar_url,omitempty"`
-	TOTPEnabled      bool   `json:"totp_enabled"`
-	RecoveryCodes    string `json:"-"`    // Never serialized
-	Plan             string `json:"plan"` // "free", "pro", or "self-hosted"
-	PlanExpiresAt    string `json:"plan_expires_at,omitempty"`
-	PlanSource       string `json:"-"`                        // Who set Plan: "manual" or "stripe" (TASK-3295); surfaced only on admin user responses
-	StripeCustomerID string `json:"-"`                        // Never serialized
-	PlanOverrides    string `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
-	OAuthProviders   string `json:"-"`                        // JSON array of linked providers, e.g. ["github","google"]
-	PasswordSet      bool   `json:"password_set"`             // True if the user explicitly set a password (vs. OAuth placeholder hash)
+	ID               string     `json:"id"`
+	Email            string     `json:"email"`
+	Username         string     `json:"username"` // Unique handle; empty until set
+	Name             string     `json:"name"`
+	PasswordHash     string     `json:"-"`    // Never serialized
+	Role             string     `json:"role"` // "admin" or "member"
+	AvatarURL        string     `json:"avatar_url,omitempty"`
+	TOTPEnabled      bool       `json:"totp_enabled"`
+	TOTPEnabledAt    *time.Time `json:"-"`
+	RecoveryCodes    string     `json:"-"`    // Never serialized
+	Plan             string     `json:"plan"` // "free", "pro", or "self-hosted"
+	PlanExpiresAt    string     `json:"plan_expires_at,omitempty"`
+	PlanSource       string     `json:"-"`                        // Who set Plan: "manual" or "stripe" (TASK-3295); surfaced only on admin user responses
+	StripeCustomerID string     `json:"-"`                        // Never serialized
+	PlanOverrides    string     `json:"plan_overrides,omitempty"` // JSON overrides for per-user limits
+	OAuthProviders   string     `json:"-"`                        // JSON array of linked providers, e.g. ["github","google"]
+	PasswordSet      bool       `json:"password_set"`             // True if the user explicitly set a password (vs. OAuth placeholder hash)
 	// CredentialEpoch is bumped by every credential change (password reset or
 	// change, disable, account claim). A sign-in mints a session only if the
 	// epoch it read when checking the credential is still current (BUG-3382).

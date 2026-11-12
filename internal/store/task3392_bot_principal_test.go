@@ -159,7 +159,7 @@ func TestTask3392_CredentialMintsRefuseABot(t *testing.T) {
 	if _, err := s.CreateSession(bot.ID, "web", "", "", time.Hour); !errors.Is(err, ErrAppPrincipal) {
 		t.Errorf("CreateSession err = %v, want ErrAppPrincipal", err)
 	}
-	if _, err := s.CreateSessionFenced(bot.ID, bot.CredentialEpoch, "cli", "", "", time.Hour, time.Now()); !errors.Is(err, ErrAppPrincipal) {
+	if _, err := s.CreateSessionFenced(bot.ID, bot.CredentialEpoch, "cli", "", "", time.Hour, time.Now(), time.Time{}); !errors.Is(err, ErrAppPrincipal) {
 		t.Errorf("CreateSessionFenced err = %v, want ErrAppPrincipal", err)
 	}
 	if _, err := s.CreateAPIToken(bot.ID, models.APITokenCreate{Name: "t"}, 30, 365); !errors.Is(err, ErrAppPrincipal) {

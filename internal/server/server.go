@@ -1946,7 +1946,13 @@ func (s *Server) setupRouter() {
 				r.Post("/delete-account", s.handleDeleteAccount)
 				r.Get("/export", s.handleExportAccount)
 
+				// Step-up verification for sensitive key edits (sudo mode)
+				r.Get("/step-up", s.handleStepUpStatus)
+				r.Post("/step-up/email", s.handleStepUpEmail)
+				r.Post("/step-up/verify", s.handleStepUpVerify)
+
 				// User-scoped API tokens
+				r.Patch("/tokens/{tokenID}", s.handleUpdateUserToken)
 				r.Get("/tokens", s.handleListUserTokens)
 				r.Post("/tokens", s.handleCreateUserToken)
 				r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)

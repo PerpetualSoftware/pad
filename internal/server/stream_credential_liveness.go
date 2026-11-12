@@ -130,7 +130,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		if err != nil {
 			return credentialUnknown
 		}
-		if tok == nil {
+		if tok == nil || tok.Scopes != TokenScopesFromContext(r.Context()) {
 			return credentialInvalid
 		}
 		return credentialValid

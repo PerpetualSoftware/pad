@@ -241,11 +241,11 @@ func TestBUG3382_StaleCredentialCheckMintsNoSession(t *testing.T) {
 	if _, err := s.UpdateUser(f.squatter.ID, models.UserUpdate{Password: ptr("a-new-password-123")}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.CreateSessionFenced(checked.ID, checked.CredentialEpoch, "web", "192.0.2.1", "", time.Hour, time.Time{}); err != store.ErrCredentialsChanged {
+	if _, err := s.CreateSessionFenced(checked.ID, checked.CredentialEpoch, "web", "192.0.2.1", "", time.Hour, time.Time{}, time.Time{}); err != store.ErrCredentialsChanged {
 		t.Errorf("a session minted on a stale credential check: err=%v", err)
 	}
 	fresh, _ := s.GetUser(f.squatter.ID)
-	if _, err := s.CreateSessionFenced(fresh.ID, fresh.CredentialEpoch, "web", "192.0.2.1", "", time.Hour, time.Time{}); err != nil {
+	if _, err := s.CreateSessionFenced(fresh.ID, fresh.CredentialEpoch, "web", "192.0.2.1", "", time.Hour, time.Time{}, time.Time{}); err != nil {
 		t.Errorf("control: a current check could not mint: %v", err)
 	}
 

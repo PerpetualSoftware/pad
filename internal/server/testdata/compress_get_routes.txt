@@ -41,6 +41,7 @@ skip /api/v1/auth/cli/sessions/{code}
 skip /api/v1/auth/export
 skip /api/v1/auth/me
 skip /api/v1/auth/session
+skip /api/v1/auth/step-up
 skip /api/v1/auth/tokens
 skip /api/v1/collab/{itemID}
 compress /api/v1/connected-apps

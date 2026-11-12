@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
+	import EditTokenAccessDialog from '$lib/components/auth/EditTokenAccessDialog.svelte';
 	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
 	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
 	import { onMount } from 'svelte';
@@ -140,6 +141,7 @@
 
 	// Tokens
 	let tokens = $state<APIToken[]>([]);
+	let tokenToEdit = $state<APIToken | null>(null);
 	let newTokenName = $state('');
 	// TASK-3866: the access a new key gets. Read and write sends ["*"], the
 	// store's own default, so a key made here is identical to one made with
@@ -309,6 +311,7 @@
 		tokenDeleting = false;
 		tokenDeleteError = '';
 		tokenToRotate = null;
+		tokenToEdit = null;
 		tokenRotating = false;
 		tokenRotateError = '';
 		exportSaving = false;
@@ -1268,6 +1271,7 @@
 									</span>
 								</div>
 								<div class="token-row-actions">
+									<Button variant="secondary" size="sm" onclick={() => { tokenToEdit = token; }}>Edit access</Button>
 									<Button variant="secondary" size="sm" onclick={() => askRotateToken(token)}>Rotate</Button>
 									<Button variant="danger" size="sm" onclick={() => askDeleteToken(token)}>Delete</Button>
 								</div>
@@ -1410,6 +1414,8 @@
 		</section>
 	{/if}
 </div>
+
+<EditTokenAccessDialog token={tokenToEdit} onclose={() => { tokenToEdit = null; }} onupdated={(updated) => { tokens = tokens.map((t) => t.id === updated.id ? updated : t); }} />
 
 <Modal
 	open={!!tokenToDelete}

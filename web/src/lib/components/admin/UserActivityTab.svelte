@@ -171,7 +171,11 @@
 			case 'token_created':
 			case 'token_revoked':
 			case 'token_rotated':
+			case 'token_updated':
 				return '🎟️';
+			case 'step_up_verified':
+			case 'step_up_failed':
+				return '🔐';
 			// TOTP
 			case 'totp_enabled':
 			case 'totp_disabled':
@@ -243,6 +247,12 @@
 				return 'Revoked an API token';
 			case 'token_rotated':
 				return 'Rotated an API token';
+			case 'token_updated':
+				return 'Updated an API token';
+			case 'step_up_verified':
+				return 'Verified identity for an API token change';
+			case 'step_up_failed':
+				return 'Failed identity verification for an API token change';
 			case 'totp_enabled':
 				return 'Enabled two-factor auth';
 			case 'totp_disabled':

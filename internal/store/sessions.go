@@ -26,13 +26,17 @@ type SessionInfo struct {
 	// Kind is how the session was issued: SessionKindCLI or SessionKindWeb
 	// (BUG-3350). Only a web session is accepted as a browser cookie.
 	Kind string
-	// CreatedAt is when the sign-in this session descends from happened: a
-	// rotation (CreateSessionIssuedAt) carries it over rather than restarting
-	// it (BUG-3336).
+	// CreatedAt starts the session lifetime cap. A rotation carries it over
+	// rather than restarting it (BUG-3336).
 	CreatedAt time.Time
+	// SignedInAt is the original sign-in time for step-up factor selection.
+	// CLI approval and rotation carry it over independently of CreatedAt.
+	SignedInAt time.Time
 	// RenewTTL is the session's sliding window (renew_ttl_seconds); zero for a
 	// legacy row that never slides. A rotation keeps it (BUG-3978).
 	RenewTTL time.Duration
+	// StepUpUntil is the fixed deadline for sensitive edits in this session.
+	StepUpUntil *time.Time
 }
 
 // Session kinds (BUG-3350). A CLI session is a bearer credential only; a web
@@ -72,7 +76,7 @@ func (s *Store) CreateSession(userID, deviceInfo, ipAddress, userAgent string, t
 // measured from created_at. The expiry is capped at that lifetime too. A
 // zero issuedAt means a new sign-in, now.
 func (s *Store) CreateSessionIssuedAt(userID, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
-	return s.createSession(userID, -1, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+	return s.createSession(userID, -1, deviceInfo, ipAddress, userAgent, ttl, issuedAt, time.Time{})
 }
 
 // ErrCredentialsChanged refuses a session mint whose credential check is
@@ -86,15 +90,16 @@ var ErrCredentialsChanged = errors.New("credentials changed since the sign-in wa
 // credential was checked (models.User.CredentialEpoch on the user the check
 // loaded), else ErrCredentialsChanged. Every production sign-in uses it
 // (BUG-3382); CreateSession / CreateSessionIssuedAt carry no fence and are
-// for tests and tooling.
-func (s *Store) CreateSessionFenced(userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
+// for tests and tooling. signedInAt independently pins step-up factor
+// selection; zero uses the new row creation time.
+func (s *Store) CreateSessionFenced(userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt, signedInAt time.Time) (string, error) {
 	if epoch < 0 {
 		return "", fmt.Errorf("insert session: negative credential epoch %d", epoch)
 	}
-	return s.createSession(userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+	return s.createSession(userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt, signedInAt)
 }
 
-func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, error) {
+func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt, signedInAt time.Time) (string, error) {
 	// Only for an account that is not disabled, decided under the users row
 	// (BUG-3349, requireActiveUserTx): a request admitted before a disable,
 	// minting after it, would otherwise leave a session its revoke never saw.
@@ -103,7 +108,7 @@ func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress,
 		return "", fmt.Errorf("insert session: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	plaintext, _, err := s.createSessionTx(tx, userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+	plaintext, _, err := s.createSessionTx(tx, userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt, signedInAt)
 	if err != nil {
 		return "", err
 	}
@@ -115,7 +120,7 @@ func (s *Store) createSession(userID string, epoch int64, deviceInfo, ipAddress,
 
 // createSessionTx is createSession's body on a caller-owned transaction: it
 // returns the plaintext token and the new row's id, and commits nothing.
-func (s *Store) createSessionTx(tx *sql.Tx, userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt time.Time) (string, string, error) {
+func (s *Store) createSessionTx(tx *sql.Tx, userID string, epoch int64, deviceInfo, ipAddress, userAgent string, ttl time.Duration, issuedAt, signedInAt time.Time) (string, string, error) {
 	// Generate 32 random bytes → hex → prefix
 	raw := make([]byte, 32)
 	if _, err := rand.Read(raw); err != nil {
@@ -143,6 +148,10 @@ func (s *Store) createSessionTx(tx *sql.Tx, userID string, epoch int64, deviceIn
 		}
 	}
 	expiresAt := expires.Format(time.RFC3339)
+	signInTime := ts
+	if !signedInAt.IsZero() {
+		signInTime = signedInAt.UTC().Format(time.RFC3339)
+	}
 
 	if err := s.requireActiveUserTx(tx, userID); err != nil {
 		if errors.Is(err, ErrUserDisabled) {
@@ -163,9 +172,9 @@ func (s *Store) createSessionTx(tx *sql.Tx, userID string, epoch int64, deviceIn
 		}
 	}
 	if _, err := tx.Exec(s.q(`
-		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds, kind)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second), SessionKindFor(deviceInfo)); err != nil {
+		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds, kind, signed_in_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`), id, userID, tokenHash, deviceInfo, ipAddress, uaHash, expiresAt, ts, int64(ttl/time.Second), SessionKindFor(deviceInfo), signInTime); err != nil {
 		return "", "", fmt.Errorf("insert session: %w", err)
 	}
 	return plaintext, id, nil
@@ -178,7 +187,8 @@ func (s *Store) createSessionTx(tx *sql.Tx, userID string, epoch int64, deviceIn
 // caller's own session, onto it, then deletes every other session of the
 // user. A device on any OTHER session dies with that session (the cascade):
 // the change exists to cut off stolen sessions, and their push tokens go with
-// them (TASK-3938). An empty oldSessionID rebinds nothing.
+// them (TASK-3938). The replacement keeps the old session sign-in time
+// for step-up factor selection. An empty oldSessionID rebinds nothing.
 //
 // It fails closed. When the transaction fails for any reason, every session
 // of the user is revoked as DeleteUserSessions always did, and the original
@@ -206,7 +216,15 @@ func (s *Store) rotateUserSessions(userID string, epoch int64, oldSessionID, dev
 		return "", fmt.Errorf("rotate sessions: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	token, replacementID, err := s.createSessionTx(tx, userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt)
+	var signedInAt time.Time
+	if oldSessionID != "" {
+		var raw string
+		if err := tx.QueryRow(s.q(`SELECT COALESCE(signed_in_at, created_at) FROM sessions WHERE id = ? AND user_id = ?`), oldSessionID, userID).Scan(&raw); err != nil {
+			return "", fmt.Errorf("rotate sessions: read sign-in time: %w", err)
+		}
+		signedInAt = parseTime(raw)
+	}
+	token, replacementID, err := s.createSessionTx(tx, userID, epoch, deviceInfo, ipAddress, userAgent, ttl, issuedAt, signedInAt)
 	if err != nil {
 		return "", err
 	}
@@ -252,9 +270,10 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 
 	var sessionID, userID, expiresAt, ipAddress, uaHash, createdAt, kind string
 	var renewSeconds int64
+	var stepUpUntil, signedInAt *string
 	err := s.db.QueryRowContext(ctx, s.q(`
-		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds)
+		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds, step_up_until, signed_in_at FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds, &stepUpUntil, &signedInAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -277,14 +296,20 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 		return nil, nil
 	}
 
+	signInTime := parseTime(createdAt)
+	if signedInAt != nil {
+		signInTime = parseTime(*signedInAt)
+	}
 	return &SessionInfo{
-		ID:        sessionID,
-		User:      user,
-		IPAddress: ipAddress,
-		UAHash:    uaHash,
-		CreatedAt: parseTime(createdAt),
-		Kind:      kind,
-		RenewTTL:  time.Duration(renewSeconds) * time.Second,
+		ID:          sessionID,
+		User:        user,
+		IPAddress:   ipAddress,
+		UAHash:      uaHash,
+		CreatedAt:   parseTime(createdAt),
+		SignedInAt:  signInTime,
+		Kind:        kind,
+		RenewTTL:    time.Duration(renewSeconds) * time.Second,
+		StepUpUntil: parseTimePtr(stepUpUntil),
 	}, nil
 }
 

@@ -29,7 +29,7 @@ var usernameCleanRe = regexp.MustCompile(`[^a-z0-9-]+`)
 var bcryptCost = 12
 
 // user SELECT columns — used by all user queries.
-const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch, kind, timezone, chat_enabled`
+const userColumns = `id, email, username, name, password_hash, role, avatar_url, totp_secret, totp_enabled, recovery_codes, plan, plan_expires_at, plan_source, stripe_customer_id, plan_overrides, oauth_providers, password_set, disabled_at, email_verified_at, last_active_at, last_write_at, created_at, updated_at, credential_epoch, kind, timezone, chat_enabled, totp_enabled_at`
 
 // scanUser scans a user row into a User struct.
 // The TOTP secret column is read and discarded: the User struct does not carry
@@ -42,15 +42,17 @@ func scanUser(row interface{ Scan(...interface{}) error }) (*models.User, error)
 	var disabledAt, emailVerifiedAt, lastActiveAt, lastWriteAt, timezone sql.NullString
 	var totpSecretUnused string
 	var chatEnabled int
+	var totpEnabledAt *string
 	err := row.Scan(
 		&u.ID, &u.Email, &u.Username, &u.Name, &u.PasswordHash, &u.Role, &u.AvatarURL,
 		&totpSecretUnused, &u.TOTPEnabled, &u.RecoveryCodes,
 		&u.Plan, &u.PlanExpiresAt, &u.PlanSource, &u.StripeCustomerID, &u.PlanOverrides, &u.OAuthProviders,
 		&u.PasswordSet,
 		&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-		&u.CredentialEpoch, &u.Kind, &timezone, &chatEnabled,
+		&u.CredentialEpoch, &u.Kind, &timezone, &chatEnabled, &totpEnabledAt,
 	)
 	u.ChatEnabled = chatEnabled != 0
+	u.TOTPEnabledAt = parseTimePtr(totpEnabledAt)
 	if disabledAt.Valid {
 		u.DisabledAt = disabledAt.String
 	}
@@ -611,13 +613,14 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 		var storageBytes int64
 		var totpSecretUnused string
 		var chatEnabled int
+		var totpEnabledAt *string
 		if err := rows.Scan(
 			&entry.ID, &entry.Email, &entry.Username, &entry.Name, &entry.PasswordHash, &entry.Role, &entry.AvatarURL,
 			&totpSecretUnused, &entry.TOTPEnabled, &entry.RecoveryCodes,
 			&entry.Plan, &entry.PlanExpiresAt, &entry.PlanSource, &entry.StripeCustomerID, &entry.PlanOverrides, &entry.OAuthProviders,
 			&entry.PasswordSet,
 			&disabledAt, &emailVerifiedAt, &lastActiveAt, &lastWriteAt, &createdAt, &updatedAt,
-			&entry.CredentialEpoch, &entry.Kind, &timezone, &chatEnabled,
+			&entry.CredentialEpoch, &entry.Kind, &timezone, &chatEnabled, &totpEnabledAt,
 			&workspaceCount, &storageBytes,
 		); err != nil {
 			return nil, fmt.Errorf("search users scan: %w", err)
@@ -639,6 +642,7 @@ func (s *Store) SearchUsers(params AdminUserSearchParams) (*AdminUserSearchResul
 			entry.Timezone = &tz
 		}
 		entry.ChatEnabled = chatEnabled != 0
+		entry.TOTPEnabledAt = parseTimePtr(totpEnabledAt)
 		entry.CreatedAt = parseTime(createdAt)
 		entry.UpdatedAt = parseTime(updatedAt)
 		entry.WorkspaceCount = workspaceCount
@@ -1984,11 +1988,13 @@ func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) e
 		return fmt.Errorf("enable totp: secret mismatch or user not found")
 	}
 
-	// Update — use the stored (encrypted) value in WHERE for atomicity
+	// Update — use the stored (encrypted) value in WHERE for atomicity.
+	// Every enrolment resets the session pin, including after disabling 2FA.
+	ts := now()
 	result, err := s.db.Exec(s.q(
-		`UPDATE users SET totp_enabled = ?, recovery_codes = ?, updated_at = ?
+		`UPDATE users SET totp_enabled = ?, recovery_codes = ?, updated_at = ?, totp_enabled_at = ?
 		 WHERE id = ? AND totp_secret = ? AND totp_enabled = ?`),
-		s.dialect.BoolToInt(true), hashedRecoveryCodes, now(), userID, storedSecret, s.dialect.BoolToInt(false))
+		s.dialect.BoolToInt(true), hashedRecoveryCodes, ts, ts, userID, storedSecret, s.dialect.BoolToInt(false))
 	if err != nil {
 		return fmt.Errorf("enable totp: %w", err)
 	}
@@ -2002,6 +2008,8 @@ func (s *Store) EnableTOTP(userID, expectedSecret, hashedRecoveryCodes string) e
 // DisableTOTP disables 2FA and clears the secret and recovery codes. It also
 // clears the totp_last_step single-use watermark (BUG-2054) so it doesn't
 // outlive the secret it belonged to and reject a future re-enrollment's codes.
+// The enrolment timestamp stays: it is ignored while disabled and overwritten
+// by every successful EnableTOTP.
 func (s *Store) DisableTOTP(userID string) error {
 	_, err := s.db.Exec(s.q(`UPDATE users SET totp_enabled = ?, totp_secret = '', recovery_codes = '', totp_last_step = NULL, updated_at = ? WHERE id = ?`),
 		s.dialect.BoolToInt(false), now(), userID)

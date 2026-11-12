@@ -428,7 +428,7 @@ func (s *Server) createAuthSession(w http.ResponseWriter, r *http.Request, user 
 	}
 	// Fenced on the credential epoch read when the sign-in checked its
 	// credential (BUG-3382): user is the account as that check loaded it.
-	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, device, clientIP(r), r.UserAgent(), ttl, time.Time{})
+	token, err := s.store.CreateSessionFenced(user.ID, user.CredentialEpoch, device, clientIP(r), r.UserAgent(), ttl, time.Time{}, time.Time{})
 	if errors.Is(err, store.ErrCredentialsChanged) {
 		writeError(w, http.StatusUnauthorized, "credentials_changed",
 			"Your sign-in details changed while you were signing in. Sign in again.")
@@ -2004,7 +2004,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 
 	// Create a fresh session so the user is logged in, fenced on the epoch
 	// this reset produced (BUG-3382).
-	sessionToken, err := s.store.CreateSessionFenced(updated.ID, updated.CredentialEpoch, "web", clientIP(r), r.UserAgent(), webSessionTTL, time.Time{})
+	sessionToken, err := s.store.CreateSessionFenced(updated.ID, updated.CredentialEpoch, "web", clientIP(r), r.UserAgent(), webSessionTTL, time.Time{}, time.Time{})
 	if err != nil {
 		writeStoreErrorBusyAs(w, r, err, http.StatusInternalServerError, "internal_error", "Password updated but failed to create session",
 			"Your password was updated, but the server was too busy to sign you in. Please sign in with the new password.")
