@@ -742,6 +742,18 @@ describe('agenda Month page', () => {
   expect(within(detail).queryByRole('button', { name: 'Done EX-30' })).toBeNull();
   expect(within(detail).getByLabelText('Done')).toBeTruthy();
  });
+ it('shows a failed Done inside day detail, not behind it', async () => {
+  await mount(); await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog');
+  h.resolve.mockRejectedValueOnce(new Error('boom'));
+  await fireEvent.click(within(detail).getByRole('button', { name: 'Done EX-30' }));
+  expect(await within(detail).findByRole('alert')).toHaveTextContent('Could not update this occurrence. Try again.');
+  expect(screen.getAllByRole('alert')).toHaveLength(1);
+ });
+ it('names the day once in day detail', async () => {
+  await mount(); await fireEvent.click(dateButton('2026-11-05'));
+  expect(within(screen.getByRole('dialog')).getAllByRole('heading', { level: 2 })).toHaveLength(1);
+ });
  it.each(['Snooze…', 'Move target…', 'Set forecast…'])('closes day detail before opening %s', async name => {
   await mount(); await fireEvent.click(dateButton('2026-11-05'));
   const detail = screen.getByRole('dialog');

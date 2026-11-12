@@ -87,7 +87,7 @@
 	const monthGroups = $derived(groupEntries(monthEntries));
 	const monthRows = $derived.by(() => {
 		const byDay = new Map<string, ReturnType<typeof agendaRows>>();
-		for (const row of agendaRows(monthEntries, zone)) {
+		for (const row of agendaRows(monthEntries)) {
 			const rows = byDay.get(row.day) ?? []; rows.push(row); byDay.set(row.day, rows);
 		}
 		return byDay;
@@ -460,7 +460,7 @@
 </PageHeader>
 
 <div role="status" aria-live="polite" aria-atomic="true">{status}</div>
-{#if actionError && !dialogEntry && !review}<p role="alert">{actionError}</p>{/if}
+{#if actionError && !dialogEntry && !review && !openedDay}<p role="alert">{actionError}</p>{/if}
 {#if !emptyGroup && savedRefreshError}
 	<p role="alert">Saved. Could not refresh the view.</p>
 	<Button onclick={() => load(day, zone, true)}>Try again</Button>
@@ -494,7 +494,7 @@
 		{:else if !incomplete}<p>No entries this month.</p>{/if}
 	{/if}
 	<AgendaDayDialog day={openedDay} entries={monthGroups.find(group => group.day === openedDay)?.entries ?? []} {zone} {mobile}
-		incomplete={!!openedDay && dayIncomplete(openedDay)} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
+		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
 {:else if mode === 'week'}
 	{#if !showEvents && data && entries.length === 0 && data.entries.length > 0}
 		<p>Created and completed entries are hidden.</p>

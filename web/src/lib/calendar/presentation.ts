@@ -193,7 +193,7 @@ export function forecastText(f: CommitmentForecastSummary, zone: string): string
 }
 
 /** Preserve authoritative placement and server order within all-day/timed groups. */
-export function agendaRows(entries: AgendaEntry[], _zone: string): CalendarRow[] {
+export function agendaRows(entries: AgendaEntry[]): CalendarRow[] {
  return groupEntries(entries).flatMap(group => group.entries.map(entry => ({
   key: entryKey(entry), day: entry.day, ref: entry.item_ref, target: entry.item_ref, title: entry.item_title,
   href: entryHref(entry), workspaceName: entry.workspace_name, allDay: isAllDay(entry), at: entry.at,
