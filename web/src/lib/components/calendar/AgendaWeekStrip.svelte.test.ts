@@ -44,6 +44,24 @@ describe('AgendaWeekStrip', () => {
 		cleanup();
 		mount({ entries: busy.slice(0, 5), compact: true }); expect(tones()).toEqual(['owed', 'quiet', 'quiet', 'done']);
 	});
+	it('claims nothing about a day that was not loaded, and no total for one partly loaded', () => {
+		const state = (day: string) => day === '2031-03-10' ? 'full' : day === '2031-03-11' ? 'partial' : 'none';
+		const { onselect } = mount({ loadState: state, entries: [entry(), entry({ day: '2031-03-11' }), entry({ day: '2031-03-11', state: 'done' }), entry({ day: '2031-03-12' })] });
+		expect(button('2031-03-10')).toHaveAccessibleName('Monday 10 March, 1 entry, 1 owed');
+		expect(button('2031-03-11')).toHaveAccessibleName('Tuesday 11 March, Today, not fully loaded');
+		expect(button('2031-03-11').querySelectorAll('.pip')).toHaveLength(2); expect(button('2031-03-11').querySelector('.n')?.textContent).toBe('2+');
+		for (const day of ['2031-03-12', '2031-03-13']) {
+			expect(button(day)).toHaveAccessibleName(/, not loaded$/); expect(button(day).getAttribute('aria-label')).not.toMatch(/entr/);
+			expect(button(day).querySelectorAll('.pip')).toHaveLength(0); expect(button(day).querySelector('.n')?.textContent).toBe('');
+			expect(button(day).classList.contains('quiet')).toBe(false);
+		}
+		expect(button('2031-03-12')).toHaveAccessibleName('Wednesday 12 March, not loaded');
+		button('2031-03-13').click(); expect(onselect).toHaveBeenCalledWith('2031-03-13');
+	});
+	it('a partly loaded day with nothing yet shows no dash', () => {
+		mount({ loadState: () => 'partial' });
+		expect(button('2031-03-12')).toHaveAccessibleName('Wednesday 12 March, not fully loaded'); expect(button('2031-03-12').querySelector('.n')?.textContent).toBe('');
+	});
 	it('is one tab stop whose arrow keys rove, and a press picks the day', async () => {
 		const { buttons, onselect } = mount();
 		expect(buttons.map(b => b.tabIndex)).toEqual([-1, 0, -1, -1, -1, -1, -1]);

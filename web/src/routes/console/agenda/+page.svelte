@@ -40,7 +40,10 @@
 	const today = $derived(todayIn(zone, now));
 	// The strip holds still while Day range steps through it; it follows the selected day otherwise.
 	let stripAnchor = $state('');
-	const stripStart = $derived(mode === 'day' && stripAnchor && day >= stripAnchor && day <= shiftDay(stripAnchor, 6) ? stripAnchor : day);
+	// Past either end of the anchored week it pages by whole weeks, so it never creeps a day at a time.
+	const stripStart = $derived(mode === 'day' && stripAnchor
+		? shiftDay(stripAnchor, 7 * Math.floor((Date.parse(`${day}T00:00:00Z`) - Date.parse(`${stripAnchor}T00:00:00Z`)) / 604_800_000))
+		: day);
 	const stripDays = $derived(Array.from({ length: 7 }, (_, index) => shiftDay(stripStart, index)));
 	let openedDay = $state<string | null>(null);
 	let monthGrid = $state<{ cancelFocus: () => void }>();
@@ -49,6 +52,9 @@
 	let surface = $state<'agenda' | 'list'>('agenda');
 	let periodHeading = $state<HTMLHeadingElement>();
 	let loadingRest = $state(false);
+	// Whether "Load the rest" was asked for in the window on screen; a quiet reload of that window then pages on too.
+	let wantRest = false;
+	const REST_PAGES = 10;
 	let showEvents = $state(true);
 	let data = $state<AgendaResponse | null>(null);
 	let loading = $state(true);
@@ -132,7 +138,12 @@
 		};
 	});
 
-	const nextDay = $derived(data?.next_from ? roleDay(data.next_from, zone) : null);
+	const windowOf = (viewMode: 'week' | 'day' | 'month', date: string, timeZone: string) =>
+		viewMode === 'month' ? monthWindow(date.slice(0, 7), timeZone) : viewMode === 'week' ? weekWindow(date, timeZone) : dayWindow(date, timeZone);
+	// next_from is a place to continue from only while it is before the window's end; at the end, the window was read through.
+	const cursorIn = (next: string | undefined, to: string) => next && Date.parse(next) < Date.parse(to) ? next : null;
+	const cursor = $derived(cursorIn(data?.next_from, windowOf(mode, day, zone).to));
+	const nextDay = $derived(cursor ? roleDay(cursor, zone) : null);
 	const monthEntries = $derived(entries.filter(entry => !nextDay || entry.day <= nextDay));
 	const monthGroups = $derived(groupEntries(monthEntries));
 	const monthRows = $derived.by(() => {
@@ -145,12 +156,20 @@
 	function dayIncomplete(date: string) {
 		return incomplete && (!nextDay || date >= nextDay || !!data?.unavailable?.length || !!data?.unexpanded?.length);
 	}
+	// How much of a strip day is on screen. Day range loads the selected day alone; a cut window stops on the next_from day.
+	function stripLoad(date: string): 'full' | 'partial' | 'none' {
+		if (!data || (mode === 'day' && date !== day)) return 'none';
+		if (!dayIncomplete(date)) return 'full';
+		return nextDay && date > nextDay ? 'none' : 'partial';
+	}
 	function monthCellLabel(date: string) {
 		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${monthRows.get(date)?.length ?? 0} entries${dayIncomplete(date) ? ', Incomplete' : ''}`;
 	}
 	function openDay(date: string) { selectedDay = date; openedDay = date; }
 	function movePeriod(delta: number) {
-		clearDrag(); selectedDay = mode === 'month' ? moveMonth(day, delta) : shiftDay(day, delta * (mode === 'week' ? 7 : 1));
+		clearDrag();
+		if (mode === 'day') stripAnchor = stripStart;
+		selectedDay = mode === 'month' ? moveMonth(day, delta) : shiftDay(day, delta * (mode === 'week' ? 7 : 1));
 	}
 	async function dayAction(entry: AgendaEntry, state: AgendaAction) {
 		const sameIdentity = authStore.identityFence();
@@ -170,9 +189,11 @@
 	});
 	// An action error with no dialog open to show it goes to the toast container, once.
 	$effect(() => {
-		const message = actionError && !dialogEntry && !review && !openedDay ? actionError : '';
+		const message = actionError;
+		// A dialog shows the error itself, and that counts as shown: closing the dialog does not repeat it.
+		const shown = !!(dialogEntry || review || openedDay);
 		untrack(() => {
-			if (message && message !== toastedError) toastStore.show(message, 'error');
+			if (message && !shown && message !== toastedError) toastStore.show(message, 'error');
 			toastedError = message;
 		});
 	});
@@ -278,6 +299,8 @@
 		const sameIdentity = authStore.identityFence();
 		const userId = authStore.user?.id;
 		const current = () => mine === ticket && sameIdentity();
+		if (!quiet) wantRest = false;
+		const resume = quiet && wantRest;
 		await Promise.resolve();
 		if (!current()) return;
 		if (loadedUser !== userId) {
@@ -289,9 +312,18 @@
 		if (!quiet) { data = null; savedRefreshError = false; announcement = ''; }
 		else if (announcement === lastAnnouncedMonth) announcement = '';
 		try {
-			const { from, to } = viewMode === 'month' ? monthWindow(date.slice(0, 7), timeZone) : viewMode === 'week' ? weekWindow(date, timeZone) : dayWindow(date, timeZone);
-			const response = await (workspaceGroups ? api.getMyAgenda(from, to, timeZone, requestedGroup) : api.getMyAgenda(from, to, timeZone));
+			const { from, to } = windowOf(viewMode, date, timeZone);
+			const read = (start: string) => workspaceGroups ? api.getMyAgenda(start, to, timeZone, requestedGroup) : api.getMyAgenda(start, to, timeZone);
+			let response = await read(from);
 			if (!current()) return;
+			// The rest was on screen before this reload: page on before publishing, so its rows never drop out.
+			for (let page = 0, next = resume && cursorIn(response.next_from, to); next && page < REST_PAGES; page++, next = cursorIn(response.next_from, to)) {
+				let rest: AgendaResponse;
+				// A page that fails leaves what was joined so far, and its next_from offers the rest again.
+				try { rest = await read(next); } catch { break; }
+				if (!current()) return;
+				response = joinRest(response, rest);
+			}
 			data = response; saved = {}; savedRefreshError = false;
 			if (!quiet && viewMode === 'month' && lastAnnouncedMonth !== monthLabel(date.slice(0, 7))) {
 				lastAnnouncedMonth = monthLabel(date.slice(0, 7)); announcement = lastAnnouncedMonth;
@@ -320,28 +352,32 @@
 			openedDay = null;
 			clearDrag();
 			if (ready) void load(date, timeZone);
-			else { ticket++; data = null; loading = true; updating = false; loadError = false; }
+			else { ticket++; wantRest = false; data = null; loading = true; updating = false; loadError = false; }
 		});
 	});
 	$effect(() => () => { ticket++; groupsTicket++; workspacesTicket++; dragSerial++; });
 	// The window stopped at next_from: ask for the remainder and join it to what is shown.
+	function joinRest(shown: AgendaResponse, rest: AgendaResponse): AgendaResponse {
+		const seen = new Set(shown.entries.map(entryKey));
+		return {
+			...shown, entries: [...shown.entries, ...rest.entries.filter(entry => !seen.has(entryKey(entry)))],
+			window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from,
+			unavailable: [...(shown.unavailable ?? []), ...(rest.unavailable ?? [])], unexpanded: [...(shown.unexpanded ?? []), ...(rest.unexpanded ?? [])]
+		};
+	}
 	async function loadRest() {
-		const from = data?.next_from;
+		const from = cursor;
 		if (!from || loadingRest) return;
+		wantRest = true;
 		const mine = ticket;
 		const sameIdentity = authStore.identityFence();
 		const current = () => mine === ticket && sameIdentity();
-		const { to } = mode === 'month' ? monthWindow(month, zone) : mode === 'week' ? weekWindow(day, zone) : dayWindow(day, zone);
+		const { to } = windowOf(mode, day, zone);
 		loadingRest = true; actionError = '';
 		try {
 			const rest = await (workspaceGroups ? api.getMyAgenda(from, to, zone, selectedGroup) : api.getMyAgenda(from, to, zone));
 			if (!current() || !data) return;
-			const seen = new Set(data.entries.map(entryKey));
-			data = {
-				...data, entries: [...data.entries, ...rest.entries.filter(entry => !seen.has(entryKey(entry)))],
-				window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from,
-				unavailable: [...(data.unavailable ?? []), ...(rest.unavailable ?? [])], unexpanded: [...(data.unexpanded ?? []), ...(rest.unexpanded ?? [])]
-			};
+			data = joinRest(data, rest);
 		} catch {
 			if (current()) actionError = 'Could not load the rest. Try again.';
 		} finally {
@@ -570,7 +606,7 @@
 	{/if}
 	{#if incomplete}
 		<div class="notice">
-			{#if data?.next_from && nextDay}
+			{#if cursor && nextDay}
 				<span><b>Showing entries up to {longDay(nextDay, 'short')}.</b> This {mode} has more than the agenda can load at once.</span><span class="spacer"></span>
 				<Button size="sm" disabled={loadingRest} onclick={loadRest}>Load the rest</Button>
 			{:else if data?.window_complete === false || data?.truncated}
@@ -616,7 +652,7 @@
 		</div>
 	{/if}
 	{#if schedule}
-		<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} {zone} {now} compact={mobile}
+		<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} loadState={stripLoad} {zone} {now} compact={mobile}
 			{dragging} {hoverDay} onselect={pickDay} onenter={enterDay} ondrop={dropDay} />
 	{/if}
 	<div class="layout">

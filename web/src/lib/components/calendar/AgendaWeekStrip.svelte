@@ -10,6 +10,8 @@
 		selected?: string;
 		/** Every entry in the window; each day counts its own. */
 		entries: AgendaEntry[];
+		/** How much of a day `entries` holds. A day not loaded shows no count; one partly loaded shows no total. */
+		loadState?: (day: string) => 'full' | 'partial' | 'none';
 		zone: string;
 		now?: Date;
 		/** Phone layout: the cells are narrow, so each shows fewer pips. */
@@ -23,7 +25,7 @@
 		ondrop: (day: string) => void;
 	}
 
-	let { days, today, selected, entries, zone, now = new Date(Date.now()), compact = false, dragging, hoverDay, onselect, onenter, ondrop }: Props = $props();
+	let { days, today, selected, entries, loadState = () => 'full', zone, now = new Date(Date.now()), compact = false, dragging, hoverDay, onselect, onenter, ondrop }: Props = $props();
 
 	type Tone = 'bad' | 'owed' | 'quiet' | 'done';
 	const ORDER: Tone[] = ['bad', 'owed', 'quiet', 'done'];
@@ -43,10 +45,11 @@
 		return entry.state === 'done' ? 'done' : 'quiet';
 	}
 	const load = $derived(new Map(days.map(day => {
-		const rows = entries.filter(entry => entry.day === day && (entry.type === 'schedule' || entry.type === 'date'));
+		const state = loadState(day);
+		const rows = state === 'none' ? [] : entries.filter(entry => entry.day === day && (entry.type === 'schedule' || entry.type === 'date'));
 		const tones = rows.map(tone).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
 		const owed = rows.filter(entry => entry.type === 'schedule' && (entry.state === 'outstanding' || entry.state === 'lapsed' || entry.state === 'missed')).length;
-		return [day, { count: rows.length, owed, tones: tones.slice(0, compact ? MAX_PIPS_COMPACT : MAX_PIPS) }] as const;
+		return [day, { state, count: rows.length, owed, tones: tones.slice(0, compact ? MAX_PIPS_COMPACT : MAX_PIPS) }] as const;
 	})));
 	// One tab stop: the day last focused, else the selected day, else today, else the first.
 	const stop = $derived([focused, selected, today].find(day => day && days.includes(day)) ?? days[0]);
@@ -55,8 +58,16 @@
 		: dragging.roles?.earliest && roleDay(dragging.roles.earliest, zone) === day ? 'Available from' : '';
 
 	function label(day: string): string {
-		const { count, owed } = load.get(day)!;
-		return [longDay(day), ...(day === today ? ['Today'] : []), count ? `${count} ${count === 1 ? 'entry' : 'entries'}` : 'no entries', ...(owed ? [`${owed} owed`] : [])].join(', ');
+		const { state, count, owed } = load.get(day)!;
+		const name = [longDay(day), ...(day === today ? ['Today'] : [])];
+		// Only a fully loaded day has a total, or can be called empty.
+		if (state !== 'full') return [...name, state === 'none' ? 'not loaded' : 'not fully loaded'].join(', ');
+		return [...name, count ? `${count} ${count === 1 ? 'entry' : 'entries'}` : 'no entries', ...(owed ? [`${owed} owed`] : [])].join(', ');
+	}
+	function figure(day: string): string | number {
+		const { state, count, owed } = load.get(day)!;
+		if (state !== 'full') return state === 'partial' && count ? `${count}+` : '';
+		return count === 0 ? '–' : day === today && owed ? `${owed} owed` : count;
 	}
 	function onkeydown(event: KeyboardEvent, index: number) {
 		if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -81,8 +92,8 @@
 		{@const info = load.get(day)!}
 		{@const pinned = pin(day)}
 		{@const over = !!dragging && hoverDay === day}
-		<button type="button" class="day" class:today={day === today} class:quiet={info.count === 0} class:over class:pinned={pinned === 'Deadline'}
-			data-strip-day={day} data-drop={dragging ? 'true' : undefined}
+		<button type="button" class="day" class:today={day === today} class:quiet={info.state === 'full' && info.count === 0} class:over class:pinned={pinned === 'Deadline'}
+			data-strip-day={day} data-load={info.state === 'full' ? undefined : info.state} data-drop={dragging ? 'true' : undefined}
 			aria-label={label(day)} aria-current={day === today ? 'date' : undefined} aria-pressed={selected ? day === selected : undefined}
 			tabindex={day === stop ? 0 : -1}
 			onclick={() => onselect(day)} onfocus={() => focused = day} onkeydown={event => onkeydown(event, index)}
@@ -91,7 +102,7 @@
 			ondrop={event => { event.preventDefault(); ondrop(day); }}>
 			<span class="date"><span class="dow">{weekday(day)}</span><span class="num">{+day.slice(8)}</span></span>
 			<span class="load">
-				<span class="n">{over && !pinned ? 'Move here' : pinned || (info.count === 0 ? '–' : day === today && info.owed ? `${info.owed} owed` : info.count)}</span>
+				<span class="n">{over && !pinned ? 'Move here' : pinned || figure(day)}</span>
 				<span class="pips">{#each info.tones as pip, at (at)}<span class="pip" data-tone={pip}></span>{/each}</span>
 			</span>
 		</button>

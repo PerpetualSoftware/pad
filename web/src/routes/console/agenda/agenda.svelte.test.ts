@@ -626,6 +626,116 @@ describe('week strip, attention band and states', () => {
   h.epoch++; rest.resolve(response([row({ item_ref: 'EX-31', item_title: 'Later item', schedule_id: 's2' })])); await settle();
   expect(screen.queryByText('Later item')).toBeNull();
  });
+ it('offers no Load the rest when next_from is the end of the window', async () => {
+  h.agenda.mockResolvedValue(response([row()], { truncated: true, next_from: '2026-11-12T05:00:00Z', unexpanded: [{ schedule_id: 's9', item_ref: 'EX-90', item_title: 'Dense', collection: 'tasks', reason: 'scan_limit' }] }));
+  await mount();
+  expect(screen.getByText('Too much to load at once. Choose a smaller range or a workspace group.')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
+  expect(h.agenda).toHaveBeenCalledTimes(1);
+  cleanup(); h.agenda.mockResolvedValue(response([row()], { next_from: '2026-11-12T00:00:00-05:00' }));
+  await mount();
+  expect(screen.getByText('Some schedules could not be shown.')).toBeTruthy(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
+ });
+ it('a month read to its end marks no tail and hides nothing', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'month');
+  h.agenda.mockResolvedValue(response([row(), row({ item_ref: 'EX-31', item_title: 'Late item', schedule_id: 's2', at: '2026-11-30T14:00:00Z', day: '2026-11-30', wall: '2026-11-30T09:00:00' })], { next_from: '2026-12-01T05:00:00Z' }));
+  render(Agenda); await screen.findByText('Late item');
+  expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
+ });
+ it('in Day range the strip claims nothing about the days it did not load', async () => {
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2)); await screen.findAllByText('First item');
+  expect(stripDay('2026-11-05')).toHaveAccessibleName('Thursday 5 November, Today, 1 entry, 1 owed'); expect(stripDay('2026-11-05').querySelectorAll('.pip')).toHaveLength(1);
+  for (const day of stripDays().slice(1)) {
+   expect(day).toHaveAccessibleName(/, not loaded$/); expect(day.getAttribute('aria-label')).not.toMatch(/entr/);
+   expect(day.querySelectorAll('.pip')).toHaveLength(0); expect(day.querySelector('.n')?.textContent).toBe('');
+  }
+  expect(stripDay('2026-11-06')).toHaveAccessibleName('Friday 6 November, not loaded');
+  h.agenda.mockResolvedValue(response([row({ at: '2026-11-07T14:00:00Z', day: '2026-11-07', wall: '2026-11-07T09:00:00' })]));
+  await fireEvent.click(stripDay('2026-11-07'));
+  await waitFor(() => expect(stripDay('2026-11-07')).toHaveAccessibleName('Saturday 7 November, 1 entry, 1 owed'));
+  expect(stripDay('2026-11-05')).toHaveAccessibleName('Thursday 5 November, Today, not loaded'); expect(stripDay('2026-11-05').querySelectorAll('.pip')).toHaveLength(0);
+ });
+ it('in Week range the strip counts only the days before next_from', async () => {
+  h.agenda.mockResolvedValue(response([row(), row({ item_ref: 'EX-31', item_title: 'Cut day item', schedule_id: 's2', at: '2026-11-08T14:00:00Z', day: '2026-11-08', wall: '2026-11-08T09:00:00' }),
+   row({ type: 'date', item_ref: 'EX-32', item_title: 'Dated later', schedule_id: undefined, at: '2026-11-10T05:00:00Z', day: '2026-11-10' })], { truncated: true, next_from: '2026-11-08T17:00:00Z' }));
+  await mount();
+  expect(stripDay('2026-11-05')).toHaveAccessibleName('Thursday 5 November, Today, 1 entry, 1 owed');
+  expect(stripDay('2026-11-07')).toHaveAccessibleName('Saturday 7 November, no entries');
+  expect(stripDay('2026-11-08')).toHaveAccessibleName('Sunday 8 November, not fully loaded'); expect(stripDay('2026-11-08').querySelectorAll('.pip')).toHaveLength(1);
+  for (const day of ['2026-11-09', '2026-11-10', '2026-11-11']) {
+   expect(stripDay(day)).toHaveAccessibleName(/, not loaded$/); expect(stripDay(day).querySelectorAll('.pip')).toHaveLength(0); expect(stripDay(day).querySelector('.n')?.textContent).toBe('');
+  }
+ });
+ it('rows from Load the rest stay after an action on one of them', async () => {
+  const later = row({ item_ref: 'EX-31', item_title: 'Later item', schedule_id: 's2', at: '2026-11-09T14:00:00Z', day: '2026-11-09', wall: '2026-11-09T09:00:00' });
+  const first = () => response([row()], { truncated: true, window_complete: false, next_from: '2026-11-08T17:00:00Z' });
+  h.agenda.mockResolvedValueOnce(first()).mockResolvedValueOnce(response([later]));
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' })); await screen.findByText('Later item');
+  const second = deferred<AgendaResponse>(); h.agenda.mockResolvedValueOnce(first()).mockReturnValueOnce(second.promise);
+  h.view.mockResolvedValueOnce({ item_ref: 'EX-31', next_occurrence: { at: later.at, wall: later.wall } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-31' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(4));
+  // Nothing is published between the two pages, so the second page never flickers out.
+  await settle(); expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
+  second.resolve(response([later])); await said('Occurrence marked done.', 'success');
+  expect(h.agenda.mock.calls[3]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all']);
+  expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.getAllByText('First item').length).toBeGreaterThan(0);
+  expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
+  expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
+ });
+ it('a refresh whose later page fails keeps the first page and offers the rest again, with no refresh error', async () => {
+  const later = row({ item_ref: 'EX-31', item_title: 'Later item', schedule_id: 's2', at: '2026-11-09T14:00:00Z', day: '2026-11-09', wall: '2026-11-09T09:00:00' });
+  const first = () => response([row()], { truncated: true, next_from: '2026-11-08T17:00:00Z' });
+  h.agenda.mockResolvedValueOnce(first()).mockResolvedValueOnce(response([later]));
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' })); await screen.findByText('Later item');
+  h.agenda.mockResolvedValueOnce(first()).mockRejectedValueOnce(new Error('offline'));
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await said('Occurrence marked done.', 'success');
+  expect(h.agenda).toHaveBeenCalledTimes(4); expect(screen.getByText('First item')).toBeTruthy(); expect(screen.queryByText('Later item')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Load the rest' })).toBeEnabled(); expect(screen.queryByText('Saved. Could not refresh the view.')).toBeNull();
+ });
+ it('a new window forgets that the rest was asked for, and a refresh stops paging at ten pages', async () => {
+  const first = () => response([row()], { truncated: true, next_from: '2026-11-08T17:00:00Z' });
+  h.agenda.mockResolvedValueOnce(first()).mockResolvedValueOnce(response([]));
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' })); await waitFor(() => expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull());
+  h.agenda.mockResolvedValue(response([row({ at: '2026-11-12T14:00:00Z', day: '2026-11-12', wall: '2026-11-12T09:00:00' })], { truncated: true, next_from: '2026-11-13T17:00:00Z' }));
+  await fireEvent.click(screen.getByRole('button', { name: 'Next week' })); await screen.findByText('Showing entries up to Fri 13 November.');
+  await settle(); expect(h.agenda).toHaveBeenCalledTimes(3);
+  // Each answer names the same cursor, so only the bound ends the paging.
+  await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' })); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(4));
+  h.view.mockResolvedValueOnce({ item_ref: 'EX-30', next_occurrence: { at: '2026-11-12T14:00:00Z', wall: '2026-11-12T09:00:00' } });
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await said('Occurrence marked done.', 'success');
+  expect(h.agenda).toHaveBeenCalledTimes(4 + 1 + 10); expect(screen.getByRole('button', { name: 'Load the rest' })).toBeEnabled();
+ });
+ it('in Day range the strip pages a whole week when the day steps past it', async () => {
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  for (let step = 1; step <= 8; step++) {
+   await fireEvent.click(screen.getByRole('button', { name: 'Next day' }));
+   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2 + step));
+   expect(stripDays()[0].dataset.stripDay).toBe(step < 7 ? '2026-11-05' : '2026-11-12');
+  }
+  expect(stripDays().map(day => day.dataset.stripDay)).toEqual(['2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15', '2026-11-16', '2026-11-17', '2026-11-18']);
+  expect(stripDay('2026-11-13')).toHaveAttribute('aria-pressed', 'true');
+  for (let step = 1; step <= 9; step++) await fireEvent.click(screen.getByRole('button', { name: 'Previous day' }));
+  await waitFor(() => expect(stripDay('2026-11-04')).toHaveAttribute('aria-pressed', 'true'));
+  expect(stripDays()[0].dataset.stripDay).toBe('2026-10-29'); expect(stripDays()[6].dataset.stripDay).toBe('2026-11-04');
+ });
+ it('a saved Day range holds its strip still from the first step', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'day'); await mount();
+  await fireEvent.click(screen.getByRole('button', { name: 'Next day' }));
+  await waitFor(() => expect(stripDay('2026-11-06')).toHaveAttribute('aria-pressed', 'true'));
+  expect(stripDays()[0].dataset.stripDay).toBe('2026-11-05');
+ });
+ it('an error the dialog showed is not repeated as a toast when the dialog closes', async () => {
+  h.resolve.mockRejectedValue(new Error('offline')); await mount(); const d = await dialog('Snooze'); await fillTime(d);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Snooze' }));
+  await within(d).findByText('Could not update this occurrence. Try again.');
+  await fireEvent.click(within(d).getByRole('button', { name: 'Cancel' })); await settle();
+  expect(screen.queryByRole('dialog')).toBeNull(); expect(h.toast.mock.calls.filter(call => call[1] === 'error')).toEqual([]);
+  // The same failure with no dialog open still reaches the toast container.
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await said('Could not update this occurrence. Try again.');
+ });
  it('one clock moves a deadline pill from soon to passed on an open page, and stops with the page', async () => {
   vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
   try {
