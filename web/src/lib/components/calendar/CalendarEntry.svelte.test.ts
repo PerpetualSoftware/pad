@@ -1,32 +1,41 @@
 import { expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/svelte';
+import { cleanup, render, screen } from '@testing-library/svelte';
 import CalendarEntry from './CalendarEntry.svelte';
 import type { CalendarRow } from '$lib/calendar/monthGrid';
 const base: CalendarRow = { key: 'k', day: '2026-03-10', ref: 'TASK-1', target: 'TASK-1', title: 'Thing', allDay: true };
 const show = (row: Partial<CalendarRow>) => render(CalendarEntry, { row: { ...base, ...row }, zone: 'UTC', basePath: '/w', onopen: vi.fn() });
 const chipColor = (text: string) => (screen.getByText(text) as HTMLElement).style.getPropertyValue('--chip-c');
-it('marks a delivered terminal row with a check', () => {
+const mark = () => screen.getByRole('img');
+const link = () => screen.getByRole('link');
+it('marks a delivered terminal row with a green check and a muted title that is not struck through', () => {
  show({ terminal: 'done', abandoned: false });
- expect(screen.getByLabelText('Done')).toHaveTextContent('✓');
+ expect(mark()).toHaveAttribute('data-mark', 'check'); expect(mark()).toHaveAccessibleName('Done');
+ expect(link()).toHaveClass('closed'); expect(link()).not.toHaveClass('struck');
 });
-it('marks a done schedule entry with a check', () => {
+it('marks a done schedule entry with a check, not struck through', () => {
  show({ state: 'done' });
- expect(screen.getByLabelText('Done')).toHaveTextContent('✓');
+ expect(mark()).toHaveAttribute('data-mark', 'check'); expect(link()).not.toHaveClass('struck');
 });
-it('shows a neutral dash, no check and the real label for an abandoned row', () => {
- const { container } = show({ terminal: 'abandoned', abandoned: true });
- expect(container.textContent).not.toContain('✓');
- expect(screen.queryByLabelText('Done')).toBeNull();
- const dash = screen.getByText('–', { exact: false, selector: 'span[aria-hidden="true"]' });
- expect(dash).toBeInTheDocument();
- expect(screen.getByText('Abandoned')).toBeInTheDocument();
+it('shows a grey dash, a struck title and the real label for an abandoned row', () => {
+ show({ terminal: 'abandoned', abandoned: true });
+ expect(mark()).toHaveAttribute('data-mark', 'dash'); expect(mark()).toHaveAccessibleName('Abandoned');
+ expect(link()).toHaveClass('closed'); expect(link()).toHaveClass('struck');
+ expect(screen.getByText('Abandoned', { selector: '.chip' })).toBeInTheDocument();
+});
+it.each(['lapsed', 'missed'])('draws a %s occurrence with the red mark and a red title', state => {
+ show({ state });
+ expect(mark()).toHaveAttribute('data-tone', 'red'); expect(link()).toHaveClass('bad');
+});
+it('does not colour an outstanding occurrence red', () => {
+ show({ state: 'outstanding' });
+ expect(link()).not.toHaveClass('bad');
 });
 it('keeps a custom abandoned status label and a neutral tone', () => {
  const { container } = show({ terminal: 'shelved', abandoned: true });
- expect(container.textContent).not.toContain('✓');
- expect(screen.getByText('Shelved')).toBeInTheDocument();
+ expect(container.querySelector('[data-mark="check"]')).toBeNull();
+ expect(screen.getByText('Shelved', { selector: '.chip' })).toBeInTheDocument();
  expect(chipColor('Shelved')).toBe('var(--accent-gray)');
- expect(container.querySelector('span[aria-hidden="true"]')).not.toBeNull();
+ expect(mark()).toHaveAccessibleName('Shelved');
 });
 it('keeps the delivered tone for an unrecognised delivered status', () => {
  show({ terminal: 'shipped', abandoned: false });
@@ -82,4 +91,28 @@ it('keeps occurrence states in one table: no second state map under components/c
  expect(files.length).toBeGreaterThan(10);
  const maps = files.map(path => [path.slice(directory.length + 1), stateKeys(readFileSync(path, 'utf8'))] as const).filter(([, keys]) => keys.length >= 2);
  expect(maps).toEqual([]);
+});
+
+const line = (row: Partial<CalendarRow>) => render(CalendarEntry, { row: { ...base, ...row }, zone: 'UTC', basePath: '/w', preview: true });
+it('previews a timed entry as one line: mark, time and title, with the rest in its title', () => {
+ const { container } = line({ allDay: false, at: '2026-03-10T09:00:00Z', state: 'outstanding', label: 'Due Date', workspaceName: 'Harbor' });
+ expect(link().querySelector('time')).toHaveTextContent('09:00'); expect(link().querySelector('.t')).toHaveTextContent('Thing');
+ expect(link().textContent?.trim()).toBe('09:00Thing');
+ expect(container.querySelector('.chip')).toBeNull(); expect(container.textContent).not.toContain('TASK-1');
+ expect(link()).toHaveAttribute('title', 'Thing · 09:00 · Due Date · Outstanding · Harbor');
+ expect(link()).toHaveAccessibleName('Thing · 09:00 · Due Date · Outstanding · Harbor');
+ expect(link()).not.toHaveClass('attention');
+});
+it('previews an all-day entry without a time and says All day in its title', () => {
+ line({ label: 'Due Date' });
+ expect(link().textContent?.trim()).toBe('Thing');
+ expect(link()).toHaveAttribute('title', 'Thing · All day · Due Date');
+});
+it('previews an attention entry in red and bold, and a closed one muted', () => {
+ line({ state: 'lapsed', attention: true });
+ expect(link()).toHaveClass('attention'); expect(link()).toHaveAttribute('title', 'Thing · All day · Lapsed');
+ cleanup(); line({ terminal: 'done' });
+ expect(link()).toHaveClass('closed'); expect(link()).not.toHaveClass('struck'); expect(link()).toHaveAttribute('title', 'Thing · All day · Done');
+ cleanup(); line({ terminal: 'abandoned', abandoned: true });
+ expect(link()).toHaveClass('struck');
 });

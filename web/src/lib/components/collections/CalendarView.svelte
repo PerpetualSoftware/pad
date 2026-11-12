@@ -4,7 +4,7 @@
  import type { CalendarResponse, Collection, Item } from '$lib/types';
  import { authStore } from '$lib/stores/auth.svelte';
  import { viewport } from '$lib/stores/breakpoint.svelte';
- import { calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthLabel, monthWindow, moveMonth, safeZone, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
+ import { attentionFirst, calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthLabel, monthWindow, moveMonth, safeZone, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
  import MonthGrid from '../calendar/MonthGrid.svelte';
  import CalendarToolbar from '../calendar/CalendarToolbar.svelte';
  import CalendarEntry from '../calendar/CalendarEntry.svelte';
@@ -59,6 +59,8 @@
  let byDay = $derived.by(() => {
   const map = new Map<string,CalendarRow[]>();
   for (const row of rows) { const list = map.get(row.day) ?? []; list.push(row); map.set(row.day,list); }
+  // What needs attention leads its day, so a missed deadline is never behind "+N more".
+  for (const [day, list] of map) map.set(day, attentionFirst(list, row => !!row.attention));
   return map;
  });
 
@@ -136,6 +138,7 @@
   {/if}
   <MonthGrid bind:this={grid} {month} {today} {selected} mobile={viewport.isMobile} {cellLabel}
    summary={(day) => data && incompleteDay(data,day) ? 'Not fully loaded' : byDay.get(day)?.length ? `${byDay.get(day)!.length} entries` : 'No entries'}
+   count={(day) => byDay.get(day)?.length ? String(byDay.get(day)!.length) : ''} empty={(day) => !byDay.get(day)?.length && !(data && incompleteDay(data,day))}
    onopen={openDay} onchoose={chooseDay} loaded={data} cell={entries} />
   {#if data}
    <CalendarDayDialog day={openedDay} rows={openedDay ? byDay.get(openedDay) ?? [] : []} {data} {zone} {basePath} onclose={() => openedDay=null} onopen={openEntry} onfilters={filtersAction} onlist={listAction} />
@@ -161,8 +164,8 @@
  button { font:inherit; color:var(--text-primary); border:0; background:transparent; cursor:pointer; border-radius:var(--radius-sm); }
  button:hover { background:var(--bg-hover); }
  button:focus-visible { outline:2px solid var(--accent-primary); outline-offset:-2px; }
- .more { text-align:left; font-size:12px; padding:var(--space-1); }
- .incomplete-day { color:var(--text-secondary); font-size:12px; margin:var(--space-2) 0; }
+ .more { text-align:left; font-size:11.5px; font-weight:600; color:var(--text-secondary); padding:1px 4px; }
+ .incomplete-day { color:var(--text-secondary); font-size:11px; margin:0; padding:0 4px; }
  .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); }
  @media (pointer:coarse) { button, .calendar :global(.btn) { min-height:44px; min-width:44px; } }
  @media (max-width:768px) { .calendar { padding:var(--space-2); } }

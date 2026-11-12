@@ -6,15 +6,15 @@
 		state?: OccurrenceState;
 		/** An outstanding occurrence whose target or deadline has passed, or an overdue dated field. */
 		overdue?: boolean;
-		/** Accessible name of the dated-field square, such as "Due". Occurrence states use their table label. */
+		/** Accessible name when the table label does not say it: a dated-field square ("Due"), or a closed item's own status. */
 		label?: string;
 	}
 
-	let { state, overdue = false, label = 'Date' }: Props = $props();
+	let { state, overdue = false, label }: Props = $props();
 
 	const row = $derived(state ? OCCURRENCE_STATES[state] : undefined);
 	const shape = $derived(row?.mark ?? 'square');
-	const name = $derived(row?.label ?? label);
+	const name = $derived(label ?? row?.label ?? 'Date');
 	// Colour follows the shape. Red is kept for a lapsed or missed occurrence,
 	// an outstanding one past its target or deadline, and an overdue dated field.
 	const tone = $derived(

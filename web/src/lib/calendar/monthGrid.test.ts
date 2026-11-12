@@ -95,3 +95,45 @@ it('carries forecasts and emits only admitted forecast markers before the calend
  data.next_from=undefined;forecast.value='2026-03-10';expect(calendarRows(data,collection,'due','2026-03')).toHaveLength(1);
  forecast.value='2026-04-12';expect(calendarRows(data,collection,'due','2026-03')).toHaveLength(1);
 });
+
+describe('month cell order, collapse and phone runs', () => {
+ const open = { schema: JSON.stringify({ fields: [{ key: 'due', type: 'date', label: 'Due Date' }, { key: 'status', type: 'select', terminal_options: ['finished'] }] }), settings: '{}' } as Collection;
+ const openItem = (id: string, status = 'open') => ({ id, slug: `i-${id}`, title: `Item ${id}`, ref: `TASK-${id}`, collection_prefix: 'TASK', item_number: Number(id), fields: JSON.stringify({ due: '2026-03-08', status }) }) as unknown as Item;
+ const entry = (ref: string, state: string, extra = {}) => ({ type: 'schedule', schedule_id: `s-${ref}-${state}`, at: '2026-03-08T07:30:00Z', day: '2026-03-08', state, item_ref: ref, item_title: `Item ${ref}`, collection: 'tasks', ...extra });
+ it('puts attention rows first and keeps the order otherwise', async () => {
+  const { attentionFirst } = await import('./monthGrid');
+  expect(attentionFirst([1, 2, 3, 4, 5, 6], n => n % 3 === 0)).toEqual([3, 6, 1, 2, 4, 5]);
+ });
+ it('flags overdue, lapsed and missed collection rows for attention, and nothing else', () => {
+  const data: CalendarResponse = { from: '', to: '', tz: 'UTC', items: [], entries: [entry('A-1', 'outstanding'), entry('A-2', 'outstanding', { overdue: true }), entry('A-3', 'lapsed'), entry('A-4', 'missed'), entry('A-5', 'done')] as CalendarResponse['entries'] };
+  expect(calendarRows(data, open, 'due').map(row => !!row.attention)).toEqual([false, true, true, true, false]);
+ });
+ it('shows one row for a dated field and an occurrence of the same item on the same day, keeping the field label', () => {
+  const first = openItem('1'); const ref = calendarRows({ from: '', to: '', tz: 'UTC', items: [{ item: first, day: '2026-03-08' }], entries: [] }, open, 'due')[0].ref;
+  expect(ref).not.toBe('');
+  const data: CalendarResponse = { from: '', to: '', tz: 'UTC', items: [{ item: first, day: '2026-03-08' }, { item: openItem('2'), day: '2026-03-08' }], entries: [entry(ref, 'outstanding'), entry(ref, 'scheduled', { day: '2026-03-09', at: '2026-03-09T07:30:00Z' })] as CalendarResponse['entries'] };
+  const rows = calendarRows(data, open, 'due');
+  expect(rows.map(row => [row.day, row.title, row.state, row.label])).toEqual([
+   ['2026-03-08', 'Item 2', undefined, 'Due Date'],
+   ['2026-03-08', `Item ${ref}`, 'outstanding', 'Due Date'],
+   ['2026-03-09', `Item ${ref}`, 'scheduled', undefined]
+  ]);
+ });
+ it('keeps the field row of a closed item and of a span beside its occurrence', () => {
+  const closed = openItem('1', 'finished'); const ref = calendarRows({ from: '', to: '', tz: 'UTC', items: [{ item: closed, day: '2026-03-08' }], entries: [] }, open, 'due')[0].ref;
+  const one = (items: CalendarResponse['items']) => calendarRows({ from: '', to: '', tz: 'UTC', items, entries: [entry(ref, 'done')] as CalendarResponse['entries'] }, open, 'due', '2026-03').filter(row => row.day === '2026-03-08');
+  expect(one([{ item: closed, day: '2026-03-08' }])).toHaveLength(2);
+  expect(one([{ item: openItem('1'), day: '2026-03-07', end_day: '2026-03-09' }])).toHaveLength(2);
+ });
+ it('collapses runs of empty days on a phone and never the days it is told to keep', async () => {
+  const { dayRuns, emptyRunLabel } = await import('./monthGrid');
+  const days = monthDays('2026-11').slice(0, 10);
+  const busy = new Set(['2026-11-05', '2026-11-09']);
+  expect(dayRuns(days, day => !busy.has(day))).toEqual([
+   { from: '2026-11-01', to: '2026-11-04', empty: true }, { from: '2026-11-05', to: '2026-11-05', empty: false },
+   { from: '2026-11-06', to: '2026-11-08', empty: true }, { from: '2026-11-09', to: '2026-11-09', empty: false }, { from: '2026-11-10', to: '2026-11-10', empty: true }
+  ]);
+  expect(emptyRunLabel('2026-11-06', '2026-11-08')).toBe('Fri 6 – Sun 8 · nothing scheduled');
+  expect(emptyRunLabel('2026-11-10', '2026-11-10')).toBe('Tue 10 · nothing scheduled');
+ });
+});

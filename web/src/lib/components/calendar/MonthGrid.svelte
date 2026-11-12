@@ -1,9 +1,13 @@
 <script lang="ts">
  import { tick, type Snippet } from 'svelte';
- import { dayLabel, monthDays, monthLabel, moveMonth, shiftDay } from '$lib/calendar/monthGrid';
- let {month, today, selected, mobile, cellLabel, summary, onopen, onchoose, loaded, cell}: {
+ import { dayLabel, dayRuns, emptyRunLabel, monthDays, monthLabel, moveMonth, shiftDay } from '$lib/calendar/monthGrid';
+ let {month, today, selected, mobile, cellLabel, summary, count = () => '', empty = () => false, onopen, onchoose, loaded, cell}: {
   month:string; today:string; selected:string; mobile:boolean;
   cellLabel:(day:string)=>string; summary:(day:string)=>string;
+  /** The text beside a date in the grid, such as "6 · 2 owed". Empty shows nothing. */
+  count?:(day:string)=>string;
+  /** Whether a day is fully loaded and has no entries. The phone list folds runs of such days into one line. */
+  empty?:(day:string)=>boolean;
   onopen:(day:string)=>void; onchoose:(day:string)=>void;
   /** Null hides the grid during loading; a new result completes pending focus. */
   loaded:unknown; cell:Snippet<[string, boolean]>;
@@ -17,6 +21,8 @@
  let leading = $derived((new Date(`${month}-01T12:00:00Z`).getUTCDay() + 6) % 7);
  let cells = $derived([...Array<string|null>(leading).fill(null), ...days, ...Array<string|null>((7 - (leading + days.length) % 7) % 7).fill(null)]);
  let weeks = $derived(Array.from({length:cells.length/7}, (_, i) => cells.slice(i*7,i*7+7)));
+ // Today, the selected day and the day that holds focus always keep their own header.
+ let runs = $derived(dayRuns(days, day => day !== today && day !== selected && day !== focusDay && empty(day)));
  export function cancelFocus() { pendingFocus = null; }
  async function finishFocus() {
   const day = pendingFocus;
@@ -55,15 +61,20 @@
  {#if loaded}
    {#if mobile}
     <ol class="day-list" aria-label={monthLabel(month)}>
-     {#each days as day}
-      <li class:today={day===today}>
-       <h3><button class="day-header" data-day={day} aria-current={day===today ? 'date' : undefined} onclick={() => onopen(day)}>{dayLabel(day,true)}{day===today ? ' · Today' : ''}<span>{summary(day)}</span></button></h3>
-       {@render cell(day,true)}
-      </li>
+     {#each runs as run (run.from)}
+      {#if run.empty}
+       <li class="empty-run">{emptyRunLabel(run.from, run.to)}</li>
+      {:else}
+       {@const day = run.from}
+       <li class:today={day===today}>
+        <h3><button class="day-header" data-day={day} aria-current={day===today ? 'date' : undefined} onclick={() => onopen(day)}>{dayLabel(day,true)}{day===today ? ' · Today' : ''}<span>{summary(day)}</span></button></h3>
+        {@render cell(day,true)}
+       </li>
+      {/if}
      {/each}
     </ol>
    {:else}
-    <p id="{uid}-help" class="instructions">Use arrow keys to choose a day. Press Enter to open its entries.</p>
+    <p id="{uid}-help" class="sr-only">Use arrow keys to choose a day. Press Enter to open its entries.</p>
     <div role="grid" aria-label={monthLabel(month)} aria-describedby="{uid}-help" class="month-grid">
      <div role="row" class="weekdays">{#each ['Monday','Tuesday','Wednesday','Thursday','Friday','Saturday','Sunday'] as name}<div role="columnheader" aria-label={name}>{name.slice(0,3)}</div>{/each}</div>
      {#each weeks as week}
@@ -71,7 +82,10 @@
        {#each week as day}
         <div role="gridcell" class="cell" class:blank={!day} class:today={day===today} aria-selected={day ? selected===day : undefined}>
          {#if day}
-          <button class="date" data-day={day} tabindex={day===focusDay ? 0 : -1} aria-label={cellLabel(day)} aria-current={day===today ? 'date' : undefined} onkeydown={(e) => keydown(e,day)} onclick={() => onopen(day)}>{Number(day.slice(-2))}{#if day===today}<span>Today</span>{/if}</button>
+          <div class="head">
+           <button class="date" data-day={day} tabindex={day===focusDay ? 0 : -1} aria-label={cellLabel(day)} aria-current={day===today ? 'date' : undefined} onkeydown={(e) => keydown(e,day)} onclick={() => onopen(day)}><b>{Number(day.slice(-2))}</b></button>
+           {#if count(day)}<span class="count" aria-hidden="true">{count(day)}</span>{/if}
+          </div>
           {@render cell(day,false)}
          {/if}
         </div>
@@ -84,23 +98,29 @@
 </div>
 <style>
  .week, .weekdays { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); }
- .weekdays { color:var(--text-secondary); text-align:center; font-size:12px; padding:var(--space-2) 0; }
- .month-grid { border:1px solid var(--border); border-radius:var(--radius); overflow:hidden; }
- .cell { min-height:144px; min-width:0; padding:var(--space-2); border-top:1px solid var(--border); border-right:1px solid var(--border); display:flex; flex-direction:column; gap:var(--space-1); }
+ .weekdays { color:var(--text-muted); font-size:11px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; border-bottom:1px solid var(--border); }
+ .weekdays div { padding:6px 10px; }
+ .month-grid { border:1px solid var(--card-border); border-radius:var(--radius-lg); overflow:hidden; background:var(--card-bg); }
+ /* Six week rows and the header fit a 900px tall window. */
+ .cell { min-height:118px; min-width:0; padding:6px; border-right:1px solid var(--border-subtle); border-bottom:1px solid var(--border-subtle); display:flex; flex-direction:column; gap:2px; }
  .cell:last-child { border-right:0; }
- .blank { background:var(--bg-secondary); }
- .today { box-shadow:inset 0 0 0 2px var(--accent-primary); }
- .cell[aria-selected="true"] { background:var(--bg-active); }
+ .week:last-child .cell { border-bottom:0; }
+ .blank { background:color-mix(in srgb, var(--bg-tertiary) 50%, transparent); }
+ .cell[aria-selected="true"] { box-shadow:inset 0 0 0 2px var(--accent-primary); }
  button { font:inherit; color:var(--text-primary); border:0; background:transparent; cursor:pointer; border-radius:var(--radius-sm); }
  button:hover { background:var(--bg-hover); }
  button:focus-visible { outline:2px solid var(--accent-primary); outline-offset:-2px; }
- .date { align-self:flex-start; padding:var(--space-1); min-width:28px; text-align:left; font-size:12px; }
- .date span { margin-left:var(--space-1); }
- .instructions { color:var(--text-secondary); font-size:12px; margin:var(--space-2) 0; }
+ .head { display:flex; align-items:center; justify-content:space-between; gap:var(--space-1); margin-bottom:2px; }
+ .date { padding:0; border-radius:50%; }
+ .date b { display:grid; place-items:center; width:22px; height:22px; border-radius:50%; font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; }
+ .today .date b { background:var(--accent-primary-strong); color:var(--text-on-accent); }
+ .count { font-size:10.5px; color:var(--text-muted); white-space:nowrap; }
+ .sr-only { position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap; }
  .day-list { list-style:none; padding:0; margin:0; }
- .day-list li { border-top:1px solid var(--border); padding:var(--space-2); }
+ .day-list li { padding:var(--space-2) 0; }
+ .day-list .empty-run { padding:6px 4px; color:var(--text-muted); font-size:13px; }
  h3 { margin:0; }
- .day-header { width:100%; min-height:44px; display:flex; justify-content:space-between; flex-wrap:wrap; gap:var(--space-2); text-align:left; font-size:14px; }
- .day-header span { color:var(--text-secondary); font-weight:normal; }
+ .day-header { width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--space-2); padding:0 4px; text-align:left; font-size:15px; font-weight:700; }
+ .day-header span { color:var(--text-secondary); font-size:12px; font-weight:normal; }
  @media (pointer:coarse) { button { min-height:44px; min-width:44px; } }
 </style>
