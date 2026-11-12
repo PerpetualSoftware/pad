@@ -242,6 +242,7 @@ var pinnedAllowedGlobalRoutes = map[string]bool{
 	"GET /api/v1/collab/{itemID}":                      true,
 	"GET /api/v1/convention-library":                   true,
 	"GET /api/v1/events":                               true,
+	"GET /api/v1/feeds/ics/{token}":                    true,
 	"GET /api/v1/health":                               true,
 	"GET /api/v1/health/live":                          true,
 	"GET /api/v1/health/ready":                         true,
