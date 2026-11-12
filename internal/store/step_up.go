@@ -63,9 +63,10 @@ func (s *Store) CreateStepUpCode(userID, sessionID string) (id, code string, exp
 	return id, code, expiresAt, nil
 }
 
-// DeleteStepUpCode removes a code whose email delivery failed.
-func (s *Store) DeleteStepUpCode(id string) error {
-	_, err := s.db.Exec(s.q(`DELETE FROM step_up_codes WHERE id=?`), id)
+// RetireStepUpCode makes a code whose email delivery failed unusable. The row
+// stays, so the failed send still counts toward the hourly send cap.
+func (s *Store) RetireStepUpCode(id string) error {
+	_, err := s.db.Exec(s.q(`UPDATE step_up_codes SET used_at=? WHERE id=? AND used_at IS NULL`), now(), id)
 	return err
 }
 

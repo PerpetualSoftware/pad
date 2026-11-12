@@ -108,12 +108,13 @@ func TestStepUpCodeLifecycle(t *testing.T) {
 		if !errors.As(err, &limited) || limited.RetryAfter <= 0 || limited.RetryAfter > time.Hour {
 			t.Fatalf("send limit: %v", err)
 		}
-		// Failed delivery is removed; it does not charge an email send.
-		if err := s.DeleteStepUpCode(id); err != nil {
+		// A failed delivery is retired, not refunded: it still counts toward
+		// the hourly cap, so repeated failures cannot loop sends.
+		if err := s.RetireStepUpCode(id); err != nil {
 			t.Fatal(err)
 		}
-		if _, _, _, err := s.CreateStepUpCode(u.ID, session.ID); err != nil {
-			t.Fatal(err)
+		if _, _, _, err := s.CreateStepUpCode(u.ID, session.ID); !errors.As(err, &limited) {
+			t.Fatalf("retired send refunded the cap: %v", err)
 		}
 		// Logging out does not reset the user-wide rate limit.
 		stepUpExec(t, s, `DELETE FROM sessions WHERE id=?`, session.ID)

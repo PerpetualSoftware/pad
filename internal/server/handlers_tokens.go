@@ -538,7 +538,11 @@ func (s *Server) handleUpdateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if updated.Name != old.Name || updated.Scopes != old.Scopes {
-		s.invalidateUserAccess(userID)
+		// A rename changes no access, so only a scope change re-checks the
+		// user's open connections.
+		if updated.Scopes != old.Scopes {
+			s.invalidateUserAccess(userID)
+		}
 		stepUp := "not_needed"
 		if widens {
 			stepUp = "used"

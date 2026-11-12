@@ -199,16 +199,15 @@ func TestTask3867EmailFailureAndFactorMismatch(t *testing.T) {
 	task3867Want(t, task3867Send(e), 409, "step_up_factor_mismatch")
 	m := task3867Mail(t, e)
 	m.fail.Store(true)
-	for i := 0; i < 4; i++ {
+	for i := 0; i < 3; i++ {
 		task3867Want(t, task3867Send(e), 503, "email_send_failed")
 	}
 	var n int
-	if err := e.srv.store.DB().QueryRow(`SELECT COUNT(*) FROM step_up_codes`).Scan(&n); err != nil || n != 0 {
-		t.Fatalf("failed sends kept %d rows: %v", n, err)
+	if err := e.srv.store.DB().QueryRow(`SELECT COUNT(*) FROM step_up_codes WHERE used_at IS NOT NULL`).Scan(&n); err != nil || n != 3 {
+		t.Fatalf("failed sends retired %d rows, want 3: %v", n, err)
 	}
 	m.fail.Store(false)
-	task3867Want(t, task3867Send(e), 200, "")
-	<-m.codes
+	task3867Want(t, task3867Send(e), 429, "rate_limited")
 	task3867EnableTOTP(t, e)
 	task3867Factor(t, e, "totp")
 	task3867Want(t, task3867Send(e), 409, "step_up_factor_mismatch")
@@ -521,5 +520,24 @@ func TestTask3867AnonymousRefused(t *testing.T) {
 		rr := httptest.NewRecorder()
 		e.srv.ServeHTTP(rr, req)
 		task3867Want(t, rr, 401, "unauthorized")
+	}
+}
+
+func TestTask3867RenameDoesNotInvalidateUserAccess(t *testing.T) {
+	e := setupTokenAuthEnv(t)
+	kicks, unregister := e.srv.accessKicks().register(e.user.ID, "")
+	defer unregister()
+	task3867Want(t, task3867Patch(e, map[string]string{"name": "Renamed"}), 200, "")
+	select {
+	case <-kicks:
+		t.Fatal("rename invalidated user access")
+	default:
+	}
+	// A scope change must still notify the same registration.
+	task3867Want(t, task3867Patch(e, map[string]string{"scopes": `["read"]`}), 200, "")
+	select {
+	case <-kicks:
+	default:
+		t.Fatal("scope change did not invalidate user access")
 	}
 }

@@ -82,11 +82,15 @@ func (s *Server) handleStepUpEmail(w http.ResponseWriter, r *http.Request) {
 		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	// Detached from the client: an abort mid-send must not cut a delivery
+	// short, and the provider may deliver even when it reports an error.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 15*time.Second)
 	defer cancel()
 	if err := sender.SendStepUpCode(ctx, session.User.Email, code); err != nil {
-		if deleteErr := s.store.DeleteStepUpCode(id); deleteErr != nil {
-			writeInternalError(w, deleteErr)
+		// Retired, not deleted: the row still counts toward the hourly send
+		// cap, so repeated failures cannot refund it and loop sends.
+		if retireErr := s.store.RetireStepUpCode(id); retireErr != nil {
+			writeInternalError(w, retireErr)
 			return
 		}
 		writeError(w, http.StatusServiceUnavailable, "email_send_failed", "Could not send the verification email; please try again")
