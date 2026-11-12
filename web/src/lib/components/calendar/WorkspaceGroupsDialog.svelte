@@ -5,6 +5,7 @@
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import DialogShell from '$lib/components/common/DialogShell.svelte';
 	import Button from '$lib/components/common/Button.svelte';
+	import WorkspaceTile from './WorkspaceTile.svelte';
 	import type { Workspace, WorkspaceGroup } from '$lib/types';
 
 	let { groups, workspaces, mobile, initialEdit, onclose, onchanged }: {
@@ -126,7 +127,7 @@
 					<legend class="lab">Workspaces <span class="count">· <span>{selectedCount} of {workspaces.length} selected</span></span></legend>
 					<div class="list">
 						{#each workspaces as workspace (workspace.id)}
-							<label class="check"><input type="checkbox" value={workspace.id} bind:group={workspaceIds} />{workspaceLabel(workspace)}</label>
+							<label class="check"><input type="checkbox" value={workspace.id} bind:group={workspaceIds} /><WorkspaceTile name={workspace.name} label={workspaceLabel(workspace)} /></label>
 						{/each}
 					</div>
 				</fieldset>
@@ -174,6 +175,8 @@
 	.count { font-weight: 400; color: var(--text-muted); }
 	input[type='text'] { box-sizing: border-box; width: 100%; min-height: 36px; padding: 6px 10px; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; font-size: 14px; }
 	fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
+	/* The name is the row's label here, so it reads as text, not as the muted cue it is in a row's meta line. */
+	.check :global(.ws) { color: inherit; }
 	.check { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 12px; overflow-wrap: anywhere; }
 	@media (pointer: coarse) { .icon { width: 44px; height: 44px; } input[type='text'] { min-height: 44px; } }
 </style>

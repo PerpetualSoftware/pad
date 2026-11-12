@@ -53,6 +53,14 @@ describe('WorkspaceGroupsDialog list', () => {
 });
 
 describe('WorkspaceGroupsDialog edit step', () => {
+	it('shows each workspace in the checklist with its colour tile before its name', async () => {
+		const { dialog } = mount(); await fireEvent.click(button('Edit Client work'));
+		const rows = within(dialog).getAllByRole('checkbox').map(box => box.closest('label')!);
+		expect(rows).toHaveLength(workspaces.length);
+		expect(rows.map(row => row.querySelector('.ws i[aria-hidden="true"]')?.textContent)).toEqual(['H', 'M', 'Q', 'W', 'F']);
+		expect(rows.map(row => row.querySelector('.ws')?.textContent)).toEqual(['HHarbor App', 'MMarina Ops', 'QQuiet Corner', 'WWebsite', 'FFifth']);
+		expect(within(dialog).getByRole('checkbox', { name: 'Harbor App' })).toBeChecked();
+	});
 	it('edits a group: back button, name, a checklist with a count, and Save group as the one primary', async () => {
 		const { dialog } = mount(); await fireEvent.click(button('Edit Client work'));
 		expect(screen.getByRole('dialog', { name: 'Workspace groups' })).toBe(dialog);
