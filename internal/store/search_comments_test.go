@@ -178,10 +178,17 @@ func TestSearchCommentVisibility(t *testing.T) {
 			}
 		})
 	}
+	// A caller granted only a collection holding none of the matches runs
+	// the full query through the permission filter, unlike "no permission",
+	// which returns before any query.
+	grantedEmpty := createTestCollection(t, s, ws.ID, "Granted but empty")
 	for name, p := range map[string]SearchParams{
-		"no permission":     {Workspace: ws.Slug},
-		"empty collections": {Workspace: ws.Slug, Unrestricted: true, CollectionFilterIDs: []string{}},
-		"wrong field":       {Workspace: ws.Slug, Unrestricted: true, FieldFilters: map[string]string{"status": "done"}},
+		"no permission":              {Workspace: ws.Slug},
+		"granted another collection": {Workspace: ws.Slug, CollectionIDs: []string{grantedEmpty.ID}},
+		"granted another workspace":  {WorkspaceIDs: []string{otherWS.ID}, CollectionIDs: []string{col.ID, hiddenCol.ID}},
+		"granted another item":       {Workspace: ws.Slug, ItemIDs: []string{tombstone.ID}},
+		"empty collections":          {Workspace: ws.Slug, Unrestricted: true, CollectionFilterIDs: []string{}},
+		"wrong field":                {Workspace: ws.Slug, Unrestricted: true, FieldFilters: map[string]string{"status": "done"}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			p.Query = "nebulaquartz"
@@ -195,11 +202,57 @@ func TestSearchCommentVisibility(t *testing.T) {
 			if res.Facets != nil {
 				for _, n := range res.Facets.Collections {
 					if n != 0 {
-						t.Errorf("facet leak: %+v", res.Facets)
+						t.Errorf("collection facet leak: %+v", res.Facets)
+					}
+				}
+				for _, n := range res.Facets.Statuses {
+					if n != 0 {
+						t.Errorf("status facet leak: %+v", res.Facets)
 					}
 				}
 			}
 		})
+	}
+}
+
+// The comment a result names, and the snippet it shows, come only from a
+// comment that passed every filter: a higher-ranked tombstoned comment whose
+// body is still indexed, a comment on a hidden item and a comment in another
+// workspace never supply either.
+func TestSearchCommentSnippetProvenance(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Snippet provenance")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Plain title", "Plain body")
+	kept := addSearchComment(t, s, item, "nebulaquartz alphaline")
+	gone := addSearchComment(t, s, item, "nebulaquartz nebulaquartz nebulaquartz nebulaquartz betasecret")
+	if _, err := s.db.Exec(s.q("UPDATE comments SET deleted_at = ? WHERE id = ?"), now(), gone.ID); err != nil {
+		t.Fatal(err)
+	}
+	hiddenCol := createTestCollection(t, s, ws.ID, "Private")
+	hidden := createTestItem(t, s, ws.ID, hiddenCol.ID, "Hidden", "Plain")
+	addSearchComment(t, s, hidden, "nebulaquartz nebulaquartz gammasecret")
+	otherWS := createTestWorkspace(t, s, "Elsewhere")
+	otherCol := createTestCollection(t, s, otherWS.ID, "Tasks")
+	other := createTestItem(t, s, otherWS.ID, otherCol.ID, "Elsewhere", "Plain")
+	addSearchComment(t, s, other, "nebulaquartz nebulaquartz deltasecret")
+
+	res, err := s.Search(SearchParams{Query: "nebulaquartz", Workspace: ws.Slug, CollectionIDs: []string{col.ID}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Total != 1 || len(res.Results) != 1 || res.Results[0].Item.ID != item.ID {
+		t.Fatalf("want the one visible item: %+v", res)
+	}
+	hit := res.Results[0]
+	assertSearchSource(t, hit, "comment", kept.ID)
+	if !strings.Contains(hit.Snippet, "alphaline") {
+		t.Errorf("snippet %q is not from the live comment", hit.Snippet)
+	}
+	for _, secret := range []string{"betasecret", "gammasecret", "deltasecret"} {
+		if strings.Contains(hit.Snippet, secret) {
+			t.Errorf("snippet %q leaks %s", hit.Snippet, secret)
+		}
 	}
 }
 
