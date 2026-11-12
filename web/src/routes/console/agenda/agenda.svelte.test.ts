@@ -610,6 +610,13 @@ describe('workspace groups and daily counts', () => {
   await waitFor(() => expect(h.updateGroup).toHaveBeenCalledWith('group-1', { name: 'Renamed', workspace_ids: ['ws-2'] }));
   expect(h.groups).toHaveBeenCalledTimes(2);
  });
+ it('renames by name only when the workspace list failed, leaving membership untouched', async () => {
+  h.workspaces.mockRejectedValue(new Error('Unavailable'));
+  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Renamed' } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await waitFor(() => expect(h.updateGroup).toHaveBeenCalledWith('group-1', { name: 'Renamed' }));
+ });
  it('requires inline confirmation to delete the selected group and reloads all', async () => {
   localStorage.setItem('pad-agenda-group:user-a', 'group-1'); await mount(); const d = await manage();
   await fireEvent.click(within(d).getByRole('button', { name: 'Delete' })); expect(h.removeGroup).not.toHaveBeenCalled();

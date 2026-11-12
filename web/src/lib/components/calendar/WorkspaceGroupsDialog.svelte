@@ -40,10 +40,9 @@
 		try {
 			if (deletedId) await api.workspaceGroups.remove(deletedId);
 			else {
-				// If the workspace list is unavailable, a rename must preserve membership.
-				const body = { name: name.trim(), workspace_ids: [...workspaceIds] };
-				if (editing) await api.workspaceGroups.update(editing, body);
-				else await api.workspaceGroups.create(body);
+				// Without the workspace list there are no checkboxes, so a rename sends the name only and membership is untouched.
+				if (editing) await api.workspaceGroups.update(editing, workspaces ? { name: name.trim(), workspace_ids: [...workspaceIds] } : { name: name.trim() });
+				else await api.workspaceGroups.create({ name: name.trim(), workspace_ids: [...workspaceIds] });
 			}
 			if (!current()) return;
 			await onchanged(deletedId);
