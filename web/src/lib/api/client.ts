@@ -3417,12 +3417,12 @@ export const api = {
 				})
 		},
 		stepUp: {
-   status: () => request<StepUpStatus>('/auth/step-up'),
-   sendEmailCode: () => request<{sent: boolean; expires_at: string}>('/auth/step-up/email', {method: 'POST'}),
-   verify: (proof: StepUpProof) => request<{active_until: string}>('/auth/step-up/verify', {method: 'POST', body: JSON.stringify(proof)}),
-  },
-  tokens: {
-   update: (tokenId: string, input: APITokenUpdate) => request<APIToken>(`/auth/tokens/${encodeURIComponent(tokenId)}`, {method: 'PATCH', body: JSON.stringify(input)}),
+			status: () => request<StepUpStatus>('/auth/step-up'),
+			sendEmailCode: () => request<{sent: boolean; expires_at: string}>('/auth/step-up/email', {method: 'POST'}),
+			verify: (proof: StepUpProof) => request<{active_until: string}>('/auth/step-up/verify', {method: 'POST', body: JSON.stringify(proof)}),
+		},
+		tokens: {
+			update: (tokenId: string, input: APITokenUpdate) => request<APIToken>(`/auth/tokens/${encodeURIComponent(tokenId)}`, {method: 'PATCH', body: JSON.stringify(input)}),
 			list: () => request<APIToken[]>('/auth/tokens'),
 			/** scopes is the JSON-array string the server stores, e.g. '["read"]'
 			 *  (TASK-3866); omitted means full access. */

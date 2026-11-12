@@ -263,5 +263,24 @@ func TestUpdateUserAPITokenCASAndOwnerScope(t *testing.T) {
 		if _, err := s.UpdateUserAPIToken(tok.ID, u.ID, &name, nil, scopes); !errors.Is(err, sql.ErrNoRows) {
 			t.Fatal(fmt.Sprint("revoked: ", err))
 		}
+
+		// A multi-scope key: the handler passes the scopes it read back as the
+		// expected value, whatever text form the backend returns them in.
+		multi, err := s.CreateAPIToken(u.ID, models.APITokenCreate{Name: "Multi", Scopes: `["read","write"]`}, 0, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		read, err := s.GetUserAPIToken(multi.ID, u.ID)
+		if err != nil || read == nil {
+			t.Fatalf("multi read: %v %v", read, err)
+		}
+		narrowed := `["read"]`
+		got, err := s.UpdateUserAPIToken(multi.ID, u.ID, nil, &narrowed, read.Scopes)
+		if err != nil {
+			t.Fatalf("multi CAS: %v", err)
+		}
+		if got.Scopes != narrowed {
+			t.Fatalf("multi narrowed scopes: %q", got.Scopes)
+		}
 	})
 }

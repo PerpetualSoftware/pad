@@ -60,19 +60,19 @@ export interface APIToken {
 }
 
 export interface APITokenUpdate {
- name?: string;
- scopes?: string;
+	name?: string;
+	scopes?: string;
 }
 
 export interface StepUpStatus {
- factor: 'totp' | 'email' | 'password' | 'unavailable';
- active_until: string | null;
+	factor: 'totp' | 'email' | 'password' | 'unavailable';
+	active_until: string | null;
 }
 
 export interface StepUpProof {
- code?: string;
- recovery_code?: string;
- password?: string;
+	code?: string;
+	recovery_code?: string;
+	password?: string;
 }
 
 export interface APITokenWithSecret extends APIToken {
