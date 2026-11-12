@@ -49,7 +49,7 @@
 </script>
 
 {#if factor === 'unavailable'}
- <p>Turn on 2FA, or create a new key and delete this one.</p>
+ <p>Turn on two-factor authentication to change key access.</p>
 {:else}
  <form onsubmit={verify}>
   <p>Verify your identity to increase this key’s access. Verification lasts 10 minutes in this session.</p>

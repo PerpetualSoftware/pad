@@ -229,7 +229,7 @@ func TestTask3867Unavailable409(t *testing.T) {
 	task3867Factor(t, e, "unavailable")
 	rr := task3867Verify(e, map[string]string{"password": "correct-horse-battery-staple"})
 	task3867Want(t, rr, 409, "step_up_unavailable")
-	if !strings.Contains(rr.Body.String(), "create a new key and delete this one") {
+	if !strings.Contains(rr.Body.String(), "Turn on two-factor authentication to change key access.") {
 		t.Fatal("missing recovery guidance")
 	}
 }

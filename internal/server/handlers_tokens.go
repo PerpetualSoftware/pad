@@ -520,8 +520,8 @@ func (s *Server) handleUpdateUserToken(w http.ResponseWriter, r *http.Request) {
 	widens := scopes != nil && tokenAccessWidens(tokenAccess{Scopes: old.Scopes}, tokenAccess{Scopes: *scopes})
 	if widens {
 		session := s.requestSessionInfo(r)
-		if session == nil || session.User.ID != userID || session.StepUpUntil == nil || !session.StepUpUntil.After(time.Now()) {
-			writeError(w, http.StatusForbidden, "step_up_required", "Verify your identity before increasing this key access")
+		if session == nil || session.User == nil || session.User.ID != userID || session.StepUpUntil == nil || !session.StepUpUntil.After(time.Now()) {
+			writeError(w, http.StatusForbidden, "step_up_required", "Verify your identity before increasing this key's access")
 			return
 		}
 	}

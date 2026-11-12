@@ -109,7 +109,7 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 	user := session.User
 	factor, _ := s.stepUpFactor(user)
 	if factor == "unavailable" {
-		writeError(w, http.StatusConflict, "step_up_unavailable", "Turn on 2FA, or create a new key and delete this one")
+		writeError(w, http.StatusConflict, "step_up_unavailable", "Turn on two-factor authentication to change key access.")
 		return
 	}
 	var input struct {
