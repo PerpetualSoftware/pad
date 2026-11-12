@@ -136,8 +136,8 @@ export const OCCURRENCE_STATES = {
 	done: { label: 'Done', tone: '--accent-green', mark: 'check' },
 	skipped: { label: 'Skipped', tone: '--accent-gray', mark: 'dash' },
 	moved: { label: 'Moved', tone: '--accent-purple', mark: 'arrow' },
-	missed: { label: 'Missed', tone: '--accent-amber', mark: 'cross' },
-	lapsed: { label: 'Lapsed', tone: '--accent-gray', mark: 'cross' },
+	missed: { label: 'Missed', tone: '--accent-red', mark: 'cross' },
+	lapsed: { label: 'Lapsed', tone: '--accent-red', mark: 'cross' },
 	unrecorded: { label: 'Not recorded', tone: '--accent-gray', mark: 'ring-dashed' }
 } as const satisfies Record<OccurrenceState, OccurrenceStateRow>;
 
@@ -248,7 +248,7 @@ function attentionKey(entry: AgendaEntry | AgendaWorkEntry): string {
 
 /**
  * What needs attention: priority-list rows whose target has passed or whose deadline passed
- * while still owed, plus window occurrences that lapsed or carry missed occurrences.
+ * while still owed, plus window occurrences that lapsed, were missed or carry missed occurrences.
  * Each occurrence is listed once, under its most severe reason.
  */
 export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWorkEntry[]): AttentionEntry[] {
@@ -267,6 +267,7 @@ export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWor
 	for (const entry of entries) {
 		if (entry.type !== 'schedule') continue;
 		if (entry.state === 'lapsed') add('lapsed', entry, true);
+		else if (entry.state === 'missed') add('missed', entry, true);
 		else if (entry.missed_count && entry.missed_count > 0) add('missed', entry, true);
 		else if (found.has(attentionKey(entry))) add(found.get(attentionKey(entry))!.reason, entry, true);
 	}

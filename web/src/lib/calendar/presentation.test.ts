@@ -51,8 +51,8 @@ describe('agenda timezone presentation', () => {
  it.each([
   ['outstanding', 'Outstanding', '--accent-amber'], ['scheduled', 'Scheduled', '--status-blue'],
   ['done', 'Done', '--accent-green'], ['skipped', 'Skipped', '--accent-gray'],
-  ['moved', 'Moved', '--accent-purple'], ['missed', 'Missed', '--accent-amber'],
-  ['lapsed', 'Lapsed', '--accent-gray'], ['unrecorded', 'Not recorded', '--accent-gray']
+  ['moved', 'Moved', '--accent-purple'], ['missed', 'Missed', '--accent-red'],
+  ['lapsed', 'Lapsed', '--accent-red'], ['unrecorded', 'Not recorded', '--accent-gray']
  ])('maps %s without inferring overdue', (state, text, color) => {
   expect(entryChips(row({ state: state as AgendaEntry['state'] }))).toEqual([{ text, color: `var(${color})` }]);
  });
@@ -172,7 +172,7 @@ describe('attentionEntries', () => {
    work({ item_ref: 'EX-23', type: 'item', schedule_id: undefined, occurrence_key: undefined, reason: 'unplaced' })
   ];
   expect(attentionEntries(window, priority).map(a => [a.entry.item_ref, a.reason])).toEqual([
-   ['EX-21', 'deadline_still_owed'], ['EX-20', 'target_passed'], ['EX-10', 'lapsed'], ['EX-11', 'missed']
+   ['EX-21', 'deadline_still_owed'], ['EX-20', 'target_passed'], ['EX-10', 'lapsed'], ['EX-11', 'missed'], ['EX-16', 'missed']
   ]);
  });
  it('lists an occurrence once when it is in both the priority list and the window, keeping the window entry', () => {

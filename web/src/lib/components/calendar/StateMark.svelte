@@ -4,7 +4,7 @@
 	interface Props {
 		/** The occurrence state. Leave unset for a dated field (due, ends), which draws as a square. */
 		state?: OccurrenceState;
-		/** An outstanding occurrence whose target or deadline has passed. */
+		/** An outstanding occurrence whose target or deadline has passed, or an overdue dated field. */
 		overdue?: boolean;
 		/** Accessible name of the dated-field square, such as "Due". Occurrence states use their table label. */
 		label?: string;
@@ -15,10 +15,10 @@
 	const row = $derived(state ? OCCURRENCE_STATES[state] : undefined);
 	const shape = $derived(row?.mark ?? 'square');
 	const name = $derived(row?.label ?? label);
-	// Colour follows the shape. Red is kept for a lapsed or missed occurrence
-	// and for an outstanding one that is past its target or deadline.
+	// Colour follows the shape. Red is kept for a lapsed or missed occurrence,
+	// an outstanding one past its target or deadline, and an overdue dated field.
 	const tone = $derived(
-		shape === 'cross' || (shape === 'ring' && overdue) ? 'red'
+		shape === 'cross' || ((shape === 'ring' || shape === 'square') && overdue) ? 'red'
 			: shape === 'ring' ? 'amber'
 			: shape === 'check' ? 'green'
 			: 'gray'
@@ -92,5 +92,10 @@
 	[data-mark='square'] {
 		border: 1.5px solid var(--border-strong);
 		border-radius: 4px;
+	}
+
+	[data-mark='square'][data-tone='red'] {
+		border-color: var(--accent-red);
+		background: color-mix(in srgb, var(--accent-red) 18%, transparent);
 	}
 </style>

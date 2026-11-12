@@ -34,12 +34,13 @@ describe('StateMark', () => {
 			unmount();
 		}
 	});
-	it('draws a dated field as a square named by its label, never red', () => {
+	it('draws a dated field as a square named by its label, red only when overdue', () => {
 		const { unmount } = render(StateMark, { label: 'Due' });
 		expect(screen.getByRole('img', { name: 'Due' })).toHaveAttribute('data-mark', 'square');
+		expect(screen.getByRole('img', { name: 'Due' })).toHaveAttribute('data-tone', 'gray');
 		unmount();
 		render(StateMark, { overdue: true });
-		expect(screen.getByRole('img', { name: 'Date' })).toHaveAttribute('data-tone', 'gray');
+		expect(screen.getByRole('img', { name: 'Date' })).toHaveAttribute('data-tone', 'red');
 	});
 	it('hides its drawing from assistive technology', () => {
 		const { container } = render(StateMark, { state: 'done' });
