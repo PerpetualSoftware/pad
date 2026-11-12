@@ -179,11 +179,13 @@ describe('resolve identity and dialogs', () => {
   await mount(); expect(h.view).not.toHaveBeenCalled(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done' }));
   expect(h.resolve).toHaveBeenCalledTimes(1); expect(h.view).toHaveBeenCalledWith('work', 'EX-30');
-  expect(await screen.findByText('Occurrence marked done.')).toBe(screen.getByRole('status')); await said('Occurrence marked done.', 'success');
+  await said('Occurrence marked done.', 'success');
+  // The toast container is itself a live region, so the page status must not say it again.
+  expect(screen.getByRole('status')).toHaveTextContent(''); expect(screen.queryByText('Occurrence marked done.')).toBeNull();
  });
  it('Skip submits once with the view identity', async () => {
   await mount(); await menu(); expect(h.view).not.toHaveBeenCalled(); await fireEvent.click(screen.getByRole('menuitem', { name: 'Skip' }));
-  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'skip' })); await screen.findByText('Occurrence skipped.');
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'skip' })); await said('Occurrence skipped.', 'success');
  });
  it.each(['different wall', 'ended', 'missing occurrence', '404'])('refuses a %s view as stale', async kind => {
   if (kind === '404') h.view.mockRejectedValue({ code: 'not_found' });
@@ -230,7 +232,7 @@ describe('resolve identity and dialogs', () => {
   for (const name of ['Done EX-30', 'Actions EX-30']) expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true);
   expect((screen.getByRole('button', { name: 'Done EX-31' }) as HTMLButtonElement).disabled).toBe(false);
   view.resolve({ next_occurrence: { at: frozenAt, wall: row().wall } }); await waitFor(() => expect(h.resolve).toHaveBeenCalledTimes(1)); expect(screen.getByText('Saving…')).toBeTruthy();
-  write.resolve({}); await screen.findByText('Occurrence marked done.');
+  write.resolve({}); await said('Occurrence marked done.', 'success');
  });
  it.each([['resolve', 'stale', 'This occurrence changed. Review the updated entry and try again.'], ['resolve', 'forbidden', 'You can no longer change this item.'], ['view', 'forbidden', 'You can no longer change this item.'], ['view', 'internal', 'Could not update this occurrence. Try again.']])('handles %s %s without replay', async (source, code, message) => {
   h[source === 'view' ? 'view' : 'resolve'].mockRejectedValue({ code }); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await said(message);
@@ -245,7 +247,7 @@ describe('resolve identity and dialogs', () => {
  it('keeps rows on quiet refresh and retries only the read after a successful write', async () => {
   const refresh = deferred<AgendaResponse>(); h.agenda.mockResolvedValueOnce(response()).mockReturnValueOnce(refresh.promise); await mount();
   await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText('Updating agenda…'); expect(screen.getByText('First item')).toBeTruthy();
-  refresh.resolve(response()); await screen.findByText('Occurrence marked done.');
+  refresh.resolve(response()); await said('Occurrence marked done.', 'success'); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(''));
   h.agenda.mockRejectedValueOnce(new Error('offline')); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText('Saved. Could not refresh the view.');
   const writes = h.resolve.mock.calls.length; h.agenda.mockResolvedValue(response()); await fireEvent.click(screen.getByRole('button', { name: 'Try again' })); await settle(); expect(h.resolve).toHaveBeenCalledTimes(writes);
  });
@@ -312,7 +314,7 @@ describe('agenda Week and priority', () => {
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1' }));
   expect(h.preview).toHaveBeenCalledTimes(1); expect(h.move).toHaveBeenCalledTimes(1);
   expect(h.preview).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z' });
-  expect(screen.queryByRole('dialog')).toBeNull(); await screen.findByText('Occurrence moved to November 6, 2026, 09:00. Its reminder follows the target.');
+  expect(screen.queryByRole('dialog')).toBeNull(); expect(screen.getByRole('status')).not.toHaveTextContent(/Occurrence moved/);
   await said('Occurrence moved to November 6, 2026, 09:00. Its reminder follows the target.', 'success');
   expect(h.agenda.mock.calls[1]).toEqual(h.agenda.mock.calls[0]);
   expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
@@ -566,6 +568,15 @@ describe('week strip, attention band and states', () => {
   await fireEvent.click(within(band).getByRole('button', { name: 'Done EX-40' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-40', expect.objectContaining({ state: 'done' })));
  });
+ it('says where a day went when its only entry is listed under Needs attention', async () => {
+  const lapsed = row({ item_ref: 'EX-42', item_title: 'Lapsed item', schedule_id: 'schedule-6', state: 'lapsed', at: '2026-11-06T10:00:00Z', day: '2026-11-06', wall: '2026-11-06T05:00:00' });
+  h.agenda.mockResolvedValue(response([row(), lapsed])); await mount();
+  const day = daySection('2026-11-06');
+  expect(within(screen.getByRole('region', { name: 'Needs attention' })).getByText('Lapsed item')).toBeTruthy();
+  expect(within(day).getByText('1 missed')).toBeTruthy(); expect(day.querySelector('li[data-ref]')).toBeNull();
+  expect(within(day).getByText('Listed under Needs attention.')).toBeTruthy(); expect(within(day).queryByText('Nothing scheduled.')).toBeNull();
+  expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy();
+ });
  it('has no attention band when nothing needs it', async () => {
   await mount(); expect(screen.queryByRole('region', { name: 'Needs attention' })).toBeNull();
  });
@@ -631,6 +642,13 @@ describe('week strip, attention band and states', () => {
   vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
   await mount(); expect(screen.getByRole('heading', { name: '5–11 Nov' })).toBeTruthy();
  });
+ it('names the day in short form on a phone and in full on a desktop', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'day');
+  await mount(); expect(screen.getByRole('heading', { name: 'November 5, 2026' })).toBeTruthy();
+  cleanup();
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  await mount(); expect(screen.getByRole('heading', { name: 'Thu 5 Nov' })).toBeTruthy(); expect(screen.queryByRole('heading', { name: 'November 5, 2026' })).toBeNull();
+ });
 });
 
 describe('target move failure and drag fences', () => {
@@ -656,7 +674,7 @@ describe('target move failure and drag fences', () => {
  });
  it('returns focus to the period heading when the moved card leaves the view', async () => {
   await mount(); h.agenda.mockResolvedValue(response([])); await drop();
-  await screen.findByText(/Occurrence moved to/);
+  await waitFor(() => expect(h.toast.mock.calls.some(call => /^Occurrence moved to/.test(call[0]) && call[1] === 'success')).toBe(true));
   expect(document.activeElement).toBe(screen.getByRole('heading', { name: '5–11 November 2026' }));
  });
  it('compares the root source to roles.target as an instant, with different RFC3339 offsets', async () => {
@@ -917,7 +935,7 @@ describe('agenda Month page', () => {
   h.agenda.mockResolvedValue(response([row({ state: 'done' })]));
   await fireEvent.click(within(detail).getByRole('button', { name: 'Done EX-30' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done' }));
-  await screen.findByText('Occurrence marked done.');
+  await said('Occurrence marked done.', 'success');
   expect(screen.getByRole('dialog')).toBe(detail);
   expect(within(detail).queryByRole('button', { name: 'Done EX-30' })).toBeNull();
   expect(within(detail).getByRole('img', { name: 'Done' })).toBeTruthy();
@@ -952,7 +970,7 @@ describe('agenda Month page', () => {
   await screen.findByText('Updating agenda…');
   expect(within(detail).getByRole('button', { name: 'Done EX-30' })).toBeDisabled();
   refresh.resolve(response([row({ state: 'skipped' })]));
-  await screen.findByText('Occurrence skipped.'); expect(screen.getByRole('dialog')).toBe(detail);
+  await said('Occurrence skipped.', 'success'); expect(screen.getByRole('dialog')).toBe(detail);
   expect(within(detail).getByText('Skipped')).toBeTruthy();
  });
  it('refocuses a keyboard month destination after data lands and cancels focus after a failed load', async () => {

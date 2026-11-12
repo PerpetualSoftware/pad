@@ -74,9 +74,9 @@ export function dayLabel(day: string): string {
 	return localDate(`${day}T12:00:00Z`, 'UTC');
 }
 
-/** A day as a heading: "Thursday 12 November". The year is left to the period label. */
-export function longDay(day: string, weekday: 'long' | 'short' = 'long'): string {
-	const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday, day: 'numeric', month: 'long' }).formatToParts(new Date(`${day}T12:00:00Z`));
+/** A day as a heading: "Thursday 12 November", or "Thu 12 Nov" with both parts short. It never carries the year. */
+export function longDay(day: string, weekday: 'long' | 'short' = 'long', month: 'long' | 'short' = 'long'): string {
+	const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday, day: 'numeric', month }).formatToParts(new Date(`${day}T12:00:00Z`));
 	const part = (type: string) => parts.find(p => p.type === type)?.value;
 	return `${part('weekday')} ${part('day')} ${part('month')}`;
 }

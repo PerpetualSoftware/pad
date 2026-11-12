@@ -34,7 +34,7 @@
 	let mode = $state<'week' | 'day' | 'month'>('week');
 	const month = $derived(day.slice(0, 7));
 	let mobile = $state(false);
-	const periodLabel = $derived(mode === 'month' ? monthLabel(month) : mode === 'week' ? weekLabel(day, mobile) : dayLabel(day));
+	const periodLabel = $derived(mode === 'month' ? monthLabel(month) : mode === 'week' ? weekLabel(day, mobile) : mobile ? longDay(day, 'short', 'short') : dayLabel(day));
 	// One clock for every deadline and forecast pill, so an open page moves them from soon to passed.
 	let now = $state(new Date(Date.now()));
 	const today = $derived(todayIn(zone, now));
@@ -176,8 +176,8 @@
 			toastedError = message;
 		});
 	});
+	// The toast container is a polite live region, so a success is announced there and not in the page status as well.
 	function succeed(message: string) {
-		announcement = message;
 		toastStore.show(message, 'success');
 	}
 	$effect(() => {
@@ -616,7 +616,7 @@
 		</div>
 	{/if}
 	{#if schedule}
-		<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} {zone} {now}
+		<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} {zone} {now} compact={mobile}
 			{dragging} {hoverDay} onselect={pickDay} onenter={enterDay} ondrop={dropDay} />
 	{/if}
 	<div class="layout">
@@ -643,7 +643,7 @@
 				{:else if data && (entries.length > 0 || attention.length > 0)}
 					{#if attention.length}<AgendaAttention items={attention} {zone} {now} {pending} {saved} compact={mobile} onaction={action} />{/if}
 					{#each listDays as date (date)}
-						<AgendaDayGroup day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} summary={summary(date)}
+						<AgendaDayGroup day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
 							deadlines={markers.get(date)?.deadlines} forecasts={markers.get(date)?.forecasts} {zone} {now} complete={!dayIncomplete(date)}
 							{pending} {saved} compact={mobile} movable={mode === 'week' && !mobile} {dragging} hover={hoverDay === date} impact={dragImpact} titles={linkedTitles}
 							onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />

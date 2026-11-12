@@ -11,6 +11,8 @@
 		entries: AgendaEntry[];
 		/** One line beside the heading, such as "2 owed · 1 done". */
 		summary?: string;
+		/** How many of the day's entries are listed under Needs attention instead of here. */
+		lifted?: number;
 		/** Occurrences whose deadline lands here while their target is on another day. */
 		deadlines?: AgendaEntry[];
 		/** Occurrences whose forecast lands here while their target is on another day. */
@@ -37,7 +39,7 @@
 		ondrop?: (day: string) => void;
 	}
 
-	let { day, today, entries, summary = '', deadlines = [], forecasts = [], zone, now = new Date(Date.now()), complete = true, pending, saved, compact = false, movable = false, heading = true,
+	let { day, today, entries, summary = '', lifted = 0, deadlines = [], forecasts = [], zone, now = new Date(Date.now()), complete = true, pending, saved, compact = false, movable = false, heading = true,
 		dragging = null, hover = false, impact = null, titles = {}, onaction, ondragstart, ondragend, onenter, ondrop }: Props = $props();
 
 	const uid = $props.id();
@@ -98,7 +100,7 @@
 				</ul>
 			</li>
 		{/if}
-		{#if empty && complete && !landing && !linked.length}<li class="empty">Nothing scheduled.</li>{/if}
+		{#if empty && complete && !landing && !linked.length}<li class="empty">{lifted > 0 ? 'Listed under Needs attention.' : 'Nothing scheduled.'}</li>{/if}
 	</ul>
 </section>
 

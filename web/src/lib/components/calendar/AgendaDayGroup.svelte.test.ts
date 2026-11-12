@@ -68,6 +68,16 @@ describe('AgendaDayGroup', () => {
 		expect(ghosts[1].textContent).toMatch(/Linked child \(linked\).*Outside its bound/);
 		expect(section.textContent).not.toContain('far');
 	});
+	it('says its entries are listed under Needs attention when they were all lifted there', () => {
+		const lifted = mount({ entries: [], lifted: 1, summary: '1 missed' }).section;
+		expect(within(lifted).getByText('Listed under Needs attention.')).toBeTruthy(); expect(within(lifted).queryByText('Nothing scheduled.')).toBeNull();
+		cleanup();
+		const bare = mount({ entries: [] }).section;
+		expect(within(bare).getByText('Nothing scheduled.')).toBeTruthy(); expect(within(bare).queryByText('Listed under Needs attention.')).toBeNull();
+		cleanup();
+		const mixed = mount({ lifted: 1 }).section;
+		expect(within(mixed).queryByText('Listed under Needs attention.')).toBeNull(); expect(within(mixed).queryByText('Nothing scheduled.')).toBeNull();
+	});
 });
 
 describe('roleMarkers', () => {

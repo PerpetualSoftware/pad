@@ -12,6 +12,8 @@
 		entries: AgendaEntry[];
 		zone: string;
 		now?: Date;
+		/** Phone layout: the cells are narrow, so each shows fewer pips. */
+		compact?: boolean;
 		/** The occurrence being dragged. While set, every day is a drop target. */
 		dragging: AgendaEntry | null;
 		/** The day the drag is over. */
@@ -21,11 +23,13 @@
 		ondrop: (day: string) => void;
 	}
 
-	let { days, today, selected, entries, zone, now = new Date(Date.now()), dragging, hoverDay, onselect, onenter, ondrop }: Props = $props();
+	let { days, today, selected, entries, zone, now = new Date(Date.now()), compact = false, dragging, hoverDay, onselect, onenter, ondrop }: Props = $props();
 
 	type Tone = 'bad' | 'owed' | 'quiet' | 'done';
 	const ORDER: Tone[] = ['bad', 'owed', 'quiet', 'done'];
+	// Most severe first: when a day has more entries than pips, the pips left out are the mildest.
 	const MAX_PIPS = 6;
+	const MAX_PIPS_COMPACT = 4;
 	let root = $state<HTMLDivElement>();
 	let focused = $state('');
 
@@ -42,7 +46,7 @@
 		const rows = entries.filter(entry => entry.day === day && (entry.type === 'schedule' || entry.type === 'date'));
 		const tones = rows.map(tone).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
 		const owed = rows.filter(entry => entry.type === 'schedule' && (entry.state === 'outstanding' || entry.state === 'lapsed' || entry.state === 'missed')).length;
-		return [day, { count: rows.length, owed, tones: tones.slice(0, MAX_PIPS) }] as const;
+		return [day, { count: rows.length, owed, tones: tones.slice(0, compact ? MAX_PIPS_COMPACT : MAX_PIPS) }] as const;
 	})));
 	// One tab stop: the day last focused, else the selected day, else today, else the first.
 	const stop = $derived([focused, selected, today].find(day => day && days.includes(day)) ?? days[0]);
@@ -96,16 +100,16 @@
 
 <style>
 	.strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--space-2); margin-top: var(--space-4); }
-	.day { display: flex; align-items: center; gap: var(--space-3); min-width: 0; min-height: 52px; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
+	.day { display: flex; align-items: center; gap: var(--space-3); min-width: 0; min-height: 52px; padding: 8px 12px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
 	.day:hover { background: var(--bg-hover); }
 	.day:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 	.date { display: flex; flex-direction: column; }
 	.dow { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-muted); }
 	.num { font-size: 18px; font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
-	.load { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
+	.load { margin-left: auto; display: flex; flex-direction: column; align-items: flex-end; gap: 3px; min-width: 0; max-width: 100%; overflow: hidden; font-size: 11px; color: var(--text-muted); font-variant-numeric: tabular-nums; }
 	.n { white-space: nowrap; }
-	.pips { display: flex; gap: 3px; min-height: 6px; }
-	.pip { width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); }
+	.pips { display: flex; gap: 3px; min-height: 6px; max-width: 100%; overflow: hidden; }
+	.pip { flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--border-strong); }
 	.pip[data-tone='owed'] { background: var(--accent-amber); }
 	.pip[data-tone='bad'] { background: var(--accent-red); }
 	.pip[data-tone='done'] { background: var(--accent-green); }

@@ -34,6 +34,16 @@ describe('AgendaWeekStrip', () => {
 		expect(tones('2031-03-12')).toEqual(['bad']); expect(tones('2031-03-13')).toEqual([]);
 		expect(button('2031-03-10')).toHaveAccessibleName(/5 entries, 3 owed/);
 	});
+	it('caps the pips so they fit the cell, keeping the most severe, and still names every entry', () => {
+		const busy = [entry({ state: 'done' }), entry({ state: 'done' }), entry({ state: 'scheduled' }), entry({ state: 'skipped' }), entry(), entry(), entry({ state: 'missed' }), entry({ state: 'lapsed' })];
+		const tones = () => [...button('2031-03-10').querySelectorAll('.pip')].map(pip => (pip as HTMLElement).dataset.tone);
+		mount({ entries: busy }); expect(tones()).toEqual(['bad', 'bad', 'owed', 'owed', 'quiet', 'quiet']);
+		cleanup();
+		mount({ entries: busy, compact: true }); expect(tones()).toEqual(['bad', 'bad', 'owed', 'owed']);
+		expect(button('2031-03-10')).toHaveAccessibleName(/8 entries, 4 owed/);
+		cleanup();
+		mount({ entries: busy.slice(0, 5), compact: true }); expect(tones()).toEqual(['owed', 'quiet', 'quiet', 'done']);
+	});
 	it('is one tab stop whose arrow keys rove, and a press picks the day', async () => {
 		const { buttons, onselect } = mount();
 		expect(buttons.map(b => b.tabIndex)).toEqual([-1, 0, -1, -1, -1, -1, -1]);
