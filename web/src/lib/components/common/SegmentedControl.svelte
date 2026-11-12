@@ -2,11 +2,13 @@
 	interface Option {
 		value: T;
 		label: string;
-		/** Shown after the label in a quieter weight. */
-		count?: number;
+		/** Shown after the label in a quieter weight. Text carries a count that is not exact, such as "12+". */
+		count?: number | string;
 		disabled?: boolean;
 		/** `tablist` mode: id of the panel this tab shows. */
 		controls?: string;
+		/** Element id of the option, so a panel can name the tab that labels it. */
+		id?: string;
 	}
 
 	interface Props {
@@ -60,6 +62,7 @@
 		{@const selected = option.value === value}
 		<button
 			type="button"
+			id={option.id}
 			class="option"
 			class:selected
 			data-index={index}
