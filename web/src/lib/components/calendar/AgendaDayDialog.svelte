@@ -1,46 +1,40 @@
 <script lang="ts">
 	import type { AgendaEntry } from '$lib/types';
 	import { dayLabel } from '$lib/calendar/monthGrid';
-	import { entryKey, type AgendaAction } from '$lib/calendar/presentation';
-	import Modal from '../common/Modal.svelte';
-	import BottomSheet from '../common/BottomSheet.svelte';
-	import Button from '../common/Button.svelte';
+	import { daySummary, entryKey, type AgendaAction } from '$lib/calendar/presentation';
+	import DialogShell from '../common/DialogShell.svelte';
 	import AgendaRow from './AgendaRow.svelte';
-	let { day, entries, zone, now, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
-		day: string | null; entries: AgendaEntry[]; zone: string; now?: Date; mobile: boolean; incomplete: boolean; error?: string;
+	let { day, today, entries, zone, now, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
+		day: string | null; today: string;
+		/** The day's rows in display order: what needs attention first. */
+		entries: AgendaEntry[];
+		zone: string; now?: Date; mobile: boolean; incomplete: boolean; error?: string;
 		pending: Record<string, boolean>; saved: Record<string, boolean>;
 		onclose: () => void; onaction: (entry: AgendaEntry, action: AgendaAction) => void;
 	} = $props();
-	const uid = $props.id();
+	const title = $derived(day ? `${dayLabel(day, true)}${day === today ? ', Today' : ''}` : '');
+	const subject = $derived(entries.length ? [`${entries.length} ${entries.length === 1 ? 'entry' : 'entries'}`, daySummary(entries)].filter(Boolean).join(' · ') : '');
 </script>
 
-{#snippet body()}
-	<div class="detail">
-		{#if !mobile}<div class="heading"><h2 id={uid}>{day ? dayLabel(day, true) : ''}</h2><Button onclick={onclose}>Close</Button></div>{/if}
-		<p>Time zone: {zone}</p>
-		{#if error}<p role="alert">{error}</p>{/if}
-		{#if incomplete}<p>Not fully loaded</p>{/if}
-		{#if !incomplete && entries.length === 0}<p>No entries on this day.</p>{/if}
-		{#if day && entries.length}
-			<ul>
-				{#each entries as entry (entryKey(entry))}
-					<AgendaRow {entry} {zone} {now} compact={mobile} pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} />
-				{/each}
-			</ul>
-		{/if}
-	</div>
-{/snippet}
-{#if mobile}
-	<BottomSheet open={!!day} {onclose} title={day ? dayLabel(day, true) : ''}>{@render body()}</BottomSheet>
-{:else}
-	<Modal open={!!day} {onclose} labelledby={uid} maxWidth="800px">{@render body()}</Modal>
-{/if}
+<DialogShell open={!!day} {mobile} {title} {subject} maxWidth="800px" {onclose}>
+	{#if error}<p class="notice bad" role="alert">{error}</p>{/if}
+	{#if incomplete}<p class="notice">Not fully loaded</p>{/if}
+	{#if !incomplete && entries.length === 0}<p class="none">No entries on this day.</p>{/if}
+	{#if day && entries.length}
+		<ul>
+			{#each entries as entry (entryKey(entry))}
+				<AgendaRow {entry} {zone} {now} compact={mobile} pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} />
+			{/each}
+		</ul>
+	{/if}
+</DialogShell>
 
 <style>
-	.detail { padding: var(--space-4); overflow: auto; overscroll-behavior: contain; }
-	.heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
-	h2 { font-size: 18px; margin: 0; }
-	p { color: var(--text-secondary); }
-	ul { list-style: none; margin: 0; padding: 0; }
+	p { margin: 0; font-size: 13px; }
+	.none { color: var(--text-secondary); }
+	/* The week's notice: amber for what did not load, red for what failed. */
+	.notice { padding: 10px var(--space-4); border: 1px solid color-mix(in srgb, var(--accent-amber) 45%, transparent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-amber) 10%, transparent); }
+	.notice.bad { border-color: color-mix(in srgb, var(--accent-red) 35%, transparent); background: color-mix(in srgb, var(--accent-red) 10%, transparent); }
+	ul { list-style: none; margin: 0; padding: 0; border: 1px solid var(--card-border); border-radius: var(--radius-lg); background: var(--card-bg); }
 	ul > :global(* + *) { border-top: 1px solid var(--border-subtle); }
 </style>

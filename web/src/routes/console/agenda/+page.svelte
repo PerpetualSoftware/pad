@@ -9,12 +9,13 @@
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import WorkspaceGroupsDialog from '$lib/components/calendar/WorkspaceGroupsDialog.svelte';
-	import { dayLabel as calendarDayLabel, monthLabel, monthWindow, moveMonth } from '$lib/calendar/monthGrid';
+	import { attentionFirst, dayLabel as calendarDayLabel, monthLabel, monthWindow, moveMonth } from '$lib/calendar/monthGrid';
 	import MonthGrid from '$lib/components/calendar/MonthGrid.svelte';
 	import CalendarEntry from '$lib/components/calendar/CalendarEntry.svelte';
 	import AgendaAttention from '$lib/components/calendar/AgendaAttention.svelte';
 	import AgendaDayDialog from '$lib/components/calendar/AgendaDayDialog.svelte';
 	import AgendaDayGroup from '$lib/components/calendar/AgendaDayGroup.svelte';
+	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import AgendaToolbar from '$lib/components/calendar/AgendaToolbar.svelte';
 	import AgendaWeekStrip from '$lib/components/calendar/AgendaWeekStrip.svelte';
 	import ForecastDialog from '$lib/components/calendar/ForecastDialog.svelte';
@@ -80,7 +81,8 @@
 	let workspaces = $state<Workspace[] | null>(null);
 	let groupsReady = $state(false);
 	let selectedGroup = $state('all');
-	let manageGroups = $state(false);
+	// The groups dialog, and the group whose edit step it opens at.
+	let manageGroups = $state<{ edit?: string } | null>(null);
 	let groupsTicket = 0;
 	let workspacesTicket = 0;
 	let ticket = 0;
@@ -148,14 +150,16 @@
 	const cursor = $derived(cursorIn(data?.next_from, windowOf(mode, day, zone).to));
 	const nextDay = $derived(cursor ? roleDay(cursor, zone) : null);
 	const monthEntries = $derived(entries.filter(entry => !nextDay || entry.day <= nextDay));
-	const monthGroups = $derived(groupEntries(monthEntries));
-	const monthRows = $derived.by(() => {
-		const byDay = new Map<string, ReturnType<typeof agendaRows>>();
-		for (const row of agendaRows(monthEntries)) {
-			const rows = byDay.get(row.day) ?? []; rows.push(row); byDay.set(row.day, rows);
-		}
-		return byDay;
-	});
+	// What needs attention in the month, by the derivation the week's band uses.
+	const monthAttention = $derived(new Set(data ? attentionEntries(monthEntries, data.priority_list).filter(item => item.inWindow).map(item => entryKey(item.entry as AgendaEntry)) : []));
+	// Each day's entries, what needs attention first, so it is never behind "+N more".
+	const monthDays = $derived(new Map(groupEntries(monthEntries).map(group => [group.day, attentionFirst(group.entries, entry => monthAttention.has(entryKey(entry)))])));
+	const monthRows = $derived(new Map([...monthDays].map(([date, rows]) => [date, agendaRows(rows).map(row => ({ ...row, attention: monthAttention.has(row.key) }))])));
+	function monthCount(date: string) {
+		const rows = monthDays.get(date) ?? [];
+		const owed = rows.filter(entry => entry.type === 'schedule' && entry.state === 'outstanding').length;
+		return rows.length ? `${rows.length}${owed ? ` · ${owed} owed` : ''}` : '';
+	}
 	function dayIncomplete(date: string) {
 		return incomplete && (!nextDay || date >= nextDay || !!data?.unavailable?.length || !!data?.unexpanded?.length);
 	}
@@ -260,7 +264,7 @@
 		const sameIdentity = authStore.identityFence();
 		const userId = authStore.user?.id;
 		const current = () => mine === groupsTicket && sameIdentity();
-		workspaceGroups = null; workspaces = null; groupsReady = false; selectedGroup = 'all'; manageGroups = false;
+		workspaceGroups = null; workspaces = null; groupsReady = false; selectedGroup = 'all'; manageGroups = null;
 		if (!userId) { groupsReady = true; return; }
 		let remembered = 'all';
 		try { remembered = localStorage.getItem(`pad-agenda-group:${userId}`) || 'all'; } catch { /* Storage is optional. */ }
@@ -584,7 +588,7 @@
 <svelte:head><title>Agenda</title></svelte:head>
 <svelte:window onkeydown={event => { if (event.key === 'Escape') clearDrag(); }} />
 <AgendaToolbar {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selectedGroup} {workspaces} {showEvents} bind:heading={periodHeading}
-	onmode={setMode} onmove={movePeriod} ontoday={goToday} ongroup={setGroup} onmanage={() => manageGroups = true} onshowevents={setShowEvents} />
+	onmode={setMode} onmove={movePeriod} ontoday={goToday} ongroup={setGroup} onmanage={() => manageGroups = {}} onshowevents={setShowEvents} />
 
 <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{status}</div>
 <div class="progress" class:busy={updating || loadingRest} aria-hidden="true"></div>
@@ -629,21 +633,33 @@
 
 {#if emptyGroup}
 	<EmptyState title="No workspaces in this group." message="Add a workspace to see its commitments here.">
-		{#snippet actions()}<Button variant="primary" onclick={() => manageGroups = true}>Add workspaces</Button>{/snippet}
+		{#snippet actions()}<Button variant="primary" onclick={() => manageGroups = { edit: selectedGroup }}>Add workspaces</Button>{/snippet}
 	</EmptyState>
 {:else if mode === 'month'}
 	{#if loadError && !savedRefreshError}{@render failed()}{/if}
 	<MonthGrid bind:this={monthGrid} {month} today={todayIn(zone)} selected={day} {mobile} loaded={data}
 		cellLabel={monthCellLabel} summary={(date) => dayIncomplete(date) ? 'Not fully loaded' : monthRows.get(date)?.length ? `${monthRows.get(date)!.length} entries` : 'No entries'}
+		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length}
 		onopen={openDay} onchoose={(date) => selectedDay = date}>
 		{#snippet cell(date: string, phone: boolean)}
-			{#each (monthRows.get(date) ?? []).slice(0, 3) as row (row.key)}<CalendarEntry {row} {zone} preview keyboard={phone} />{/each}
-			{#if (monthRows.get(date)?.length ?? 0) > 3}<button class="more" tabindex={phone ? 0 : -1} onclick={() => openDay(date)}>+{monthRows.get(date)!.length - 3} more</button>{/if}
+			{#if phone}
+				<!-- The phone month is the week's list: every entry of the day, with its actions. -->
+				{#if monthDays.get(date)?.length}
+					<ul class="card month-day">
+						{#each monthDays.get(date) ?? [] as entry (entryKey(entry))}
+							<AgendaRow {entry} {zone} {now} compact pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} onaction={action} />
+						{/each}
+					</ul>
+				{/if}
+			{:else}
+				{#each (monthRows.get(date) ?? []).slice(0, 3) as row (row.key)}<CalendarEntry {row} {zone} preview keyboard={false} />{/each}
+				{#if (monthRows.get(date)?.length ?? 0) > 3}<button class="more" tabindex="-1" onclick={() => openDay(date)}>+{monthRows.get(date)!.length - 3} more</button>{/if}
+			{/if}
 			{#if dayIncomplete(date)}<p class="incomplete-day">Not fully loaded</p>{/if}
 		{/snippet}
 	</MonthGrid>
 	{#if nothing}<p class="quiet-note">No entries this month.</p>{/if}
-	<AgendaDayDialog day={openedDay} entries={monthGroups.find(group => group.day === openedDay)?.entries ?? []} {zone} {now} {mobile}
+	<AgendaDayDialog day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
 	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} /></div>{/if}
 {:else}
@@ -725,26 +741,28 @@
 	</div>
 {/if}
 {#if manageGroups && workspaceGroups}
-	<WorkspaceGroupsDialog groups={workspaceGroups} {workspaces} onclose={() => manageGroups = false} onchanged={refreshGroups} />
+	<WorkspaceGroupsDialog groups={workspaceGroups} {workspaces} {mobile} initialEdit={manageGroups.edit} onclose={() => manageGroups = null} onchanged={refreshGroups} />
 {/if}
-<ForecastDialog open={!!forecastEntry} entry={forecastEntry} {zone} {permissionCopy}
+<ForecastDialog open={!!forecastEntry} entry={forecastEntry} {zone} {mobile} {permissionCopy}
  onclose={() => forecastEntry = null}
  onsaved={() => { forecastEntry = null; void load(day, zone, true); }} />
-<ResolveOccurrenceDialog open={!!dialogEntry} mode={dialogMode} {zone}
+<ResolveOccurrenceDialog open={!!dialogEntry} mode={dialogMode} entry={dialogEntry} {zone} {mobile}
 	pending={dialogEntry ? !!pending[entryKey(dialogEntry)] : false} error={actionError}
 	onclose={() => dialogEntry = null}
 	onsubmit={(until, comment) => { if (dialogEntry) { if (dialogMode === 'move') void moveTarget(dialogEntry, until, comment || undefined); else void resolve(dialogEntry, 'snooze', until, comment); } }} />
 {#if review}
-	<MoveImpactDialog entry={review.entry} preview={review.preview} {zone} titles={linkedTitles} initialReason={review.reason}
+	<MoveImpactDialog entry={review.entry} preview={review.preview} {zone} {mobile} titles={linkedTitles} initialReason={review.reason}
 		pending={committing} error={actionError} onclose={cancelReview}
 		onsubmit={(reason, acknowledge) => { if (review && !committing) void commitTarget(review.entry, review.to, review.preview, review.sameIdentity, reason, acknowledge); }} />
 {/if}
 
 <style>
-	.more { font: inherit; color: var(--text-primary); border: 0; background: transparent; cursor: pointer; border-radius: var(--radius-sm); text-align: left; font-size: 12px; padding: var(--space-1); }
+	.more { font: inherit; color: var(--text-secondary); border: 0; background: transparent; cursor: pointer; border-radius: 4px; text-align: left; font-size: 11.5px; font-weight: 600; padding: 1px 4px; }
+	.month-day { list-style: none; margin: 0; padding: 0; overflow: hidden; }
+	.month-day > :global(* + *) { border-top: 1px solid var(--border-subtle); }
 	.more:hover { background: var(--bg-hover); }
 	.more:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
-	.incomplete-day { color: var(--text-secondary); font-size: 12px; margin: var(--space-2) 0; }
+	.incomplete-day { color: var(--text-secondary); font-size: 11px; margin: 0; padding: 0 4px; }
 	@media (pointer: coarse) { .more { min-height: 44px; min-width: 44px; } }
 
 	/* A quiet reload keeps the content and runs a thin line under the toolbar. */
