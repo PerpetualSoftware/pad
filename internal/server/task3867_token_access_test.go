@@ -511,6 +511,15 @@ func TestTask3867AnonymousRefused(t *testing.T) {
 		{"POST", "/api/v1/auth/step-up/email"},
 		{"POST", "/api/v1/auth/step-up/verify"},
 	} {
-		task3867Want(t, doRequest(e.srv, route.method, route.path, map[string]string{"name": "Name"}), 401, "unauthorized")
+		// Satisfy the existing CSRF gate so the handler must reject the
+		// missing session itself.
+		req := httptest.NewRequest(route.method, route.path, strings.NewReader(`{"name":"Name"}`))
+		req.Header.Set("Content-Type", "application/json")
+		csrf := strings.Repeat("a", csrfTokenLen*2)
+		req.AddCookie(&http.Cookie{Name: csrfCookieName(e.srv.secureCookies), Value: csrf})
+		req.Header.Set(csrfHeader, csrf)
+		rr := httptest.NewRecorder()
+		e.srv.ServeHTTP(rr, req)
+		task3867Want(t, rr, 401, "unauthorized")
 	}
 }
