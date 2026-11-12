@@ -79,5 +79,5 @@ export function resultAnnouncement(
 
 /** The source label displayed beside a comment snippet. */
 export function matchMarker(result: SearchResult): string {
- return result.matched_in === 'comment' ? 'in comment' : '';
+	return result.matched_in === 'comment' ? 'in comment' : '';
 }

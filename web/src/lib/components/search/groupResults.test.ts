@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchResult } from '$lib/types';
 import {
+	matchMarker,
 	groupResultsByCollection,
 	inRenderedOrder,
 	reselectAfterAppend,
@@ -89,5 +90,15 @@ describe('resultAnnouncement (TASK-2234)', () => {
 		expect(resultAnnouncement('quokka', false, false, 1)).toBe('1 result');
 		expect(resultAnnouncement('quokka', false, false, 3)).toBe('3 results');
 		expect(resultAnnouncement('  ', false, false, 0)).toBe('');
+	});
+});
+
+describe('matchMarker', () => {
+	it('labels a comment match and nothing else', () => {
+		const sources: SearchResult['matched_in'][] = ['title', 'content', 'tags', 'ref'];
+		expect(matchMarker({ ...hit('a', 'tasks'), matched_in: 'comment' })).toBe('in comment');
+		for (const matched_in of sources) {
+			expect(matchMarker({ ...hit('a', 'tasks'), matched_in })).toBe('');
+		}
 	});
 });

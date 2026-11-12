@@ -989,6 +989,22 @@
 
 <svelte:window onkeydown={handleWindowKeydown} />
 
+<!--
+	The snippet line of a result card, shared by the three result lists. A
+	comment match carries a source label after the text; screen readers hear
+	it as ", matched in comment" so it does not run into the snippet.
+-->
+{#snippet snippetLine(r: SearchResult)}
+	{@const marker = matchMarker(r)}
+	<div class="result-snippet" class:has-marker={!!marker}>
+		{#if isBodyStale(r.item)}<StaleBodyDot />{/if}<span class="snippet-text"
+			>{stripHtml(r.snippet)}</span
+		>{#if marker}<span class="match-marker" data-testid="match-marker"
+				><span class="sr-only">{', matched '}</span>{marker}</span
+			>{/if}
+	</div>
+{/snippet}
+
 {#if uiStore.searchOpen}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1240,10 +1256,7 @@
 											{/if}
 										</div>
 										{#if r.snippet}
-											<div class="result-snippet">
-												{#if isBodyStale(r.item)}<StaleBodyDot />{/if}
-												{stripHtml(r.snippet)}{#if matchMarker(r)} <span>({matchMarker(r)})</span>{/if}
-											</div>
+											{@render snippetLine(r)}
 										{/if}
 									</button>
 								{/each}
@@ -1293,7 +1306,7 @@
 									{/if}
 								</div>
 								{#if r.snippet}
-									<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}{#if matchMarker(r)} <span>({matchMarker(r)})</span>{/if}</div>
+									{@render snippetLine(r)}
 								{/if}
 							</button>
 						{/each}
@@ -1396,7 +1409,7 @@
 										{/if}
 									</div>
 									{#if r.snippet}
-										<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}{#if matchMarker(r)} <span>({matchMarker(r)})</span>{/if}</div>
+										{@render snippetLine(r)}
 									{/if}
 								</button>
 							{/each}
@@ -1778,6 +1791,34 @@
 		margin-left: 24px;
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	/*
+		A comment match: the snippet was cut from a comment, not the body, so a
+		quiet source label sits beside it. The row becomes a flex line so a long
+		snippet truncates and the label stays whole at its end.
+	*/
+	.result-snippet.has-marker {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+	}
+	.result-snippet.has-marker .snippet-text {
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.match-marker {
+		flex-shrink: 0;
+		/* 0.7em of the palette text, the size of the status pill above it. */
+		font-size: calc(0.7em / 0.85);
+		/* Low enough that a marked row is as tall as an unmarked one. */
+		line-height: 1.2;
+		padding: 1px 8px;
+		border-radius: 999px;
+		background: color-mix(in srgb, var(--text-muted) 15%, transparent);
+		color: var(--text-secondary);
 		white-space: nowrap;
 	}
 

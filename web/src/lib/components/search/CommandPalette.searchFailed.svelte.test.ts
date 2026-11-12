@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, fireEvent, cleanup } from '@testing-library/svelte';
+import { render, fireEvent, cleanup, within } from '@testing-library/svelte';
 
 // TASK-3587: a server search that fails is not "No results". The palette
 // used to clear its results on a failure, so the empty branch said
@@ -131,21 +131,42 @@ describe('CommandPalette: a failed search is not "No results" (TASK-3587)', () =
 	});
 });
 
-
 describe('CommandPalette comment matches', () => {
- beforeEach(() => {
-  vi.useFakeTimers();
-  vi.mocked(api.search).mockReset();
-  state.localHits = [];
- });
- afterEach(() => { cleanup(); vi.useRealTimers(); });
- for (const ready of [false, true]) {
-  it(`shows the comment marker beside the snippet with a ${ready ? 'ready' : 'cold'} local index`, async () => {
-   state.ready = ready;
-   vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in: 'comment', comment_id: 'comment-one' }], total: 1, limit: 20, offset: 0 } as never);
-   const view = await typeAndSettle('pelican');
-   const snippet = view.getByText('about pelicans', { exact: false });
-   expect(snippet.textContent).toContain('in comment');
-  });
- }
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.mocked(api.search).mockReset();
+		state.localHits = [];
+	});
+	afterEach(() => {
+		cleanup();
+		vi.useRealTimers();
+	});
+
+	for (const ready of [false, true]) {
+		const index = ready ? 'ready' : 'cold';
+
+		it(`shows the comment marker beside the snippet with a ${index} local index`, async () => {
+			state.ready = ready;
+			vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in: 'comment', comment_id: 'comment-one' }], total: 1, limit: 20, offset: 0 } as never);
+			const view = await typeAndSettle('pelican');
+			// The marker is in the snippet line of the matched result, after the text.
+			const line = view.getByText('about pelicans').closest('.result-snippet') as HTMLElement;
+			expect(line).toBeTruthy();
+			const marker = within(line).getByTestId('match-marker');
+			expect(marker.textContent).toContain('in comment');
+			expect(line.textContent).toMatch(/about pelicans.*in comment/);
+			expect(view.getAllByTestId('match-marker')).toHaveLength(1);
+			// It is part of the option, so a screen reader hears it with the result.
+			expect(marker.closest('[role="option"]')?.textContent).toContain('Pelican notes');
+		});
+
+		it(`shows no marker on a body match with a ${index} local index`, async () => {
+			state.ready = ready;
+			vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in: 'content' }], total: 1, limit: 20, offset: 0 } as never);
+			const view = await typeAndSettle('pelican');
+			expect(view.getByText('about pelicans')).toBeTruthy();
+			expect(view.queryByTestId('match-marker')).toBeNull();
+			expect(view.queryByText(/in comment/)).toBeNull();
+		});
+	}
 });
