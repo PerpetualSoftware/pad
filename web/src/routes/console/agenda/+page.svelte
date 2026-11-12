@@ -53,6 +53,7 @@
 	let selectedGroup = $state('all');
 	let manageGroups = $state(false);
 	let groupsTicket = 0;
+	let workspacesTicket = 0;
 	let ticket = 0;
 	// What the agenda request depends on: whether groups loaded, the selected id and its members.
 	// A primitive, so a refetched groups array that changes neither (e.g. renaming another group) does not reload.
@@ -120,19 +121,30 @@
 		if (!userId) { groupsReady = true; return; }
 		let remembered = 'all';
 		try { remembered = localStorage.getItem(`pad-agenda-group:${userId}`) || 'all'; } catch { /* Storage is optional. */ }
-		const [groupResult, workspaceResult] = await Promise.allSettled([api.workspaceGroups.list(), api.workspaces.list()]);
-		if (!current()) return;
-		if (groupResult.status === 'fulfilled') {
-			workspaceGroups = groupResult.value.groups;
+		// The workspace list only feeds the empty-group check and the dialog, so the agenda never waits on it.
+		void loadWorkspaces();
+		try {
+			const response = await api.workspaceGroups.list();
+			if (!current()) return;
+			workspaceGroups = response.groups;
 			selectedGroup = workspaceGroups.some(group => group.id === remembered) ? remembered : 'all';
-		}
-		if (workspaceResult.status === 'fulfilled') workspaces = workspaceResult.value;
-		groupsReady = true;
+		} catch { /* No picker; the agenda loads without a group. */ }
+		if (current()) groupsReady = true;
+	}
+	// Refetched with the groups after each write, so members added elsewhere are known before the empty-group check reads them.
+	async function loadWorkspaces() {
+		const mine = ++workspacesTicket;
+		const sameIdentity = authStore.identityFence();
+		try {
+			const response = await api.workspaces.list();
+			if (mine === workspacesTicket && sameIdentity()) workspaces = response;
+		} catch { /* Keep the last list; with none, the empty-group check is skipped. */ }
 	}
 	async function refreshGroups(resetGroup?: string) {
 		const mine = ++groupsTicket;
 		const sameIdentity = authStore.identityFence();
 		const current = () => mine === groupsTicket && sameIdentity();
+		void loadWorkspaces();
 		try {
 			const response = await api.workspaceGroups.list();
 			if (!current()) return;
@@ -192,7 +204,7 @@
 			else { ticket++; data = null; loading = true; updating = false; loadError = false; }
 		});
 	});
-	$effect(() => () => { ticket++; groupsTicket++; dragSerial++; });
+	$effect(() => () => { ticket++; groupsTicket++; workspacesTicket++; dragSerial++; });
 	function today() {
 		clearDrag();
 		const next = todayIn(zone);

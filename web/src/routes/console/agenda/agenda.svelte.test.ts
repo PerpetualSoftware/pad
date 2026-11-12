@@ -648,6 +648,19 @@ describe('workspace groups and daily counts', () => {
   await settle(); expect(screen.queryByRole('option', { name: 'Private group' })).toBeNull();
   expect(localStorage.getItem('pad-agenda-group:user-b')).toBeNull();
  });
+ it('loads the agenda without waiting for the workspace list', async () => {
+  h.workspaces.mockReturnValue(new Promise(() => {}));
+  await mount(); expect(picker()).toBeTruthy();
+ });
+ it('refetches workspaces with the groups, so members added elsewhere do not read as an empty group', async () => {
+  await mount(); await fireEvent.change(picker(), { target: { value: 'group-1' } });
+  h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-new', name: 'Added elsewhere' }]);
+  h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-new'] }] });
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
+  await waitFor(() => expect(h.workspaces).toHaveBeenCalledTimes(2)); await settle();
+  expect(screen.queryByText('No workspaces in this group.')).toBeNull();
+ });
  it('discards a pending group write after identity changes', async () => {
   const write = deferred<object>(); h.createGroup.mockReturnValueOnce(write.promise);
   await mount(); const d = await manage();
