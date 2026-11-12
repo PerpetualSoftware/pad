@@ -155,7 +155,7 @@ func task3867Mail(t *testing.T, e *tokenAuthEnv) *task3867Mailbox {
 	}))
 	t.Cleanup(stub.Close)
 	sender := email.NewSender("test-key", "pad@example.com", "Pad", "")
-	sender.SetEndpoint(stub.URL)
+	sender.SetEndpoint(stub.URL, stub.Client())
 	e.srv.SetEmailSender(sender)
 	return m
 }

@@ -65,11 +65,16 @@ func (s *Sender) Configure(apiKey, fromAddr, fromName, baseURL string) {
 
 // SetEndpoint overrides the Maileroo API endpoint. Intended for tests that
 // stand up an httptest server mimicking Maileroo's v2 API — production
-// callers should leave the default in place. Thread-safe.
-func (s *Sender) SetEndpoint(url string) {
+// callers should leave the default in place. An optional client lets tests use
+// the test server transport without sharing the default connection pool.
+// Thread-safe.
+func (s *Sender) SetEndpoint(url string, client ...*http.Client) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.endpoint = url
+	if len(client) > 0 && client[0] != nil {
+		s.client = client[0]
+	}
 }
 
 // SetCloudMode toggles the getpad.dev marketing footer on outgoing
@@ -143,6 +148,7 @@ func (s *Sender) SendAs(ctx context.Context, fromName, to, toName, subject, html
 func (s *Sender) sendWith(ctx context.Context, endpoint, fromAddr, fromName, to, toName, subject, html, plain string) error {
 	s.mu.RLock()
 	apiKey := s.apiKey
+	client := s.client
 	s.mu.RUnlock()
 
 	payload := mailerooPayload{
@@ -170,7 +176,7 @@ func (s *Sender) sendWith(ctx context.Context, endpoint, fromAddr, fromName, to,
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 
-	resp, err := s.client.Do(req)
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("send email: %w", err)
 	}
