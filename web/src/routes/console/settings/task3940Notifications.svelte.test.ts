@@ -8,6 +8,8 @@ vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
 	isPlanLimitError: () => false,
 	api: {
+		calendarFeeds: { list: vi.fn(async () => []), create: vi.fn(), revoke: vi.fn() },
+		workspaces: { list: vi.fn(async () => []) },
 		notificationSettings: {
 			get: vi.fn(async () => {
 				state.gets++;

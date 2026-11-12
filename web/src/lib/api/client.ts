@@ -91,6 +91,9 @@ import type {
 	WorkspaceTabsResponse,
 	WorkspaceGroup,
 	WorkspaceGroupsResponse,
+	CalendarFeed,
+	CalendarFeedLayer,
+	CalendarFeedCreateResponse,
 	ShareLink,
 	SharePayload,
 	TOTPSetupResponse,
@@ -1543,6 +1546,13 @@ export interface InvitationPreview {
 let serverCapabilitiesCache: Promise<ServerCapabilities> | null = null;
 
 export const api = {
+	calendarFeeds: {
+		list: async () => (await request<{ feeds: CalendarFeed[] }>('/me/calendar-feeds')).feeds,
+		create: (data: { layer: CalendarFeedLayer; workspace_ids: string[]; name?: string }) =>
+			request<CalendarFeedCreateResponse>('/me/calendar-feeds', { method: 'POST', body: JSON.stringify(data) }),
+		revoke: (id: string) =>
+			request<void>(`/me/calendar-feeds/${encodeURIComponent(id)}`, { method: 'DELETE' })
+	},
 	workspaceGroups: {
 		list: () => request<WorkspaceGroupsResponse>('/me/workspace-groups'),
 		get: (id: string) => request<WorkspaceGroup>(`/me/workspace-groups/${encodeURIComponent(id)}`),

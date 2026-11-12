@@ -396,6 +396,23 @@ export interface WorkspaceGroupsResponse {
 	groups: WorkspaceGroup[];
 }
 
+export type CalendarFeedLayer = 'mine' | 'agent';
+
+export interface CalendarFeed {
+	id: string;
+	layer: CalendarFeedLayer;
+	workspace_ids: string[];
+	name: string;
+	created_at: string;
+	last_used_at: string | null;
+}
+
+export interface CalendarFeedCreateResponse {
+	feed: CalendarFeed;
+	token: string;
+	url?: string;
+}
+
 // One workspace in the caller's open set: a tab in the workspace tab bar
 // (PLAN-3002 U1 / TASK-3256). Mirrors models.WorkspaceTab. The whole set is
 // server-side, so it is the same on every device.

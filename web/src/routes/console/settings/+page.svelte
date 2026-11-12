@@ -14,6 +14,7 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import NotificationSettings from '$lib/components/settings/NotificationSettings.svelte';
+	import CalendarFeedsSettings from '$lib/components/settings/CalendarFeedsSettings.svelte';
 	import ChatEnterSendsToggle from '$lib/components/settings/ChatEnterSendsToggle.svelte';
 	import CharacterShortcutsToggle from '$lib/components/common/CharacterShortcutsToggle.svelte';
 	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
@@ -911,6 +912,15 @@
 				</div>
 			</section>
 		{/if}
+
+		<section class="card" id="calendar-feeds">
+			<h2 class="card-title">Calendar feeds</h2>
+			<div class="card-body">
+				{#key authStore.identityEpoch}
+					<CalendarFeedsSettings />
+				{/key}
+			</div>
+		</section>
 
 		<!-- Password -->
 		<section class="card">
