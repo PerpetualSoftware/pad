@@ -519,6 +519,7 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
+	"ambiguous_reminder":          {}, // BUG-4501: acknowledge by id to disambiguate.
 	"invalid_body":                {},
 	"schedule_linked":             {},
 	"deadline_approval_required":  {},

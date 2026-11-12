@@ -86,6 +86,8 @@ func writeRootStructuredError(w io.Writer, err error) {
 	if errors.As(err, &commitmentErr) {
 		structured := false
 		switch commitmentErr.Code {
+		case "ambiguous_reminder":
+			structured = true
 		case "invalid_body":
 			structured = cli.IsCommitmentRoute(commitmentErr.RequestPath)
 		case "hard_deadline", "deadline_owner_required", "commitment_changed",

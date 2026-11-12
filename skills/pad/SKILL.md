@@ -134,7 +134,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Querying:**
 - "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
-- "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad remind` (IDEA-2641). The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack <reminder-id>` — `next` prints the exact ack command under the entry, so you never have to go looking for the id; **finishing the item does not acknowledge it**, because a reminder is often armed precisely to fire after the work is done
+- "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad remind` (IDEA-2641). The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack <reminder-id|ref>` — `next` prints the exact ack command under the entry, so you never have to go looking for the id; **finishing the item does not acknowledge it**, because a reminder is often armed precisely to fire after the work is done
 `pad remind forecast set|clear` sets a hand-set milestone estimate; it arms nothing and is never a missed deadline.
 
 - "check this every weekday at 9" / "this is due Friday 5pm" / "what's on my agenda?" → a **schedule**: `pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays` (`--deadline hard|soft` for a due time, `--window 2h` for a span). The start is a wall time in the user's zone (no `Z`, no offset); omit `--tz` unless asked, and the server pins the account zone. Resolve an occurrence with `pad remind done|skip|snooze|move TASK-5`; list with `pad remind agenda`. There is no `pad cal`.
@@ -224,7 +224,7 @@ pad item search "query"
 pad item comment TASK-5 "..." [--reply-to <comment-id>]   # or --stdin for a multi-line body; an empty one is refused
 pad remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # arm a one-shot reminder (RFC3339 INSTANT; a bare date is refused)
 pad item reminders TASK-5                                  # armed / fired / acknowledged
-pad item ack <reminder-id>                                 # acknowledge a fired reminder
+pad item ack <reminder-id|ref>                             # ref: exactly one fired, unacknowledged unmanaged reminder; multiple require an id
 pad item unremind <reminder-id>
 pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays   # schedule (daily weekdays weekly biweekly monthly monthly-last quarterly yearly, or an RRULE)
 pad remind TASK-5 --start 2026-11-14 --deadline hard           # a due date (all-day) the item must not miss
