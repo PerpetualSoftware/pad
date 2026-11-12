@@ -1,19 +1,19 @@
 <script lang="ts">
-	import { tick, untrack } from 'svelte';
+	import { untrack } from 'svelte';
 	import Button from '$lib/components/common/Button.svelte';
-	import Modal from '$lib/components/common/Modal.svelte';
+	import DialogShell from '$lib/components/common/DialogShell.svelte';
 	import { instantPreview, wallToInstant } from '$lib/calendar/presentation';
+	import type { AgendaEntry } from '$lib/types';
 
-	let { open, mode, zone, pending = false, error = '', onclose, onsubmit }: {
-		open: boolean; mode: 'snooze' | 'move'; zone: string; pending?: boolean; error?: string;
+	let { open, mode, entry, zone, mobile, pending = false, error = '', onclose, onsubmit }: {
+		open: boolean; mode: 'snooze' | 'move'; entry: AgendaEntry | null; zone: string; mobile: boolean; pending?: boolean; error?: string;
 		onclose: () => void; onsubmit: (until: string, comment?: string) => void;
 	} = $props();
 	const id = $props.id();
 	let wall = $state('');
 	let reason = $state('');
 	let timeError = $state('');
-	let heading: HTMLHeadingElement | undefined;
-	const title = $derived(mode === 'move' ? 'Move target' : 'Snooze occurrence');
+	const title = $derived(mode === 'move' ? 'Move target' : 'Snooze');
 	const preview = $derived.by(() => {
 		try { return wall ? instantPreview(wallToInstant(wall, zone), zone) : ''; }
 		catch { return ''; }
@@ -21,11 +21,7 @@
 
 	$effect(() => {
 		const visible = open;
-		untrack(() => {
-			if (!visible) return;
-			wall = ''; reason = ''; timeError = '';
-			void tick().then(() => heading?.focus());
-		});
+		untrack(() => { if (visible) { wall = ''; reason = ''; timeError = ''; } });
 	});
 
 	function submit(event: SubmitEvent) {
@@ -40,39 +36,41 @@
 	}
 </script>
 
-<Modal {open} onclose={() => { if (!pending) onclose(); }} labelledby={`${id}-heading`}>
-	<form onsubmit={submit} novalidate>
-		<h2 id={`${id}-heading`} tabindex="-1" bind:this={heading}>{title}</h2>
-		<label for={`${id}-time`}>{mode === 'move' ? 'New date and time' : 'Remind me again at…'}</label>
-		<div class="time-field">
+<DialogShell {open} {mobile} {pending} {title} subject={[entry?.item_title, entry?.workspace_name].filter(Boolean).join(' · ')} subjectRef={entry?.item_ref} {onclose}>
+	<form id={`${id}-form`} onsubmit={submit} novalidate>
+		<div class="field">
+			<label for={`${id}-time`}>{mode === 'move' ? 'New date and time' : 'Remind me again at…'}</label>
 			<input id={`${id}-time`} type="datetime-local" bind:value={wall} disabled={pending} aria-invalid={!!timeError} aria-describedby={timeError ? `${id}-time-error ${id}-zone` : `${id}-zone`} />
-			<span id={`${id}-zone`}>{zone}</span>
+			<p class="hint" id={`${id}-zone`}>{zone}</p>
+			{#if timeError}<p class="field-error" id={`${id}-time-error`}>{timeError}</p>{/if}
+			{#if preview}<p class="hint">{preview}</p>{/if}
 		</div>
-		{#if timeError}<p class="field-error" id={`${id}-time-error`}>{timeError}</p>{/if}
-		{#if preview}<p class="preview">{preview}</p>{/if}
 		{#if mode === 'move'}
-			<p>The reminder follows the target.</p>
-			<label for={`${id}-reason`}>Reason (optional)</label>
-			<textarea id={`${id}-reason`} bind:value={reason} disabled={pending}></textarea>
+			<p class="note">The reminder follows the target.</p>
+			<div class="field">
+				<label for={`${id}-reason`}>Reason <span class="optional">(optional)</span></label>
+				<textarea id={`${id}-reason`} bind:value={reason} disabled={pending}></textarea>
+			</div>
 		{/if}
 		{#if error}<p role="alert">{error}</p>{/if}
-		<div class="footer">
-			<Button disabled={pending} onclick={onclose}>Cancel</Button>
-			<Button type="submit" disabled={pending}>{mode === 'move' ? 'Move target' : 'Snooze'}</Button>
-		</div>
 	</form>
-</Modal>
+	{#snippet footer()}
+		<Button disabled={pending} onclick={() => { if (!pending) onclose(); }}>Cancel</Button>
+		<Button variant="primary" type="submit" form={`${id}-form`} disabled={pending}>{title}</Button>
+	{/snippet}
+</DialogShell>
 
 <style>
-	form { padding: var(--space-5); overflow-y: auto; min-width: 0; }
-	h2 { font-size: 1.2rem; margin: 0 0 var(--space-4); }
-	label { display: block; margin: var(--space-3) 0 var(--space-2); font-weight: 600; }
-	.time-field { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-2); }
-	.time-field span { color: var(--text-secondary); overflow-wrap: anywhere; }
-	input, textarea { box-sizing: border-box; min-width: 0; max-width: 100%; padding: var(--space-2); color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; }
-	textarea { display: block; width: 100%; min-height: 6rem; resize: vertical; }
+	form { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
+	p { margin: 0; }
+	.field { min-width: 0; }
+	label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+	.optional { font-weight: 400; color: var(--text-muted); }
+	.hint { margin-top: 6px; font-size: 12px; color: var(--text-muted); overflow-wrap: anywhere; }
+	.note { font-size: 13px; color: var(--text-secondary); }
+	input, textarea { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 6px 10px; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; font-size: 14px; }
+	textarea { display: block; min-height: 72px; resize: vertical; }
 	[aria-invalid="true"] { border-color: var(--accent-red); }
-	.field-error { color: var(--accent-red); }
-	.preview { color: var(--text-secondary); overflow-wrap: anywhere; }
-	.footer { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-5); }
+	.field-error { margin-top: 6px; font-size: 12px; color: var(--accent-red); }
+	@media (max-width: 768px) { input { min-height: 44px; } }
 </style>

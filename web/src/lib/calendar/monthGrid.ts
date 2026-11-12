@@ -56,6 +56,10 @@ export function monthWindow(month: string, zone: string) {
 export function dayLabel(day: string, full = false): string {
  return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', ...(full ? { weekday: 'long' as const } : {}), day:'numeric',month:'long',year:'numeric' }).format(new Date(`${day}T12:00:00Z`));
 }
+/** How many entries a day has, in words: "1 entry", "3 entries". */
+export function entryCount(count: number): string {
+ return `${count} ${count === 1 ? 'entry' : 'entries'}`;
+}
 export function monthLabel(month: string): string {
  return new Intl.DateTimeFormat('en-GB', {timeZone:'UTC',month:'long',year:'numeric'}).format(new Date(`${month}-01T12:00:00Z`));
 }
@@ -88,6 +92,44 @@ export interface CalendarRow {
  key: string; day: string; ref: string; target: string; title: string; allDay: boolean;
  item?: Item; at?: string; label?: string; terminal?: string; abandoned?: boolean; state?: string; overdue?: boolean;
  start?: string; end?: string; continues?: boolean; missedCount?: number; stale?: boolean;
+ /** Sorted first and drawn in red: a missed hard deadline must never sit behind "+N more". */
+ attention?: boolean;
+}
+/** Attention rows first; the order is otherwise kept. */
+export function attentionFirst<T>(rows: T[], attention: (row: T) => boolean): T[] {
+ return [...rows.filter(attention), ...rows.filter(row => !attention(row))];
+}
+/** An item shows once a day: its occurrence row stands for its dated-field row and takes the field label.
+ * A closed item and a span keep their own row, which says what the occurrence does not. */
+function collapseFieldRows(rows: CalendarRow[]): CalendarRow[] {
+ const occurrences = new Map<string, CalendarRow[]>();
+ for (const row of rows) {
+  if (row.state === undefined || !row.ref) continue;
+  const key = `${row.day}|${row.ref}`;
+  occurrences.set(key, [...(occurrences.get(key) ?? []), row]);
+ }
+ return rows.filter(row => {
+  const same = row.item && !row.terminal && !row.start ? occurrences.get(`${row.day}|${row.ref}`) : undefined;
+  for (const occurrence of same ?? []) occurrence.label = row.label;
+  return !same;
+ });
+}
+/** The phone list: each day that must keep its own header, and each run of the days between as one line. */
+export function dayRuns(days: string[], empty: (day: string) => boolean): { from: string; to: string; empty: boolean }[] {
+ const runs: { from: string; to: string; empty: boolean }[] = [];
+ for (const day of days) {
+  const last = runs[runs.length - 1];
+  if (empty(day) && last?.empty) last.to = day;
+  else runs.push({ from: day, to: day, empty: empty(day) });
+ }
+ return runs;
+}
+export function emptyRunLabel(from: string, to: string): string {
+ const short = (day: string) => {
+  const parts = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', weekday: 'short', day: 'numeric' }).formatToParts(new Date(`${day}T12:00:00Z`));
+  return `${parts.find(p => p.type === 'weekday')!.value} ${parts.find(p => p.type === 'day')!.value}`;
+ };
+ return `${from === to ? short(from) : `${short(from)} – ${short(to)}`} · nothing scheduled`;
 }
 /** Keep the server's day placement; expand only the supplied inclusive item span. Rows sort by day, all-day first, items before schedule entries within a day (as the API places them), then stable server order. */
 export function calendarRows(data: CalendarResponse, collection: Collection, field: string, month?: string): CalendarRow[] {
@@ -123,9 +165,10 @@ export function calendarRows(data: CalendarResponse, collection: Collection, fie
   }
   if (days && !days.includes(entry.day)) continue;
   rows.push({key:`schedule:${entry.schedule_id ?? index}:${entry.at}:${index}`,day:entry.day,ref:entry.item_ref,target:entry.item_ref,title:entry.item_title,
-   forecast:entry.forecast,allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,missedCount:entry.missed_count,stale:entry.stale});
+   forecast:entry.forecast,allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,missedCount:entry.missed_count,stale:entry.stale,
+   attention:!!entry.overdue || entry.state === 'lapsed' || entry.state === 'missed'});
  }
- return rows.sort((a,b) => a.day.localeCompare(b.day) || Number(b.allDay) - Number(a.allDay));
+ return collapseFieldRows(rows).sort((a,b) => a.day.localeCompare(b.day) || Number(b.allDay) - Number(a.allDay));
 }
 export function incomplete(data: CalendarResponse): boolean {
  return !!(data.truncated || data.partial_day || data.unexpanded?.length || data.unavailable?.length);

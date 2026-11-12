@@ -13,10 +13,12 @@ vi.mock('$lib/stores/auth.svelte', async () => {
  return { authStore: {
   get user() { signal.get('auth'); return h.user; },
   get identityEpoch() { signal.get('auth'); return h.epoch; },
-  identityFence() { const epoch = h.epoch; return () => epoch === h.epoch; }
+  identityFence() { const epoch = h.epoch; return () => epoch === h.epoch; },
+  onIdentityChange: () => () => {}
  } };
 });
 import Agenda from './+page.svelte';
+import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 
 const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-11-05T14:00:00Z', day: '2026-11-05', wall: '2026-11-05T09:00:00', floating: true, item_ref: 'EX-30', item_title: 'First item', collection: 'tasks', workspace: 'work', workspace_name: 'First workspace', owner_username: 'alice', state: 'outstanding', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, schedule_id: 'schedule-1', ...extra });
 const workspaceGroups: WorkspaceGroup[] = [{ id: 'all', name: 'All', kind: 'all', workspace_ids: [] }, { id: 'mine', name: 'Mine', kind: 'mine', workspace_ids: [] }, { id: 'group-1', name: 'Team', kind: 'named', workspace_ids: ['ws-1'] }];
@@ -30,7 +32,7 @@ async function menu(ref = 'EX-30') { await fireEvent.click(screen.getByRole('but
 async function dialog(kind: 'Move' | 'Snooze') {
  await menu();
  await fireEvent.click(screen.getByRole('menuitem', { name: kind === 'Move' ? 'Move target…' : 'Snooze…' }));
- return screen.getByRole('dialog', { name: kind === 'Move' ? 'Move target' : 'Snooze occurrence' });
+ return screen.getByRole('dialog', { name: kind === 'Move' ? 'Move target' : 'Snooze' });
 }
 /** A message that went to the toast container, with its type. */
 const said = (text: string, type: 'success' | 'error' = 'error') => waitFor(() => expect(h.toast.mock.calls.filter(call => call[0] === text && call[1] === type)).toHaveLength(1));
@@ -66,7 +68,7 @@ beforeEach(() => {
  h.move.mockResolvedValue(preview()); h.item.mockResolvedValue({ title: 'Linked child' });
  h.resolve.mockResolvedValue({ schedule: {}, resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0 } });
 });
-afterEach(() => { cleanup(); vi.restoreAllMocks(); });
+afterEach(() => { confirmDialog.abandonAll(); cleanup(); vi.restoreAllMocks(); });
 
 describe('agenda Day page', () => {
  beforeEach(() => localStorage.setItem('pad-agenda-mode:user-a', 'day'));
@@ -330,7 +332,7 @@ describe('agenda Week and priority', () => {
   expect(within(daySection('2026-11-07')).getByText('Outside its bound')).toBeTruthy();
   await fireEvent.dragEnter(daySection()); expect(h.preview).toHaveBeenCalledTimes(1);
   await fireEvent.drop(daySection());
-  const d = await screen.findByRole('dialog'); await fireEvent.click(within(d).getByRole('checkbox')); await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  const d = await screen.findByRole('dialog'); await fireEvent.click(within(d).getByRole('checkbox')); await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'CH-2', expect.objectContaining({ role: 'target', acknowledge_violations: true })));
  });
  it.each(['different', 'missing'])('rejects a %s preview root and reloads without a write', async kind => {
@@ -348,15 +350,18 @@ describe('agenda Week and priority', () => {
   const linked = { item_id: 'linked', role: 'earliest' as const, to: '2026-11-07T15:00:00Z' };
   h.preview.mockResolvedValue(preview(undefined, { renegotiates_deadline: true, changes: [linked, ...preview().changes], left_in_place: [{ ...linked, role: 'occupied_until' }] }));
   await mount(); await drag(); await screen.findByText('Review needed: this move changes a hard deadline.'); await fireEvent.drop(daySection());
-  const d = await screen.findByRole('dialog', { name: 'Review deadline change' });
-  expect(within(d).getByText('This move changes a hard deadline.')).toBeTruthy();
-  expect(within(d).getByText(/First item → November 6/)).toBeTruthy();
-  expect(within(d).getByText(/Linked child \(linked\).*Available from/)).toBeTruthy();
+  const d = await screen.findByRole('dialog', { name: 'Review move' });
+  expect(d.querySelector('.subject')).toHaveTextContent('First item · First workspace EX-30');
+  expect(within(d).getByText('This move changes the hard deadline.')).toBeTruthy();
+  await within(d).findAllByText('Linked child');
+  const moves = [...d.querySelectorAll('[data-change]')].map(el => el.textContent?.replace(/\s+/g, ' ').trim());
+  expect(moves).toEqual(['First item Target Thu 5, 09:00 → Fri 6, 09:00', 'Linked child Linked · Available from → Sat 7, 10:00']);
   expect(within(d).getByText('Not moved (finished)')).toBeTruthy();
-  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  expect([...d.querySelectorAll('[data-left]')].map(el => el.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Linked child Linked · Until → Sat 7, 10:00']);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move and change deadline' }));
   expect(within(d).getByText('Enter a reason.')).toBeTruthy(); expect(h.move).not.toHaveBeenCalled();
   await fireEvent.input(within(d).getByLabelText('Reason'), { target: { value: ' Agreed later ' } });
-  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move and change deadline' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1', reason: 'Agreed later' }));
  });
  it.each(['Cancel', 'Escape'])('%s closes review with no write', async method => {
@@ -369,11 +374,11 @@ describe('agenda Week and priority', () => {
   const change = { item_id: 'linked', role: 'deadline' as const, to: '2026-11-07T15:00:00Z' };
   h.item.mockRejectedValue(new Error('offline')); h.preview.mockResolvedValue(preview(undefined, { changes: [...preview().changes, change], violations: [change] }));
   await mount(); await drop(); const d = await screen.findByRole('dialog');
-  expect(await within(d).findByText(/Linked item \(linked\)/)).toBeTruthy();
-  expect(within(d).getByText('Outside its bound')).toBeTruthy();
-  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true })); expect(h.move).not.toHaveBeenCalled();
+  expect(await within(d).findByText('Linked item')).toBeTruthy();
+  expect(within(d).getByText('Outside bound')).toBeTruthy();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' })); expect(h.move).not.toHaveBeenCalled();
   await fireEvent.click(within(d).getByLabelText('Accept dates outside their bounds'));
-  await fireEvent.click(within(d).getByRole('button', { name: 'Move', exact: true }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1', acknowledge_violations: true }));
  });
  it('pins available and deadline days while dragging and clears drag decorations on Escape', async () => {
@@ -907,10 +912,11 @@ describe('forecast actions', () => {
   h.view.mockResolvedValue({forecast:null,milestone,roles:{target:'2026-11-05'}});
   h.setForecast.mockResolvedValue({});
   await mount();await menu();await fireEvent.click(screen.getByRole('menuitem',{name:'Set forecast…'}));
-  const d=await screen.findByRole('dialog',{name:'Forecast'});await within(d).findByText(/No children selected/);
-  expect((within(d).getByLabelText('Date') as HTMLInputElement).value).toBe('');
-  await fireEvent.input(within(d).getByLabelText('Date'),{target:{value:'2026-11-10'}});
-  await fireEvent.click(within(d).getByRole('button',{name:'Save'}));
+  const d=await screen.findByRole('dialog',{name:'Forecast'});await waitFor(()=>expect(within(d).getByLabelText('New forecast date')).not.toBeDisabled());
+  expect(d.querySelector('.subject')).toHaveTextContent('First item · First workspace EX-30');
+  expect((within(d).getByLabelText('New forecast date') as HTMLInputElement).value).toBe('');
+  await fireEvent.input(within(d).getByLabelText('New forecast date'),{target:{value:'2026-11-10'}});
+  await fireEvent.click(within(d).getByRole('button',{name:'Save forecast'}));
   await waitFor(()=>expect(h.setForecast).toHaveBeenCalledWith('work','EX-30',{value:'2026-11-10'}));
   await waitFor(()=>expect(h.agenda).toHaveBeenCalledTimes(2));
   expect(screen.queryByText('Loading agenda…')).toBeNull();
@@ -972,7 +978,9 @@ describe('workspace groups and daily counts', () => {
   await screen.findByText('No workspaces in this group.');
   expect(screen.queryByText(/Could not load/)).toBeNull(); expect(document.querySelector('.layout')).toBeNull(); expect(stripDays()).toHaveLength(0);
   expect(screen.queryByRole('table', { name: 'Daily counts' })).toBeNull(); expect(document.querySelector('[data-stat]')).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Add workspaces' })); expect(screen.getByRole('dialog', { name: 'Workspace groups' })).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: 'Add workspaces' }));
+  const d = screen.getByRole('dialog', { name: 'Workspace groups' });
+  expect(within(d).getByRole('textbox', { name: 'Name' })).toHaveValue('Team'); expect(within(d).getByRole('button', { name: 'Save group' })).toBeTruthy();
  });
  it('renders normal surfaces for a populated group with no entries', async () => {
   h.agenda.mockResolvedValue(response([])); render(Agenda);
@@ -990,17 +998,18 @@ describe('workspace groups and daily counts', () => {
  it('creates a trimmed group with a workspace and refreshes the picker', async () => {
   await mount(); const d = await manage();
   expect(within(d).queryByText('All')).toBeNull(); expect(within(d).queryByText('Mine')).toBeNull();
+  await fireEvent.click(within(d).getByRole('button', { name: 'New group' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: '  New team  ' } });
   await fireEvent.click(within(d).getByRole('checkbox', { name: 'First workspace' }));
   h.groups.mockResolvedValue({ groups: [...workspaceGroups, { id: 'new', name: 'New team', kind: 'named', workspace_ids: ['ws-1'] }] });
   await fireEvent.click(within(d).getByRole('button', { name: 'Create group' }));
   await waitFor(() => expect(h.createGroup).toHaveBeenCalledWith({ name: 'New team', workspace_ids: ['ws-1'] }));
   await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2)); await settle();
-  await fireEvent.click(within(d).getByRole('button', { name: 'Close' })); expect(await listed()).toContain('New team');
+  await fireEvent.click(within(d).getByRole('button', { name: 'Done' })); expect(await listed()).toContain('New team');
  });
  it('renames and edits workspaces, disambiguating duplicate workspace names', async () => {
   h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', owner_username: 'bob' }]);
-  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Edit Team' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: ' Renamed ' } });
   await fireEvent.click(within(d).getByRole('checkbox', { name: 'alice/First workspace' }));
   await fireEvent.click(within(d).getByRole('checkbox', { name: 'bob/First workspace' }));
@@ -1010,29 +1019,30 @@ describe('workspace groups and daily counts', () => {
  });
  it('renames by name only when the workspace list failed, leaving membership untouched', async () => {
   h.workspaces.mockRejectedValue(new Error('Unavailable'));
-  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Edit Team' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Renamed' } });
   await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
   await waitFor(() => expect(h.updateGroup).toHaveBeenCalledWith('group-1', { name: 'Renamed' }));
  });
- it('requires inline confirmation to delete the selected group and reloads all', async () => {
+ it('requires confirmation to delete the selected group and reloads all', async () => {
   localStorage.setItem('pad-agenda-group:user-a', 'group-1'); await mount(); const d = await manage();
-  await fireEvent.click(within(d).getByRole('button', { name: 'Delete' })); expect(h.removeGroup).not.toHaveBeenCalled();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Delete Team' })); expect(h.removeGroup).not.toHaveBeenCalled();
+  expect(confirmDialog.active).toMatchObject({ title: 'Delete Team?', confirmLabel: 'Delete group', danger: true });
   h.groups.mockResolvedValue({ groups: workspaceGroups.slice(0, 2) });
-  await fireEvent.click(within(d).getByRole('button', { name: 'Confirm delete' }));
+  confirmDialog.confirm();
   await waitFor(() => expect(h.removeGroup).toHaveBeenCalledWith('group-1'));
   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('all'));
   expect(filter()).toHaveTextContent('All workspaces'); expect(h.groups).toHaveBeenCalledTimes(2);
  });
  it.each([{ message: 'Name is already used.' }, {}])('shows save failures inside the open dialog: %j', async error => {
-  h.createGroup.mockRejectedValue(error); await mount(); const d = await manage();
+  h.createGroup.mockRejectedValue(error); await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'New group' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Team' } });
   await fireEvent.click(within(d).getByRole('button', { name: 'Create group' }));
   await within(d).findByText('message' in error ? error.message : 'Could not save the group. Try again.');
   expect(screen.getByRole('dialog', { name: 'Workspace groups' })).toBe(d);
  });
  it('rejects a whitespace-only group name', async () => {
-  await mount(); const d = await manage();
+  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'New group' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: '   ' } });
   await fireEvent.click(within(d).getByRole('button', { name: 'Create group' })); expect(h.createGroup).not.toHaveBeenCalled();
  });
@@ -1054,14 +1064,14 @@ describe('workspace groups and daily counts', () => {
   await mount(); await choose('Team');
   h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-new', name: 'Added elsewhere' }]);
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-new'] }] });
-  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Edit Team' }));
   await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
   await waitFor(() => expect(h.workspaces).toHaveBeenCalledTimes(2)); await settle();
   expect(screen.queryByText('No workspaces in this group.')).toBeNull();
  });
  it('discards a pending group write after identity changes', async () => {
   const write = deferred<object>(); h.createGroup.mockReturnValueOnce(write.promise);
-  await mount(); const d = await manage();
+  await mount(); const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'New group' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Private' } });
   await fireEvent.click(within(d).getByRole('button', { name: 'Create group' }));
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1);
@@ -1087,19 +1097,19 @@ describe('workspace groups and daily counts', () => {
  it('does not reload the agenda when a group other than the selected one is renamed', async () => {
   await mount(); const calls = h.agenda.mock.calls.length;
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], name: 'Renamed' }] });
-  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Edit Team' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Renamed' } });
   await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
   await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2)); await settle();
   expect(h.agenda.mock.calls.length).toBe(calls); expect(screen.getByText('First item')).toBeTruthy();
-  await fireEvent.click(within(d).getByRole('button', { name: 'Close' })); expect(await listed()).toContain('Renamed');
+  await fireEvent.click(within(d).getByRole('button', { name: 'Done' })); expect(await listed()).toContain('Renamed');
  });
  it('reloads the agenda when the selected group changes its workspaces', async () => {
   await mount(); await choose('Team');
   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1')); const calls = h.agenda.mock.calls.length;
   h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', name: 'Second' }]);
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-1', 'ws-2'] }] });
-  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
+  const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Edit Team' }));
   await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
   await waitFor(() => expect(h.agenda.mock.calls.length).toBe(calls + 1));
  });
@@ -1109,6 +1119,44 @@ describe('workspace groups and daily counts', () => {
 describe('agenda Month page', () => {
  beforeEach(() => localStorage.setItem('pad-agenda-mode:user-a', 'month'));
  const dateButton = (day: string) => document.querySelector(`button.date[data-day="${day}"]`) as HTMLButtonElement;
+ const cellOf = (day: string) => dateButton(day).closest<HTMLElement>('[role="gridcell"]')!;
+ const phone = () => vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+ // Server order: three outstanding, one outstanding whose target passed (named by the priority list), one lapsed.
+ const crowded = () => response([
+  // The first is all-day: all-day entries lead a day, but never ahead of what needs attention.
+  ...[0, 1, 2].map(i => row({ item_ref: `EX-${30 + i}`, schedule_id: `s${i}`, item_title: `Plain ${i}`, all_day: i === 0 })),
+  row({ item_ref: 'EX-40', schedule_id: 's-late', item_title: 'Late target' }),
+  row({ item_ref: 'EX-41', schedule_id: 's-lapsed', item_title: 'Lapsed one', state: 'lapsed', at: '2026-11-05T15:00:00Z', occurrence_key: 'k1' })
+ ], { priority_list: [workRow({ item_ref: 'EX-40', schedule_id: 's-late', item_title: 'Late target', reason: 'target_passed' })] });
+ it('puts attention entries ahead of the three-entry cut, in red, with the day count and what is owed', async () => {
+  h.agenda.mockResolvedValue(crowded()); render(Agenda); await screen.findByRole('grid');
+  const cell = cellOf('2026-11-05'); const lines = within(cell).getAllByRole('link');
+  expect(lines.map(line => line.querySelector('.t')?.textContent)).toEqual(['Late target', 'Lapsed one', 'Plain 0']);
+  expect(lines.map(line => line.classList.contains('attention'))).toEqual([true, true, false]);
+  expect(lines[1]).toHaveAttribute('title', 'Lapsed one · 10:00 · Lapsed · First workspace');
+  expect(within(cell).getByRole('button', { name: '+2 more' })).toBeTruthy();
+  expect(cell.querySelector('.count')).toHaveTextContent('5 · 4 owed');
+  expect(within(cell).queryByText('Today')).toBeNull(); expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 5 entries$/);
+  expect(cellOf('2026-11-06').querySelector('.count')).toBeNull();
+ });
+ it('lists attention entries first in day detail, under a title and summary for the day', async () => {
+  h.agenda.mockResolvedValue(crowded()); render(Agenda); await screen.findByRole('grid'); await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog', { name: 'Thursday, 5 November 2026, Today' });
+  expect(detail.querySelector('.subject')).toHaveTextContent('5 entries · 4 owed · 1 missed');
+  expect([...detail.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-40', 'EX-41', 'EX-30', 'EX-31', 'EX-32']);
+  expect(detail.textContent).not.toContain('Time zone');
+ });
+ it('on a phone lists every entry of a day as a row with its actions, attention first, and folds empty days', async () => {
+  phone(); h.agenda.mockResolvedValue(crowded()); render(Agenda);
+  const list = await screen.findByRole('list', { name: 'November 2026' });
+  expect([...list.children].map(item => item.querySelector('button.day-header')?.getAttribute('data-day') ?? item.textContent?.trim())).toEqual(['Sun 1 – Wed 4 · nothing scheduled', '2026-11-05', 'Fri 6 – Mon 30 · nothing scheduled']);
+  expect([...list.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-40', 'EX-41', 'EX-30', 'EX-31', 'EX-32']);
+  expect(within(list).queryByRole('button', { name: /more$/ })).toBeNull();
+  expect(within(list).getAllByRole('button', { name: /^Done EX-/ })).toHaveLength(4); expect(within(list).getByRole('button', { name: 'Mark done EX-41' })).toBeTruthy();
+  await fireEvent.click(within(list).getByRole('button', { name: 'Done EX-30' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done' }));
+  expect(screen.queryByRole('dialog')).toBeNull();
+ });
  it('selects Month with aria-pressed and requests the local month through the DST fold', async () => {
   localStorage.setItem('pad-agenda-mode:user-a', 'week'); await mount();
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'false');
@@ -1122,9 +1170,9 @@ describe('agenda Month page', () => {
   render(Agenda); const grid = await screen.findByRole('grid', { name: 'November 2026' });
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
   expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all');
-  const cell = dateButton('2026-11-05').parentElement!;
+  const cell = cellOf('2026-11-05');
   expect(within(grid).getByRole('link', { name: /Month item 0/ })).toHaveAttribute('href', '/alice/work/tasks/EX-30');
-  expect(within(cell).getAllByText('First workspace')).toHaveLength(3);
+  expect(cell.querySelector('.count')).toHaveTextContent('4 · 4 owed');
   expect(within(cell).getAllByRole('link')).toHaveLength(3);
   expect(screen.queryByText('Month item 3')).toBeNull();
   expect(document.querySelector('[draggable="true"]')).toBeNull();
@@ -1218,9 +1266,9 @@ describe('agenda Month page', () => {
  it('marks an incomplete tail and hides previews after next_from without claiming an empty month', async () => {
   h.agenda.mockResolvedValue(response([row({ day: '2026-11-16', item_title: 'Unexamined tail' })], { truncated: true, next_from: '2026-11-15T17:00:00Z' }));
   render(Agenda); await screen.findByText('Showing entries up to Sun 15 November.');
-  expect(within(dateButton('2026-11-14').parentElement!).queryByText('Not fully loaded')).toBeNull();
+  expect(within(cellOf('2026-11-14')).queryByText('Not fully loaded')).toBeNull();
   for (const day of ['2026-11-15', '2026-11-16', '2026-11-30']) {
-   expect(within(dateButton(day).parentElement!).getByText('Not fully loaded')).toBeTruthy();
+   expect(within(cellOf(day)).getByText('Not fully loaded')).toBeTruthy();
    expect(dateButton(day).getAttribute('aria-label')).toMatch(/, Incomplete$/);
   }
   expect(screen.queryByText('Unexamined tail')).toBeNull(); expect(screen.queryByText('No entries this month.')).toBeNull();
@@ -1234,10 +1282,14 @@ describe('agenda Month page', () => {
  });
  it('offers to reveal hidden created and completed entries in Month', async () => {
   h.agenda.mockResolvedValue(response([row({ type: 'created' }), row({ type: 'completed', item_ref: 'EX-31' })]));
-  render(Agenda); await screen.findByRole('grid'); await screen.findAllByText('First item'); await toggleEvents();
+  render(Agenda); await screen.findByRole('grid'); await toggleEvents();
   expect(screen.getByText('Created and completed items are hidden.')).toBeTruthy();
   expect(screen.queryByText('No entries this month.')).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.getAllByText('First item')).toHaveLength(2);
+  // Shown again, they are still not lines in the cell: the day detail folds them into its last line.
+  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.queryByText('First item')).toBeNull();
+  await fireEvent.click(dateButton('2026-11-05'));
+  await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '1 created · 1 completed' }));
+  expect(within(screen.getByRole('dialog')).getAllByText('First item')).toHaveLength(2);
  });
  it('shows the summary below the grid, named for the month, and no outstanding list', async () => {
   h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); await mount();
@@ -1246,12 +1298,75 @@ describe('agenda Month page', () => {
   expect(summary.closest('aside')).toBeNull(); expect(summary.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1');
   expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull();
  });
+ // Created events of one day, as the agenda returns them with the option on.
+ const made = (count: number, day = '2026-11-05') => Array.from({ length: count }, (_, i) => row({ type: 'created', item_ref: `EV-${i}`, item_title: `Made ${i}`, schedule_id: undefined, state: undefined, day, at: `${day}T15:00:00Z` }));
+ const three = () => [0, 1, 2].map(i => row({ item_ref: `EX-${30 + i}`, schedule_id: `s${i}`, item_title: `Plain ${i}` }));
+ it('counts and lists commitments only in a cell, and folds created and completed into a disclosure in day detail', async () => {
+  h.agenda.mockResolvedValue(response([...three(), ...made(20)])); render(Agenda); await screen.findByRole('grid');
+  const cell = cellOf('2026-11-05');
+  expect(cell.querySelector('.count')).toHaveTextContent(/^3 · 3 owed$/);
+  expect(within(cell).getAllByRole('link').map(line => line.querySelector('.t')?.textContent)).toEqual(['Plain 0', 'Plain 1', 'Plain 2']);
+  expect(within(cell).queryByRole('button', { name: /more$/ })).toBeNull();
+  expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 3 entries$/);
+  await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog', { name: 'Thursday, 5 November 2026, Today' });
+  expect(detail.querySelector('.subject')).toHaveTextContent(/^3 entries · 3 owed$/);
+  expect([...detail.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EX-31', 'EX-32']);
+  const toggle = within(detail).getByRole('button', { name: '20 created' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(detail.querySelectorAll('[data-ref^="EV-"]')).toHaveLength(20);
+  expect(detail.querySelector('.subject')).toHaveTextContent(/^3 entries · 3 owed$/);
+ });
+ it('leaves a day with only created and completed events empty in the grid, with the events in its day detail', async () => {
+  h.agenda.mockResolvedValue(response([row(), ...made(2, '2026-11-09')])); render(Agenda); await screen.findByRole('grid');
+  const cell = cellOf('2026-11-09');
+  expect(cell.querySelector('.count')).toBeNull(); expect(within(cell).queryAllByRole('link')).toHaveLength(0);
+  expect(dateButton('2026-11-09').getAttribute('aria-label')).toMatch(/2026, 0 entries$/);
+  await fireEvent.click(dateButton('2026-11-09'));
+  const detail = screen.getByRole('dialog', { name: 'Monday, 9 November 2026' });
+  expect(detail.querySelector('.subject')).toBeNull(); expect(within(detail).queryByText('No entries on this day.')).toBeNull();
+  expect(within(detail).getByRole('button', { name: '2 created' })).toHaveAttribute('aria-expanded', 'false');
+ });
+ it('on a phone keeps the header of a day with only events while they are shown, and folds it once they are hidden', async () => {
+  phone(); h.agenda.mockResolvedValue(response([...three(), ...made(20), ...made(2, '2026-11-09')])); render(Agenda);
+  const list = await screen.findByRole('list', { name: 'November 2026' });
+  const headers = () => [...list.querySelectorAll('button.day-header')].map(button => button.getAttribute('data-day'));
+  expect(headers()).toEqual(['2026-11-05', '2026-11-09']);
+  const quiet = list.querySelector('button.day-header[data-day="2026-11-09"]')!.closest('li')!;
+  expect(quiet.querySelectorAll('[data-ref]')).toHaveLength(0);
+  const toggle = within(quiet).getByRole('button', { name: '2 created' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await fireEvent.click(toggle); expect(quiet.querySelectorAll('[data-ref^="EV-"]')).toHaveLength(2);
+  const today = list.querySelector('button.day-header[data-day="2026-11-05"]')!.closest('li')!;
+  expect([...today.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EX-31', 'EX-32']);
+  expect(within(today).getByRole('button', { name: '20 created' })).toHaveAttribute('aria-expanded', 'false');
+  await toggleEvents();
+  await waitFor(() => expect(headers()).toEqual(['2026-11-05']));
+  expect(within(list).queryByRole('button', { name: /created/ })).toBeNull();
+ });
+ it('heads a phone day as the week does: the day without its year, a Today badge and what is owed', async () => {
+  phone(); h.agenda.mockResolvedValue(response([row(), row({ item_ref: 'EX-31', schedule_id: 's2', state: 'done' }), row({ item_ref: 'EX-50', schedule_id: 's3', day: '2026-11-09', at: '2026-11-09T14:00:00Z' })])); render(Agenda);
+  const list = await screen.findByRole('list', { name: 'November 2026' });
+  const today = list.querySelector('button.day-header[data-day="2026-11-05"]')!;
+  expect(today.textContent?.replace(/\s+/g, ' ').trim()).toBe('Thursday 5 November Today 1 owed · 1 done');
+  expect(today.querySelector('.badge')).toHaveTextContent('Today');
+  expect(list.querySelector('button.day-header[data-day="2026-11-09"]')!.textContent?.replace(/\s+/g, ' ').trim()).toBe('Monday 9 November 1 owed');
+  expect(list.textContent).not.toMatch(/\d entr/);
+ });
+ it('says "1 entry" for a day with one entry, in the cell label and the day detail', async () => {
+  await mount();
+  expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 1 entry$/);
+  await fireEvent.click(dateButton('2026-11-05'));
+  expect(screen.getByRole('dialog').querySelector('.subject')).toHaveTextContent(/^1 entry · 1 owed$/);
+ });
  it('uses the phone day list and its summaries instead of the desktop grid', async () => {
-  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  phone();
   h.agenda.mockResolvedValue(response([row()], { unavailable: [{ item_ref: 'EX-99', code: 'internal' }] }));
   await mount(); expect(screen.queryByRole('grid')).toBeNull();
   const list = screen.getByRole('list', { name: 'November 2026' }); expect(list.children).toHaveLength(30);
-  const header = within(list).getByRole('button', { name: /Thursday, 5 November 2026 · Today.*Not fully loaded/ });
+  const header = within(list).getByRole('button', { name: /^Thursday 5 November\s*Today.*Not fully loaded/ });
   await fireEvent.click(header); expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done EX-30' })).toBeTruthy();
  });
 });
