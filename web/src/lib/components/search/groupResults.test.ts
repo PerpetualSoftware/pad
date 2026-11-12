@@ -11,7 +11,7 @@ import {
 // "Constructor" (slug `constructor`) found Object's constructor on a plain
 // object, skipped creating its group, and the push threw.
 function hit(id: string, collection_slug: string): SearchResult {
-	return { item: { id, collection_slug } as SearchResult['item'], snippet: '', rank: 0 };
+	return { item: { id, collection_slug } as SearchResult['item'], snippet: '', matched_in: 'title', rank: 0 };
 }
 
 describe('groupResultsByCollection (BUG-3054)', () => {

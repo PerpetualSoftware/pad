@@ -14,7 +14,8 @@
 		groupResultsByCollection,
 		inRenderedOrder,
 		reselectAfterAppend,
-		resultAnnouncement
+		resultAnnouncement,
+		matchMarker,
 	} from './groupResults';
 	import type {
 		SearchResult,
@@ -333,6 +334,7 @@
 			out.push({
 				item,
 				snippet: '',
+				matched_in: 'title',
 				rank: h.score,
 				workspace: { slug: wsSlug, owner_username: ownerUsername },
 			});
@@ -1240,7 +1242,7 @@
 										{#if r.snippet}
 											<div class="result-snippet">
 												{#if isBodyStale(r.item)}<StaleBodyDot />{/if}
-												{stripHtml(r.snippet)}
+												{stripHtml(r.snippet)}{#if matchMarker(r)} <span>({matchMarker(r)})</span>{/if}
 											</div>
 										{/if}
 									</button>
@@ -1291,7 +1293,7 @@
 									{/if}
 								</div>
 								{#if r.snippet}
-									<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}</div>
+									<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}{#if matchMarker(r)} <span>({matchMarker(r)})</span>{/if}</div>
 								{/if}
 							</button>
 						{/each}
@@ -1394,7 +1396,7 @@
 										{/if}
 									</div>
 									{#if r.snippet}
-										<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}</div>
+										<div class="result-snippet">{#if isBodyStale(r.item)}<StaleBodyDot />{/if}{stripHtml(r.snippet)}{#if matchMarker(r)} <span>({matchMarker(r)})</span>{/if}</div>
 									{/if}
 								</button>
 							{/each}

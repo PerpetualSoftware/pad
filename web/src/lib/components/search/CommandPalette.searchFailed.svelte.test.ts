@@ -130,3 +130,22 @@ describe('CommandPalette: a failed search is not "No results" (TASK-3587)', () =
 		expect(view.queryByText(/Couldn't load more results/)).toBeNull();
 	});
 });
+
+
+describe('CommandPalette comment matches', () => {
+ beforeEach(() => {
+  vi.useFakeTimers();
+  vi.mocked(api.search).mockReset();
+  state.localHits = [];
+ });
+ afterEach(() => { cleanup(); vi.useRealTimers(); });
+ for (const ready of [false, true]) {
+  it(`shows the comment marker beside the snippet with a ${ready ? 'ready' : 'cold'} local index`, async () => {
+   state.ready = ready;
+   vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in: 'comment', comment_id: 'comment-one' }], total: 1, limit: 20, offset: 0 } as never);
+   const view = await typeAndSettle('pelican');
+   const snippet = view.getByText('about pelicans', { exact: false });
+   expect(snippet.textContent).toContain('in comment');
+  });
+ }
+});

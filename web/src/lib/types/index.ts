@@ -2393,6 +2393,8 @@ export interface ChangesResponse {
 
 export interface SearchResult {
 	item: Item;
+	matched_in: 'title' | 'content' | 'tags' | 'comment' | 'ref';
+	comment_id?: string;
 	snippet: string;
 	rank: number;
 	/** The workspace the item is in, from the server's access check (TASK-3604). */

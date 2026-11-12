@@ -76,3 +76,8 @@ export function resultAnnouncement(
 	if (!query.trim() || loading || contentLoading) return '';
 	return `${count} result${count === 1 ? '' : 's'}`;
 }
+
+/** The source label displayed beside a comment snippet. */
+export function matchMarker(result: SearchResult): string {
+ return result.matched_in === 'comment' ? 'in comment' : '';
+}
