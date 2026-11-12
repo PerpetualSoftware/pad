@@ -916,9 +916,13 @@
 		<section class="card" id="calendar-feeds">
 			<h2 class="card-title">Calendar feeds</h2>
 			<div class="card-body">
-				{#key authStore.identityEpoch}
-					<CalendarFeedsSettings />
-				{/key}
+				<!-- Signed in only: clear() bumps the epoch, and a remount on the dead session
+				     would take the 401 redirect over the delete flow's own navigation. -->
+				{#if authStore.authenticated}
+					{#key authStore.identityEpoch}
+						<CalendarFeedsSettings />
+					{/key}
+				{/if}
 			</div>
 		</section>
 
