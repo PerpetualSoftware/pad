@@ -4,7 +4,7 @@
  import type { CalendarResponse, Collection, Item } from '$lib/types';
  import { authStore } from '$lib/stores/auth.svelte';
  import { viewport } from '$lib/stores/breakpoint.svelte';
- import { attentionFirst, calendarError, calendarRows, dayLabel, fieldLabel, incomplete, incompleteDay, monthLabel, monthWindow, moveMonth, safeZone, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
+ import { attentionFirst, calendarError, calendarRows, dayLabel, entryCount, fieldLabel, incomplete, incompleteDay, monthLabel, monthWindow, moveMonth, safeZone, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
  import MonthGrid from '../calendar/MonthGrid.svelte';
  import CalendarToolbar from '../calendar/CalendarToolbar.svelte';
  import CalendarEntry from '../calendar/CalendarEntry.svelte';
@@ -115,7 +115,7 @@
  function changeConfig(next:CalendarConfig) { onConfigChange(next); }
  function filtersAction() { openedDay=null; onFilters(); }
  function listAction() { openedDay=null; onList(); }
- function cellLabel(day:string) { return `${dayLabel(day,true)}${day===today ? ', Today' : ''}, ${byDay.get(day)?.length ?? 0} entries${data && incompleteDay(data,day) ? ', Incomplete' : ''}`; }
+ function cellLabel(day:string) { return `${dayLabel(day,true)}${day===today ? ', Today' : ''}, ${entryCount(byDay.get(day)?.length ?? 0)}${data && incompleteDay(data,day) ? ', Incomplete' : ''}`; }
 </script>
 
 <section class="calendar" class:updating={loading && !!data} aria-label="Calendar" aria-busy={loading && !!data}>
@@ -137,7 +137,7 @@
    {/if}
   {/if}
   <MonthGrid bind:this={grid} {month} {today} {selected} mobile={viewport.isMobile} {cellLabel}
-   summary={(day) => data && incompleteDay(data,day) ? 'Not fully loaded' : byDay.get(day)?.length ? `${byDay.get(day)!.length} entries` : 'No entries'}
+   summary={(day) => data && incompleteDay(data,day) ? 'Not fully loaded' : byDay.get(day)?.length ? entryCount(byDay.get(day)!.length) : 'No entries'}
    count={(day) => byDay.get(day)?.length ? String(byDay.get(day)!.length) : ''} empty={(day) => !byDay.get(day)?.length && !(data && incompleteDay(data,day))}
    onopen={openDay} onchoose={chooseDay} loaded={data} cell={entries} />
   {#if data}

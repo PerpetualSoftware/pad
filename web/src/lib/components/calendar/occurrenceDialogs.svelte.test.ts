@@ -84,13 +84,30 @@ describe('ResolveOccurrenceDialog', () => {
 });
 
 describe('AgendaDayDialog', () => {
-	const mount = (extra: Record<string, unknown> = {}) => render(AgendaDayDialog, { day: '2026-11-12', today: '2026-11-12', entries: [entry, { ...entry, item_ref: 'TASK-10', schedule_id: 's2', state: 'done' }], zone: 'America/New_York', mobile: false, incomplete: false, pending: {}, saved: {}, onclose: vi.fn(), onaction: vi.fn(), ...extra });
+	const mount = (extra: Record<string, unknown> = {}) => render(AgendaDayDialog, { props: { day: '2026-11-12', today: '2026-11-12', entries: [entry, { ...entry, item_ref: 'TASK-10', schedule_id: 's2', state: 'done' }], zone: 'America/New_York', mobile: false, incomplete: false, pending: {}, saved: {}, onclose: vi.fn(), onaction: vi.fn(), ...extra } });
 	it('is titled with the day, says Today, and summarises the day under it', () => {
 		mount();
 		const dialog = screen.getByRole('dialog', { name: 'Thursday, 12 November 2026, Today' });
 		expect(dialog.querySelector('.subject')).toHaveTextContent('2 entries · 1 owed · 1 done');
 		expect(dialog.textContent).not.toContain('Time zone'); expect(dialog.querySelector('footer')).toBeNull();
 		expect([...dialog.querySelectorAll('[data-ref]')].map(row => row.getAttribute('data-ref'))).toEqual(['TASK-9', 'TASK-10']);
+	});
+	it('counts commitments only, says "1 entry", and ends with a collapsed disclosure of the created and completed events', async () => {
+		const events = [{ ...entry, type: 'created' as const, item_ref: 'TASK-20', state: undefined }, { ...entry, type: 'completed' as const, item_ref: 'TASK-21', state: undefined }];
+		mount({ entries: [entry], events });
+		const dialog = screen.getByRole('dialog');
+		expect(dialog.querySelector('.subject')).toHaveTextContent(/^1 entry · 1 owed$/);
+		expect([...dialog.querySelectorAll('[data-ref]')].map(row => row.getAttribute('data-ref'))).toEqual(['TASK-9']);
+		const toggle = within(dialog).getByRole('button', { name: '1 created · 1 completed' });
+		expect(toggle).toHaveAttribute('aria-expanded', 'false');
+		await fireEvent.click(toggle);
+		expect([...dialog.querySelectorAll('[data-ref]')].map(row => row.getAttribute('data-ref'))).toEqual(['TASK-9', 'TASK-20', 'TASK-21']);
+	});
+	it('shows the events alone on a day with no commitments, with no subject and no empty line', () => {
+		mount({ entries: [], events: [{ ...entry, type: 'created' as const, item_ref: 'TASK-20', state: undefined }] });
+		const dialog = screen.getByRole('dialog');
+		expect(dialog.querySelector('.subject')).toBeNull(); expect(within(dialog).queryByText('No entries on this day.')).toBeNull();
+		expect(within(dialog).getByRole('button', { name: '1 created' })).toBeInTheDocument();
 	});
 	it('leaves Today out on another day and keeps the incomplete and error lines', () => {
 		mount({ today: '2026-11-13', entries: [], incomplete: true, error: 'Could not update this occurrence. Try again.' });

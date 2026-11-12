@@ -56,6 +56,10 @@ export function monthWindow(month: string, zone: string) {
 export function dayLabel(day: string, full = false): string {
  return new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', ...(full ? { weekday: 'long' as const } : {}), day:'numeric',month:'long',year:'numeric' }).format(new Date(`${day}T12:00:00Z`));
 }
+/** How many entries a day has, in words: "1 entry", "3 entries". */
+export function entryCount(count: number): string {
+ return `${count} ${count === 1 ? 'entry' : 'entries'}`;
+}
 export function monthLabel(month: string): string {
  return new Intl.DateTimeFormat('en-GB', {timeZone:'UTC',month:'long',year:'numeric'}).format(new Date(`${month}-01T12:00:00Z`));
 }

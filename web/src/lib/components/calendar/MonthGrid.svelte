@@ -1,9 +1,11 @@
 <script lang="ts">
  import { tick, type Snippet } from 'svelte';
  import { dayLabel, dayRuns, emptyRunLabel, monthDays, monthLabel, moveMonth, shiftDay } from '$lib/calendar/monthGrid';
- let {month, today, selected, mobile, cellLabel, summary, count = () => '', empty = () => false, onopen, onchoose, loaded, cell}: {
+ let {month, today, selected, mobile, cellLabel, summary, heading, count = () => '', empty = () => false, onopen, onchoose, loaded, cell}: {
   month:string; today:string; selected:string; mobile:boolean;
   cellLabel:(day:string)=>string; summary:(day:string)=>string;
+  /** The phone list's own words for a day, such as "Thursday 12 November"; today then carries a badge. Without it a day reads as its full date. */
+  heading?:(day:string)=>string;
   /** The text beside a date in the grid, such as "6 · 2 owed". Empty shows nothing. */
   count?:(day:string)=>string;
   /** Whether a day is fully loaded and has no entries. The phone list folds runs of such days into one line. */
@@ -67,7 +69,7 @@
       {:else}
        {@const day = run.from}
        <li class:today={day===today}>
-        <h3><button class="day-header" data-day={day} aria-current={day===today ? 'date' : undefined} onclick={() => onopen(day)}>{dayLabel(day,true)}{day===today ? ' · Today' : ''}<span>{summary(day)}</span></button></h3>
+        <h3><button class="day-header" data-day={day} aria-current={day===today ? 'date' : undefined} onclick={() => onopen(day)}>{#if heading}{heading(day)}{#if day===today}{' '}<i class="badge">Today</i>{/if}{:else}{dayLabel(day,true)}{day===today ? ' · Today' : ''}{/if}{' '}<span>{summary(day)}</span></button></h3>
         {@render cell(day,true)}
        </li>
       {/if}
@@ -121,6 +123,7 @@
  .day-list .empty-run { padding:6px 4px; color:var(--text-muted); font-size:13px; }
  h3 { margin:0; }
  .day-header { width:100%; min-height:44px; display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:var(--space-2); padding:0 4px; text-align:left; font-size:15px; font-weight:700; }
- .day-header span { color:var(--text-secondary); font-size:12px; font-weight:normal; }
+ .day-header span { margin-left:auto; color:var(--text-secondary); font-size:12px; font-weight:normal; }
+ .badge { font-style:normal; font-size:11px; font-weight:700; color:var(--text-on-accent); background:var(--accent-primary-strong); border-radius:99px; padding:0 8px; }
  @media (pointer:coarse) { button { min-height:44px; min-width:44px; } }
 </style>

@@ -39,6 +39,18 @@ describe('MonthGrid', () => {
 		]);
 		expect(within(list).getAllByRole('button')).toHaveLength(2);
 	});
+	it('heads a phone day with the page\'s own heading and a Today badge when one is given', () => {
+		mount({ mobile: true, heading: (day: string) => `Heading ${day}` });
+		const today = document.querySelector('button.day-header[data-day="2026-11-12"]')!;
+		expect(today.textContent?.replace(/\s+/g, ' ').trim()).toBe('Heading 2026-11-12 Today summary');
+		expect(today.querySelector('.badge')).toHaveTextContent('Today');
+		const other = document.querySelector('button.day-header[data-day="2026-11-05"]')!;
+		expect(other.textContent?.replace(/\s+/g, ' ').trim()).toBe('Heading 2026-11-05 summary'); expect(other.querySelector('.badge')).toBeNull();
+	});
+	it('keeps the dated heading and the Today word when no heading is given', () => {
+		mount({ mobile: true });
+		expect(document.querySelector('button.day-header[data-day="2026-11-12"]')!.textContent?.replace(/\s+/g, ' ').trim()).toBe('Thursday, 12 November 2026 · Today summary');
+	});
 	it('never collapses today, a day that is not fully loaded or the selected day', () => {
 		// The page reports a day that is not fully loaded as not empty.
 		mount({ mobile: true, today: '2026-11-03', selected: '2026-11-20', empty: (day: string) => day !== '2026-11-25' });

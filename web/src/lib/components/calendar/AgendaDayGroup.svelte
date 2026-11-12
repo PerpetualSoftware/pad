@@ -1,7 +1,8 @@
 <script lang="ts">
 	import Chip from '$lib/components/common/Chip.svelte';
+	import AgendaEvents from './AgendaEvents.svelte';
 	import AgendaRow from './AgendaRow.svelte';
-	import { entryKey, isAllDay, localTime, longDay, roleDay, shortDay, type AgendaAction } from '$lib/calendar/presentation';
+	import { entryKey, isAllDay, isEvent, localTime, longDay, roleDay, shortDay, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, CommitmentMoveResult } from '$lib/types';
 
 	interface Props {
@@ -43,13 +44,8 @@
 		dragging = null, hover = false, impact = null, titles = {}, onaction, ondragstart, ondragend, onenter, ondrop }: Props = $props();
 
 	const uid = $props.id();
-	let showEvents = $state(false);
-	const isEvent = (entry: AgendaEntry) => entry.type === 'created' || entry.type === 'completed';
 	const rows = $derived(entries.filter(entry => !isEvent(entry)));
 	const events = $derived(entries.filter(isEvent));
-	const eventsLabel = $derived((['created', 'completed'] as const)
-		.map(type => [events.filter(entry => entry.type === type).length, type] as const)
-		.filter(([count]) => count > 0).map(([count, type]) => `${count} ${type}`).join(' · '));
 	const linked = $derived(impact?.changes.filter(change => !change.root && roleDay(change.to, zone) === day) ?? []);
 	const landing = $derived(hover && dragging && dragging.day !== day ? dragging : null);
 	const empty = $derived(rows.length + events.length + deadlines.length + forecasts.length === 0);
@@ -87,19 +83,7 @@
 				{#if impact?.violations?.some(violation => violation.item_id === change.item_id && violation.role === change.role)}<Chip size="sm" color="var(--accent-red)">Outside its bound</Chip>{/if}
 			</li>
 		{/each}
-		{#if events.length}
-			<li class="events">
-				<button type="button" aria-expanded={showEvents} aria-controls={`${uid}-events`} onclick={() => showEvents = !showEvents}>
-					<svg class:open={showEvents} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6" /></svg>
-					{eventsLabel}
-				</button>
-				<ul id={`${uid}-events`} hidden={!showEvents}>
-					{#if showEvents}
-						{#each events as entry (entryKey(entry))}<AgendaRow {entry} {zone} {now} {compact} {onaction} />{/each}
-					{/if}
-				</ul>
-			</li>
-		{/if}
+		<AgendaEvents {events} {zone} {now} {compact} {onaction} />
 		{#if empty && complete && !landing && !linked.length}<li class="empty">{lifted > 0 ? 'Listed under Needs attention.' : 'Nothing scheduled.'}</li>{/if}
 	</ul>
 </section>
@@ -111,19 +95,12 @@
 	h2:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; border-radius: var(--radius-sm); }
 	.today { font-size: 11px; font-weight: 700; color: var(--text-on-accent); background: var(--accent-primary-strong); border-radius: 99px; padding: 0 8px; }
 	.sum { margin-left: auto; font-size: 12px; color: var(--text-muted); }
-	.list, .events ul { list-style: none; margin: 0; padding: 0; }
+	.list { list-style: none; margin: 0; padding: 0; }
 	.list { overflow: hidden; background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
-	.list > :global(* + *), .events ul > :global(*) { border-top: 1px solid var(--border-subtle); }
+	.list > :global(* + *) { border-top: 1px solid var(--border-subtle); }
 	.drop .list { outline: 2px dashed var(--accent-primary); outline-offset: 2px; }
 	.empty { padding: 10px var(--space-4); color: var(--text-muted); font-size: 13px; }
 	.ghost { display: flex; align-items: center; gap: var(--space-3); min-height: 34px; margin: 4px; padding: 5px var(--space-3); border: 1px dashed var(--accent-primary); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--accent-primary) 6%, transparent); font-size: 13px; }
 	.ghost .time { flex: 0 0 56px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 	.ghost .what { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 500; }
-	.events button { display: flex; align-items: center; gap: var(--space-2); width: 100%; padding: 7px var(--space-4); border: 0; background: transparent; color: var(--text-muted); font: inherit; font-size: 12px; text-align: left; cursor: pointer; }
-	.events button:hover { background: var(--bg-hover); }
-	.events button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; }
-	.events svg { transition: transform 0.12s; }
-	.events svg.open { transform: rotate(90deg); }
-	@media (prefers-reduced-motion: reduce) { .events svg { transition: none; } }
-	@media (pointer: coarse) { .events button { min-height: 44px; } }
 </style>

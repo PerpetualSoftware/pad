@@ -1282,10 +1282,14 @@ describe('agenda Month page', () => {
  });
  it('offers to reveal hidden created and completed entries in Month', async () => {
   h.agenda.mockResolvedValue(response([row({ type: 'created' }), row({ type: 'completed', item_ref: 'EX-31' })]));
-  render(Agenda); await screen.findByRole('grid'); await screen.findAllByText('First item'); await toggleEvents();
+  render(Agenda); await screen.findByRole('grid'); await toggleEvents();
   expect(screen.getByText('Created and completed items are hidden.')).toBeTruthy();
   expect(screen.queryByText('No entries this month.')).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.getAllByText('First item')).toHaveLength(2);
+  // Shown again, they are still not lines in the cell: the day detail folds them into its last line.
+  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.queryByText('First item')).toBeNull();
+  await fireEvent.click(dateButton('2026-11-05'));
+  await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '1 created · 1 completed' }));
+  expect(within(screen.getByRole('dialog')).getAllByText('First item')).toHaveLength(2);
  });
  it('shows the summary below the grid, named for the month, and no outstanding list', async () => {
   h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); await mount();
@@ -1294,12 +1298,75 @@ describe('agenda Month page', () => {
   expect(summary.closest('aside')).toBeNull(); expect(summary.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1');
   expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull();
  });
+ // Created events of one day, as the agenda returns them with the option on.
+ const made = (count: number, day = '2026-11-05') => Array.from({ length: count }, (_, i) => row({ type: 'created', item_ref: `EV-${i}`, item_title: `Made ${i}`, schedule_id: undefined, state: undefined, day, at: `${day}T15:00:00Z` }));
+ const three = () => [0, 1, 2].map(i => row({ item_ref: `EX-${30 + i}`, schedule_id: `s${i}`, item_title: `Plain ${i}` }));
+ it('counts and lists commitments only in a cell, and folds created and completed into a disclosure in day detail', async () => {
+  h.agenda.mockResolvedValue(response([...three(), ...made(20)])); render(Agenda); await screen.findByRole('grid');
+  const cell = cellOf('2026-11-05');
+  expect(cell.querySelector('.count')).toHaveTextContent(/^3 · 3 owed$/);
+  expect(within(cell).getAllByRole('link').map(line => line.querySelector('.t')?.textContent)).toEqual(['Plain 0', 'Plain 1', 'Plain 2']);
+  expect(within(cell).queryByRole('button', { name: /more$/ })).toBeNull();
+  expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 3 entries$/);
+  await fireEvent.click(dateButton('2026-11-05'));
+  const detail = screen.getByRole('dialog', { name: 'Thursday, 5 November 2026, Today' });
+  expect(detail.querySelector('.subject')).toHaveTextContent(/^3 entries · 3 owed$/);
+  expect([...detail.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EX-31', 'EX-32']);
+  const toggle = within(detail).getByRole('button', { name: '20 created' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await fireEvent.click(toggle);
+  expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(detail.querySelectorAll('[data-ref^="EV-"]')).toHaveLength(20);
+  expect(detail.querySelector('.subject')).toHaveTextContent(/^3 entries · 3 owed$/);
+ });
+ it('leaves a day with only created and completed events empty in the grid, with the events in its day detail', async () => {
+  h.agenda.mockResolvedValue(response([row(), ...made(2, '2026-11-09')])); render(Agenda); await screen.findByRole('grid');
+  const cell = cellOf('2026-11-09');
+  expect(cell.querySelector('.count')).toBeNull(); expect(within(cell).queryAllByRole('link')).toHaveLength(0);
+  expect(dateButton('2026-11-09').getAttribute('aria-label')).toMatch(/2026, 0 entries$/);
+  await fireEvent.click(dateButton('2026-11-09'));
+  const detail = screen.getByRole('dialog', { name: 'Monday, 9 November 2026' });
+  expect(detail.querySelector('.subject')).toBeNull(); expect(within(detail).queryByText('No entries on this day.')).toBeNull();
+  expect(within(detail).getByRole('button', { name: '2 created' })).toHaveAttribute('aria-expanded', 'false');
+ });
+ it('on a phone keeps the header of a day with only events while they are shown, and folds it once they are hidden', async () => {
+  phone(); h.agenda.mockResolvedValue(response([...three(), ...made(20), ...made(2, '2026-11-09')])); render(Agenda);
+  const list = await screen.findByRole('list', { name: 'November 2026' });
+  const headers = () => [...list.querySelectorAll('button.day-header')].map(button => button.getAttribute('data-day'));
+  expect(headers()).toEqual(['2026-11-05', '2026-11-09']);
+  const quiet = list.querySelector('button.day-header[data-day="2026-11-09"]')!.closest('li')!;
+  expect(quiet.querySelectorAll('[data-ref]')).toHaveLength(0);
+  const toggle = within(quiet).getByRole('button', { name: '2 created' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false');
+  await fireEvent.click(toggle); expect(quiet.querySelectorAll('[data-ref^="EV-"]')).toHaveLength(2);
+  const today = list.querySelector('button.day-header[data-day="2026-11-05"]')!.closest('li')!;
+  expect([...today.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EX-31', 'EX-32']);
+  expect(within(today).getByRole('button', { name: '20 created' })).toHaveAttribute('aria-expanded', 'false');
+  await toggleEvents();
+  await waitFor(() => expect(headers()).toEqual(['2026-11-05']));
+  expect(within(list).queryByRole('button', { name: /created/ })).toBeNull();
+ });
+ it('heads a phone day as the week does: the day without its year, a Today badge and what is owed', async () => {
+  phone(); h.agenda.mockResolvedValue(response([row(), row({ item_ref: 'EX-31', schedule_id: 's2', state: 'done' }), row({ item_ref: 'EX-50', schedule_id: 's3', day: '2026-11-09', at: '2026-11-09T14:00:00Z' })])); render(Agenda);
+  const list = await screen.findByRole('list', { name: 'November 2026' });
+  const today = list.querySelector('button.day-header[data-day="2026-11-05"]')!;
+  expect(today.textContent?.replace(/\s+/g, ' ').trim()).toBe('Thursday 5 November Today 1 owed · 1 done');
+  expect(today.querySelector('.badge')).toHaveTextContent('Today');
+  expect(list.querySelector('button.day-header[data-day="2026-11-09"]')!.textContent?.replace(/\s+/g, ' ').trim()).toBe('Monday 9 November 1 owed');
+  expect(list.textContent).not.toMatch(/\d entr/);
+ });
+ it('says "1 entry" for a day with one entry, in the cell label and the day detail', async () => {
+  await mount();
+  expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 1 entry$/);
+  await fireEvent.click(dateButton('2026-11-05'));
+  expect(screen.getByRole('dialog').querySelector('.subject')).toHaveTextContent(/^1 entry · 1 owed$/);
+ });
  it('uses the phone day list and its summaries instead of the desktop grid', async () => {
   phone();
   h.agenda.mockResolvedValue(response([row()], { unavailable: [{ item_ref: 'EX-99', code: 'internal' }] }));
   await mount(); expect(screen.queryByRole('grid')).toBeNull();
   const list = screen.getByRole('list', { name: 'November 2026' }); expect(list.children).toHaveLength(30);
-  const header = within(list).getByRole('button', { name: /Thursday, 5 November 2026 · Today.*Not fully loaded/ });
+  const header = within(list).getByRole('button', { name: /^Thursday 5 November\s*Today.*Not fully loaded/ });
   await fireEvent.click(header); expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done EX-30' })).toBeTruthy();
  });
 });

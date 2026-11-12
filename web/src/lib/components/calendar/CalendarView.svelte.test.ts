@@ -187,3 +187,17 @@ it('keeps the lapsed occurrence first in the phone list, behind no +N more', asy
   expect(list.children.length).toBeLessThan(31);
  } finally { spy.mockRestore(); }
 });
+it('says "1 entry" for a day with one entry, in the cell label and the phone summary', async () => {
+ const one = () => ({...data(),items:data().items.slice(0,1)});
+ vi.mocked(api.calendar.get).mockResolvedValue(one()); const view = mount();
+ expect(await screen.findByRole('button',{name:'Sunday, 8 March 2026, 1 entry'})).toBeInTheDocument();
+ expect(screen.getByRole('button',{name:'Monday, 9 March 2026, 0 entries'})).toBeInTheDocument();
+ view.unmount();
+ const { viewport } = await import('$lib/stores/breakpoint.svelte');
+ const spy = vi.spyOn(viewport, 'isMobile', 'get').mockReturnValue(true);
+ try {
+  mount();
+  const list = await screen.findByRole('list',{name:'March 2026'});
+  expect(list.querySelector('button.day-header[data-day="2026-03-08"] span')).toHaveTextContent(/^1 entry$/);
+ } finally { spy.mockRestore(); }
+});

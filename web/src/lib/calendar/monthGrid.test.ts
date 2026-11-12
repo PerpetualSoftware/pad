@@ -136,4 +136,8 @@ describe('month cell order, collapse and phone runs', () => {
   expect(emptyRunLabel('2026-11-06', '2026-11-08')).toBe('Fri 6 – Sun 8 · nothing scheduled');
   expect(emptyRunLabel('2026-11-10', '2026-11-10')).toBe('Tue 10 · nothing scheduled');
  });
+ it('counts entries in words, singular for one', async () => {
+  const { entryCount } = await import('./monthGrid');
+  expect([0, 1, 2, 20].map(entryCount)).toEqual(['0 entries', '1 entry', '2 entries', '20 entries']);
+ });
 });

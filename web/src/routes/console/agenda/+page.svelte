@@ -4,16 +4,17 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { agendaRows, attentionEntries, roleDay, roleMarkers, canMove, canResolve, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { agendaRows, attentionEntries, roleDay, roleMarkers, canMove, canResolve, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isEvent, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
 	import WorkspaceGroupsDialog from '$lib/components/calendar/WorkspaceGroupsDialog.svelte';
-	import { attentionFirst, dayLabel as calendarDayLabel, monthLabel, monthWindow, moveMonth } from '$lib/calendar/monthGrid';
+	import { attentionFirst, dayLabel as calendarDayLabel, entryCount, monthLabel, monthWindow, moveMonth } from '$lib/calendar/monthGrid';
 	import MonthGrid from '$lib/components/calendar/MonthGrid.svelte';
 	import CalendarEntry from '$lib/components/calendar/CalendarEntry.svelte';
 	import AgendaAttention from '$lib/components/calendar/AgendaAttention.svelte';
 	import AgendaDayDialog from '$lib/components/calendar/AgendaDayDialog.svelte';
+	import AgendaEvents from '$lib/components/calendar/AgendaEvents.svelte';
 	import AgendaDayGroup from '$lib/components/calendar/AgendaDayGroup.svelte';
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import AgendaToolbar from '$lib/components/calendar/AgendaToolbar.svelte';
@@ -152,8 +153,10 @@
 	const monthEntries = $derived(entries.filter(entry => !nextDay || entry.day <= nextDay));
 	// What needs attention in the month, by the derivation the week's band uses.
 	const monthAttention = $derived(new Set(data ? attentionEntries(monthEntries, data.priority_list).filter(item => item.inWindow).map(item => entryKey(item.entry as AgendaEntry)) : []));
-	// Each day's entries, what needs attention first, so it is never behind "+N more".
-	const monthDays = $derived(new Map(groupEntries(monthEntries).map(group => [group.day, attentionFirst(group.entries, entry => monthAttention.has(entryKey(entry)))])));
+	// Each day's commitments, what needs attention first, so it is never behind "+N more".
+	// Created and completed entries are never rows or counted: each day's fold into one line that ends its list.
+	const monthEvents = $derived(new Map(groupEntries(monthEntries.filter(isEvent)).map(group => [group.day, group.entries])));
+	const monthDays = $derived(new Map(groupEntries(monthEntries.filter(entry => !isEvent(entry))).map(group => [group.day, attentionFirst(group.entries, entry => monthAttention.has(entryKey(entry)))])));
 	// agendaRows leads with all-day rows, so the attention order is applied to its result.
 	const monthRows = $derived(new Map([...monthDays].map(([date, rows]) => [date, attentionFirst(agendaRows(rows).map(row => ({ ...row, attention: monthAttention.has(row.key) })), row => row.attention)])));
 	function monthCount(date: string) {
@@ -171,7 +174,7 @@
 		return nextDay && date > nextDay ? 'none' : 'partial';
 	}
 	function monthCellLabel(date: string) {
-		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${monthRows.get(date)?.length ?? 0} entries${dayIncomplete(date) ? ', Incomplete' : ''}`;
+		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${entryCount(monthRows.get(date)?.length ?? 0)}${dayIncomplete(date) ? ', Incomplete' : ''}`;
 	}
 	async function setSurface(value: 'agenda' | 'list') {
 		if (value === surface) return;
@@ -639,17 +642,18 @@
 {:else if mode === 'month'}
 	{#if loadError && !savedRefreshError}{@render failed()}{/if}
 	<MonthGrid bind:this={monthGrid} {month} today={todayIn(zone)} selected={day} {mobile} loaded={data}
-		cellLabel={monthCellLabel} summary={(date) => dayIncomplete(date) ? 'Not fully loaded' : monthRows.get(date)?.length ? `${monthRows.get(date)!.length} entries` : 'No entries'}
-		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length}
+		cellLabel={monthCellLabel} heading={longDay} summary={(date) => dayIncomplete(date) ? 'Not fully loaded' : daySummary(monthDays.get(date) ?? [])}
+		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length && !monthEvents.get(date)?.length}
 		onopen={openDay} onchoose={(date) => selectedDay = date}>
 		{#snippet cell(date: string, phone: boolean)}
 			{#if phone}
 				<!-- The phone month is the week's list: every entry of the day, with its actions. -->
-				{#if monthDays.get(date)?.length}
+				{#if monthDays.get(date)?.length || monthEvents.get(date)?.length}
 					<ul class="card month-day">
 						{#each monthDays.get(date) ?? [] as entry (entryKey(entry))}
 							<AgendaRow {entry} {zone} {now} compact pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} onaction={action} />
 						{/each}
+						<AgendaEvents events={monthEvents.get(date) ?? []} {zone} {now} compact onaction={action} />
 					</ul>
 				{/if}
 			{:else}
@@ -660,7 +664,7 @@
 		{/snippet}
 	</MonthGrid>
 	{#if nothing}<p class="quiet-note">No entries this month.</p>{/if}
-	<AgendaDayDialog day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} {zone} {now} {mobile}
+	<AgendaDayDialog day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} events={openedDay ? monthEvents.get(openedDay) ?? [] : []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
 	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} /></div>{/if}
 {:else}
