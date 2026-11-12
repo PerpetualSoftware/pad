@@ -116,3 +116,16 @@ it('previews an attention entry in red and bold, and a closed one muted', () => 
  cleanup(); line({ terminal: 'abandoned', abandoned: true });
  expect(link()).toHaveClass('struck');
 });
+it('previews a forecast marker as an estimate: named Forecast and drawn dashed', () => {
+ const { container } = line({ kind: 'forecast', title: 'Ship it', forecast: { value: '2026-03-12', set_by: 'u1', set_by_name: 'Alex', set_by_kind: 'agent', set_at: 'now', source: '' } });
+ const a = container.querySelector('a.line')!;
+ expect(a.getAttribute('aria-label')).toMatch(/^Forecast · Ship it/);
+ expect(a.getAttribute('data-role')).toBe('forecast');
+ expect(a.classList.contains('forecast-marker')).toBe(true);
+});
+it('does not name an ordinary preview line a forecast', () => {
+ const { container } = line({ title: 'Ship it' });
+ const a = container.querySelector('a.line')!;
+ expect(a.getAttribute('aria-label')).not.toMatch(/Forecast/);
+ expect(a.getAttribute('data-role')).toBeNull();
+});

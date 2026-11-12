@@ -17,13 +17,14 @@
  let time = $derived(row.allDay || !row.at ? '' : timeLabel(row.at, zone));
  let name = $derived(row.continues && preview ? 'Continues' : row.title);
  // Everything the one-line preview leaves out, for its tooltip and accessible name.
- let tip = $derived([row.title, time || 'All day', row.label, state?.label ?? (row.terminal ? formatFieldLabel(row.terminal) : ''),
+ // A forecast marker is an estimate, not the entry itself: it says so first.
+ let tip = $derived([row.kind === 'forecast' ? 'Forecast' : '', row.title, time || 'All day', row.label, state?.label ?? (row.terminal ? formatFieldLabel(row.terminal) : ''),
   row.overdue ? 'Overdue' : '', row.workspaceName].filter(Boolean).join(' · '));
  let href = $derived(row.href === undefined ? `${basePath}/${encodeURIComponent(row.target)}` : row.href ?? undefined);
  function click(e: MouseEvent) { if (onopen && shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }
 </script>
 {#if preview}
- <a class="line" class:attention={row.attention} class:closed class:struck={row.abandoned} {href} title={tip} aria-label={tip} tabindex={keyboard ? 0 : -1} onclick={click}>
+ <a class="line" class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:attention={row.attention} class:closed class:struck={row.abandoned} {href} title={tip} aria-label={tip} tabindex={keyboard ? 0 : -1} onclick={click}>
   <StateMark {...mark} overdue={!!row.overdue || !!row.attention} />{#if time}<time>{time}</time>{/if}<span class="t">{name}</span>
  </a>
 {:else}
