@@ -175,7 +175,11 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	}
 	facets := s.searchFacetsForMatches(matches, args)
 
-	query := matches + `
+	// Keep the ranks of the two indexes separate. Explicit item sorting still
+	// applies within each leg, with the existing item id tie-breaker.
+	order := " ORDER BY m.match_leg, CASE WHEN m.match_leg = 0 THEN i.workspace_id ELSE '' END, CASE WHEN m.match_leg = 0 THEN i.id ELSE '' END, " + strings.TrimPrefix(s.searchOrderClause(params), " ORDER BY ")
+	page, args := s.searchPage(params, matches, args, order)
+	query := page + `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
 		       i.pinned, i.sort_order, i.parent_id, i.assigned_user_id, i.agent_role_id, i.role_sort_order,
 		       i.created_by, i.last_modified_by, i.source,
@@ -183,18 +187,17 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at,
-		       m.snippet, m.title_snippet, m.tags_snippet, m.rank_score, m.comment_id, m.match_leg
-		FROM search_matches m
+		       CASE m.match_leg WHEN 0 THEN i.title WHEN 1 THEN its.snippet ELSE cms.snippet END,
+		       COALESCE(its.title_snippet, ''), COALESCE(its.tags_snippet, ''), m.rank_score, m.comment_id, m.match_leg
+		FROM search_page m
 		JOIN items i ON i.id = m.id
 		JOIN collections c ON c.id = i.collection_id
 		LEFT JOIN users au ON au.id = i.assigned_user_id
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
+		LEFT JOIN item_snippets its ON its.id = m.id
+		LEFT JOIN comment_snippets cms ON cms.comment_id = m.comment_id
 	`
-	// Keep the ranks of the two indexes separate. Explicit item sorting still
-	// applies within each leg, with the existing item id tie-breaker.
-	order := strings.TrimPrefix(s.searchOrderClause(params), " ORDER BY ")
-	query += " ORDER BY m.match_leg, CASE WHEN m.match_leg = 0 THEN i.workspace_id ELSE '' END, CASE WHEN m.match_leg = 0 THEN i.id ELSE '' END, " + order
-	query += fmt.Sprintf(" LIMIT %d OFFSET %d", params.Limit, params.Offset)
+	query += order
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
@@ -254,8 +257,8 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 }
 
 // searchMatches builds one row per item before sorting, paging, counting or
-// faceting. Materialization keeps SQLite FTS auxiliary functions in their
-// MATCH context, before the window function picks the best comment per item.
+// faceting, without computing snippets. Materialization keeps SQLite ranks in
+// their MATCH context before the window function picks the best comment.
 func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, []interface{}) {
 	itemTable, commentTable := "items_fts", "comments_fts"
 	itemFrom := "items_fts JOIN items i ON i.rowid = items_fts.rowid"
@@ -265,23 +268,12 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 		itemFrom = "items i"
 		commentFrom = "comments cm JOIN items i ON i.id = cm.item_id"
 	}
-	bodySnippet, bodyArgs := s.dialect.FTSSnippet(itemTable, 1, "i.content", params.Query)
-	titleSnippet, titleArgs := s.dialect.FTSSnippet(itemTable, 0, "i.title", params.Query)
-	tagsColumn := "i.tags"
-	if s.dialect.Driver() == DriverPostgres {
-		tagsColumn = "i.tags::text"
-	}
-	tagsSnippet, tagsArgs := s.dialect.FTSSnippet(itemTable, 2, tagsColumn, params.Query)
 	itemRank, itemRankArgs := s.dialect.FTSRank(itemTable, "search_vector", params.Query)
 	itemMatch, itemMatchArgs := s.dialect.FTSMatch(itemTable, "search_vector", params.Query)
-	itemQuery := fmt.Sprintf(`SELECT i.id, %s AS snippet, %s AS title_snippet, %s AS tags_snippet,
-		%s AS rank_score, '' AS comment_id, 1 AS match_leg
+	itemQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, '' AS comment_id, 1 AS match_leg
 		FROM %s JOIN collections c ON c.id = i.collection_id WHERE %s`,
-		bodySnippet, titleSnippet, tagsSnippet, itemRank, itemFrom, itemMatch)
-	args := append(bodyArgs, titleArgs...)
-	args = append(args, tagsArgs...)
-	args = append(args, itemRankArgs...)
-	args = append(args, itemMatchArgs...)
+		itemRank, itemFrom, itemMatch)
+	args := append(itemRankArgs, itemMatchArgs...)
 	itemQuery, args = s.appendSearchFilters(itemQuery, args, params)
 	if len(directIDs) > 0 {
 		itemQuery += " AND i.id NOT IN (" + placeholders(len(directIDs)) + ")"
@@ -290,15 +282,12 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 		}
 	}
 
-	commentSnippet, snippetArgs := s.dialect.FTSSnippet(commentTable, 0, "cm.body", params.Query)
 	commentRank, rankArgs := s.dialect.FTSRank(commentTable, "search_vector", params.Query)
 	commentMatch, matchArgs := s.dialect.FTSMatch(commentTable, "search_vector", params.Query)
-	commentQuery := fmt.Sprintf(`SELECT i.id, %s AS snippet, '' AS title_snippet, '' AS tags_snippet,
-		%s AS rank_score, cm.id AS comment_id, 2 AS match_leg
+	commentQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, cm.id AS comment_id, 2 AS match_leg
 		FROM %s JOIN collections c ON c.id = i.collection_id
-		WHERE %s AND cm.deleted_at IS NULL`, commentSnippet, commentRank, commentFrom, commentMatch)
-	commentArgs := append(snippetArgs, rankArgs...)
-	commentArgs = append(commentArgs, matchArgs...)
+		WHERE %s AND cm.deleted_at IS NULL`, commentRank, commentFrom, commentMatch)
+	commentArgs := append(rankArgs, matchArgs...)
 	commentQuery, commentArgs = s.appendSearchFilters(commentQuery, commentArgs, params)
 	commentQuery += " AND i.id NOT IN (SELECT id FROM item_matches)"
 	if len(directIDs) > 0 {
@@ -319,15 +308,56 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 		), search_matches AS (
 			SELECT * FROM item_matches
 			UNION ALL
-			SELECT id, snippet, title_snippet, tags_snippet, rank_score, comment_id, match_leg
+			SELECT id, rank_score, comment_id, match_leg
 			FROM best_comments WHERE comment_position = 1`
 	if len(directIDs) > 0 {
-		query += ` UNION ALL SELECT i.id, i.title, '', '', -1000, '', 0 FROM items i WHERE i.id IN (` + placeholders(len(directIDs)) + ")"
+		query += ` UNION ALL SELECT i.id, -1000, '', 0 FROM items i WHERE i.id IN (` + placeholders(len(directIDs)) + ")"
 		for _, id := range directIDs {
 			args = append(args, id)
 		}
 	}
 	return query + ") ", args
+}
+
+// searchPage fixes the ordered page before evaluating any snippets. Each
+// snippet CTE is restricted to the selected leg and ids, so at most Limit
+// rows need highlighting. SQLite snippets stay inside their FTS MATCH context.
+func (s *Store) searchPage(params SearchParams, matches string, args []interface{}, order string) (string, []interface{}) {
+	query := matches + `, search_page AS MATERIALIZED (
+		SELECT m.* FROM search_matches m JOIN items i ON i.id = m.id` + order +
+		fmt.Sprintf(" LIMIT %d OFFSET %d), ", params.Limit, params.Offset)
+	itemTable, commentTable := "items_fts", "comments_fts"
+	itemFrom := "items_fts JOIN items i ON i.rowid = items_fts.rowid"
+	commentFrom := "comments_fts JOIN comments cm ON cm.rowid = comments_fts.rowid"
+	tagsColumn := "i.tags"
+	if s.dialect.Driver() == DriverPostgres {
+		itemTable, commentTable = "i", "cm"
+		itemFrom, commentFrom = "items i", "comments cm"
+		tagsColumn = "i.tags::text"
+	}
+	bodySnippet, bodyArgs := s.dialect.FTSSnippet(itemTable, 1, "i.content", params.Query)
+	titleSnippet, titleArgs := s.dialect.FTSSnippet(itemTable, 0, "i.title", params.Query)
+	tagsSnippet, tagsArgs := s.dialect.FTSSnippet(itemTable, 2, tagsColumn, params.Query)
+	itemMatch, itemMatchArgs := s.dialect.FTSMatch(itemTable, "search_vector", params.Query)
+	query += fmt.Sprintf(`item_snippets AS MATERIALIZED (
+		SELECT i.id, %s AS snippet, %s AS title_snippet, %s AS tags_snippet
+		FROM %s WHERE %s AND i.id IN (SELECT id FROM search_page WHERE match_leg = 1)
+	), `, bodySnippet, titleSnippet, tagsSnippet, itemFrom, itemMatch)
+	args = append(args, bodyArgs...)
+	args = append(args, titleArgs...)
+	args = append(args, tagsArgs...)
+	args = append(args, itemMatchArgs...)
+
+	commentSnippet, snippetArgs := s.dialect.FTSSnippet(commentTable, 0, "cm.body", params.Query)
+	commentMatch, commentMatchArgs := s.dialect.FTSMatch(commentTable, "search_vector", params.Query)
+	query += fmt.Sprintf(`comment_snippets AS MATERIALIZED (
+		SELECT cm.id AS comment_id, %s AS snippet FROM %s
+		WHERE %s AND cm.deleted_at IS NULL
+		AND cm.id IN (SELECT comment_id FROM search_page WHERE match_leg = 2)
+	) `, commentSnippet, commentFrom, commentMatch)
+	args = append(args, snippetArgs...)
+	args = append(args, commentMatchArgs...)
+	return query, args
 }
 
 // appendSearchFilters adds workspace, collection, and field filter clauses to a query.
