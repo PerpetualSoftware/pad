@@ -16,6 +16,7 @@
 		reselectAfterAppend,
 		resultAnnouncement,
 		matchMarker,
+		type PaletteResult
 	} from './groupResults';
 	import type {
 		SearchResult,
@@ -56,7 +57,7 @@
 	// stays undefined and `selectResult` falls back to
 	// `workspaceStore.current`. For local results, the workspace is
 	// resolved from `workspaceStore.workspaces`.
-	interface AugmentedSearchResult extends SearchResult {
+	interface AugmentedSearchResult extends PaletteResult {
 		workspace?: { slug: string; owner_username: string };
 	}
 
@@ -334,7 +335,6 @@
 			out.push({
 				item,
 				snippet: '',
-				matched_in: 'title',
 				rank: h.score,
 				workspace: { slug: wsSlug, owner_username: ownerUsername },
 			});
@@ -994,7 +994,7 @@
 	comment match carries a source label after the text; screen readers hear
 	it as ", matched in comment" so it does not run into the snippet.
 -->
-{#snippet snippetLine(r: SearchResult)}
+{#snippet snippetLine(r: PaletteResult)}
 	{@const marker = matchMarker(r)}
 	<div class="result-snippet" class:has-marker={!!marker}>
 		{#if isBodyStale(r.item)}<StaleBodyDot />{/if}<span class="snippet-text"

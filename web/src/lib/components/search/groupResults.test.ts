@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { SearchResult } from '$lib/types';
+import type { PaletteResult } from './groupResults';
 import {
 	matchMarker,
 	groupResultsByCollection,
@@ -11,8 +12,8 @@ import {
 // BUG-3054: grouped by a user-chosen collection slug. A collection named
 // "Constructor" (slug `constructor`) found Object's constructor on a plain
 // object, skipped creating its group, and the push threw.
-function hit(id: string, collection_slug: string): SearchResult {
-	return { item: { id, collection_slug } as SearchResult['item'], snippet: '', matched_in: 'title', rank: 0 };
+function hit(id: string, collection_slug: string): PaletteResult {
+	return { item: { id, collection_slug } as SearchResult['item'], snippet: '', rank: 0 };
 }
 
 describe('groupResultsByCollection (BUG-3054)', () => {
@@ -58,7 +59,7 @@ describe('inRenderedOrder (TASK-2234)', () => {
 // one; the selection follows the item, not the index.
 describe('reselectAfterAppend (TASK-2234)', () => {
 	const cols = [{ slug: 'a', icon: '', name: 'A' }, { slug: 'b', icon: '', name: 'B' }];
-	const order = (rs: SearchResult[]) => inRenderedOrder(groupResultsByCollection(rs, cols));
+	const order = (rs: PaletteResult[]) => inRenderedOrder(groupResultsByCollection(rs, cols));
 	const a1 = hit('a1', 'a');
 	const b1 = hit('b1', 'b');
 	const a2 = hit('a2', 'a');
@@ -94,11 +95,13 @@ describe('resultAnnouncement (TASK-2234)', () => {
 });
 
 describe('matchMarker', () => {
-	it('labels a comment match and nothing else', () => {
-		const sources: SearchResult['matched_in'][] = ['title', 'content', 'tags', 'ref'];
-		expect(matchMarker({ ...hit('a', 'tasks'), matched_in: 'comment' })).toBe('in comment');
-		for (const matched_in of sources) {
-			expect(matchMarker({ ...hit('a', 'tasks'), matched_in })).toBe('');
-		}
+	it('labels a comment match and no other source', () => {
+		expect(matchMarker({ matched_in: 'comment' })).toBe('in comment');
+		const others: SearchResult['matched_in'][] = ['title', 'content', 'tags', 'ref'];
+		for (const matched_in of others) expect(matchMarker({ matched_in })).toBe('');
+	});
+
+	it('gives no label to a locally built row, which names no source', () => {
+		expect(matchMarker(hit('a', 'tasks'))).toBe('');
 	});
 });
