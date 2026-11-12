@@ -755,7 +755,8 @@
 
 	.layout { display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: var(--space-6); margin-top: var(--space-5); align-items: start; }
 	.main { min-width: 0; }
-	.rail { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; position: sticky; top: var(--space-4); }
+	/* Sticky, so a rail taller than the window scrolls inside itself; otherwise its lower rows are reachable only at the page end. */
+	.rail { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; position: sticky; top: var(--space-4); max-height: calc(100vh - 2 * var(--space-4)); overflow-y: auto; overscroll-behavior: contain; }
 	.card { background: var(--card-bg); border: 1px solid var(--card-border); border-radius: var(--radius-lg); box-shadow: var(--shadow-card); }
 	.card.below { margin-top: var(--space-5); max-width: 420px; }
 	.rail .card { min-width: 0; }
@@ -791,7 +792,7 @@
 
 	@media (max-width: 1099px) {
 		.layout { grid-template-columns: minmax(0, 1fr); gap: var(--space-4); }
-		.rail { position: static; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
+		.rail { position: static; max-height: none; overflow: visible; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; }
 		.rail.single { grid-template-columns: minmax(0, 1fr); max-width: 420px; }
 	}
 	@media (max-width: 768px) {
