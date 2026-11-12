@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -108,11 +109,18 @@ func TestTASK4359_ShowMilestoneSummary(t *testing.T) {
 // work a request starts that outlives the request). Building the server after
 // that write orders its reads behind it. Registering srv.Stop after tzCLI's
 // restore makes it run first: Stop waits for the server's goroutines, so none
-// is still reading when the zone is put back.
+// is still reading when the zone is put back. The stub server is already
+// serving when the handler is assigned, so the handler is read under a lock.
 func forecastCLI4359(t *testing.T, agent string) (*cobra.Command, http.HandlerFunc, *models.Item, *models.Item, *models.User, string) {
 	t.Helper()
+	var mu sync.Mutex
 	var handler http.HandlerFunc
-	root := tzCLI(t, func(w http.ResponseWriter, r *http.Request) { handler(w, r) })
+	root := tzCLI(t, func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		h := handler
+		mu.Unlock()
+		h(w, r)
+	})
 	s := storetest.NewSQLite(t)
 	srv := server.New(s)
 	t.Cleanup(srv.Stop)
@@ -146,12 +154,15 @@ func forecastCLI4359(t *testing.T, agent string) (*cobra.Command, http.HandlerFu
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler = func(w http.ResponseWriter, r *http.Request) {
+	serve := func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+tok.Token)
 		if agent != "" {
 			r.Header.Set("X-Pad-Agent", agent)
 		}
 		srv.ServeHTTP(w, r.WithContext(server.WithCurrentUser(r.Context(), u)))
 	}
-	return root, handler, it, kid, u, ws.Slug
+	mu.Lock()
+	handler = serve
+	mu.Unlock()
+	return root, serve, it, kid, u, ws.Slug
 }
