@@ -726,6 +726,8 @@ describe('agenda Month page', () => {
   expect(within(cell).getAllByText('First workspace')).toHaveLength(3);
   expect(within(cell).getAllByRole('link')).toHaveLength(3);
   expect(screen.queryByText('Month item 3')).toBeNull();
+  expect(document.querySelector('[draggable="true"]')).toBeNull();
+  expect(screen.getAllByRole('status')).toHaveLength(1);
   await fireEvent.click(within(cell).getByRole('button', { name: '+1 more' }));
   expect(within(screen.getByRole('dialog')).getAllByRole('button', { name: /^Done / })).toHaveLength(4);
  });
@@ -740,7 +742,7 @@ describe('agenda Month page', () => {
   expect(within(detail).queryByRole('button', { name: 'Done EX-30' })).toBeNull();
   expect(within(detail).getByLabelText('Done')).toBeTruthy();
  });
- it.each(['Snooze…', 'Move target…', 'Forecast…'])('closes day detail before opening %s', async name => {
+ it.each(['Snooze…', 'Move target…', 'Set forecast…'])('closes day detail before opening %s', async name => {
   await mount(); await fireEvent.click(dateButton('2026-11-05'));
   const detail = screen.getByRole('dialog');
   await fireEvent.click(within(detail).getByRole('button', { name: 'Actions EX-30' }));
@@ -772,8 +774,22 @@ describe('agenda Month page', () => {
   h.agenda.mockResolvedValue(response([])); await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
   await screen.findByRole('grid', { name: 'January 2027' }); await settle(); expect(document.activeElement).toBe(outside); outside.remove();
  });
+ it('keeps the focused date when switching between desktop and phone', async () => {
+  let change: ((event: MediaQueryListEvent) => void) | undefined;
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: false, media: query,
+   addEventListener: (_name: string, callback: (event: MediaQueryListEvent) => void) => { if (query === '(max-width: 768px)') change = callback; },
+   removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  await mount(); dateButton('2026-11-05').focus();
+  change!({ matches: true } as MediaQueryListEvent);
+  await waitFor(() => expect(document.activeElement).toBe(document.querySelector('button.day-header[data-day="2026-11-05"]')));
+  expect(screen.queryByRole('grid')).toBeNull();
+  change!({ matches: false } as MediaQueryListEvent);
+  await waitFor(() => expect(document.activeElement).toBe(dateButton('2026-11-05')));
+  expect(h.agenda).toHaveBeenCalledTimes(1);
+ });
  it('moves one month at a time and clamps March 31 to February 28 while keeping the selected day across modes', async () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-03-31T12:00:00Z'));
+  h.agenda.mockResolvedValue(response([row({ day: '2026-03-31' })]));
   await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Previous month' }));
   await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all'));
   expect(dateButton('2026-02-28')).toHaveAttribute('tabindex', '0');
@@ -783,6 +799,8 @@ describe('agenda Month page', () => {
   await fireEvent.click(screen.getByRole('button', { name: 'Next month' }));
   await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', 'all'));
   expect(dateButton('2026-03-28')).toHaveAttribute('tabindex', '0');
+  await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+  expect(dateButton('2026-03-31')).toHaveAttribute('tabindex', '0');
  });
  it('marks an incomplete tail and hides previews after next_from without claiming an empty month', async () => {
   h.agenda.mockResolvedValue(response([row({ day: '2026-11-16', item_title: 'Unexamined tail' })], { truncated: true, next_from: '2026-11-15T17:00:00Z' }));

@@ -1,3 +1,4 @@
+import type { CalendarRow } from './monthGrid';
 import type { AgendaEntry, CommitmentForecastSummary } from '$lib/types';
 
 const DAY = 86_400_000;
@@ -189,4 +190,15 @@ export function forecastSetter(f: CommitmentForecastSummary): string {
 }
 export function forecastText(f: CommitmentForecastSummary, zone: string): string {
  return `Forecast ${roleText(f.value, zone)} · set by ${forecastSetter(f)}`;
+}
+
+/** Preserve authoritative placement and server order within all-day/timed groups. */
+export function agendaRows(entries: AgendaEntry[], _zone: string): CalendarRow[] {
+ return groupEntries(entries).flatMap(group => group.entries.map(entry => ({
+  key: entryKey(entry), day: entry.day, ref: entry.item_ref, target: entry.item_ref, title: entry.item_title,
+  href: entryHref(entry), workspaceName: entry.workspace_name, allDay: isAllDay(entry), at: entry.at,
+  ...(entry.type === 'schedule'
+   ? { state: entry.state, overdue: entry.overdue, missedCount: entry.missed_count, stale: entry.stale, forecast: entry.forecast }
+   : { label: entryChips(entry)[0]?.text, overdue: entry.overdue })
+ })));
 }
