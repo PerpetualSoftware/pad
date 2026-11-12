@@ -557,3 +557,64 @@ func TestMilestoneTrashedChildIsVisibleMissingAndRemovable(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestForecastSummariesBatch(t *testing.T) {
+	t.Parallel()
+	m := newMsFix(t)
+	user, err := m.s.CreateUser(models.UserCreate{Email: "forecast@example.com", Name: "Forecast Setter", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherItem, other := m.mk(t, dailyUTC, "2026-10-29T12:00:00Z")
+	if err := m.s.SetForecast(m.ws.ID, otherItem.ID, "unknown-user", "user", "2031-03-15T10:00:00Z", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.s.SetForecast(m.ws.ID, m.ms.ID, user.ID, "agent", "2031-03-12", "estimate"); err != nil {
+		t.Fatal(err)
+	}
+	ids := make([]string, 1002)
+	for i := range ids {
+		ids[i] = "unknown"
+	}
+	ids[0], ids[501] = m.sc.ID, other.ID
+	got, err := m.s.ForecastSummaries(ids)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := got[m.sc.ID]
+	if len(got) != 2 || f == nil || f.Value != "2031-03-12" || f.SetBy != user.ID || f.SetByName != user.Name || f.SetByKind != "agent" || f.SetAt == "" || f.Source != "estimate" {
+		t.Fatalf("summaries: %+v", got)
+	}
+	otherForecast := got[other.ID]
+	if otherForecast == nil || otherForecast.Value != "2031-03-15T10:00:00Z" || otherForecast.SetBy != "unknown-user" || otherForecast.SetByName != "" || otherForecast.SetByKind != "user" || otherForecast.SetAt == "" || otherForecast.Source != "" {
+		t.Fatalf("other forecast: %+v", otherForecast)
+	}
+	empty, err := m.s.ForecastSummaries(nil)
+	if err != nil || empty == nil || len(empty) != 0 {
+		t.Fatalf("empty = %v, %v", empty, err)
+	}
+}
+
+func TestReadForecastCarriesSetterName(t *testing.T) {
+	t.Parallel()
+	m := newMsFix(t)
+	u, err := m.s.CreateUser(models.UserCreate{Email: "setter@example.com", Name: "Named Setter", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := m.s.SetForecast(m.ws.ID, m.ms.ID, u.ID, "agent", "2031-03-12", ""); err != nil {
+		t.Fatal(err)
+	}
+	f := m.read(t, nil).Forecast
+	if f == nil || f.SetByName != u.Name {
+		t.Fatalf("forecast = %+v", f)
+	}
+	// Unknown/deleted setters retain their stored identity and kind.
+	if err := m.s.SetForecast(m.ws.ID, m.ms.ID, "unknown", "user", "2031-03-13", ""); err != nil {
+		t.Fatal(err)
+	}
+	f = m.read(t, nil).Forecast
+	if f == nil || f.SetByName != "" || f.SetBy != "unknown" {
+		t.Fatalf("unknown setter = %+v", f)
+	}
+}

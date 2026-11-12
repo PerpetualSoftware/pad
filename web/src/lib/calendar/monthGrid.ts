@@ -1,4 +1,5 @@
-import { getAbandonedOptions, doneFieldKey, doneFieldTerminalOptions, formatItemRef, itemUrlId, parseFields, parseSchema, type CalendarResponse, type Collection, type Item } from '$lib/types';
+import { roleDay, isDateOnly } from './presentation';
+import { getAbandonedOptions, doneFieldKey, doneFieldTerminalOptions, formatItemRef, itemUrlId, parseFields, parseSchema, type CommitmentForecastSummary, type CalendarResponse, type Collection, type Item } from '$lib/types';
 
 export type { CalendarConfig } from '$lib/collections/viewPersistence';
 import type { CalendarConfig } from '$lib/collections/viewPersistence';
@@ -82,6 +83,7 @@ export function calendarError(error: unknown): string {
  return 'Could not load calendar.';
 }
 export interface CalendarRow {
+ kind?: 'forecast'; forecast?: CommitmentForecastSummary;
  key: string; day: string; ref: string; target: string; title: string; allDay: boolean;
  item?: Item; at?: string; label?: string; terminal?: string; abandoned?: boolean; state?: string; overdue?: boolean;
  start?: string; end?: string; continues?: boolean; missedCount?: number; stale?: boolean;
@@ -107,10 +109,20 @@ export function calendarRows(data: CalendarResponse, collection: Collection, fie
     label:fieldLabel(collection,field),start:span ? placed.day : undefined,end:span ? placed.end_day : undefined,continues:!!span && day !== placed.day});
   }
  }
+ const forecastKeys = new Set<string>();
  for (const [index, entry] of data.entries.entries()) {
+  if (entry.forecast) {
+   const forecast = entry.forecast;
+   const day = roleDay(forecast.value, data.tz);
+   const key = JSON.stringify([entry.workspace,entry.owner_username,entry.schedule_id]);
+   if (day !== entry.day && (!days || days.includes(day)) && (!data.next_from || day < data.next_from) && !forecastKeys.has(key)) {
+    forecastKeys.add(key);
+    rows.push({key:`forecast:${key}`,kind:'forecast',day,ref:entry.item_ref,target:entry.item_ref,title:entry.item_title,forecast,at:forecast.value,allDay:isDateOnly(forecast.value)});
+   }
+  }
   if (days && !days.includes(entry.day)) continue;
   rows.push({key:`schedule:${entry.schedule_id ?? index}:${entry.at}:${index}`,day:entry.day,ref:entry.item_ref,target:entry.item_ref,title:entry.item_title,
-   allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,missedCount:entry.missed_count,stale:entry.stale});
+   forecast:entry.forecast,allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,missedCount:entry.missed_count,stale:entry.stale});
  }
  return rows.sort((a,b) => a.day.localeCompare(b.day) || Number(b.allDay) - Number(a.allDay));
 }

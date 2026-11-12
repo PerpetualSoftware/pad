@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Chip from '$lib/components/common/Chip.svelte';
 	import OccurrenceActions from './OccurrenceActions.svelte';
-	import { canResolve, canMove, roleText, entryChips, entryHref, isAllDay, isDateOnly, localTime, type AgendaAction } from '$lib/calendar/presentation';
+	import { forecastText, canResolve, canMove, roleText, entryChips, entryHref, isAllDay, isDateOnly, localTime, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	let { entry, zone, pending = false, saved = false, week = false, onaction, ondragstart, ondragend }: {
@@ -23,11 +23,12 @@
 			{#if href}<a {href}>{entry.item_title}</a>{:else}<span>{entry.item_title}</span>{/if}
 		</div>
 		<div class="meta"><span>{entry.workspace_name} / {entry.collection}</span><span>{entry.item_ref}</span></div>
-		{#if week && entry.type === 'schedule'}
+		{#if entry.type === 'schedule'}
 			{#if entry.roles?.earliest}<div class="role">Available from {roleText(entry.roles.earliest, zone)}</div>{/if}
-			{#if entry.roles?.deadline}<div class="role">Deadline {roleText(entry.roles.deadline, zone)}{entry.roles.deadline_behavior === 'stays_owed' ? ' · Still owed' : entry.roles.deadline_behavior === 'lapses' ? ' · Lapses' : ''}</div>{/if}
+			{#if entry.roles?.deadline}<div class="role" data-role="deadline">Deadline {roleText(entry.roles.deadline, zone)}{entry.roles.deadline_behavior === 'stays_owed' ? ' · Still owed' : entry.roles.deadline_behavior === 'lapses' ? ' · Lapses' : ''}</div>{/if}
 			{#if entry.roles?.occupied_until}<div class="role">Until {isDateOnly(entry.roles.occupied_until) ? roleText(entry.roles.occupied_until, zone) : localTime(entry.roles.occupied_until, zone)}</div>{/if}
 		{/if}
+  {#if entry.forecast}<div class="forecast" data-role="forecast">{forecastText(entry.forecast, zone)}</div>{/if}
 	</div>
 	<div class="chips">
 		{#each entryChips(entry) as chip, index (index)}
@@ -57,6 +58,7 @@
 		.chips { order: 2; max-width: 100%; }
 		.agenda-row :global(.actions) { order: 3; }
 	}
+	.forecast { border: 1px dashed var(--border-strong); padding: var(--space-1); margin-top: var(--space-1); font-size: 0.8rem; }
 	.role { margin-top: var(--space-1); color: var(--text-secondary); font-size: 0.8rem; }
 	.week { flex-direction: column; gap: var(--space-2); padding: var(--space-3); }
 	.week .time { flex: none; }

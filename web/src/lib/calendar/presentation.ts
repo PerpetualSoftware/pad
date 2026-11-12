@@ -1,4 +1,4 @@
-import type { AgendaEntry } from '$lib/types';
+import type { AgendaEntry, CommitmentForecastSummary } from '$lib/types';
 
 const DAY = 86_400_000;
 
@@ -137,7 +137,7 @@ export function entryChips(entry: AgendaEntry): { text: string; color: string }[
 	return chips;
 }
 
-export type AgendaAction = 'done' | 'skip' | 'snooze' | 'move' | 'today';
+export type AgendaAction = 'done' | 'skip' | 'snooze' | 'move' | 'today' | 'forecast';
 
 export function weekWindow(start: string, zone: string): { from: string; to: string } {
 	return { from: dayWindow(start, zone).from, to: dayWindow(shiftDay(start, 7), zone).from };
@@ -182,4 +182,11 @@ export function sameTarget(current: string, instant: string, zone: string): bool
 	if (!Number.isFinite(at)) return false;
 	if (isDateOnly(current)) return at === Date.parse(wallToInstant(`${current}T00:00`, zone));
 	return at === Date.parse(current);
+}
+
+export function forecastSetter(f: CommitmentForecastSummary): string {
+ return f.set_by_name ? `${f.set_by_name}${f.set_by_kind === 'agent' ? ' (agent)' : ''}` : f.set_by_kind === 'agent' ? 'an agent' : 'a member';
+}
+export function forecastText(f: CommitmentForecastSummary, zone: string): string {
+ return `Forecast ${roleText(f.value, zone)} · set by ${forecastSetter(f)}`;
 }

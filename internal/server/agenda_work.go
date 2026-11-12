@@ -48,6 +48,7 @@ func agendaPriority(c store.AgendaWorkCandidate) string {
 
 func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope store.PendingReminderScope) {
 	resp := &run.response
+	priorityStart, waitingStart := len(resp.PriorityList), len(resp.WaitingOn)
 	cut := func() { resp.PriorityListComplete, resp.WaitingOnComplete, resp.NoDateComplete = false, false, false }
 	if s.agendaNow().After(run.deadline) {
 		cut()
@@ -140,6 +141,25 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 			e.Reason = "deadline_still_owed"
 		}
 		resp.PriorityList = append(resp.PriorityList, e)
+	}
+	ids = ids[:0]
+	for _, rows := range [][]agendaEntry{resp.PriorityList[priorityStart:], resp.WaitingOn[waitingStart:]} {
+		for _, e := range rows {
+			if e.ScheduleID != "" {
+				ids = append(ids, e.ScheduleID)
+			}
+		}
+	}
+	forecasts, err := s.store.ForecastSummaries(ids)
+	if err != nil {
+		slog.Warn("agenda: forecasts unavailable", "workspace_id", workspaceID, "error_class", fmt.Sprintf("%T", err))
+		cut()
+		return
+	}
+	for _, rows := range [][]agendaEntry{resp.PriorityList[priorityStart:], resp.WaitingOn[waitingStart:]} {
+		for i := range rows {
+			rows[i].Forecast = forecasts[rows[i].ScheduleID]
+		}
 	}
 }
 

@@ -3771,6 +3771,10 @@ export const api = {
 	// ── Needs you (TASK-3923, IDEA-3906 A6) ──────────────────────────────────
 	getCommitment: (ws: string, ref: string) =>
 		request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment`),
+ setCommitmentForecast: (ws: string, ref: string, body: {value: string; source?: string}) =>
+  request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/forecast`, {method: 'PUT', body: JSON.stringify(body)}),
+ clearCommitmentForecast: (ws: string, ref: string) =>
+  request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/forecast`, {method: 'DELETE'}),
 	resolveCommitment: (ws: string, ref: string, body: CommitmentResolveRequest) =>
 		request<CommitmentResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/resolve`, {
 			method: 'POST', body: JSON.stringify(body)

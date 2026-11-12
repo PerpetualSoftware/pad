@@ -555,3 +555,12 @@ required/optional parameters, refusal rules, return fields and safety guidance.
 ### Agenda result roles (v0.111)
 
 `pad_item` agenda and bootstrap resources return the commitment role contract in place: no `kind`, one entry per occurrence with all roles, effective moved placement, terminal recorded history, and independent priority, Waiting on and No date groups with completeness flags. The workspace agenda returns `no_date: []` with `no_date_scope: "personal_only"` when no recipient is selected: this means **not listed here**, never "nothing undated". Recipient-filtered listings and `/me/agenda` omit the marker. The REST shapes and caps are documented in docs/api.md. Parameters and commands are unchanged.
+
+
+### Milestone forecasts (v0.112)
+
+`pad_item` adds the mutating `schedule-forecast` action. Pass required `ref` and exactly one of `forecast` (a YYYY-MM-DD date or RFC3339 instant) or `clear_forecast:true`. Optional `forecast_source` (at most 280 characters) accompanies a set only. Types and combinations are checked by the shared action before dispatch, with identical `validation_failed` refusals on stdio and HTTP. A set returns the commitment view with setter identity, kind, current name, time, source and history; clearing returns the view with `forecast:null`.
+
+Stdio uses `pad item remind forecast set <ref> <value> [--source TEXT]` or `forecast clear <ref>`; HTTP uses PUT `{value, source?}` or DELETE on `/workspaces/{ws}/items/{ref}/commitment/forecast`. This hand-set estimate arms nothing, is never computed from targets or children, and is never a missed deadline. ChatGPT defers this action to v2, as with other schedule actions.
+
+The schedule-edit/delete/agenda/reminders descriptions were condensed in v0.112 to retain the fixed prompt ceilings; required parameters, visibility and refusal rules are unchanged.

@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
-	import { canMove, entryHref, entryKey, isDateOnly, roleDay, roleText, todayIn, wallToInstant, type AgendaAction } from '$lib/calendar/presentation';
+	import { forecastText, canMove, entryHref, entryKey, isDateOnly, roleDay, roleText, todayIn, wallToInstant, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry } from '$lib/types';
 	let { data, zone, pending, saved, onaction }: {
 		data: AgendaResponse; zone: string; pending: Record<string, boolean>; saved: Record<string, boolean>;
@@ -30,7 +30,9 @@
 				{#if reasons[row.reason]}<Chip size="sm">{reasons[row.reason]}</Chip>{/if}
 				{#if row.roles?.target}<div class="date">Target {roleText(row.roles.target, zone)}</div>{/if}
 				{#if row.roles?.deadline}<div class="date">Deadline {roleText(row.roles.deadline, zone)}</div>{/if}
-				{#if entry && canMove(entry)}
+				{#if row.forecast}<div class="forecast" data-role="forecast">{forecastText(row.forecast, zone)}</div>{/if}
+    {#if entry}<Button size="sm" disabled={!!busy} onclick={() => onaction(entry, 'forecast')}>Forecast…</Button>{/if}
+    {#if entry && canMove(entry)}
 					<div class="actions">
 						<Button size="sm" disabled={!!busy} onclick={() => onaction(entry, 'move')}>Move target…</Button>
 						{#if entry.day !== todayIn(zone)}<Button size="sm" disabled={!!busy} onclick={() => onaction(entry, 'today')}>Bring to today</Button>{/if}
@@ -65,6 +67,7 @@
 </section>
 
 <style>
+	.forecast { border: 1px dashed var(--border-strong); padding: var(--space-1); margin-top: var(--space-1); font-size: 0.85rem; }
 	section { min-width: 0; border: 1px solid var(--border); border-radius: var(--radius); padding: var(--space-4); }
 	h2 { font-size: 1.1rem; margin: 0; }
 	h3 { font-size: 0.95rem; margin: var(--space-4) 0 var(--space-2); }

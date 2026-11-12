@@ -30,24 +30,26 @@ type scheduleOccurrence struct {
 // scheduleView decodes the fields the table output reads. Anything else the
 // server adds stays in the raw body, which --format json prints untouched.
 type scheduleView struct {
-	ItemRef         string                  `json:"item_ref"`
-	Roles           models.CommitmentRoles  `json:"roles"`
-	Dtstart         string                  `json:"dtstart"`
-	Tz              *string                 `json:"tz"`
-	Floating        bool                    `json:"floating"`
-	Rrule           *string                 `json:"rrule"`
-	Anchor          string                  `json:"anchor"`
-	Audience        string                  `json:"audience"`
-	NextOccurrence  *scheduleOccurrence     `json:"next_occurrence"`
-	NextOverrideAt  *string                 `json:"next_override_at"`
-	MissedCount     int                     `json:"missed_count"`
-	MissedTruncated bool                    `json:"missed_truncated"`
-	Stale           bool                    `json:"stale"`
-	EndedAt         *string                 `json:"ended_at"`
-	ErrorCode       *string                 `json:"error_code"`
-	TimezoneNote    string                  `json:"timezone_note"`
-	Links           []displayCommitmentLink `json:"links"`
-	Gates           models.ScheduleGateView `json:"gates"`
+	Forecast        *models.CommitmentForecast `json:"forecast"`
+	Milestone       models.CommitmentMilestone `json:"milestone"`
+	ItemRef         string                     `json:"item_ref"`
+	Roles           models.CommitmentRoles     `json:"roles"`
+	Dtstart         string                     `json:"dtstart"`
+	Tz              *string                    `json:"tz"`
+	Floating        bool                       `json:"floating"`
+	Rrule           *string                    `json:"rrule"`
+	Anchor          string                     `json:"anchor"`
+	Audience        string                     `json:"audience"`
+	NextOccurrence  *scheduleOccurrence        `json:"next_occurrence"`
+	NextOverrideAt  *string                    `json:"next_override_at"`
+	MissedCount     int                        `json:"missed_count"`
+	MissedTruncated bool                       `json:"missed_truncated"`
+	Stale           bool                       `json:"stale"`
+	EndedAt         *string                    `json:"ended_at"`
+	ErrorCode       *string                    `json:"error_code"`
+	TimezoneNote    string                     `json:"timezone_note"`
+	Links           []displayCommitmentLink    `json:"links"`
+	Gates           models.ScheduleGateView    `json:"gates"`
 }
 
 const instantLayout = "2006-01-02 15:04 MST"
@@ -225,6 +227,23 @@ whether the schedule is active, ended or in error.`,
 					missed += " (stale)"
 				}
 				fmt.Fprintf(w, "Missed:\t%s\n", missed)
+			}
+			if f := v.Forecast; f != nil {
+				text := fmt.Sprintf("%s (set by %s; set at %s", f.Value, forecastSetterCLI(f), f.SetAt)
+				if f.Source != "" {
+					text += "; source: " + f.Source
+				}
+				fmt.Fprintf(w, "Forecast:\t%s)\n", text)
+			}
+			if m := v.Milestone; m.Total != 0 || m.Result != nil {
+				result := "none"
+				if m.Result != nil {
+					result = *m.Result
+				}
+				if result == "unknown" {
+					result += " (includes items you cannot see)"
+				}
+				fmt.Fprintf(w, "Children:\t%d of %d counted, %d waivers, result %s\n", m.Counted, m.Total, m.Waivers, result)
 			}
 			fmt.Fprintf(w, "State:\t%s\n", state)
 			for _, link := range v.Links {
@@ -551,19 +570,20 @@ confirmation unless --yes is given.`,
 // ---- agenda ----
 
 type agendaEntry struct {
-	Type        string                 `json:"type"`
-	At          string                 `json:"at"`
-	Day         string                 `json:"day"`
-	Date        string                 `json:"date"`
-	AllDay      bool                   `json:"all_day"`
-	State       string                 `json:"state"`
-	ItemRef     string                 `json:"item_ref"`
-	ItemTitle   string                 `json:"item_title"`
-	Roles       models.CommitmentRoles `json:"roles"`
-	Field       string                 `json:"field"`
-	Overdue     bool                   `json:"overdue"`
-	MissedCount int                    `json:"missed_count"`
-	Stale       bool                   `json:"stale"`
+	Forecast    *models.ForecastSummary `json:"forecast"`
+	Type        string                  `json:"type"`
+	At          string                  `json:"at"`
+	Day         string                  `json:"day"`
+	Date        string                  `json:"date"`
+	AllDay      bool                    `json:"all_day"`
+	State       string                  `json:"state"`
+	ItemRef     string                  `json:"item_ref"`
+	ItemTitle   string                  `json:"item_title"`
+	Roles       models.CommitmentRoles  `json:"roles"`
+	Field       string                  `json:"field"`
+	Overdue     bool                    `json:"overdue"`
+	MissedCount int                     `json:"missed_count"`
+	Stale       bool                    `json:"stale"`
 }
 
 type agendaResponse struct {
@@ -841,6 +861,9 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 				state, kind = "dated", e.Field
 			}
 			var flags []string
+			if e.Forecast != nil {
+				flags = append(flags, "forecast="+e.Forecast.Value)
+			}
 			if e.Overdue {
 				flags = append(flags, "overdue")
 			}
@@ -879,7 +902,7 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 }
 
 func addRemindSubcommands(cmd *cobra.Command) {
-	cmd.AddCommand(remindShowCmd())
+	cmd.AddCommand(remindShowCmd(), remindForecastCmd())
 	for _, v := range resolveVerbs {
 		cmd.AddCommand(remindResolveCmd(v))
 	}

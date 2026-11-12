@@ -1934,6 +1934,7 @@ export interface CalendarItem {
 }
 
 export interface CalendarEntry {
+ forecast?: CommitmentForecastSummary;
 	type: 'schedule' | 'date';
 	at: string;
 	day: string;
@@ -3758,6 +3759,7 @@ export interface ChatConversationsResponse {
 }
 
 export interface AgendaEntry {
+ forecast?: CommitmentForecastSummary;
 	type: 'schedule' | 'date' | 'created' | 'completed';
 	at: string;
 	day: string;
@@ -3856,7 +3858,55 @@ export interface CommitmentRoles {
  roles_origin: 'native' | 'legacy_backfill';
 }
 
+export interface CommitmentForecastSummary {
+ value: string;
+ set_by: string;
+ set_by_name?: string;
+ set_by_kind: 'user' | 'agent';
+ set_at: string;
+ source: string;
+}
+export interface ForecastEvent {
+ id?: string;
+ action: 'set' | 'clear';
+ value: string;
+ prev_value: string;
+ set_by: string;
+ set_by_kind: 'user' | 'agent';
+ source: string;
+ recorded_at: string;
+}
+export interface CommitmentForecast extends CommitmentForecastSummary {
+ passed: boolean;
+ history: ForecastEvent[];
+}
+export interface MilestoneChild {
+ item_ref: string;
+ kind: 'child' | 'waiver';
+ close_state: 'open' | 'done' | 'abandoned' | 'missing';
+ done_value?: string;
+ counts: boolean;
+ waived: boolean;
+ reason?: string;
+ added_by: string;
+ added_at: string;
+}
+export interface CommitmentMilestone {
+ children: MilestoneChild[];
+ counted: number;
+ total: number;
+ waivers: number;
+ result: 'completed' | 'pending' | 'unknown' | null;
+ completed_at?: string;
+ evidence_changed: boolean | null;
+ changes: {item_ref: string; was: string; now: string; reopened?: boolean}[];
+ evidence: {item_ref: string; kind: 'child' | 'waiver'; close_state: string; done_value?: string; recorded_at: string}[];
+ history: {item_ref: string; kind: 'child' | 'waiver'; reason?: string; added_by: string; added_at: string; removed_by: string; removed_at: string}[];
+}
+
 export interface ItemCommitmentView {
+ forecast: CommitmentForecast | null;
+ milestone: CommitmentMilestone;
  links: CommitmentLink[];
  gates: CommitmentGateView;
  conflicts?: CommitmentDateConflict[];

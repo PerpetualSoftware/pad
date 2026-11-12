@@ -3,8 +3,8 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult } from '$lib/types';
 
-const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
-vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getCommitment: h.view, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, items: { get: h.item } } }));
+const h = vi.hoisted(() => ({ agenda: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, items: { get: h.item } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/auth.svelte', async () => {
  const { SvelteMap } = await import('svelte/reactivity');
@@ -502,5 +502,32 @@ describe('target move failure and drag fences', () => {
   await fireEvent.dragEnd(source); p.resolve(preview(undefined, { changes: [...preview().changes, { item_id: 'linked', role: 'target', to: '2026-11-07T14:00:00Z' }] }));
   await settle(); expect(screen.queryByText(/proposed/)).toBeNull(); expect(h.move).not.toHaveBeenCalled();
   await drop(); await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1)); expect(h.preview).toHaveBeenCalledTimes(2);
+ });
+});
+
+describe('forecast actions', () => {
+ const milestone={children:[],counted:0,total:0,waivers:0,result:null};
+ it('opens an empty forecast from Day actions and quietly reloads after saving',async()=>{
+  localStorage.setItem('pad-agenda-mode:user-a','day');
+  h.view.mockResolvedValue({forecast:null,milestone,roles:{target:'2026-11-05'}});
+  h.setForecast.mockResolvedValue({});
+  await mount();await menu();await fireEvent.click(screen.getByRole('menuitem',{name:'Set forecast…'}));
+  const d=await screen.findByRole('dialog',{name:'Forecast'});await within(d).findByText(/No children selected/);
+  expect((within(d).getByLabelText('Date') as HTMLInputElement).value).toBe('');
+  await fireEvent.input(within(d).getByLabelText('Date'),{target:{value:'2026-11-10'}});
+  await fireEvent.click(within(d).getByRole('button',{name:'Save'}));
+  await waitFor(()=>expect(h.setForecast).toHaveBeenCalledWith('work','EX-30',{value:'2026-11-10'}));
+  await waitFor(()=>expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(screen.queryByText('Loading agenda…')).toBeNull();
+ });
+ it('opens Forecast from the priority list and clears the estimate',async()=>{
+  h.agenda.mockResolvedValue(response([row()],{priority_list:[workRow({roles:{...row().roles!,target:row().at},forecast:{value:'2026-11-10',set_by:'u1',set_by_kind:'agent',set_at:'now',source:''}})]}));
+  h.view.mockResolvedValue({forecast:{value:'2026-11-10',set_by:'u1',set_by_kind:'agent',set_at:'now',source:'',passed:false},milestone});
+  h.clearForecast.mockResolvedValue({});
+  render(Agenda);await screen.findByRole('button',{name:'Forecast…'});await fireEvent.click(screen.getByRole('button',{name:'Forecast…'}));
+  const d=await screen.findByRole('dialog',{name:'Forecast'});await within(d).findByRole('button',{name:'Clear forecast'});
+  await fireEvent.click(within(d).getByRole('button',{name:'Clear forecast'}));
+  await waitFor(()=>expect(h.clearForecast).toHaveBeenCalledWith('work','EX-30'));
+  await waitFor(()=>expect(h.agenda).toHaveBeenCalledTimes(2));
  });
 });

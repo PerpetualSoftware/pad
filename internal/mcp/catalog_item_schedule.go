@@ -549,3 +549,51 @@ func actionItemScheduleGraph(action string) ActionFn {
 		return env.Dispatch(ctx, path, out)
 	}
 }
+
+// actionItemScheduleForecast validates the same combinations on both transports.
+func actionItemScheduleForecast(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	refuse := func(message string) (*CallToolResult, error) {
+		return errStructured("pad_item.schedule-forecast", fmt.Errorf("%s", message)), nil
+	}
+	ref, ok := input["ref"].(string)
+	if !ok || strings.TrimSpace(ref) == "" {
+		return refuse("ref is required")
+	}
+	value, hasValue := input["forecast"]
+	if hasValue {
+		if _, ok := value.(string); !ok {
+			return refuse("forecast must be a string")
+		}
+	}
+	clear, hasClear := input["clear_forecast"]
+	if hasClear {
+		if _, ok := clear.(bool); !ok {
+			return refuse("clear_forecast must be a boolean")
+		}
+	}
+	source, hasSource := input["forecast_source"]
+	if hasSource {
+		if _, ok := source.(string); !ok {
+			return refuse("forecast_source must be a string")
+		}
+	}
+	if hasValue == (clear == true) || (hasClear && clear != true) {
+		return refuse("exactly one of forecast or clear_forecast: true is required")
+	}
+	if clear == true && hasSource {
+		return refuse("forecast_source requires forecast")
+	}
+	out := map[string]any{"ref": ref}
+	if ws, ok := input["workspace"]; ok {
+		out["workspace"] = ws
+	}
+	verb := "clear"
+	if hasValue {
+		verb = "set"
+		out["value"] = value
+		if hasSource {
+			out["source"] = source
+		}
+	}
+	return env.Dispatch(ctx, []string{"item", "remind", "forecast", verb}, out)
+}

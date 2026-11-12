@@ -3240,6 +3240,24 @@ func WrapOpKey(body []byte, err error) error {
 	return &OpKeyError{Key: k.OpKey, Err: err}
 }
 
+func (c *Client) put(path string, body interface{}, result interface{}) error {
+	data, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := c.newRequest("PUT", path, bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return WrapOpKey(data, fmt.Errorf("request failed: %w", err))
+	}
+	defer resp.Body.Close()
+	return WrapOpKey(data, c.handleResponse(resp, result))
+}
+
 func (c *Client) patch(path string, body interface{}, result interface{}) error {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -3743,4 +3761,20 @@ func (c *Client) ResolveChatTarget(target string, ensure bool) (int, error) {
 		return 0, err
 	}
 	return result.Conversation.Number, nil
+}
+
+// SetCommitmentForecast replaces the hand-set estimate without changing roles.
+func (c *Client) SetCommitmentForecast(ws, ref, value, source string) (json.RawMessage, error) {
+	body := map[string]any{"value": value}
+	if source != "" {
+		body["source"] = source
+	}
+	var result json.RawMessage
+	return result, c.put(commitmentBase(ws, ref)+"/forecast", body, &result)
+}
+
+// ClearCommitmentForecast removes the estimate and returns the commitment view.
+func (c *Client) ClearCommitmentForecast(ws, ref string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.deleteWithResult(commitmentBase(ws, ref)+"/forecast", &result)
 }

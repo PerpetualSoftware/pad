@@ -106,6 +106,7 @@ var padItemTool = ToolDef{
 
 		"schedule":             passThrough([]string{"item", "remind", "show"}),
 		"schedule-edit":        actionItemScheduleEdit,
+		"schedule-forecast":    actionItemScheduleForecast,
 		"schedule-delete":      actionItemScheduleDelete,
 		"schedule-resolve":     actionItemScheduleResolve,
 		"schedule-renegotiate": actionItemScheduleRenegotiate,
@@ -222,6 +223,9 @@ var padItemSchemaParams = []ParamDef{
 	// ── Schedules ── (TASK-4105)
 	{Name: "every", Type: "string", Description: "Repeat rule: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE. For remind (schedule) and schedule-edit."},
 	{Name: "start", Type: "string", Description: "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required: remind as a schedule. For: schedule-edit."},
+	{Name: "forecast", Type: "string", Description: "schedule-forecast estimate: YYYY-MM-DD or RFC3339; excludes clear_forecast."},
+	{Name: "clear_forecast", Type: "bool", Description: "schedule-forecast: true clears; excludes forecast."},
+	{Name: "forecast_source", Type: "string", Description: "With forecast only; max 280 characters."},
 	{Name: "deadline", Type: "string", Description: "hard makes a deadline; soft or omit for no deadline. schedule-edit: soft and none clear it and keep any window. Not with window. schedule-renegotiate: the new deadline, an RFC3339 instant."},
 	{Name: "window", Type: "string", Description: "Span from start: a duration (90m, 2h, 3d) or an end wall (2026-11-09T17:00). Not with deadline."},
 	{Name: "anchor", Type: "string", Description: "calendar (default) | completion: the next one falls an interval after you mark it done."},
@@ -456,10 +460,10 @@ Actions:
     until acknowledged. start replaces remind_at for a once/repeating check, deadline
     or window; optional every, deadline, window, anchor, audience, tz, floating.
   schedule — Read the item's schedule. Required: ref.
-  schedule-edit — Change it; only parameters given change. Required: ref, one of the schedule
-    parameters (deadline soft or none clears the deadline and keeps any window).
+  schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
     snooze and move also need until. Optional: comment, actual_done_at (done only).
+  schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
     series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a
     revision; preview=false with it applies. Hard deadline: assignee or owner only.
@@ -473,16 +477,14 @@ Actions:
     bound crossings also need acknowledge_violations. Both ends must be readable and editable.
   schedule-gate — Wait for blocker success (fixed occurrence if scheduled): ref, blocker.
     With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
-  schedule-delete — Irreversibly delete schedule, rule, resolved history and managed
-    reminder; pending occurrence stops firing. Required: ref. Keeps item, comments, one-shot reminders.
-  agenda — Occurrences and dated items. Required: from, to (RFC3339, <=92 days). Optional: tz.
-    no_date_scope: personal_only means undated work is not listed here, never nothing undated. /me/agenda personal groups (priority_list, waiting_on, no_date) contain the caller's own work: assigned to them, else created by them, for their human/agent audience.
+  schedule-delete — Irreversibly delete schedule/rule/history/managed reminder; stops pending firing. ref required. Keeps item/comments/one-shot reminders.
+  agenda — Occurrences/dated items: from, to (RFC3339, <=92 days); tz optional.
+    no_date_scope:personal_only means undated work is not listed, never empty. /me/agenda priority_list/waiting_on/no_date contain work assigned to the caller, else created by them, for their human/agent audience.
   ack-reminder — Acknowledge fired reminder; leaves next/ready. Required: reminder_id
     (fired suggestion/arming response, NOT item ref). Only this acknowledges; completing
     the item does not. Reminders may fire after work finishes.
-  reminders — List armed/fired/acknowledged reminders. Required: ref.
-    Each row's id is reminder_id for unremind (and ack-reminder, once that reminder has fired).
-  unremind — Disarm/delete. Required: reminder_id (from reminders, or from the response when you armed it).
+  reminders — Armed/fired/acknowledged reminders; ref required. Row id is reminder_id for unremind/ack-reminder (fired only).
+  unremind — Disarm/delete by reminder_id (from reminders or arming response).
   claim — Atomic execution lease. Required: ref. Optional: holder, worker_id, ttl
     (Go duration; default 15m, max 24h). Returns worker_id. One claimer wins; loser's
     409 names live holder/expiry: log and skip, never retry in a loop. Re-claim extends expiry.

@@ -98,3 +98,12 @@ describe('week presentation', () => {
   expect(targetOnDay(row({ all_day: true }), '2026-11-02', 'America/New_York')).toBe('2026-11-02T05:00:00.000Z');
  });
 });
+
+import { forecastSetter, forecastText } from './presentation';
+it('renders forecast provenance and date-only values without zone shifts',()=>{
+ const f={value:'2031-03-12',set_by:'u1',set_by_kind:'agent' as const,set_at:'now',source:''};
+ expect(forecastSetter(f)).toBe('an agent');
+ expect(forecastSetter({...f,set_by_kind:'user'})).toBe('a member');
+ expect(forecastSetter({...f,set_by_name:'Alex'})).toBe('Alex (agent)');
+ expect(forecastText({...f,set_by_name:'Alex'},'America/Los_Angeles')).toBe('Forecast March 12, 2031 · set by Alex (agent)');
+});
