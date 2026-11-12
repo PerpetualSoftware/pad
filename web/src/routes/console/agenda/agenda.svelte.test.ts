@@ -3,9 +3,10 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
-const h = vi.hoisted(() => ({ agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+const h = vi.hoisted(() => ({ toast: vi.fn(), agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
 vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, items: { get: h.item } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
+vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/stores/auth.svelte', async () => {
  const { SvelteMap } = await import('svelte/reactivity');
  const signal = new SvelteMap<string, number>(); h.signal = signal;
@@ -24,19 +25,31 @@ const frozenAt = '2026-11-05T17:00:00Z';
 const response = (entries: AgendaEntry[] = [row()], extra: Partial<AgendaResponse> = {}): AgendaResponse => ({ from: '', to: '', tz: 'America/New_York', entries, window_complete:true,priority_list:[],priority_list_complete:true,waiting_on:[],waiting_on_complete:true,no_date:[],no_date_complete:true, ...extra });
 const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
 const settle = async () => { await new Promise(r => setTimeout(r, 0)); flushSync(); };
-async function mount() { render(Agenda); await screen.findByText('First item'); }
+async function mount() { render(Agenda); await screen.findAllByText('First item'); }
 async function menu(ref = 'EX-30') { await fireEvent.click(screen.getByRole('button', { name: `Actions ${ref}` })); }
 async function dialog(kind: 'Move' | 'Snooze') {
  await menu();
  await fireEvent.click(screen.getByRole('menuitem', { name: kind === 'Move' ? 'Move target…' : 'Snooze…' }));
  return screen.getByRole('dialog', { name: kind === 'Move' ? 'Move target' : 'Snooze occurrence' });
 }
+/** A message that went to the toast container, with its type. */
+const said = (text: string, type: 'success' | 'error' = 'error') => waitFor(() => expect(h.toast.mock.calls.filter(call => call[0] === text && call[1] === type)).toHaveLength(1));
+const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
+async function eventsOption() { await fireEvent.click(screen.getByRole('button', { name: 'View options' })); return screen.getByRole('menuitemradio', { name: 'Show created and completed' }); }
+async function toggleEvents() { await fireEvent.click(await eventsOption()); }
+async function eventsShown() { const on = (await eventsOption()).getAttribute('aria-checked') === 'true'; await fireEvent.click(screen.getByRole('button', { name: 'View options' })); return on; }
+const filter = () => screen.getByRole('button', { name: /^Workspaces: / });
+const groupItems = () => screen.getAllByRole('menuitemradio').map(el => el.querySelector('.mi-label')?.textContent?.trim());
+const groupItem = (name: string) => screen.getAllByRole('menuitemradio').find(el => el.querySelector('.mi-label')?.textContent?.trim() === name)!;
+const sections = () => [...document.querySelectorAll<HTMLElement>('section[data-day]')];
+const stripDay = (day = '2026-11-06') => document.querySelector(`button[data-strip-day="${day}"]`) as HTMLButtonElement;
+const stripDays = () => [...document.querySelectorAll<HTMLButtonElement>('button[data-strip-day]')];
 async function fillTime(d: HTMLElement, value = '2026-11-06T09:30') { await fireEvent.input(within(d).getByLabelText(/New date and time|Remind me again at/), { target: { value } }); }
 
 const preview = (to = '2026-11-06T14:00:00.000Z', extra: Partial<CommitmentMoveResult> = {}): CommitmentMoveResult => ({ revision: 'revision-1', changes: [{ item_id: 'root', role: 'target', from: row().at, to, root: true }], ...extra });
 const workRow = (extra: Partial<AgendaWorkEntry> = {}): AgendaWorkEntry => ({ ...row(), type: 'schedule', rank: 'normal', reason: 'outstanding', ...extra });
 const card = (ref = 'EX-30') => document.querySelector(`[data-ref="${ref}"][draggable="true"]`) as HTMLElement;
-const daySection = (day = '2026-11-06') => document.querySelector(`[data-day="${day}"]`) as HTMLElement;
+const daySection = (day = '2026-11-06') => document.querySelector(`section[data-day="${day}"]`) as HTMLElement;
 async function drag(day = '2026-11-06', ref = 'EX-30') {
  await fireEvent.dragStart(card(ref)); await fireEvent.dragEnter(daySection(day));
 }
@@ -60,10 +73,10 @@ describe('agenda Day page', () => {
  it('renders two workspaces, routes, time, checkbox and one polite status', async () => {
   h.agenda.mockResolvedValue(response([row(), row({ workspace: 'other', owner_username: 'bob', workspace_name: 'Second workspace', item_ref: 'EX-31', item_title: 'Second item', schedule_id: 'schedule-2', all_day: true })]));
   await mount();
-  expect(screen.getByText('First workspace / tasks')).toBeTruthy(); expect(screen.getByText('Second workspace / tasks')).toBeTruthy();
+  expect(screen.getByText('First workspace')).toBeTruthy(); expect(screen.getByText('Second workspace')).toBeTruthy();
   expect(screen.getByRole('link', { name: 'First item' }).getAttribute('href')).toBe('/alice/work/tasks/EX-30');
   expect(screen.getByText('09:00')).toBeTruthy(); expect(screen.getByText('All day')).toBeTruthy();
-  expect((screen.getByRole('checkbox', { name: 'Show created and completed' }) as HTMLInputElement).checked).toBe(true);
+  expect(await eventsShown()).toBe(true);
   expect(screen.getAllByRole('status')).toHaveLength(1);
   expect(screen.getByRole('link', { name: 'America/New_York' }).getAttribute('href')).toBe('/console/settings');
   expect(h.agenda.mock.calls[0][2]).toBe('America/New_York');
@@ -71,20 +84,23 @@ describe('agenda Day page', () => {
  });
  it('hides only events locally, persists per user, and another user defaults to checked', async () => {
   h.agenda.mockResolvedValue(response([row(), row({ type: 'created', item_title: 'Created item' }), row({ type: 'completed', item_title: 'Completed item' })]));
-  await mount(); await fireEvent.click(screen.getByRole('checkbox'));
-  expect(screen.queryByText('Created item')).toBeNull(); expect(screen.queryByText('Completed item')).toBeNull(); expect(screen.getByText('First item')).toBeTruthy();
+  const events = () => screen.queryByRole('button', { name: '1 created · 1 completed' });
+  await mount(); expect(events()).toBeTruthy(); expect(screen.queryByText('Created item')).toBeNull();
+  await fireEvent.click(events()!); expect(screen.getByText('Created item')).toBeTruthy(); expect(screen.getByText('Completed item')).toBeTruthy();
+  await toggleEvents();
+  expect(events()).toBeNull(); expect(screen.queryByText('Created item')).toBeNull(); expect(screen.getByText('First item')).toBeTruthy();
   expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBe('0'); expect(h.agenda).toHaveBeenCalledTimes(1);
-  cleanup(); await mount(); expect(screen.queryByText('Created item')).toBeNull();
-  cleanup(); h.user = { id: 'user-b', timezone: 'America/New_York' }; await mount(); expect(screen.getByText('Created item')).toBeTruthy();
+  cleanup(); await mount(); expect(events()).toBeNull();
+  cleanup(); h.user = { id: 'user-b', timezone: 'America/New_York' }; await mount(); expect(events()).toBeTruthy();
  });
  it('refetches timezone changes on the mounted page and isolates a new user preference', async () => {
-  await mount(); await fireEvent.click(screen.getByRole('checkbox'));
+  await mount(); await toggleEvents();
   h.user = { id: 'user-a', timezone: 'Asia/Tokyo' }; h.signal?.set('auth', 1);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
   expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', 'all']);
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 2);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
-  expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
+  expect(await eventsShown()).toBe(true);
   expect(localStorage.getItem('pad-agenda-show-events:user-b')).toBeNull();
  });
  it.each(['Europe/London', null])('uses the browser zone, then UTC, when the account has no zone: %s', async browserZone => {
@@ -98,15 +114,15 @@ describe('agenda Day page', () => {
    row({ owner_username: '', item_ref: 'EX-32', schedule_id: 's3', item_title: 'No owner' })
   ]));
   render(Agenda); const done = await screen.findByRole('link', { name: 'Finished occurrence' });
-  expect(done.parentElement?.classList.contains('done')).toBe(true); expect(screen.getByLabelText('Done')).toHaveTextContent('✓');
+  expect(done.closest('li')?.classList.contains('done')).toBe(true); expect(screen.getByRole('img', { name: 'Done' })).toBeTruthy();
   expect(screen.getByText('10:30')).toBeTruthy(); expect(screen.getByText('No owner')).toBeTruthy();
   expect(screen.queryByRole('link', { name: 'No owner' })).toBeNull();
  });
  it('survives throwing storage with an in-memory default', async () => {
   vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
   vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
-  await mount(); expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(true);
-  await fireEvent.click(screen.getByRole('checkbox')); expect((screen.getByRole('checkbox') as HTMLInputElement).checked).toBe(false);
+  await mount(); expect(await eventsShown()).toBe(true);
+  await toggleEvents(); expect(await eventsShown()).toBe(false);
  });
  it('does not access the preference before the user is known', async () => {
   h.user = null; const get = vi.spyOn(localStorage, 'getItem'); const set = vi.spyOn(localStorage, 'setItem');
@@ -114,18 +130,21 @@ describe('agenda Day page', () => {
  });
  it.each([{ truncated: true, next_from: '2026-11-06T01:00:00Z' }, { unavailable: [{ item_ref: 'EX-30', code: 'internal' }] }, { unexpanded: [{ schedule_id: 's', item_ref: 'EX-30', item_title: 'X', collection: 'tasks', reason: 'scan_limit' as const }] }])('never claims an incomplete answer is empty: %j', async extra => {
   h.agenda.mockResolvedValue(response([], extra)); render(Agenda);
-  await screen.findByText('Agenda is incomplete.'); expect(screen.queryByText('No entries on this day.')).toBeNull();
-  if ('next_from' in extra) expect(screen.getByText('more after November 5, 2026')).toBeTruthy();
+  await screen.findByText('next_from' in extra ? 'Showing entries up to Thu 5 November.' : 'Some schedules could not be shown.');
+  expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
+  expect(screen.queryAllByRole('button', { name: 'Load the rest' })).toHaveLength('next_from' in extra ? 1 : 0);
  });
  it('offers to show hidden events when they are everything loaded', async () => {
-  h.agenda.mockResolvedValue(response([row({ type: 'created' })])); await mount(); await fireEvent.click(screen.getByRole('checkbox'));
-  expect(screen.getByText('Created and completed entries are hidden.')).toBeTruthy();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show created and completed' })); expect(screen.getByText('First item')).toBeTruthy();
+  h.agenda.mockResolvedValue(response([row({ type: 'created' })])); render(Agenda); await screen.findByRole('button', { name: '1 created' }); await toggleEvents();
+  expect(screen.getByText('Created and completed items are hidden.')).toBeTruthy(); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.getByRole('button', { name: '1 created' })).toBeTruthy();
  });
  it('renders loading, error with retry, and the complete empty state', async () => {
   const pending = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(pending.promise); render(Agenda); await screen.findByText('Loading agenda…');
-  pending.resolve(response([])); await screen.findByText('No entries on this day.');
-  cleanup(); h.agenda.mockRejectedValueOnce(new Error('offline')); render(Agenda); await screen.findByText('Could not load agenda.');
+  expect(document.querySelector('.main[aria-busy="true"] .skeleton')).toBeTruthy(); expect(sections()).toHaveLength(0);
+  pending.resolve(response([])); await screen.findByText('Nothing scheduled for Thursday 5 November'); expect(document.querySelector('[aria-busy="true"]')).toBeNull();
+  cleanup(); h.agenda.mockRejectedValueOnce(new Error('offline')); render(Agenda); await screen.findByText('Could not load this day');
+  expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1); expect(sections()).toHaveLength(0);
   h.agenda.mockResolvedValue(response()); await fireEvent.click(screen.getByRole('button', { name: 'Try again' })); await screen.findByText('First item');
  });
  it('ignores late responses from previous days and Today refetches even on today', async () => {
@@ -159,7 +178,8 @@ describe('resolve identity and dialogs', () => {
  it('Done fetches the view at submit and uses the frozen instant, exactly once', async () => {
   await mount(); expect(h.view).not.toHaveBeenCalled(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done' }));
-  expect(h.resolve).toHaveBeenCalledTimes(1); expect(h.view).toHaveBeenCalledWith('work', 'EX-30'); await screen.findByText('Occurrence marked done.');
+  expect(h.resolve).toHaveBeenCalledTimes(1); expect(h.view).toHaveBeenCalledWith('work', 'EX-30');
+  expect(await screen.findByText('Occurrence marked done.')).toBe(screen.getByRole('status')); await said('Occurrence marked done.', 'success');
  });
  it('Skip submits once with the view identity', async () => {
   await mount(); await menu(); expect(h.view).not.toHaveBeenCalled(); await fireEvent.click(screen.getByRole('menuitem', { name: 'Skip' }));
@@ -168,8 +188,8 @@ describe('resolve identity and dialogs', () => {
  it.each(['different wall', 'ended', 'missing occurrence', '404'])('refuses a %s view as stale', async kind => {
   if (kind === '404') h.view.mockRejectedValue({ code: 'not_found' });
   else h.view.mockResolvedValue({ ended_at: kind === 'ended' ? '2026-11-05T12:00:00Z' : undefined, next_occurrence: kind === 'missing occurrence' ? undefined : { at: frozenAt, wall: kind === 'different wall' ? '2026-11-06T09:00:00' : row().wall } });
-  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText('This occurrence changed. Review the updated entry and try again.');
-  expect(h.resolve).not.toHaveBeenCalled(); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await said(staleCopy);
+  expect(h.resolve).not.toHaveBeenCalled(); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2)); expect(screen.queryByRole('alert')).toBeNull();
  });
  it('focuses the dialog and returns focus to Actions on cancel', async () => {
   await mount(); const trigger = screen.getByRole('button', { name: 'Actions EX-30' }); trigger.focus();
@@ -213,13 +233,13 @@ describe('resolve identity and dialogs', () => {
   write.resolve({}); await screen.findByText('Occurrence marked done.');
  });
  it.each([['resolve', 'stale', 'This occurrence changed. Review the updated entry and try again.'], ['resolve', 'forbidden', 'You can no longer change this item.'], ['view', 'forbidden', 'You can no longer change this item.'], ['view', 'internal', 'Could not update this occurrence. Try again.']])('handles %s %s without replay', async (source, code, message) => {
-  h[source === 'view' ? 'view' : 'resolve'].mockRejectedValue({ code }); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText(message);
+  h[source === 'view' ? 'view' : 'resolve'].mockRejectedValue({ code }); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await said(message);
   if (code !== 'internal') await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
   expect(h.resolve).toHaveBeenCalledTimes(source === 'view' ? 0 : 1);
  });
  it('shows the server sentence when a skip before a hard deadline needs the owner, and keeps the button', async () => {
   const sentence = 'Only the assignee or a workspace owner can skip this occurrence before its hard deadline.';
-  h.resolve.mockRejectedValue({ code: 'deadline_owner_required', message: sentence }); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText(sentence);
+  h.resolve.mockRejectedValue({ code: 'deadline_owner_required', message: sentence }); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await said(sentence);
   expect(h.agenda).toHaveBeenCalledTimes(1); expect((screen.getByRole('button', { name: 'Done EX-30' }) as HTMLButtonElement).disabled).toBe(false);
  });
  it('keeps rows on quiet refresh and retries only the read after a successful write', async () => {
@@ -251,9 +271,9 @@ describe('agenda Week and priority', () => {
  it('an incomplete week never says a day is empty', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false, truncated: true }));
   render(Agenda);
-  await screen.findByText('Agenda is incomplete.');
-  expect(document.querySelectorAll('[data-day]')).toHaveLength(7);
-  expect(screen.queryByText('Nothing on this day.')).toBeNull();
+  await screen.findByText('Too much to load at once. Choose a smaller range or a workspace group.');
+  expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
+  expect(stripDays()).toHaveLength(7); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
  });
  it('defaults to one seven-local-day DST window, renders seven days and shifts by civil weeks', async () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-30T16:00:00Z'));
@@ -261,9 +281,10 @@ describe('agenda Week and priority', () => {
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
   expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', 'all']);
   expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
-  expect(document.querySelectorAll('[data-day]')).toHaveLength(7);
-  expect(within(daySection('2026-10-30')).getByRole('heading')).toHaveTextContent(/Friday.*30.*Today/);
-  expect(await screen.findAllByText('Nothing on this day.')).toHaveLength(7);
+  expect(stripDays().map(day => day.dataset.stripDay)).toEqual(['2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']);
+  expect(stripDays().filter(day => day.getAttribute('aria-current') === 'date')).toEqual([stripDay('2026-10-30')]);
+  expect(await screen.findAllByText(/^Nothing scheduled/)).toHaveLength(1); expect(sections()).toHaveLength(0);
+  expect(screen.getByText('Nothing scheduled for 30 October – 5 November 2026')).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
   expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', 'all']);
@@ -292,6 +313,7 @@ describe('agenda Week and priority', () => {
   expect(h.preview).toHaveBeenCalledTimes(1); expect(h.move).toHaveBeenCalledTimes(1);
   expect(h.preview).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z' });
   expect(screen.queryByRole('dialog')).toBeNull(); await screen.findByText('Occurrence moved to November 6, 2026, 09:00. Its reminder follows the target.');
+  await said('Occurrence moved to November 6, 2026, 09:00. Its reminder follows the target.', 'success');
   expect(h.agenda.mock.calls[1]).toEqual(h.agenda.mock.calls[0]);
   expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
   expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Actions EX-30' }));
@@ -311,12 +333,12 @@ describe('agenda Week and priority', () => {
  });
  it.each(['different', 'missing'])('rejects a %s preview root and reloads without a write', async kind => {
   h.preview.mockResolvedValue(preview(undefined, { changes: kind === 'missing' ? [] : [{ ...preview().changes[0], from: '2026-11-04T14:00:00Z' }] }));
-  await mount(); await drop(); await screen.findByText('This occurrence changed. Review the updated entry and try again.');
+  await mount(); await drop(); await said(staleCopy);
   expect(h.move).not.toHaveBeenCalled(); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
  });
  it.each(['preview', 'move'])('handles commitment_changed from %s without retry', async source => {
   h[source].mockRejectedValue({ code: 'commitment_changed' }); await mount(); await drop();
-  await screen.findByText('This occurrence changed. Review the updated entry and try again.');
+  await said(staleCopy);
   expect(h.move).toHaveBeenCalledTimes(source === 'move' ? 1 : 0); expect(h.preview).toHaveBeenCalledTimes(1);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
  });
@@ -354,22 +376,26 @@ describe('agenda Week and priority', () => {
  });
  it('pins available and deadline days while dragging and clears drag decorations on Escape', async () => {
   const roles = { ...row().roles!, target: row().at, earliest: '2026-11-06T14:00:00Z', deadline: '2026-11-08T14:00:00Z' };
-  h.agenda.mockResolvedValue(response([row({ roles, roles_origin: 'native' })])); await mount(); await drag();
-  expect(within(daySection()).getByText('Available from', { exact: true })).toBeTruthy();
-  expect(within(daySection('2026-11-08')).getByText('Deadline', { exact: true })).toBeTruthy();
+  h.agenda.mockResolvedValue(response([row({ roles, roles_origin: 'native' })])); await mount(); await drag('2026-11-07');
+  expect(within(stripDay()).getByText('Available from', { exact: true })).toBeTruthy();
+  expect(within(stripDay('2026-11-08')).getByText('Deadline', { exact: true })).toBeTruthy();
+  expect(within(stripDay('2026-11-07')).getByText('Move here')).toBeTruthy(); expect(daySection('2026-11-07').classList.contains('drop')).toBe(true);
   await fireEvent.keyDown(window, { key: 'Escape' });
-  expect(screen.queryByText('Available from', { exact: true })).toBeNull(); expect(h.move).not.toHaveBeenCalled();
-  await fireEvent.drop(daySection()); expect(h.move).not.toHaveBeenCalled();
+  expect(screen.queryByText('Available from', { exact: true })).toBeNull(); expect(screen.queryByText('Move here')).toBeNull(); expect(h.move).not.toHaveBeenCalled();
+  expect(stripDays().every(day => day.dataset.drop === undefined)).toBe(true);
+  await fireEvent.drop(daySection()); await fireEvent.drop(stripDay()); expect(h.move).not.toHaveBeenCalled();
  });
  it('labels target and all date roles, with noninteractive separate-day deadline markers', async () => {
   h.agenda.mockResolvedValue(response([row({ roles: { ...row().roles!, target: row().at, earliest: '2026-11-05T13:00:00Z', deadline: '2026-11-05T16:00:00Z', deadline_behavior: 'stays_owed', occupied_until: '2026-11-05T15:00:00Z' } }), row({ item_ref: 'EX-31', item_title: 'Another item', roles: { ...row().roles!, deadline: '2026-11-08T14:00:00Z', deadline_behavior: 'lapses' } })]));
-  await mount(); const day = within(daySection('2026-11-05'));
-  expect(day.getAllByText(/Target.*09:00/).length).toBeGreaterThan(0);
-  expect(day.getByText(/Deadline.*11:00.*Still owed/)).toBeTruthy();
-  expect(day.getByText(/Available from.*08:00/)).toBeTruthy(); expect(day.getByText('Until 10:00')).toBeTruthy();
-  const marker = within(daySection('2026-11-08')).getByText('Deadline · Another item').closest('li')!;
-  expect(within(marker).queryByRole('button')).toBeNull(); expect(marker.getAttribute('draggable')).not.toBe('true');
-  expect(within(daySection('2026-11-08')).getByText('Nothing on this day.')).toBeTruthy();
+  await mount(); const first = daySection('2026-11-05').querySelector('li[data-ref="EX-30"]')!;
+  expect(first.querySelector('.time')?.textContent).toMatch(/09:00.*from 08:00.*until 10:00/);
+  expect(first.querySelector('[data-kind="deadline"]')).toHaveAttribute('title', 'Deadline November 5, 2026, 11:00 · Still owed');
+  expect(daySection('2026-11-05').querySelector('li[data-role="deadline"]')).toBeNull();
+  const marker = daySection('2026-11-08').querySelector('li[data-role="deadline"]')!;
+  expect(marker.textContent).toMatch(/Deadline\s*Another item/);
+  expect(within(marker as HTMLElement).queryByRole('button')).toBeNull(); expect(marker.getAttribute('draggable')).not.toBe('true');
+  expect(within(daySection('2026-11-08')).queryByText('Nothing scheduled.')).toBeNull();
+  expect(within(daySection('2026-11-09')).getByText('Nothing scheduled.')).toBeTruthy();
  });
  it('dropping a card back on its own day is a no-op, not a conflict', async () => {
   await mount(); await drop('2026-11-05');
@@ -383,9 +409,9 @@ describe('agenda Week and priority', () => {
   // The engine resolves a date-only target at midnight in the recipient zone.
   h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to, { changes: [{ item_id: 'root', role: 'target', from: '2026-11-05T05:00:00Z', to: body.to, root: true }] })));
   await mount();
-  expect(within(daySection('2026-11-08')).getByText('Deadline · First item')).toBeTruthy();
-  expect(within(daySection('2026-11-07')).queryByText(/Deadline ·/)).toBeNull();
-  expect(within(daySection('2026-11-05')).getByText(/Deadline November 8, 2026 · Lapses/)).toBeTruthy();
+  expect(daySection('2026-11-08').querySelector('li[data-role="deadline"]')?.textContent).toMatch(/Deadline\s*First item/);
+  expect(daySection('2026-11-07').querySelector('li[data-role="deadline"]')).toBeNull();
+  expect(daySection('2026-11-05').querySelector('[data-kind="deadline"]')).toHaveAttribute('title', 'Deadline November 8, 2026 · Lapses');
   await drop('2026-11-06');
   await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
   expect(h.move.mock.calls[0][2]).toMatchObject({ role: 'target', to: '2026-11-06T05:00:00.000Z', revision: 'revision-1' });
@@ -405,9 +431,9 @@ describe('agenda Week and priority', () => {
   localStorage.setItem('pad-agenda-show-events:user-a', '0');
   h.agenda.mockResolvedValue(response([row({ type: 'created', item_title: 'Created item' })]));
   render(Agenda);
-  expect(await screen.findByText('Created and completed entries are hidden.')).toBeTruthy();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show created and completed' }));
-  expect(await screen.findByText('Created item')).toBeTruthy();
+  expect(await screen.findByText('Created and completed items are hidden.')).toBeTruthy(); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show them' }));
+  await fireEvent.click(await screen.findByRole('button', { name: '1 created' })); expect(screen.getByText('Created item')).toBeTruthy();
  });
  it('deadline markers come only from live occurrences, never history rows', async () => {
   const roles = { ...row().roles!, deadline: '2026-11-08T14:00:00Z', deadline_behavior: 'lapses' as const };
@@ -417,9 +443,8 @@ describe('agenda Week and priority', () => {
    row({ item_ref: 'EX-32', item_title: 'Finished item', roles, state: 'done', at: '2026-11-06T14:00:00Z', day: '2026-11-06', wall: '2026-11-06T09:00:00' })
   ]));
   render(Agenda); await screen.findAllByText('Another item');
-  const day = within(daySection('2026-11-08'));
-  expect(day.getAllByText('Deadline · Another item')).toHaveLength(1);
-  expect(day.queryByText('Deadline · Finished item')).toBeNull();
+  const markers = [...daySection('2026-11-08').querySelectorAll('li[data-role="deadline"]')];
+  expect(markers).toHaveLength(1); expect(markers[0].textContent).toContain('Another item');
  });
  it.each([false, true])('Bring to today uses the shared target flow, all-day=%s', async all_day => {
   const at = all_day ? '2026-11-06T05:00:00Z' : '2026-11-06T14:00:00Z';
@@ -444,11 +469,11 @@ describe('agenda Week and priority', () => {
   for (const text of ['Showing all outstanding', 'Target passed', 'Missed deadline · Still owed', 'Needs a decision', 'This list is incomplete.']) expect(within(list).getByText(text)).toBeTruthy();
   expect(within(list).getByText(/Target November 5.*09:00/)).toBeTruthy(); expect(within(list).getByText(/Deadline November 6.*09:00/)).toBeTruthy();
   expect(within(list).queryByText('No undated work.')).toBeNull(); expect(within(list).queryByRole('button', { name: /^Done/ })).toBeNull();
-  expect(screen.queryByText('Agenda is incomplete.')).toBeNull();
+  expect(screen.queryByText(/Showing entries up to|Too much to load|could not be shown/)).toBeNull();
  });
  it('renders complete empty groups and keeps window incompleteness independent', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false })); render(Agenda);
-  for (const text of ['Nothing outstanding.', 'Nothing waiting.', 'No undated work.', 'Agenda is incomplete.']) expect(await screen.findByText(text)).toBeTruthy();
+  for (const text of ['Nothing outstanding.', 'Nothing waiting.', 'No undated work.', 'Too much to load at once. Choose a smaller range or a workspace group.']) expect(await screen.findByText(text)).toBeTruthy();
  });
  it('never calls an incomplete empty group empty', async () => {
   h.agenda.mockResolvedValue(response([], { priority_list_complete: false, waiting_on_complete: false, no_date_complete: false })); render(Agenda);
@@ -463,13 +488,148 @@ describe('agenda Week and priority', () => {
   await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1' }));
  });
- it('switches between Agenda and List in place at mobile widths without fetching', async () => {
+ it('switches between Schedule and Outstanding in place at mobile widths without fetching', async () => {
   vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
   await mount();
-  expect(screen.getByRole('button', { name: 'Agenda', exact: true })).toHaveAttribute('aria-pressed', 'true');
-  await fireEvent.click(screen.getByRole('button', { name: 'List', exact: true }));
-  expect(screen.getByRole('region', { name: 'Priority' })).toBeVisible(); expect(screen.queryByText('First item')).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Agenda', exact: true })); await screen.findByText('First item'); expect(h.agenda).toHaveBeenCalledTimes(1);
+  expect(screen.getByRole('button', { name: 'Schedule' })).toHaveAttribute('aria-pressed', 'true');
+  expect(document.querySelector('li[data-ref="EX-30"]')?.classList.contains('compact')).toBe(true);
+  expect(screen.getByRole('button', { name: 'Range: Week' })).toBeTruthy(); expect(screen.queryByRole('group', { name: 'Range' })).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Outstanding' }));
+  expect(screen.getByRole('region', { name: 'Priority' })).toBeVisible(); expect(screen.queryByText('First item')).toBeNull(); expect(stripDays()).toHaveLength(0);
+  await fireEvent.click(screen.getByRole('button', { name: 'Schedule' })); await screen.findByText('First item'); expect(h.agenda).toHaveBeenCalledTimes(1);
+  await fireEvent.click(screen.getByRole('button', { name: 'Range: Week' })); await fireEvent.click(screen.getByRole('menuitemradio', { name: 'Day' }));
+  expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('day'); expect(screen.getByRole('button', { name: 'Range: Day' })).toBeTruthy();
+ });
+});
+
+describe('week strip, attention band and states', () => {
+ const owed = (extra: Partial<AgendaWorkEntry> = {}) => workRow({ item_ref: 'EX-40', item_title: 'Owed item', schedule_id: 'schedule-4', at: '2026-11-03T14:00:00Z', day: '2026-11-03', wall: '2026-11-03T09:00:00', overdue: true, reason: 'target_passed', roles: { ...row().roles!, target: '2026-11-03T14:00:00Z' }, ...extra });
+ it('the strip runs seven days from the selected day and jumps to a day heading', async () => {
+  await mount();
+  expect(stripDays().map(day => day.dataset.stripDay)).toEqual(['2026-11-05', '2026-11-06', '2026-11-07', '2026-11-08', '2026-11-09', '2026-11-10', '2026-11-11']);
+  expect(stripDay('2026-11-05')).toHaveAttribute('aria-current', 'date'); expect(stripDay('2026-11-05').querySelectorAll('.pip')).toHaveLength(1);
+  expect(sections()).toHaveLength(7);
+  await fireEvent.click(stripDay('2026-11-08'));
+  await waitFor(() => expect(document.activeElement).toBe(within(daySection('2026-11-08')).getByRole('heading', { name: 'Sunday 8 November' })));
+  expect(h.agenda).toHaveBeenCalledTimes(1);
+ });
+ it('in Day range the strip stays put and selects the day', async () => {
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(stripDay('2026-11-05')).toHaveAttribute('aria-pressed', 'true');
+  await fireEvent.click(stripDay('2026-11-07'));
+  await waitFor(() => expect(h.agenda.mock.lastCall?.slice(0, 2)).toEqual(['2026-11-07T05:00:00.000Z', '2026-11-08T05:00:00.000Z']));
+  expect(stripDays()[0].dataset.stripDay).toBe('2026-11-05'); expect(stripDay('2026-11-07')).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('heading', { name: 'November 7, 2026' })).toBeTruthy();
+ });
+ it('a drag turns the strip into drop zones, previews once per day and moves on a strip drop', async () => {
+  await mount(); expect(stripDays().every(day => day.dataset.drop === undefined)).toBe(true);
+  await fireEvent.dragStart(card());
+  expect(stripDays().every(day => day.dataset.drop === 'true')).toBe(true); expect(card().classList.contains('dragging')).toBe(true);
+  await fireEvent.dragEnter(stripDay()); await fireEvent.dragEnter(daySection()); await fireEvent.dragEnter(stripDay('2026-11-07')); await fireEvent.dragEnter(stripDay());
+  expect(h.preview).toHaveBeenCalledTimes(2);
+  expect(h.preview.mock.calls.map(call => call[2].to)).toEqual(['2026-11-06T14:00:00.000Z', '2026-11-07T14:00:00.000Z']);
+  expect(within(stripDay()).getByText('Move here')).toBeTruthy();
+  await waitFor(() => expect(document.querySelector('.dragbar')?.textContent).toMatch(/Moving “First item” to Fri 6, 09:00\..*Esc/));
+  expect(daySection().querySelector('li.ghost')?.textContent).toMatch(/09:00.*First item.*Moves here/);
+  await fireEvent.drop(stripDay());
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1' }));
+  expect(h.preview).toHaveBeenCalledTimes(2); expect(document.querySelector('.dragbar')).toBeNull();
+ });
+ it('the drag bar says what follows and what the deadline does', async () => {
+  const roles = { ...row().roles!, target: row().at, deadline: '2026-11-09T14:00:00Z' };
+  h.agenda.mockResolvedValue(response([row({ roles, roles_origin: 'native' })]));
+  h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to, { changes: [...preview(body.to).changes, { item_id: 'linked', role: 'target', to: '2026-11-08T14:00:00Z' }] })));
+  await mount(); await drag();
+  await waitFor(() => expect(document.querySelector('.dragbar')?.textContent).toMatch(/1 linked item follows · deadline Mon 9, 09:00 unchanged/));
+ });
+ it('an occurrence that cannot move does not start a drag', async () => {
+  h.agenda.mockResolvedValue(response([row({ roles: { ...row().roles!, deadline: '2026-11-06T14:00:00Z' }, roles_origin: 'legacy_backfill' })]));
+  await mount(); const item = document.querySelector('li[data-ref="EX-30"]')!;
+  expect(item.getAttribute('draggable')).not.toBe('true');
+  const start = new Event('dragstart', { bubbles: true, cancelable: true }); item.dispatchEvent(start); flushSync();
+  expect(start.defaultPrevented).toBe(true); expect(stripDays().every(day => day.dataset.drop === undefined)).toBe(true);
+ });
+ it('lists what needs attention once, above the days, and not again in its day', async () => {
+  const late = row({ item_ref: 'EX-41', item_title: 'Late item', schedule_id: 'schedule-5', overdue: true });
+  const lapsed = row({ item_ref: 'EX-42', item_title: 'Lapsed item', schedule_id: 'schedule-6', state: 'lapsed', at: '2026-11-05T10:00:00Z', wall: '2026-11-05T05:00:00' });
+  h.agenda.mockResolvedValue(response([row(), late, lapsed], { priority_list: [owed(), workRow({ ...late, reason: 'target_passed' }), workRow()] }));
+  await mount();
+  const band = screen.getByRole('region', { name: 'Needs attention' });
+  expect([...band.querySelectorAll('li')].map(li => li.getAttribute('data-ref'))).toEqual(['EX-40', 'EX-41', 'EX-42']);
+  expect(within(band).getByText('3')).toBeTruthy(); expect(band.querySelector('[draggable="true"]')).toBeNull();
+  expect(band.querySelector('li[data-ref="EX-40"] .time')?.textContent).toMatch(/Tue 3.*09:00/);
+  expect([...daySection('2026-11-05').querySelectorAll('li[data-ref]')].map(li => li.getAttribute('data-ref'))).toEqual(['EX-30']);
+  expect(within(daySection('2026-11-05')).getByText('2 owed · 1 missed')).toBeTruthy();
+  expect(stripDay('2026-11-05').querySelectorAll('.pip')).toHaveLength(3);
+  h.view.mockResolvedValue({ next_occurrence: { at: '2026-11-03T14:00:00Z', wall: '2026-11-03T09:00:00' } });
+  await fireEvent.click(within(band).getByRole('button', { name: 'Done EX-40' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-40', expect.objectContaining({ state: 'done' })));
+ });
+ it('has no attention band when nothing needs it', async () => {
+  await mount(); expect(screen.queryByRole('region', { name: 'Needs attention' })).toBeNull();
+ });
+ it('Mark done records a lapsed occurrence at its own instant, without reading the next one', async () => {
+  const lapsed = row({ item_ref: 'EX-42', item_title: 'Lapsed item', schedule_id: 'schedule-6', state: 'lapsed', at: '2026-11-05T10:00:00Z', wall: '2026-11-05T05:00:00' });
+  h.agenda.mockResolvedValue(response([row(), lapsed])); await mount();
+  await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-42' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-42', { occurrence_at: '2026-11-05T10:00:00Z', state: 'done' }));
+  expect(h.view).not.toHaveBeenCalled(); await said('Occurrence marked done.', 'success'); expect(h.agenda).toHaveBeenCalledTimes(2);
+  h.resolve.mockRejectedValueOnce({ code: 'stale' }); await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-42' }));
+  await said(staleCopy); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
+ });
+ it('shows a skeleton while loading, then one error card with one retry and a way back', async () => {
+  const first = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(first.promise); render(Agenda);
+  await waitFor(() => expect(document.querySelector('.main[aria-busy="true"]')).toBeTruthy());
+  expect(document.querySelectorAll('.skeleton')).toHaveLength(3); expect(stripDays()).toHaveLength(7); expect(sections()).toHaveLength(0);
+  first.resolve(response()); await screen.findByText('First item'); expect(document.querySelector('.skeleton')).toBeNull();
+  h.agenda.mockRejectedValue(new Error('offline')); await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
+  await screen.findByText('Could not load this week');
+  expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1); expect(sections()).toHaveLength(0); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
+  h.agenda.mockResolvedValue(response()); await fireEvent.click(screen.getByRole('button', { name: 'Back to this week' }));
+  await screen.findByText('First item'); expect(screen.queryByText('Could not load this week')).toBeNull();
+  expect(h.agenda.mock.lastCall?.[0]).toBe('2026-11-05T05:00:00.000Z');
+ });
+ it('offers no way back when the failed week is this week', async () => {
+  h.agenda.mockRejectedValueOnce(new Error('offline')); render(Agenda); await screen.findByText('Could not load this week');
+  expect(screen.queryByRole('button', { name: 'Back to this week' })).toBeNull();
+  h.agenda.mockResolvedValue(response()); await fireEvent.click(screen.getByRole('button', { name: 'Try again' })); await screen.findByText('First item');
+ });
+ it('Load the rest asks from next_from and joins the two answers', async () => {
+  h.agenda.mockResolvedValueOnce(response([row()], { truncated: true, window_complete: false, next_from: '2026-11-08T17:00:00Z', priority_list: [workRow()] }))
+   .mockResolvedValueOnce(response([row(), row({ item_ref: 'EX-31', item_title: 'Later item', schedule_id: 's2', at: '2026-11-09T14:00:00Z', day: '2026-11-09', wall: '2026-11-09T09:00:00' })], { priority_list: [] }));
+  await mount(); expect(screen.getByText('Showing entries up to Sun 8 November.')).toBeTruthy();
+  expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy(); expect(within(daySection('2026-11-09')).queryByText('Nothing scheduled.')).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' }));
+  await screen.findByText('Later item');
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all']);
+  expect(screen.getAllByText('First item')).toHaveLength(2); expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
+  expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
+  expect(within(screen.getByRole('region', { name: 'Priority' })).getByText('First item')).toBeTruthy();
+ });
+ it('Load the rest keeps the notice when the rest fails or the identity changed', async () => {
+  h.agenda.mockResolvedValueOnce(response([row()], { truncated: true, next_from: '2026-11-08T17:00:00Z' })).mockRejectedValueOnce(new Error('offline'));
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' }));
+  await said('Could not load the rest. Try again.'); expect(screen.getByRole('button', { name: 'Load the rest' })).toBeEnabled(); expect(screen.getByText('First item')).toBeTruthy();
+  const rest = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(rest.promise); await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' }));
+  h.epoch++; rest.resolve(response([row({ item_ref: 'EX-31', item_title: 'Later item', schedule_id: 's2' })])); await settle();
+  expect(screen.queryByText('Later item')).toBeNull();
+ });
+ it('one clock moves a deadline pill from soon to passed on an open page, and stops with the page', async () => {
+  vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+  try {
+   h.agenda.mockResolvedValue(response([row({ roles: { ...row().roles!, deadline: '2026-11-05T12:30:00Z', deadline_behavior: 'stays_owed' }, roles_origin: 'native' })]));
+   await mount(); const pill = () => document.querySelector('li[data-ref="EX-30"] [data-kind="deadline"]');
+   expect(pill()).toHaveAttribute('data-tone', 'soon'); expect(vi.getTimerCount()).toBe(1);
+   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-11-05T12:31:00Z')); vi.advanceTimersByTime(60_000); flushSync();
+   expect(pill()).toHaveAttribute('data-tone', 'passed'); expect(pill()?.textContent).toContain('Deadline passed 1 min ago · still owed');
+   expect(h.agenda).toHaveBeenCalledTimes(1);
+   cleanup(); expect(vi.getTimerCount()).toBe(0);
+  } finally { vi.useRealTimers(); }
+ });
+ it('names the week on a phone without the year', async () => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  await mount(); expect(screen.getByRole('heading', { name: '5–11 Nov' })).toBeTruthy();
  });
 });
 
@@ -484,7 +644,7 @@ describe('target move failure and drag fences', () => {
   ['schedule_linked', 'Server explanation', false],
   ['internal', 'Could not update this occurrence. Try again.', false]
  ])('handles %s without reissuing the move', async (code, copy, reload) => {
-  h.move.mockRejectedValue({ code, message: 'Server explanation' }); await mount(); await drop(); await screen.findByText(copy);
+  h.move.mockRejectedValue({ code, message: 'Server explanation' }); await mount(); await drop(); await said(copy);
   expect(h.move).toHaveBeenCalledTimes(1); expect(h.preview).toHaveBeenCalledTimes(1);
   expect(h.agenda).toHaveBeenCalledTimes(reload ? 2 : 1);
  });
@@ -550,23 +710,26 @@ describe('forecast actions', () => {
 
 
 describe('workspace groups and daily counts', () => {
- const picker = () => screen.getByRole('combobox', { name: 'Workspace group' });
- const choose = async (id: string) => { await fireEvent.change(picker(), { target: { value: id } }); };
- const manage = async () => { await fireEvent.click(screen.getAllByRole('button', { name: 'Manage groups' })[0]); return screen.getByRole('dialog', { name: 'Workspace groups' }); };
+ const choose = async (name: string) => { await fireEvent.click(filter()); await fireEvent.click(groupItem(name)); };
+ const manage = async () => { await fireEvent.click(filter()); await fireEvent.click(screen.getByRole('menuitem', { name: 'Manage groups…' })); return screen.getByRole('dialog', { name: 'Workspace groups' }); };
+ const listed = async () => { await fireEvent.click(filter()); const names = groupItems(); await fireEvent.click(filter()); return names; };
  it('lists groups in server order, selects and remembers a group', async () => {
   h.groups.mockResolvedValue({ groups: [...workspaceGroups, { id: 'group-2', name: 'Another', kind: 'named', workspace_ids: ['ws-1'] }] });
   await mount();
-  expect(within(picker()).getAllByRole('option').map(el => el.textContent)).toEqual(['All', 'Mine', 'Team', 'Another']);
-  await choose('group-1');
+  expect(filter()).toHaveTextContent('All workspaces');
+  expect(await listed()).toEqual(['All workspaces', 'My workspaces', 'Team', 'Another']);
+  await choose('Team');
   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
+  expect(filter()).toHaveTextContent('Team'); expect(screen.queryByRole('menu')).toBeNull();
+  await fireEvent.click(filter()); expect(groupItem('Team')).toHaveAttribute('aria-checked', 'true'); expect(groupItem('All workspaces')).toHaveAttribute('aria-checked', 'false');
   expect(localStorage.getItem('pad-agenda-group:user-a')).toBe('group-1');
  });
  it.each(['group-1', 'deleted'])('restores a saved group or falls back to all: %s', async saved => {
   localStorage.setItem('pad-agenda-group:user-a', saved); await mount();
-  expect((picker() as HTMLSelectElement).value).toBe(saved === 'deleted' ? 'all' : saved);
+  expect(filter()).toHaveTextContent(saved === 'deleted' ? 'All workspaces' : 'Team');
   expect(h.agenda.mock.calls[0][3]).toBe(saved === 'deleted' ? 'all' : saved);
   if (saved === 'deleted') {
-   await choose('mine'); expect(localStorage.getItem('pad-agenda-group:user-a')).toBe('mine');
+   await choose('My workspaces'); expect(localStorage.getItem('pad-agenda-group:user-a')).toBe('mine');
   }
  });
  it('recovers from a saved named group deleted elsewhere without a load error', async () => {
@@ -575,32 +738,35 @@ describe('workspace groups and daily counts', () => {
   h.groups.mockResolvedValueOnce({ groups: workspaceGroups }).mockResolvedValue({ groups: workspaceGroups.slice(0, 2) });
   await mount();
   expect(h.agenda.mock.calls.map(call => call[3])).toEqual(['group-1', 'all']);
-  expect(h.groups).toHaveBeenCalledTimes(2); expect((picker() as HTMLSelectElement).value).toBe('all');
-  expect(screen.queryByText('Could not load agenda.')).toBeNull();
+  expect(h.groups).toHaveBeenCalledTimes(2); expect(filter()).toHaveTextContent('All workspaces');
+  expect(screen.queryByText(/Could not load/)).toBeNull();
  });
  it('loads the original agenda without a group when the groups list fails', async () => {
   h.groups.mockRejectedValue(new Error('Unavailable')); await mount();
-  expect(screen.queryByRole('combobox', { name: 'Workspace group' })).toBeNull();
-  expect(h.agenda.mock.calls[0]).toHaveLength(3); expect(screen.queryByRole('alert')).toBeNull();
+  expect(screen.queryByRole('button', { name: /^Workspaces: / })).toBeNull();
+  expect(h.agenda.mock.calls[0]).toHaveLength(3); expect(screen.queryByRole('alert')).toBeNull(); expect(h.toast).not.toHaveBeenCalled();
  });
  it.each([{ ids: [] }, { ids: ['gone'] }])('renders an empty named group with no accessible workspaces: %j', async ({ ids }) => {
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ids }] });
   h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] }));
-  render(Agenda); await screen.findByRole('combobox', { name: 'Workspace group' }); await choose('group-1');
+  render(Agenda); await screen.findByRole('button', { name: /^Workspaces: / }); await choose('Team');
   await screen.findByText('No workspaces in this group.');
-  expect(screen.queryByText('Could not load agenda.')).toBeNull(); expect(document.querySelector('.week-layout')).toBeNull();
+  expect(screen.queryByText(/Could not load/)).toBeNull(); expect(document.querySelector('.layout')).toBeNull(); expect(stripDays()).toHaveLength(0);
   expect(screen.queryByRole('img', { name: 'Daily counts' })).toBeNull();
-  expect(screen.getAllByRole('button', { name: 'Manage groups' })).toHaveLength(2);
+  await fireEvent.click(screen.getByRole('button', { name: 'Add workspaces' })); expect(screen.getByRole('dialog', { name: 'Workspace groups' })).toBeTruthy();
  });
  it('renders normal surfaces for a populated group with no entries', async () => {
   h.agenda.mockResolvedValue(response([])); render(Agenda);
-  await screen.findByRole('combobox', { name: 'Workspace group' }); await choose('group-1');
+  await screen.findByRole('button', { name: /^Workspaces: / }); await choose('Team');
   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
-  expect(screen.queryByText('No workspaces in this group.')).toBeNull(); expect(document.querySelector('.week-layout')).toBeTruthy();
+  expect(screen.queryByText('No workspaces in this group.')).toBeNull(); expect(document.querySelector('.layout')).toBeTruthy();
+  expect(await screen.findByText('Nothing scheduled for 5–11 November 2026')).toBeTruthy(); expect(screen.getByText('No commitments or dated items in “Team” this week.')).toBeTruthy();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show all workspaces' })); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('all'));
+  expect(screen.queryByRole('button', { name: 'Show all workspaces' })).toBeNull(); expect(screen.getByText('No commitments or dated items this week.')).toBeTruthy();
  });
  it('skips the empty-group check when workspaces fail to load', async () => {
-  h.workspaces.mockRejectedValue(new Error('Unavailable')); await mount(); await choose('group-1');
-  expect(screen.queryByText('No workspaces in this group.')).toBeNull(); expect(document.querySelector('.week-layout')).toBeTruthy();
+  h.workspaces.mockRejectedValue(new Error('Unavailable')); await mount(); await choose('Team');
+  expect(screen.queryByText('No workspaces in this group.')).toBeNull(); expect(document.querySelector('.layout')).toBeTruthy();
  });
  it('creates a trimmed group with a workspace and refreshes the picker', async () => {
   await mount(); const d = await manage();
@@ -610,7 +776,8 @@ describe('workspace groups and daily counts', () => {
   h.groups.mockResolvedValue({ groups: [...workspaceGroups, { id: 'new', name: 'New team', kind: 'named', workspace_ids: ['ws-1'] }] });
   await fireEvent.click(within(d).getByRole('button', { name: 'Create group' }));
   await waitFor(() => expect(h.createGroup).toHaveBeenCalledWith({ name: 'New team', workspace_ids: ['ws-1'] }));
-  await screen.findByRole('option', { name: 'New team' }); expect(h.groups).toHaveBeenCalledTimes(2);
+  await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2)); await settle();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close' })); expect(await listed()).toContain('New team');
  });
  it('renames and edits workspaces, disambiguating duplicate workspace names', async () => {
   h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', owner_username: 'bob' }]);
@@ -636,7 +803,7 @@ describe('workspace groups and daily counts', () => {
   await fireEvent.click(within(d).getByRole('button', { name: 'Confirm delete' }));
   await waitFor(() => expect(h.removeGroup).toHaveBeenCalledWith('group-1'));
   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('all'));
-  expect((picker() as HTMLSelectElement).value).toBe('all'); expect(h.groups).toHaveBeenCalledTimes(2);
+  expect(filter()).toHaveTextContent('All workspaces'); expect(h.groups).toHaveBeenCalledTimes(2);
  });
  it.each([{ message: 'Name is already used.' }, {}])('shows save failures inside the open dialog: %j', async error => {
   h.createGroup.mockRejectedValue(error); await mount(); const d = await manage();
@@ -657,15 +824,15 @@ describe('workspace groups and daily counts', () => {
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1);
   await screen.findByText('First item');
   old.resolve({ groups: [...workspaceGroups, { id: 'private', name: 'Private group', kind: 'named', workspace_ids: [] }] }); oldWorkspaces.resolve([]);
-  await settle(); expect(screen.queryByRole('option', { name: 'Private group' })).toBeNull();
+  await settle(); expect(await listed()).toEqual(['All workspaces', 'My workspaces', 'Team']);
   expect(localStorage.getItem('pad-agenda-group:user-b')).toBeNull();
  });
  it('loads the agenda without waiting for the workspace list', async () => {
   h.workspaces.mockReturnValue(new Promise(() => {}));
-  await mount(); expect(picker()).toBeTruthy();
+  await mount(); expect(filter()).toBeTruthy();
  });
  it('refetches workspaces with the groups, so members added elsewhere do not read as an empty group', async () => {
-  await mount(); await fireEvent.change(picker(), { target: { value: 'group-1' } });
+  await mount(); await choose('Team');
   h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-new', name: 'Added elsewhere' }]);
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-new'] }] });
   const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
@@ -702,11 +869,12 @@ describe('workspace groups and daily counts', () => {
   const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Rename' }));
   await fireEvent.input(within(d).getByRole('textbox', { name: 'Name' }), { target: { value: 'Renamed' } });
   await fireEvent.click(within(d).getByRole('button', { name: 'Save group' }));
-  await screen.findByRole('option', { name: 'Renamed' }); await settle();
+  await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2)); await settle();
   expect(h.agenda.mock.calls.length).toBe(calls); expect(screen.getByText('First item')).toBeTruthy();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close' })); expect(await listed()).toContain('Renamed');
  });
  it('reloads the agenda when the selected group changes its workspaces', async () => {
-  await mount(); await fireEvent.change(picker(), { target: { value: 'group-1' } });
+  await mount(); await choose('Team');
   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1')); const calls = h.agenda.mock.calls.length;
   h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', name: 'Second' }]);
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-1', 'ws-2'] }] });
@@ -752,7 +920,7 @@ describe('agenda Month page', () => {
   await screen.findByText('Occurrence marked done.');
   expect(screen.getByRole('dialog')).toBe(detail);
   expect(within(detail).queryByRole('button', { name: 'Done EX-30' })).toBeNull();
-  expect(within(detail).getByLabelText('Done')).toBeTruthy();
+  expect(within(detail).getByRole('img', { name: 'Done' })).toBeTruthy();
  });
  it('shows a failed Done inside day detail, not behind it', async () => {
   await mount(); await fireEvent.click(dateButton('2026-11-05'));
@@ -793,7 +961,7 @@ describe('agenda Month page', () => {
   await screen.findByText('Loading agenda…'); next.resolve(response([]));
   await waitFor(() => expect(document.activeElement).toBe(dateButton('2026-12-30')));
   h.agenda.mockRejectedValueOnce(new Error('offline'));
-  await fireEvent.keyDown(document.activeElement!, { key: 'PageDown' }); await screen.findByText('Could not load agenda.');
+  await fireEvent.keyDown(document.activeElement!, { key: 'PageDown' }); await screen.findByText('Could not load this month');
   const outside = document.createElement('input'); document.body.appendChild(outside); outside.focus();
   h.agenda.mockResolvedValue(response([])); await fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
   await screen.findByRole('grid', { name: 'January 2027' }); await settle(); expect(document.activeElement).toBe(outside); outside.remove();
@@ -828,7 +996,7 @@ describe('agenda Month page', () => {
  });
  it('marks an incomplete tail and hides previews after next_from without claiming an empty month', async () => {
   h.agenda.mockResolvedValue(response([row({ day: '2026-11-16', item_title: 'Unexamined tail' })], { truncated: true, next_from: '2026-11-15T17:00:00Z' }));
-  render(Agenda); await screen.findByText('Agenda is incomplete.');
+  render(Agenda); await screen.findByText('Showing entries up to Sun 15 November.');
   expect(within(dateButton('2026-11-14').parentElement!).queryByText('Not fully loaded')).toBeNull();
   for (const day of ['2026-11-15', '2026-11-16', '2026-11-30']) {
    expect(within(dateButton(day).parentElement!).getByText('Not fully loaded')).toBeTruthy();
@@ -845,10 +1013,10 @@ describe('agenda Month page', () => {
  });
  it('offers to reveal hidden created and completed entries in Month', async () => {
   h.agenda.mockResolvedValue(response([row({ type: 'created' }), row({ type: 'completed', item_ref: 'EX-31' })]));
-  render(Agenda); await screen.findByRole('grid'); await fireEvent.click(screen.getByRole('checkbox', { name: 'Show created and completed' }));
-  expect(screen.getByText('Created and completed entries are hidden.')).toBeTruthy();
+  render(Agenda); await screen.findByRole('grid'); await screen.findAllByText('First item'); await toggleEvents();
+  expect(screen.getByText('Created and completed items are hidden.')).toBeTruthy();
   expect(screen.queryByText('No entries this month.')).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show created and completed' })); expect(screen.getAllByText('First item')).toHaveLength(2);
+  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.getAllByText('First item')).toHaveLength(2);
  });
  it('uses the phone day list and its summaries instead of the desktop grid', async () => {
   vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);

@@ -1,13 +1,13 @@
 <script lang="ts">
 	import type { AgendaEntry } from '$lib/types';
 	import { dayLabel } from '$lib/calendar/monthGrid';
-	import type { AgendaAction } from '$lib/calendar/presentation';
+	import { entryKey, type AgendaAction } from '$lib/calendar/presentation';
 	import Modal from '../common/Modal.svelte';
 	import BottomSheet from '../common/BottomSheet.svelte';
 	import Button from '../common/Button.svelte';
-	import AgendaDayList from './AgendaDayList.svelte';
-	let { day, entries, zone, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
-		day: string | null; entries: AgendaEntry[]; zone: string; mobile: boolean; incomplete: boolean; error?: string;
+	import AgendaRow from './AgendaRow.svelte';
+	let { day, entries, zone, now, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
+		day: string | null; entries: AgendaEntry[]; zone: string; now?: Date; mobile: boolean; incomplete: boolean; error?: string;
 		pending: Record<string, boolean>; saved: Record<string, boolean>;
 		onclose: () => void; onaction: (entry: AgendaEntry, action: AgendaAction) => void;
 	} = $props();
@@ -21,7 +21,13 @@
 		{#if error}<p role="alert">{error}</p>{/if}
 		{#if incomplete}<p>Not fully loaded</p>{/if}
 		{#if !incomplete && entries.length === 0}<p>No entries on this day.</p>{/if}
-		{#if day}<AgendaDayList {day} {entries} {zone} {pending} {saved} {onaction} heading={false} />{/if}
+		{#if day && entries.length}
+			<ul>
+				{#each entries as entry (entryKey(entry))}
+					<AgendaRow {entry} {zone} {now} compact={mobile} pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} />
+				{/each}
+			</ul>
+		{/if}
 	</div>
 {/snippet}
 {#if mobile}
@@ -35,4 +41,6 @@
 	.heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-2); }
 	h2 { font-size: 18px; margin: 0; }
 	p { color: var(--text-secondary); }
+	ul { list-style: none; margin: 0; padding: 0; }
+	ul > :global(* + *) { border-top: 1px solid var(--border-subtle); }
 </style>
