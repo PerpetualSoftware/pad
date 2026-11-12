@@ -1694,6 +1694,14 @@ location /api/v1/events {
 }
 ```
 
+### Calendar feed URLs in proxy logs
+
+A calendar feed URL (`/api/v1/feeds/ics/<token>`) carries its secret in the
+path, and Pad redacts it only in its own logs. A reverse proxy's access log
+records the full path, so drop or redact that path there: in nginx, a
+`location /api/v1/feeds/ics/` block with `access_log off;`; in Caddy, a
+`log_skip` for that path.
+
 ## Monitoring
 
 Pad exposes Prometheus metrics at `/metrics` (unauthenticated). Key metrics:
