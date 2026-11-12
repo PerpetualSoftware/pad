@@ -10,6 +10,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
+	"github.com/spf13/cobra"
 )
 
 const forecast4359 = `{"value":"2031-03-12","set_by":"u1","set_by_name":"Alex","set_by_kind":"agent","set_at":"2026-11-11T10:00:00Z","source":"hand estimate","passed":false,"history":[]}`
@@ -48,9 +49,7 @@ func TestTASK4359_ForecastSetShowClear(t *testing.T) {
 
 func TestTASK4359_ForecastAgentProvenance(t *testing.T) {
 	t.Run("real server", func(t *testing.T) {
-		h, it, _, u, _ := forecastCLI4359(t)
-		hAgent := func(w http.ResponseWriter, r *http.Request) { r.Header.Set("X-Pad-Agent", "forecast-test"); h(w, r) }
-		root := tzCLI(t, hAgent)
+		root, _, it, _, u, _ := forecastCLI4359(t, "forecast-test")
 		out, _, err := tzRun(t, root, "--format", "json", "remind", "forecast", "set", it.Ref, "2031-03-12", "--source", "real estimate")
 		var body map[string]any
 		_ = json.Unmarshal([]byte(out), &body)
@@ -78,7 +77,7 @@ func TestTASK4359_AgendaShowsForecastFlag(t *testing.T) {
 
 func TestTASK4359_ShowMilestoneSummary(t *testing.T) {
 	t.Run("API selected child", func(t *testing.T) {
-		h, it, kid, _, ws := forecastCLI4359(t)
+		root, h, it, kid, _, ws := forecastCLI4359(t, "")
 		req := httptest.NewRequest("PUT", "/api/v1/workspaces/"+ws+"/items/"+it.Ref+"/commitment/children/"+kid.Ref, strings.NewReader(`{"kind":"waiver","reason":"not needed"}`))
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Authorization", "Bearer pad_test")
@@ -87,7 +86,6 @@ func TestTASK4359_ShowMilestoneSummary(t *testing.T) {
 		if rr.Code != 200 {
 			t.Fatalf("select child: %d %s", rr.Code, rr.Body.String())
 		}
-		root := tzCLI(t, h)
 		out, _, err := tzRun(t, root, "remind", "show", it.Ref)
 		if err != nil || !strings.Contains(out, "1 of 1 counted, 1 waivers, result completed") {
 			t.Fatalf("real summary: %q %v", out, err)
@@ -104,8 +102,17 @@ func TestTASK4359_ShowMilestoneSummary(t *testing.T) {
 }
 
 // Exercise the real write/read doors as well as the CLI wire formatting above.
-func forecastCLI4359(t *testing.T) (http.HandlerFunc, *models.Item, *models.Item, *models.User, string) {
+//
+// The CLI is built first because tzCLI writes time.Local, and the real
+// server reads it from its own goroutines (background sweepers, and async
+// work a request starts that outlives the request). Building the server after
+// that write orders its reads behind it. Registering srv.Stop after tzCLI's
+// restore makes it run first: Stop waits for the server's goroutines, so none
+// is still reading when the zone is put back.
+func forecastCLI4359(t *testing.T, agent string) (*cobra.Command, http.HandlerFunc, *models.Item, *models.Item, *models.User, string) {
 	t.Helper()
+	var handler http.HandlerFunc
+	root := tzCLI(t, func(w http.ResponseWriter, r *http.Request) { handler(w, r) })
 	s := storetest.NewSQLite(t)
 	srv := server.New(s)
 	t.Cleanup(srv.Stop)
@@ -139,9 +146,12 @@ func forecastCLI4359(t *testing.T) (http.HandlerFunc, *models.Item, *models.Item
 	if err != nil {
 		t.Fatal(err)
 	}
-	handler := func(w http.ResponseWriter, r *http.Request) {
+	handler = func(w http.ResponseWriter, r *http.Request) {
 		r.Header.Set("Authorization", "Bearer "+tok.Token)
+		if agent != "" {
+			r.Header.Set("X-Pad-Agent", agent)
+		}
 		srv.ServeHTTP(w, r.WithContext(server.WithCurrentUser(r.Context(), u)))
 	}
-	return handler, it, kid, u, ws.Slug
+	return root, handler, it, kid, u, ws.Slug
 }
