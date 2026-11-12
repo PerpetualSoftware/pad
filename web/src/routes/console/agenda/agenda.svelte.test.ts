@@ -1123,7 +1123,8 @@ describe('agenda Month page', () => {
  const phone = () => vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
  // Server order: three outstanding, one outstanding whose target passed (named by the priority list), one lapsed.
  const crowded = () => response([
-  ...[0, 1, 2].map(i => row({ item_ref: `EX-${30 + i}`, schedule_id: `s${i}`, item_title: `Plain ${i}` })),
+  // The first is all-day: all-day entries lead a day, but never ahead of what needs attention.
+  ...[0, 1, 2].map(i => row({ item_ref: `EX-${30 + i}`, schedule_id: `s${i}`, item_title: `Plain ${i}`, all_day: i === 0 })),
   row({ item_ref: 'EX-40', schedule_id: 's-late', item_title: 'Late target' }),
   row({ item_ref: 'EX-41', schedule_id: 's-lapsed', item_title: 'Lapsed one', state: 'lapsed', at: '2026-11-05T15:00:00Z', occurrence_key: 'k1' })
  ], { priority_list: [workRow({ item_ref: 'EX-40', schedule_id: 's-late', item_title: 'Late target', reason: 'target_passed' })] });

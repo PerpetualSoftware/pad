@@ -154,7 +154,8 @@
 	const monthAttention = $derived(new Set(data ? attentionEntries(monthEntries, data.priority_list).filter(item => item.inWindow).map(item => entryKey(item.entry as AgendaEntry)) : []));
 	// Each day's entries, what needs attention first, so it is never behind "+N more".
 	const monthDays = $derived(new Map(groupEntries(monthEntries).map(group => [group.day, attentionFirst(group.entries, entry => monthAttention.has(entryKey(entry)))])));
-	const monthRows = $derived(new Map([...monthDays].map(([date, rows]) => [date, agendaRows(rows).map(row => ({ ...row, attention: monthAttention.has(row.key) }))])));
+	// agendaRows leads with all-day rows, so the attention order is applied to its result.
+	const monthRows = $derived(new Map([...monthDays].map(([date, rows]) => [date, attentionFirst(agendaRows(rows).map(row => ({ ...row, attention: monthAttention.has(row.key) })), row => row.attention)])));
 	function monthCount(date: string) {
 		const rows = monthDays.get(date) ?? [];
 		const owed = rows.filter(entry => entry.type === 'schedule' && entry.state === 'outstanding').length;
