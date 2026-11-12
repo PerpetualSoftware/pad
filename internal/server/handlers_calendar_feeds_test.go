@@ -365,3 +365,26 @@ func TestCalendarFeedValidationAndRevokeOwnership(t *testing.T) {
 		t.Fatal("revoke disclosed ownership or existence")
 	}
 }
+
+// The agenda admits a date field whose first ten characters are a date. Such a
+// value is written as an all-day event, and never fails the whole feed.
+func TestCalendarFeedLooseDateFieldIsAllDay(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	w.srv.agendaClock = func() time.Time { return meAgendaNow }
+	w.item(t, "tasks", "Scheduled-ok", `{}`, oneShot())
+	if _, err := w.srv.store.CreateItem(w.ws.ID, w.colls["tasks"].ID, models.ItemCreate{Title: "Loose-date", Fields: `{"due_date":"2031-03-10T09:00"}`}); err != nil {
+		t.Fatal(err)
+	}
+	f := createTestCalendarFeed(t, w.srv, w.owner, "mine")
+	rr := fetchTestCalendarFeed(w.srv, f.Token)
+	if rr.Code != 200 {
+		t.Fatalf("fetch %d", rr.Code)
+	}
+	body := strings.ReplaceAll(rr.Body.String(), "\r\n ", "")
+	if strings.Count(body, "Loose-date") != 1 || !strings.Contains(body, "DTSTART;VALUE=DATE:20310310\r\n") {
+		t.Fatal("loose date field not written as an all-day event")
+	}
+	if strings.Count(body, "Scheduled-ok") != 1 {
+		t.Fatal("other events missing")
+	}
+}

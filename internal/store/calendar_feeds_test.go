@@ -149,3 +149,24 @@ func TestCalendarFeedMintRequiresLiveHuman(t *testing.T) {
 		})
 	}
 }
+
+// A claim keeps the users row, so no cascade fires: the previous holder's
+// feed URLs must stop working, or they would show the claimant's workspaces.
+func TestCalendarFeedRevokedByAccountClaim(t *testing.T) {
+	s := testStore(t)
+	u := createUnverifiedUser(t, s, "feedclaim@example.com")
+	_, token, err := s.CreateCalendarFeed(context.Background(), u.ID, "mine", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ClaimAccountByProvider(u.ID, "google", "", ""); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	f, _, err := s.LookupCalendarFeed(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f != nil {
+		t.Fatal("the previous holder's feed still resolves after the claim")
+	}
+}
