@@ -2393,6 +2393,13 @@ export interface ChangesResponse {
 
 export interface SearchResult {
 	item: Item;
+	/**
+	 * The field the match was found in, and the one `snippet` is cut from
+	 * (a `ref` hit carries the title). The server always sends it.
+	 */
+	matched_in: 'title' | 'content' | 'tags' | 'comment' | 'ref';
+	/** On a `comment` match only: the best-ranked live comment that matched. */
+	comment_id?: string;
 	snippet: string;
 	rank: number;
 	/** The workspace the item is in, from the server's access check (TASK-3604). */

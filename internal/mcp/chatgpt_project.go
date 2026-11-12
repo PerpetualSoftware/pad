@@ -204,7 +204,7 @@ var chatGPTResponseShapes = map[string]shape{
 	"search": shapeWith(shapeKeys("total", "limit", "offset"), shape{
 		// Search blanks content on every hit; an empty body would read as
 		// "this item has no content", so it is not passed on.
-		"results": shape{"item": shapeWithout(itemShape, "content"), "snippet": keepAll},
+		"results": shape{"item": shapeWithout(itemShape, "content"), "snippet": keepAll, "matched_in": keepAll, "comment_id": keepAll},
 		"facets":  keepAll,
 	}),
 	"list_items":        shapeList(itemShape),

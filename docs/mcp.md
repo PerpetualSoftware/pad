@@ -564,3 +564,14 @@ required/optional parameters, refusal rules, return fields and safety guidance.
 Stdio uses `pad item remind forecast set <ref> <value> [--source TEXT]` or `forecast clear <ref>`; HTTP uses PUT `{value, source?}` or DELETE on `/workspaces/{ws}/items/{ref}/commitment/forecast`. This hand-set estimate arms nothing, is never computed from targets or children, and is never a missed deadline. ChatGPT defers this action to v2, as with other schedule actions.
 
 The schedule-edit/delete/agenda/reminders descriptions were condensed in v0.112 to retain the fixed prompt ceilings; required parameters, visibility and refusal rules are unchanged.
+
+
+## Search result sources
+
+`pad_search` searches item fields and live comment bodies by default. Each result
+adds `matched_in` (`title | content | tags | comment | ref`); a comment match
+also includes `comment_id` and a snippet from that comment. An item appears once,
+with item-field matches ahead of comment-only matches. Totals, pagination and
+facets use the same deduplicated items. These fields also pass through the
+ChatGPT search result projection. This additive result change leaves tool names,
+actions, parameters, and the catalog version unchanged.

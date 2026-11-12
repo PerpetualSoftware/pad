@@ -349,7 +349,31 @@ func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
 		t.Fatal("SearchItems did not return the item; this leg measured nothing")
 	})
 
+	// The query matches the body, so the snippet is body text and carries
+	// the body's marker.
 	t.Run("Search", func(t *testing.T) {
+		resp, err := s.Search(store.SearchParams{Unrestricted: true, WorkspaceIDs: []string{wsID}, Query: "stored"})
+		if err != nil {
+			t.Fatalf("Search: %v", err)
+		}
+		for _, r := range resp.Results {
+			if r.Item.ID != item.ID {
+				continue
+			}
+			if r.MatchedIn != "content" {
+				t.Fatalf("Search matched_in = %q, want content; this leg must measure a body match", r.MatchedIn)
+			}
+			if r.Item.ContentState != want {
+				t.Errorf("Search content_state = %q, want %q", r.Item.ContentState, want)
+			}
+			return
+		}
+		t.Fatal("Search did not return the item; this leg measured nothing")
+	})
+
+	// A title match shows a title snippet, not body text, so it must not
+	// carry the body's marker.
+	t.Run("SearchTitleMatchCarriesNoBodyMarker", func(t *testing.T) {
 		resp, err := s.Search(store.SearchParams{Unrestricted: true, WorkspaceIDs: []string{wsID}, Query: "Stale"})
 		if err != nil {
 			t.Fatalf("Search: %v", err)
@@ -358,8 +382,11 @@ func everyContentBearingReadDoor(t *testing.T, s *store.Store) {
 			if r.Item.ID != item.ID {
 				continue
 			}
-			if r.Item.ContentState != want {
-				t.Errorf("Search content_state = %q, want %q", r.Item.ContentState, want)
+			if r.MatchedIn != "title" {
+				t.Fatalf("Search matched_in = %q, want title", r.MatchedIn)
+			}
+			if r.Item.ContentState != "" {
+				t.Errorf("title match content_state = %q, want empty", r.Item.ContentState)
 			}
 			return
 		}

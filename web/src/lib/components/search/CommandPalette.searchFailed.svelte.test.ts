@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { render, fireEvent, cleanup } from '@testing-library/svelte';
+import { render, fireEvent, cleanup, within } from '@testing-library/svelte';
 
 // TASK-3587: a server search that fails is not "No results". The palette
 // used to clear its results on a failure, so the empty branch said
@@ -128,5 +128,71 @@ describe('CommandPalette: a failed search is not "No results" (TASK-3587)', () =
 		reject(new Error('network'));
 		await vi.advanceTimersByTimeAsync(50);
 		expect(view.queryByText(/Couldn't load more results/)).toBeNull();
+	});
+});
+
+describe('CommandPalette comment matches', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		vi.mocked(api.search).mockReset();
+		state.localHits = [];
+	});
+	afterEach(() => {
+		cleanup();
+		vi.useRealTimers();
+	});
+
+	for (const ready of [false, true]) {
+		const index = ready ? 'ready' : 'cold';
+
+		it(`shows the comment marker beside the snippet with a ${index} local index`, async () => {
+			state.ready = ready;
+			vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in: 'comment', comment_id: 'comment-one' }], total: 1, limit: 20, offset: 0 } as never);
+			const view = await typeAndSettle('pelican');
+			// The marker is in the snippet line of the matched result, after the text.
+			const line = view.getByText('about pelicans').closest('.result-snippet') as HTMLElement;
+			expect(line).toBeTruthy();
+			const marker = within(line).getByTestId('match-marker');
+			expect(marker.textContent).toContain('in comment');
+			expect(line.textContent).toMatch(/about pelicans.*in comment/);
+			expect(view.getAllByTestId('match-marker')).toHaveLength(1);
+			// It is part of the option, so a screen reader hears it with the result.
+			expect(marker.closest('[role="option"]')?.textContent).toContain('Pelican notes');
+		});
+
+		it(`marks no other match source with a ${index} local index`, async () => {
+			state.ready = ready;
+			const results = (['title', 'tags', 'ref'] as const).map((matched_in, i) => ({
+				...hit,
+				item: { ...hit.item, id: `srv-${matched_in}`, slug: `s-${i}`, title: `Hit ${matched_in}` },
+				snippet: `snippet for ${matched_in}`,
+				matched_in,
+			}));
+			vi.mocked(api.search).mockResolvedValueOnce({ results, total: 3, limit: 20, offset: 0 } as never);
+			const view = await typeAndSettle('pelican');
+			expect(view.getByText('snippet for tags')).toBeTruthy();
+			expect(view.queryByTestId('match-marker')).toBeNull();
+		});
+
+		it(`shows no marker on a body match with a ${index} local index`, async () => {
+			state.ready = ready;
+			vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in: 'content' }], total: 1, limit: 20, offset: 0 } as never);
+			const view = await typeAndSettle('pelican');
+			expect(view.getByText('about pelicans')).toBeTruthy();
+			expect(view.queryByTestId('match-marker')).toBeNull();
+			expect(view.queryByText(/in comment/)).toBeNull();
+		});
+	}
+
+	it('a row from the local index sits beside a comment match and carries no marker', async () => {
+		state.ready = true;
+		state.localHits = [{ id: 'local-1', score: 5 }];
+		vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in: 'comment', comment_id: 'comment-one' }], total: 1, limit: 20, offset: 0 } as never);
+		const view = await typeAndSettle('pelican');
+		const local = view.getByText('Pelican plan').closest('[role="option"]') as HTMLElement;
+		expect(within(local).queryByTestId('match-marker')).toBeNull();
+		const server = view.getByText('Pelican notes').closest('[role="option"]') as HTMLElement;
+		expect(within(server).getByTestId('match-marker').textContent).toContain('in comment');
+		expect(view.getAllByTestId('match-marker')).toHaveLength(1);
 	});
 });

@@ -122,8 +122,8 @@ func TestBodyDerivedTextSitesAreAllRuledOn(t *testing.T) {
 			reason: "playbook-match (TASK-3120) option descriptions — the derived summary is folded into the text sent to the typed-decision PROVIDER as part of the prompt; it is never returned to the caller. PlaybookMatchResponse.Options carries only ref/title/invocation_slug, no description or summary field, so there is no reader-facing text this marker would qualify",
 		},
 		"internal/store/search.go:FTSSnippet": {
-			count:  2,
-			reason: "FTS search snippets — the body is dropped from the result but the snippet is cut from it, so models.Item.ContentState survives on that path deliberately (and is cleared on the title-only direct-ref paths beside it)",
+			count:  4,
+			reason: "FTS search snippets for the returned page: item body, title and tags, and comment body. Only the body snippet is cut from the item body; the result keeps models.Item.ContentState exactly when matched_in is content and clears it for title, tags, comment and direct-ref results, whose text is not body text",
 		},
 		"internal/store/items.go:FTSSnippet": {
 			count:  2,

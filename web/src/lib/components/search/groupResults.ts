@@ -1,9 +1,19 @@
 import type { Collection, SearchResult } from '$lib/types';
 
+/**
+ * A row the palette lists. A server result says where it matched; a row built
+ * from the local index does not (that index covers titles, refs, tags and
+ * field values and reports only a score), so it carries no `matched_in`
+ * rather than a guessed one.
+ */
+export type PaletteResult = Omit<SearchResult, 'matched_in'> & {
+	matched_in?: SearchResult['matched_in'];
+};
+
 export interface ResultGroup {
 	icon: string;
 	name: string;
-	results: SearchResult[];
+	results: PaletteResult[];
 }
 
 /**
@@ -18,7 +28,7 @@ export interface ResultGroup {
  * only through `Object.entries`, which a null-prototype object answers the same.
  */
 export function groupResultsByCollection(
-	results: SearchResult[],
+	results: PaletteResult[],
 	collections: Pick<Collection, 'slug' | 'icon' | 'name'>[],
 ): Record<string, ResultGroup> {
 	const groups: Record<string, ResultGroup> = Object.create(null);
@@ -43,7 +53,7 @@ export function groupResultsByCollection(
  * aria-activedescendant walk this order, so the selection moves down the list
  * the user sees rather than jumping between groups in rank order.
  */
-export function inRenderedOrder(groups: Record<string, ResultGroup>): SearchResult[] {
+export function inRenderedOrder(groups: Record<string, ResultGroup>): PaletteResult[] {
 	return Object.values(groups).flatMap((g) => g.results);
 }
 
@@ -54,8 +64,8 @@ export function inRenderedOrder(groups: Record<string, ResultGroup>): SearchResu
  * name a different item; the selection follows the item, by id.
  */
 export function reselectAfterAppend(
-	before: SearchResult[],
-	after: SearchResult[],
+	before: PaletteResult[],
+	after: PaletteResult[],
 	idx: number,
 ): number {
 	const selected = idx >= 0 ? before[idx] : undefined;
@@ -75,4 +85,13 @@ export function resultAnnouncement(
 ): string {
 	if (!query.trim() || loading || contentLoading) return '';
 	return `${count} result${count === 1 ? '' : 's'}`;
+}
+
+/**
+ * The source label shown beside a result's snippet: "in comment" when the
+ * snippet was cut from a comment, the wording the CLI uses. Every other
+ * source reads as the item's own text and gets no label.
+ */
+export function matchMarker(result: Pick<PaletteResult, 'matched_in'>): string {
+	return result.matched_in === 'comment' ? 'in comment' : '';
 }

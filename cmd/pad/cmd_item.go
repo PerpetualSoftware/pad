@@ -3929,8 +3929,9 @@ func searchCmd() *cobra.Command {
 			// Parse and display results
 			var searchResp struct {
 				Results []struct {
-					Item    models.Item `json:"item"`
-					Snippet string      `json:"snippet"`
+					Item      models.Item `json:"item"`
+					Snippet   string      `json:"snippet"`
+					MatchedIn string      `json:"matched_in"`
 				} `json:"results"`
 				Total  int `json:"total"`
 				Limit  int `json:"limit"`
@@ -3960,7 +3961,11 @@ func searchCmd() *cobra.Command {
 				}
 				fmt.Printf("%s %s (%s)\n", icon, r.Item.Title, r.Item.CollectionName)
 				if r.Snippet != "" {
-					fmt.Printf("  %s\n", r.Snippet)
+					marker := ""
+					if r.MatchedIn == "comment" {
+						marker = " (in comment)"
+					}
+					fmt.Printf("  %s%s\n", r.Snippet, marker)
 					// BUG-3033. The JSON form carries the marker on the embedded
 					// item; this renderer decodes that item and prints only the
 					// snippet, so without this the signal stops here.
