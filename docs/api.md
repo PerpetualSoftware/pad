@@ -548,7 +548,7 @@ response as a grouped personal-agenda request, before reading any feed id.
 - `POST /api/v1/me/calendar-feeds` accepts `{"layer":"mine"|"agent","workspace_ids":["<uuid>"],"name":"optional label"}`. Workspace UUIDs are canonicalised and must be admitted to the caller; `[]` means all admitted workspaces at fetch time. Names contain at most 100 characters. Returns `201 {feed,token,url?}`; the full `padics_` token is returned exactly once. The URL is omitted without a usable server base URL.
 - `GET /api/v1/me/calendar-feeds` returns `200 {feeds:[...]}`, live feeds newest first. Feed metadata is `{id,layer,workspace_ids,name,created_at,last_used_at}`; `last_used_at` is nullable. Neither tokens nor hashes can be retrieved. There is no update route: the layer is immutable.
 - `DELETE /api/v1/me/calendar-feeds/{id}` revokes an owned live feed and returns `204`. Another user's id, an unknown id and an already revoked id receive identical `404` responses. At most 10 live feeds are allowed across both layers; creating an eleventh returns `400 validation_error` with `details: {field:"feeds",code:"range"}` and message "At most 10 calendar feeds are allowed". Revoking frees a slot.
-- `GET /api/v1/feeds/ics/{token}` is public and authenticates only with the URL token; it does not read or set session cookies. It returns `text/calendar; charset=utf-8`, `Cache-Control: private`, and `X-Content-Type-Options: nosniff`. The token is not an API bearer token and cannot authenticate other endpoints. This route has a separate per-IP rate limit of 20/minute, burst 10.
+- `GET /api/v1/feeds/ics/{token}` is public and authenticates only with the URL token; it does not read or set session cookies. It returns `text/calendar; charset=utf-8`, `Cache-Control: private`, and `X-Content-Type-Options: nosniff`. The token is not an API bearer token and cannot authenticate other endpoints. This route has its own rate limits: 20/minute, burst 10, per feed URL, and 300/minute, burst 100, per source address, because calendar providers poll every subscriber's feed from a small shared pool of addresses.
 
 Each feed is one layer. `mine` contains `human` and `both` schedule occurrences
 plus dated-field entries. `agent` contains only `agent` schedule occurrences:
@@ -564,7 +564,10 @@ user. Explicit workspace ids intersect that admitted set, so lost access drops
 out silently. The window is UTC midnight 90 days before today through UTC midnight
 365 days after today (exclusive), walked in consecutive chunks of at most 92
 days through the agenda expansion path. Each chunk retains the agenda's 500-entry,
-1000-schedule scan and 1.5-second bounds. The whole feed stops at 2000 VEVENTs
+1000-schedule scan and 1.5-second bounds. A chunk cut at its entry cap resumes
+at the agenda's `next_from`, so the feed never skips days mid-window; a chunk cut
+with no resume point ends the feed there. The `agent` layer reads schedules only,
+so dated fields take none of its cap. The whole feed stops at 2000 VEVENTs
 (including deadline events) or five seconds. `X-Pad-Feed-Complete: true` means the
 window was fully read; any cap, truncation, unexpanded schedule or unavailable
 entry produces `200` with gathered events and `X-Pad-Feed-Complete: false`.

@@ -388,3 +388,86 @@ func TestCalendarFeedLooseDateFieldIsAllDay(t *testing.T) {
 		t.Fatal("other events missing")
 	}
 }
+
+// A chunk cut at the agenda's entry cap resumes at next_from: the feed may end
+// early at its own cap, but never skips days in the middle of the window.
+func TestCalendarFeedTruncatedChunkLeavesNoHole(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	w.srv.agendaClock = func() time.Time { return meAgendaNow }
+	for i := 0; i < 6; i++ {
+		w.item(t, "tasks", fmt.Sprintf("Daily-%d", i), `{}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2030-12-10T09:00", Tz: "UTC", Rrule: "FREQ=DAILY", Audience: "human"})
+	}
+	f := createTestCalendarFeed(t, w.srv, w.owner, "mine")
+	rr := fetchTestCalendarFeed(w.srv, f.Token)
+	if rr.Code != 200 {
+		t.Fatalf("fetch %d", rr.Code)
+	}
+	days := map[string]map[string]bool{}
+	summary := ""
+	for _, line := range strings.Split(rr.Body.String(), "\r\n") {
+		switch {
+		case strings.HasPrefix(line, "SUMMARY:"):
+			summary = line
+		case strings.HasPrefix(line, "DTSTART:"):
+			if days[summary] == nil {
+				days[summary] = map[string]bool{}
+			}
+			days[summary][strings.TrimPrefix(line, "DTSTART:")[:8]] = true
+		}
+	}
+	if len(days) != 6 {
+		t.Fatalf("schedules in feed: %d", len(days))
+	}
+	for name, set := range days {
+		first, _ := time.Parse("20060102", "20301210")
+		for d := first; len(set) > 0; d = d.AddDate(0, 0, 1) {
+			key := d.Format("20060102")
+			if !set[key] {
+				t.Fatalf("%s: %s missing while %d later days are present", name, key, len(set))
+			}
+			delete(set, key)
+		}
+	}
+}
+
+// The agent layer reads schedules only: dated fields it would discard neither
+// take its cap nor mark it incomplete.
+func TestCalendarFeedAgentLayerSkipsDatedItems(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	w.srv.agendaClock = func() time.Time { return meAgendaNow }
+	sc := oneShot()
+	sc.Audience = "agent"
+	w.item(t, "tasks", "Agent-only", `{}`, sc)
+	for i := 0; i <= agendaMaxEntries; i++ {
+		if _, err := w.srv.store.CreateItem(w.ws.ID, w.colls["tasks"].ID, models.ItemCreate{Title: fmt.Sprintf("Dated-%d", i), Fields: `{"due_date":"2031-03-12"}`}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	f := createTestCalendarFeed(t, w.srv, w.owner, "agent")
+	rr := fetchTestCalendarFeed(w.srv, f.Token)
+	if rr.Code != 200 || rr.Header().Get("X-Pad-Feed-Complete") != "true" {
+		t.Fatalf("agent feed %d complete=%q", rr.Code, rr.Header().Get("X-Pad-Feed-Complete"))
+	}
+	if strings.Count(rr.Body.String(), "BEGIN:VEVENT") != 1 || !strings.Contains(rr.Body.String(), "Agent-only") {
+		t.Fatal("agent feed content")
+	}
+}
+
+// Calendar providers poll many subscribers from one address: one feed using
+// its budget does not throttle another feed from the same address.
+func TestCalendarFeedRateLimitIsPerFeed(t *testing.T) {
+	w := newAgendaWorld(t, "tasks")
+	w.srv.agendaClock = func() time.Time { return meAgendaNow }
+	a := createTestCalendarFeed(t, w.srv, w.owner, "mine")
+	b := createTestCalendarFeed(t, w.srv, w.owner, "agent")
+	var rr *httptest.ResponseRecorder
+	for i := 0; i < 11; i++ {
+		rr = fetchTestCalendarFeed(w.srv, a.Token)
+	}
+	if rr.Code != 429 {
+		t.Fatalf("feed a after its burst: %d", rr.Code)
+	}
+	if rr = fetchTestCalendarFeed(w.srv, b.Token); rr.Code != 200 {
+		t.Fatalf("feed b from the same address: %d", rr.Code)
+	}
+}

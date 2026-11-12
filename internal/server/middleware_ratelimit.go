@@ -321,8 +321,10 @@ type RateLimiters struct {
 	// force is already infeasible; this is defense in depth. Per-IP because
 	// the caller is unauthenticated.
 	InvitationPreview *ipRateLimiter
-	// ICSFeed bounds unauthenticated calendar polls per source IP.
-	ICSFeed *ipRateLimiter
+	// ICSFeed bounds calendar polls per feed URL; ICSFeedIP bounds them per
+	// source address.
+	ICSFeed   *ipRateLimiter
+	ICSFeedIP *ipRateLimiter
 	// RecoveryCode caps how many recovery codes can be tried against a
 	// single 2FA challenge token. Without it an attacker who captures a
 	// valid challenge_token can grind through the small recovery-code
@@ -543,7 +545,10 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(20),
 			Burst: 300,
 		}),
-		ICSFeed: newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(20.0 / 60.0), Burst: 10}),
+		// ICSFeed: 20/min per feed URL, burst 10. ICSFeedIP: 300/min per
+		// address, burst 100, enough for a provider polling many subscribers.
+		ICSFeed:   newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(20.0 / 60.0), Burst: 10}),
+		ICSFeedIP: newIPRateLimiter(rateLimitConfig{Rate: rate.Limit(300.0 / 60.0), Burst: 100}),
 		// InvitationPreview: 20 requests per minute per IP (= 20/60 per second,
 		// burst 20). The /join page fetches this once on mount, so the ceiling
 		// is generous enough for a shared-NAT team onboarding in a batch while
@@ -701,6 +706,7 @@ func (rls *RateLimiters) Stop() {
 		rls.Health,
 		rls.InvitationPreview,
 		rls.ICSFeed,
+		rls.ICSFeedIP,
 		rls.RecoveryCode,
 		rls.SharePasswordIP,
 		rls.SharePasswordShare,
@@ -826,7 +832,17 @@ func (s *Server) RateLimit(next http.Handler) http.Handler {
 		}
 
 		if strings.HasPrefix(path, "/api/v1/feeds/ics/") {
-			if !s.rateLimiters.ICSFeed.allow(addr) {
+			// Calendar providers poll every subscriber's feed from a small
+			// shared pool of addresses, so the tight bucket is per feed URL
+			// (keyed by its hash, never the secret) and the per-address bucket
+			// only bounds floods of guessed URLs.
+			if !s.rateLimiters.ICSFeedIP.allow(addr) {
+				slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", "ics_feed_ip")
+				writeRateLimitResponse(w, s.rateLimiters.ICSFeedIP.config)
+				return
+			}
+			sum := sha256.Sum256([]byte(strings.TrimPrefix(path, "/api/v1/feeds/ics/")))
+			if !s.rateLimiters.ICSFeed.allow(hex.EncodeToString(sum[:])) {
 				slog.Warn("rate limited", "ip", ip, "path", logging.RedactPath(path), "limiter", "ics_feed")
 				writeRateLimitResponse(w, s.rateLimiters.ICSFeed.config)
 				return

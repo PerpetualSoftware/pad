@@ -232,6 +232,9 @@ type agendaRead struct {
 	recipient, audience     string
 	listNoDate              bool
 	scanCut                 bool
+	// skipDated reads schedule occurrences only, for a reader that would
+	// discard dated-field entries (the agent calendar feed).
+	skipDated bool
 	// A set cut cannot promise a resume instant. A time cut can.
 	setCut  bool
 	timeCut time.Time
@@ -279,6 +282,9 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 	run.setCut = run.setCut || sch.SetCut
 	if !sch.TimeCut.IsZero() && (run.timeCut.IsZero() || sch.TimeCut.Before(run.timeCut)) {
 		run.timeCut = sch.TimeCut
+	}
+	if run.skipDated {
+		return nil
 	}
 
 	// The dated half: ListItems carries the scope, archived and terminal clauses.

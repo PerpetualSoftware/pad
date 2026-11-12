@@ -289,6 +289,7 @@ func (s *Server) readCalendarFeed(r *http.Request, f *store.CalendarFeed, u *mod
 		run.audience = "human"
 		if c.Agent {
 			run.audience = "agent"
+			run.skipDated = true
 		}
 		if deadline.Before(run.deadline) {
 			run.deadline = deadline
@@ -308,7 +309,20 @@ func (s *Server) readCalendarFeed(r *http.Request, f *store.CalendarFeed, u *mod
 			}
 		}
 		run.finish()
-		complete = complete && run.response.WindowComplete && !run.response.Truncated && len(run.response.Unavailable) == 0 && len(run.response.Unexpanded) == 0
+		complete = complete && len(run.response.Unavailable) == 0 && len(run.response.Unexpanded) == 0
+		// A truncated chunk resumes at next_from, which promises every instant
+		// before it was examined. Without one, the feed ends here rather than
+		// skip to the next chunk and leave a hole mid-window.
+		next := end
+		if run.response.Truncated {
+			nf, err := time.Parse(time.RFC3339, run.response.NextFrom)
+			if err == nil && nf.After(start) && !nf.After(end) {
+				next = nf
+			} else {
+				complete = false
+				next = to
+			}
+		}
 		for _, e := range run.response.Entries {
 			if expired() {
 				return c, false, nil
@@ -362,7 +376,7 @@ func (s *Server) readCalendarFeed(r *http.Request, f *store.CalendarFeed, u *mod
 				return c, false, nil
 			}
 		}
-		start = end
+		start = next
 	}
 	return c, complete && !expired(), nil
 }
