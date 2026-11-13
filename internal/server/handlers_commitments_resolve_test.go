@@ -283,12 +283,15 @@ func TestCommitmentCompletionAnchorRuleSetHTTP(t *testing.T) {
 	}
 }
 
-// The managed-reminder 409 names the resolve door.
+// The managed-reminder 409 names the ack command and the resolve door.
 func TestManagedReminderRefusalNamesResolve(t *testing.T) {
 	t.Parallel()
 	rr := httptest.NewRecorder()
 	writeReminderManaged(rr, "")
-	if !strings.Contains(rr.Body.String(), "POST .../commitment/resolve, or change or delete the commitment instead") {
-		t.Errorf("message = %s", rr.Body.String())
+	body := rr.Body.String()
+	for _, want := range []string{"pad remind ack REF --occurrence INSTANT", "POST .../commitment/resolve", "or change or delete the commitment instead"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("message lacks %q: %s", want, body)
+		}
 	}
 }
