@@ -43,9 +43,9 @@ describe('agenda timezone presentation', () => {
   expect(isAllDay(date)).toBe(true);
   expect(isAllDay(row({ type: 'date', date: '2026-03-07T09:00:00Z' }))).toBe(false);
  });
- it('filters exactly created and completed', () => {
+ it('always drops created entries, and drops completed ones only when they are hidden', () => {
   const entries = ['schedule', 'date', 'created', 'completed'].map(type => row({ type: type as AgendaEntry['type'] }));
-  expect(filterEntries(entries, true)).toEqual(entries);
+  expect(filterEntries(entries, true)).toEqual([entries[0], entries[1], entries[3]]);
   expect(filterEntries(entries, false)).toEqual(entries.slice(0, 2));
  });
  it.each([

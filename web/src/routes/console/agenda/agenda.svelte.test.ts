@@ -37,9 +37,9 @@ async function dialog(kind: 'Move' | 'Snooze') {
 /** A message that went to the toast container, with its type. */
 const said = (text: string, type: 'success' | 'error' = 'error') => waitFor(() => expect(h.toast.mock.calls.filter(call => call[0] === text && call[1] === type)).toHaveLength(1));
 const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
-async function eventsOption() { await fireEvent.click(screen.getByRole('button', { name: 'View options' })); return screen.getByRole('menuitemradio', { name: 'Show created and completed' }); }
-async function toggleEvents() { await fireEvent.click(await eventsOption()); }
-async function eventsShown() { const on = (await eventsOption()).getAttribute('aria-checked') === 'true'; await fireEvent.click(screen.getByRole('button', { name: 'View options' })); return on; }
+async function completedOption() { await fireEvent.click(screen.getByRole('button', { name: 'View options' })); return screen.getByRole('menuitemradio', { name: 'Show completed' }); }
+async function toggleCompleted() { await fireEvent.click(await completedOption()); }
+async function completedShown() { const on = (await completedOption()).getAttribute('aria-checked') === 'true'; await fireEvent.click(screen.getByRole('button', { name: 'View options' })); return on; }
 const filter = () => screen.getByRole('button', { name: /^Workspaces: / });
 const groupItems = () => screen.getAllByRole('menuitemradio').map(el => el.querySelector('.mi-label')?.textContent?.trim());
 const groupItem = (name: string) => screen.getAllByRole('menuitemradio').find(el => el.querySelector('.mi-label')?.textContent?.trim() === name)!;
@@ -78,32 +78,32 @@ describe('agenda Day page', () => {
   expect(screen.getByText('First workspace')).toBeTruthy(); expect(screen.getByText('Second workspace')).toBeTruthy();
   expect(screen.getByRole('link', { name: 'First item' }).getAttribute('href')).toBe('/alice/work/tasks/EX-30');
   expect(screen.getByText('09:00')).toBeTruthy(); expect(screen.getByText('All day')).toBeTruthy();
-  expect(await eventsShown()).toBe(true);
+  expect(await completedShown()).toBe(true);
   expect(screen.getAllByRole('status')).toHaveLength(1);
   expect(screen.getByRole('link', { name: 'America/New_York' }).getAttribute('href')).toBe('/console/settings');
   expect(h.agenda.mock.calls[0][2]).toBe('America/New_York');
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'false');
  });
- it('hides only events locally, persists per user, and another user defaults to checked', async () => {
-  h.agenda.mockResolvedValue(response([row(), row({ type: 'created', item_title: 'Created item' }), row({ type: 'completed', item_title: 'Completed item' })]));
-  const events = () => screen.queryByRole('button', { name: '1 created · 1 completed' });
-  await mount(); expect(events()).toBeTruthy(); expect(screen.queryByText('Created item')).toBeNull();
-  await fireEvent.click(events()!); expect(screen.getByText('Created item')).toBeTruthy(); expect(screen.getByText('Completed item')).toBeTruthy();
-  await toggleEvents();
-  expect(events()).toBeNull(); expect(screen.queryByText('Created item')).toBeNull(); expect(screen.getByText('First item')).toBeTruthy();
-  expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBe('0'); expect(h.agenda).toHaveBeenCalledTimes(1);
-  cleanup(); await mount(); expect(events()).toBeNull();
-  cleanup(); h.user = { id: 'user-b', timezone: 'America/New_York' }; await mount(); expect(events()).toBeTruthy();
+ it('hides only completed entries locally, persists per user, and another user defaults to checked', async () => {
+  h.agenda.mockResolvedValue(response([row(), row({ type: 'completed', item_ref: 'EX-31', item_title: 'Completed item' }), row({ type: 'completed', item_ref: 'EX-32', item_title: 'Other completed' })]));
+  const completed = () => screen.queryByRole('button', { name: '2 completed' });
+  await mount(); expect(completed()).toBeTruthy(); expect(screen.queryByText('Completed item')).toBeNull();
+  await fireEvent.click(completed()!); expect(screen.getByText('Completed item')).toBeTruthy(); expect(screen.getByText('Other completed')).toBeTruthy();
+  await toggleCompleted();
+  expect(completed()).toBeNull(); expect(screen.queryByText('Completed item')).toBeNull(); expect(screen.getByText('First item')).toBeTruthy();
+  expect(localStorage.getItem('pad-agenda-completed:user-a')).toBe('0'); expect(h.agenda).toHaveBeenCalledTimes(1);
+  cleanup(); await mount(); expect(completed()).toBeNull();
+  cleanup(); h.user = { id: 'user-b', timezone: 'America/New_York' }; await mount(); expect(completed()).toBeTruthy();
  });
  it('refetches timezone changes on the mounted page and isolates a new user preference', async () => {
-  await mount(); await toggleEvents();
+  await mount(); await toggleCompleted();
   h.user = { id: 'user-a', timezone: 'Asia/Tokyo' }; h.signal?.set('auth', 1);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
   expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', 'all']);
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 2);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
-  expect(await eventsShown()).toBe(true);
-  expect(localStorage.getItem('pad-agenda-show-events:user-b')).toBeNull();
+  expect(await completedShown()).toBe(true);
+  expect(localStorage.getItem('pad-agenda-completed:user-b')).toBeNull();
  });
  it.each(['Europe/London', null])('uses the browser zone, then UTC, when the account has no zone: %s', async browserZone => {
   h.user = { id: 'user-a' }; h.browserZone = browserZone;
@@ -123,8 +123,8 @@ describe('agenda Day page', () => {
  it('survives throwing storage with an in-memory default', async () => {
   vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
   vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
-  await mount(); expect(await eventsShown()).toBe(true);
-  await toggleEvents(); expect(await eventsShown()).toBe(false);
+  await mount(); expect(await completedShown()).toBe(true);
+  await toggleCompleted(); expect(await completedShown()).toBe(false);
  });
  it('does not access the preference before the user is known', async () => {
   h.user = null; const get = vi.spyOn(localStorage, 'getItem'); const set = vi.spyOn(localStorage, 'setItem');
@@ -136,10 +136,10 @@ describe('agenda Day page', () => {
   expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
   expect(screen.queryAllByRole('button', { name: 'Load the rest' })).toHaveLength('next_from' in extra ? 1 : 0);
  });
- it('offers to show hidden events when they are everything loaded', async () => {
-  h.agenda.mockResolvedValue(response([row({ type: 'created' })])); render(Agenda); await screen.findByRole('button', { name: '1 created' }); await toggleEvents();
-  expect(screen.getByText('Created and completed items are hidden.')).toBeTruthy(); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.getByRole('button', { name: '1 created' })).toBeTruthy();
+ it('offers to show hidden completed work when it is everything loaded', async () => {
+  h.agenda.mockResolvedValue(response([row({ type: 'completed' })])); render(Agenda); await screen.findByRole('button', { name: '1 completed' }); await toggleCompleted();
+  expect(screen.getByText('Completed work is hidden.')).toBeTruthy(); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show it' })); expect(screen.getByRole('button', { name: '1 completed' })).toBeTruthy();
  });
  it('renders loading, error with retry, and the complete empty state', async () => {
   const pending = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(pending.promise); render(Agenda); await screen.findByText('Loading agenda…');
@@ -434,13 +434,13 @@ describe('agenda Week and priority', () => {
   expect(screen.queryByRole('dialog', { name: 'Move target' })).toBeNull();
   expect(screen.queryByText(/This occurrence changed/)).toBeNull();
  });
- it('Week says when the created and completed toggle hides every entry', async () => {
-  localStorage.setItem('pad-agenda-show-events:user-a', '0');
-  h.agenda.mockResolvedValue(response([row({ type: 'created', item_title: 'Created item' })]));
+ it('Week says when the Show completed toggle hides every entry', async () => {
+  localStorage.setItem('pad-agenda-completed:user-a', '0');
+  h.agenda.mockResolvedValue(response([row({ type: 'completed', item_title: 'Completed item' })]));
   render(Agenda);
-  expect(await screen.findByText('Created and completed items are hidden.')).toBeTruthy(); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show them' }));
-  await fireEvent.click(await screen.findByRole('button', { name: '1 created' })); expect(screen.getByText('Created item')).toBeTruthy();
+  expect(await screen.findByText('Completed work is hidden.')).toBeTruthy(); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show it' }));
+  await fireEvent.click(await screen.findByRole('button', { name: '1 completed' })); expect(screen.getByText('Completed item')).toBeTruthy();
  });
  it('deadline markers come only from live occurrences, never history rows', async () => {
   const roles = { ...row().roles!, deadline: '2026-11-08T14:00:00Z', deadline_behavior: 'lapses' as const };
@@ -1280,15 +1280,15 @@ describe('agenda Month page', () => {
   await fireEvent.click(dateButton('2026-11-05'));
   expect(within(screen.getByRole('dialog')).getByText('No entries on this day.')).toBeTruthy();
  });
- it('offers to reveal hidden created and completed entries in Month', async () => {
-  h.agenda.mockResolvedValue(response([row({ type: 'created' }), row({ type: 'completed', item_ref: 'EX-31' })]));
-  render(Agenda); await screen.findByRole('grid'); await toggleEvents();
-  expect(screen.getByText('Created and completed items are hidden.')).toBeTruthy();
+ it('offers to reveal hidden completed entries in Month', async () => {
+  h.agenda.mockResolvedValue(response([row({ type: 'completed' }), row({ type: 'completed', item_ref: 'EX-31' })]));
+  render(Agenda); await screen.findByRole('grid'); await toggleCompleted();
+  expect(screen.getByText('Completed work is hidden.')).toBeTruthy();
   expect(screen.queryByText('No entries this month.')).toBeNull();
   // Shown again, they are still not lines in the cell: the day detail folds them into its last line.
-  await fireEvent.click(screen.getByRole('button', { name: 'Show them' })); expect(screen.queryByText('First item')).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show it' })); expect(screen.queryByText('First item')).toBeNull();
   await fireEvent.click(dateButton('2026-11-05'));
-  await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '1 created · 1 completed' }));
+  await fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: '2 completed' }));
   expect(within(screen.getByRole('dialog')).getAllByText('First item')).toHaveLength(2);
  });
  it('shows the summary below the grid, named for the month, and no outstanding list', async () => {
@@ -1298,10 +1298,10 @@ describe('agenda Month page', () => {
   expect(summary.closest('aside')).toBeNull(); expect(summary.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1');
   expect(screen.queryByRole('region', { name: 'Outstanding' })).toBeNull();
  });
- // Created events of one day, as the agenda returns them with the option on.
- const made = (count: number, day = '2026-11-05') => Array.from({ length: count }, (_, i) => row({ type: 'created', item_ref: `EV-${i}`, item_title: `Made ${i}`, schedule_id: undefined, state: undefined, day, at: `${day}T15:00:00Z` }));
+ // Completed entries of one day, as the agenda returns them with the option on.
+ const made = (count: number, day = '2026-11-05') => Array.from({ length: count }, (_, i) => row({ type: 'completed', item_ref: `EV-${i}`, item_title: `Made ${i}`, schedule_id: undefined, state: undefined, day, at: `${day}T15:00:00Z` }));
  const three = () => [0, 1, 2].map(i => row({ item_ref: `EX-${30 + i}`, schedule_id: `s${i}`, item_title: `Plain ${i}` }));
- it('counts and lists commitments only in a cell, and folds created and completed into a disclosure in day detail', async () => {
+ it('counts and lists commitments only in a cell, and folds completed entries into a disclosure in day detail', async () => {
   h.agenda.mockResolvedValue(response([...three(), ...made(20)])); render(Agenda); await screen.findByRole('grid');
   const cell = cellOf('2026-11-05');
   expect(cell.querySelector('.count')).toHaveTextContent(/^3 · 3 owed$/);
@@ -1312,14 +1312,14 @@ describe('agenda Month page', () => {
   const detail = screen.getByRole('dialog', { name: 'Thursday, 5 November 2026, Today' });
   expect(detail.querySelector('.subject')).toHaveTextContent(/^3 entries · 3 owed$/);
   expect([...detail.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EX-31', 'EX-32']);
-  const toggle = within(detail).getByRole('button', { name: '20 created' });
+  const toggle = within(detail).getByRole('button', { name: '20 completed' });
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await fireEvent.click(toggle);
   expect(toggle).toHaveAttribute('aria-expanded', 'true');
   expect(detail.querySelectorAll('[data-ref^="EV-"]')).toHaveLength(20);
   expect(detail.querySelector('.subject')).toHaveTextContent(/^3 entries · 3 owed$/);
  });
- it('leaves a day with only created and completed events empty in the grid, with the events in its day detail', async () => {
+ it('leaves a day with only completed entries empty in the grid, with them in its day detail', async () => {
   h.agenda.mockResolvedValue(response([row(), ...made(2, '2026-11-09')])); render(Agenda); await screen.findByRole('grid');
   const cell = cellOf('2026-11-09');
   expect(cell.querySelector('.count')).toBeNull(); expect(within(cell).queryAllByRole('link')).toHaveLength(0);
@@ -1327,24 +1327,24 @@ describe('agenda Month page', () => {
   await fireEvent.click(dateButton('2026-11-09'));
   const detail = screen.getByRole('dialog', { name: 'Monday, 9 November 2026' });
   expect(detail.querySelector('.subject')).toBeNull(); expect(within(detail).queryByText('No entries on this day.')).toBeNull();
-  expect(within(detail).getByRole('button', { name: '2 created' })).toHaveAttribute('aria-expanded', 'false');
+  expect(within(detail).getByRole('button', { name: '2 completed' })).toHaveAttribute('aria-expanded', 'false');
  });
- it('on a phone keeps the header of a day with only events while they are shown, and folds it once they are hidden', async () => {
+ it('on a phone keeps the header of a day with only completed entries while they are shown, and folds it once they are hidden', async () => {
   phone(); h.agenda.mockResolvedValue(response([...three(), ...made(20), ...made(2, '2026-11-09')])); render(Agenda);
   const list = await screen.findByRole('list', { name: 'November 2026' });
   const headers = () => [...list.querySelectorAll('button.day-header')].map(button => button.getAttribute('data-day'));
   expect(headers()).toEqual(['2026-11-05', '2026-11-09']);
   const quiet = list.querySelector('button.day-header[data-day="2026-11-09"]')!.closest('li')!;
   expect(quiet.querySelectorAll('[data-ref]')).toHaveLength(0);
-  const toggle = within(quiet).getByRole('button', { name: '2 created' });
+  const toggle = within(quiet).getByRole('button', { name: '2 completed' });
   expect(toggle).toHaveAttribute('aria-expanded', 'false');
   await fireEvent.click(toggle); expect(quiet.querySelectorAll('[data-ref^="EV-"]')).toHaveLength(2);
   const today = list.querySelector('button.day-header[data-day="2026-11-05"]')!.closest('li')!;
   expect([...today.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EX-31', 'EX-32']);
-  expect(within(today).getByRole('button', { name: '20 created' })).toHaveAttribute('aria-expanded', 'false');
-  await toggleEvents();
+  expect(within(today).getByRole('button', { name: '20 completed' })).toHaveAttribute('aria-expanded', 'false');
+  await toggleCompleted();
   await waitFor(() => expect(headers()).toEqual(['2026-11-05']));
-  expect(within(list).queryByRole('button', { name: /created/ })).toBeNull();
+  expect(within(list).queryByRole('button', { name: /completed/ })).toBeNull();
  });
  it('heads a phone day as the week does: the day without its year, a Today badge and what is owed', async () => {
   phone(); h.agenda.mockResolvedValue(response([row(), row({ item_ref: 'EX-31', schedule_id: 's2', state: 'done' }), row({ item_ref: 'EX-50', schedule_id: 's3', day: '2026-11-09', at: '2026-11-09T14:00:00Z' })])); render(Agenda);
@@ -1368,5 +1368,82 @@ describe('agenda Month page', () => {
   const list = screen.getByRole('list', { name: 'November 2026' }); expect(list.children).toHaveLength(30);
   const header = within(list).getByRole('button', { name: /^Thursday 5 November\s*Today.*Not fully loaded/ });
   await fireEvent.click(header); expect(within(screen.getByRole('dialog')).getByRole('button', { name: 'Done EX-30' })).toBeTruthy();
+ });
+});
+
+describe('created entries stay off the agenda; Show completed is its own toggle (TASK-4512)', () => {
+ const phone = () => vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+ const event = (type: 'created' | 'completed', ref: string, title: string, day = '2026-11-05') => row({ type, item_ref: ref, item_title: title, schedule_id: undefined, state: undefined, roles: undefined, day, at: `${day}T15:00:00Z` });
+ // One commitment, two completed and two created on its day, and a day whose only entry is a created one.
+ const mixed = () => response([row(), event('completed', 'EV-1', 'Closed one'), event('completed', 'EV-2', 'Closed two'), event('created', 'EV-3', 'Made one'), event('created', 'EV-4', 'Made two'), event('created', 'EV-5', 'Made alone', '2026-11-07')]);
+ const noCreated = () => { for (const title of ['Made one', 'Made two', 'Made alone']) expect(screen.queryByText(title)).toBeNull(); expect(document.body.textContent).not.toMatch(/created/i); };
+
+ it.each(['week', 'day'])('%s: never draws a created entry, in the rows, the disclosure, the strip or its counts', async mode => {
+  localStorage.setItem('pad-agenda-mode:user-a', mode); h.agenda.mockResolvedValue(mixed()); await mount();
+  const toggle = screen.getByRole('button', { name: '2 completed' });
+  expect(toggle).toHaveAttribute('aria-expanded', 'false'); // The chevron follows the words: "2 completed ›".
+  expect(toggle.textContent?.trim()).toBe('2 completed'); expect(toggle.lastElementChild?.tagName.toLowerCase()).toBe('svg');
+  await fireEvent.click(toggle); expect(toggle).toHaveAttribute('aria-expanded', 'true');
+  expect(screen.getByText('Closed one')).toBeTruthy(); expect(screen.getByText('Closed two')).toBeTruthy(); noCreated();
+  expect(stripDay('2026-11-05')).toHaveAccessibleName(/Thursday 5 November, Today, 1 entry, 1 owed/);
+  // Day range loads one day; in Week the day whose only entry is a created one reads as empty.
+  if (mode === 'week') {
+   expect(stripDay('2026-11-07')).toHaveAccessibleName(/Saturday 7 November, no entries/); expect(stripDay('2026-11-07').querySelectorAll('.pip')).toHaveLength(0);
+   expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy();
+  }
+ });
+ it('month: never draws a created entry in a cell, the day dialog or the empty days', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'month'); h.agenda.mockResolvedValue(mixed()); render(Agenda); await screen.findByRole('grid');
+  noCreated();
+  await fireEvent.click(document.querySelector('button.date[data-day="2026-11-05"]') as HTMLButtonElement);
+  const detail = screen.getByRole('dialog');
+  const toggle = within(detail).getByRole('button', { name: '2 completed' }); await fireEvent.click(toggle);
+  expect([...detail.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EV-1', 'EV-2']); noCreated();
+  await fireEvent.click(within(detail).getByRole('button', { name: 'Close' }));
+  await fireEvent.click(document.querySelector('button.date[data-day="2026-11-07"]') as HTMLButtonElement);
+  expect(within(screen.getByRole('dialog')).getByText('No entries on this day.')).toBeTruthy();
+ });
+ it('phone month list: no created entry, and a day with only created ones folds as empty', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'month'); phone(); h.agenda.mockResolvedValue(mixed()); render(Agenda);
+  const list = await screen.findByRole('list', { name: 'November 2026' });
+  expect([...list.querySelectorAll('button.day-header')].map(button => button.getAttribute('data-day'))).toEqual(['2026-11-05']);
+  await fireEvent.click(within(list).getByRole('button', { name: '2 completed' }));
+  expect([...list.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-30', 'EV-1', 'EV-2']); noCreated();
+ });
+ it('Show completed defaults on, toggles off and persists under its own key, and ignores the old combined key', async () => {
+  localStorage.setItem('pad-agenda-show-events:user-a', '0');
+  h.agenda.mockResolvedValue(mixed()); await mount();
+  expect((await completedOption()).getAttribute('aria-checked')).toBe('true');
+  expect(screen.queryByRole('menuitemradio', { name: 'Show created and completed' })).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+  expect(screen.getByRole('button', { name: '2 completed' })).toBeTruthy();
+  await toggleCompleted();
+  expect(screen.queryByRole('button', { name: /completed/ })).toBeNull(); expect(screen.getByText('First item')).toBeTruthy();
+  expect(localStorage.getItem('pad-agenda-completed:user-a')).toBe('0'); expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBe('0');
+  cleanup(); await mount(); expect(screen.queryByRole('button', { name: /completed/ })).toBeNull();
+  await toggleCompleted(); expect(localStorage.getItem('pad-agenda-completed:user-a')).toBe('1');
+  expect(screen.getByRole('button', { name: '2 completed' })).toBeTruthy();
+ });
+ it.each([true, false])('a dated item done on its day stays inline as Done, Show completed %s', async shown => {
+  if (!shown) localStorage.setItem('pad-agenda-completed:user-a', '0');
+  h.agenda.mockResolvedValue(response([row({ state: 'done', item_title: 'Finished occurrence' }), event('completed', 'EX-30', 'Finished occurrence')]));
+  render(Agenda); const link = await screen.findByRole('link', { name: 'Finished occurrence' });
+  const inline = link.closest('li.agenda-row')!;
+  expect(inline.classList.contains('done')).toBe(true); expect(within(inline as HTMLElement).getByRole('img', { name: 'Done' })).toBeTruthy();
+  expect(inline.closest('li:not(.agenda-row)')).toBeNull();
+  expect(screen.queryAllByRole('button', { name: '1 completed' })).toHaveLength(shown ? 1 : 0);
+ });
+ it('a window of created entries only reads as empty, with no hidden notice', async () => {
+  h.agenda.mockResolvedValue(response([event('created', 'EV-3', 'Made one')])); render(Agenda);
+  expect(await screen.findByText('Nothing scheduled for 5–11 November 2026')).toBeTruthy();
+  expect(screen.queryByText(/hidden/)).toBeNull(); expect(screen.queryByRole('button', { name: /^Show/ })).toBeNull(); noCreated();
+ });
+ it('a window of completed entries only, with Show completed off, says so and offers to show it', async () => {
+  localStorage.setItem('pad-agenda-completed:user-a', '0');
+  h.agenda.mockResolvedValue(response([event('completed', 'EV-1', 'Closed one'), event('created', 'EV-3', 'Made one')])); render(Agenda);
+  expect(await screen.findByText('Completed work is hidden.')).toBeTruthy(); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Show it' }));
+  expect(screen.queryByText('Completed work is hidden.')).toBeNull();
+  await fireEvent.click(await screen.findByRole('button', { name: '1 completed' })); expect(screen.getByText('Closed one')).toBeTruthy(); noCreated();
  });
 });

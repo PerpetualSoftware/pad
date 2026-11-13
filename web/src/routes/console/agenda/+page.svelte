@@ -4,7 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { agendaRows, attentionEntries, roleDay, roleMarkers, canMove, canResolve, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isEvent, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { agendaRows, attentionEntries, roleDay, roleMarkers, canMove, canResolve, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -14,7 +14,7 @@
 	import CalendarEntry from '$lib/components/calendar/CalendarEntry.svelte';
 	import AgendaAttention from '$lib/components/calendar/AgendaAttention.svelte';
 	import AgendaDayDialog from '$lib/components/calendar/AgendaDayDialog.svelte';
-	import AgendaEvents from '$lib/components/calendar/AgendaEvents.svelte';
+	import AgendaCompleted from '$lib/components/calendar/AgendaCompleted.svelte';
 	import AgendaDayGroup from '$lib/components/calendar/AgendaDayGroup.svelte';
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import AgendaToolbar from '$lib/components/calendar/AgendaToolbar.svelte';
@@ -29,7 +29,7 @@
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
 	const genericCopy = 'Could not update this occurrence. Try again.';
-	const preferencePrefix = 'pad-agenda-show-events:';
+	const preferencePrefix = 'pad-agenda-completed:';
 	const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
 	let selectedDay = $state('');
 	const day = $derived(selectedDay || todayIn(zone));
@@ -60,7 +60,7 @@
 	// Whether "Load the rest" was asked for in the window on screen; a quiet reload of that window then pages on too.
 	let wantRest = false;
 	const REST_PAGES = 10;
-	let showEvents = $state(true);
+	let showCompleted = $state(true);
 	let data = $state<AgendaResponse | null>(null);
 	let loading = $state(true);
 	let updating = $state(false);
@@ -100,7 +100,8 @@
 	let hoverDay = $state('');
 	let toastedError = '';
 	const dragCache = new Map<string, { to: string; promise: Promise<CommitmentMoveResult> }>();
-	const entries = $derived(filterEntries(data?.entries ?? [], showEvents));
+	// Created entries never reach the page: creation is intake, not a commitment.
+	const entries = $derived(filterEntries(data?.entries ?? [], showCompleted));
 	const groups = $derived(groupEntries(entries));
 	const incomplete = $derived(!!(data?.window_complete === false || data?.truncated || data?.unavailable?.length || data?.unexpanded?.length || data?.next_from));
 	const status = $derived(loading ? 'Loading agenda…' : updating ? 'Updating agenda…' : announcement);
@@ -127,8 +128,8 @@
 		return [daySummary(dayRows(date)), ...(deadlines ? [`${deadlines} deadline${deadlines === 1 ? '' : 's'}`] : [])].filter(Boolean).join(' · ');
 	}
 	const listDays = $derived(mode === 'week' ? stripDays : groups.map(group => group.day));
-	const hiddenEvents = $derived(!showEvents && !!data && entries.length === 0 && data.entries.length > 0);
-	const nothing = $derived(!!data && !loading && !loadError && !incomplete && !hiddenEvents && entries.length === 0 && attention.length === 0);
+	const hiddenCompleted = $derived(!showCompleted && !!data && entries.length === 0 && data.entries.some(isCompleted));
+	const nothing = $derived(!!data && !loading && !loadError && !incomplete && !hiddenCompleted && entries.length === 0 && attention.length === 0);
 	// What a drag over a day would do, in words.
 	const dragNote = $derived.by(() => {
 		if (!dragging || !hoverDay || unchanged(dragging, targetOnDay(dragging, hoverDay, zone))) return null;
@@ -154,9 +155,9 @@
 	// What needs attention in the month, by the derivation the week's band uses.
 	const monthAttention = $derived(new Set(data ? attentionEntries(monthEntries, data.priority_list).filter(item => item.inWindow).map(item => entryKey(item.entry as AgendaEntry)) : []));
 	// Each day's commitments, what needs attention first, so it is never behind "+N more".
-	// Created and completed entries are never rows or counted: each day's fold into one line that ends its list.
-	const monthEvents = $derived(new Map(groupEntries(monthEntries.filter(isEvent)).map(group => [group.day, group.entries])));
-	const monthDays = $derived(new Map(groupEntries(monthEntries.filter(entry => !isEvent(entry))).map(group => [group.day, attentionFirst(group.entries, entry => monthAttention.has(entryKey(entry)))])));
+	// Completed entries are never rows or counted: each day's fold into one line that ends its list.
+	const monthCompleted = $derived(new Map(groupEntries(monthEntries.filter(isCompleted)).map(group => [group.day, group.entries])));
+	const monthDays = $derived(new Map(groupEntries(monthEntries.filter(entry => !isCompleted(entry))).map(group => [group.day, attentionFirst(group.entries, entry => monthAttention.has(entryKey(entry)))])));
 	// agendaRows leads with all-day rows, so the attention order is applied to its result.
 	const monthRows = $derived(new Map([...monthDays].map(([date, rows]) => [date, attentionFirst(agendaRows(rows).map(row => ({ ...row, attention: monthAttention.has(row.key) })), row => row.attention)])));
 	function monthCount(date: string) {
@@ -232,7 +233,7 @@
 					savedMode = stored === 'day' || stored === 'month' ? stored : 'week';
 				} catch { /* Storage is optional. */ }
 			}
-			showEvents = value; mode = savedMode;
+			showCompleted = value; mode = savedMode;
 		});
 	});
 	function setMode(value: 'week' | 'day' | 'month') {
@@ -244,8 +245,8 @@
 		if (!userId || userId !== preferenceUser) return;
 		try { localStorage.setItem(`pad-agenda-mode:${userId}`, value); } catch { /* Keep the in-memory choice. */ }
 	}
-	function setShowEvents(value: boolean) {
-		showEvents = value;
+	function setShowCompleted(value: boolean) {
+		showCompleted = value;
 		const userId = authStore.user?.id;
 		if (!userId || userId !== preferenceUser) return;
 		try { localStorage.setItem(`${preferencePrefix}${userId}`, value ? '1' : '0'); } catch { /* Keep the in-memory choice. */ }
@@ -591,8 +592,8 @@
 
 <svelte:head><title>Agenda</title></svelte:head>
 <svelte:window onkeydown={event => { if (event.key === 'Escape') clearDrag(); }} />
-<AgendaToolbar {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selectedGroup} {workspaces} {showEvents} bind:heading={periodHeading}
-	onmode={setMode} onmove={movePeriod} ontoday={goToday} ongroup={setGroup} onmanage={() => manageGroups = {}} onshowevents={setShowEvents} />
+<AgendaToolbar {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selectedGroup} {workspaces} {showCompleted} bind:heading={periodHeading}
+	onmode={setMode} onmove={movePeriod} ontoday={goToday} ongroup={setGroup} onmanage={() => manageGroups = {}} onshowcompleted={setShowCompleted} />
 
 <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{status}</div>
 <div class="progress" class:busy={updating || loadingRest} aria-hidden="true"></div>
@@ -627,10 +628,10 @@
 			{/if}
 		</div>
 	{/if}
-	{#if hiddenEvents}
+	{#if hiddenCompleted}
 		<div class="notice info">
-			<span>Created and completed items are hidden.</span><span class="spacer"></span>
-			<Button size="sm" variant="ghost" onclick={() => setShowEvents(true)}>Show them</Button>
+			<span>Completed work is hidden.</span><span class="spacer"></span>
+			<Button size="sm" variant="ghost" onclick={() => setShowCompleted(true)}>Show it</Button>
 		</div>
 	{/if}
 {/if}
@@ -643,17 +644,17 @@
 	{#if loadError && !savedRefreshError}{@render failed()}{/if}
 	<MonthGrid bind:this={monthGrid} {month} today={todayIn(zone)} selected={day} {mobile} loaded={data}
 		cellLabel={monthCellLabel} heading={longDay} summary={(date) => dayIncomplete(date) ? 'Not fully loaded' : daySummary(monthDays.get(date) ?? [])}
-		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length && !monthEvents.get(date)?.length}
+		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length && !monthCompleted.get(date)?.length}
 		onopen={openDay} onchoose={(date) => selectedDay = date}>
 		{#snippet cell(date: string, phone: boolean)}
 			{#if phone}
 				<!-- The phone month is the week's list: every entry of the day, with its actions. -->
-				{#if monthDays.get(date)?.length || monthEvents.get(date)?.length}
+				{#if monthDays.get(date)?.length || monthCompleted.get(date)?.length}
 					<ul class="card month-day">
 						{#each monthDays.get(date) ?? [] as entry (entryKey(entry))}
 							<AgendaRow {entry} {zone} {now} compact pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} onaction={action} />
 						{/each}
-						<AgendaEvents events={monthEvents.get(date) ?? []} {zone} {now} compact onaction={action} />
+						<AgendaCompleted completed={monthCompleted.get(date) ?? []} {zone} {now} compact onaction={action} />
 					</ul>
 				{/if}
 			{:else}
@@ -664,7 +665,7 @@
 		{/snippet}
 	</MonthGrid>
 	{#if nothing}<p class="quiet-note">No entries this month.</p>{/if}
-	<AgendaDayDialog day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} events={openedDay ? monthEvents.get(openedDay) ?? [] : []} {zone} {now} {mobile}
+	<AgendaDayDialog day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} completed={openedDay ? monthCompleted.get(openedDay) ?? [] : []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
 	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} /></div>{/if}
 {:else}

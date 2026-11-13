@@ -90,13 +90,14 @@ export function isAllDay(entry: AgendaEntry): boolean {
 	return entry.type === 'schedule' ? entry.all_day === true : entry.type === 'date' && /^\d{4}-\d{2}-\d{2}$/.test(entry.date ?? '');
 }
 
-/** A created or completed event: a record of what happened, never a commitment row. */
-export function isEvent(entry: AgendaEntry): boolean {
-	return entry.type === 'created' || entry.type === 'completed';
+/** A completed entry: a record of work finished, never a commitment row. */
+export function isCompleted(entry: AgendaEntry): boolean {
+	return entry.type === 'completed';
 }
 
-export function filterEntries(entries: AgendaEntry[], showEvents: boolean): AgendaEntry[] {
-	return showEvents ? entries : entries.filter(entry => !isEvent(entry));
+/** What the agenda shows of a response: never its created entries, and its completed ones only when asked for. */
+export function filterEntries(entries: AgendaEntry[], showCompleted: boolean): AgendaEntry[] {
+	return entries.filter(entry => entry.type !== 'created' && (showCompleted || !isCompleted(entry)));
 }
 
 export function groupEntries(entries: AgendaEntry[]): { day: string; entries: AgendaEntry[] }[] {

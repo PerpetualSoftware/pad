@@ -131,14 +131,20 @@ describe('reloadForIdentityChange', () => {
 	});
 });
 
-it('clears every per-user agenda event preference on identity change', () => {
-	localStorage.setItem('pad-agenda-show-events:user-a', '0');
-	localStorage.setItem('pad-agenda-show-events:user-b', '1');
+it('clears every per-user agenda Show completed preference on identity change', () => {
+	localStorage.setItem('pad-agenda-completed:user-a', '0');
+	localStorage.setItem('pad-agenda-completed:user-b', '1');
 	localStorage.setItem('pad-theme', 'dark');
 	clearPersistentIdentityState();
-	expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBeNull();
-	expect(localStorage.getItem('pad-agenda-show-events:user-b')).toBeNull();
+	expect(localStorage.getItem('pad-agenda-completed:user-a')).toBeNull();
+	expect(localStorage.getItem('pad-agenda-completed:user-b')).toBeNull();
 	expect(localStorage.getItem('pad-theme')).toBe('dark');
+});
+
+it('clears the earlier combined agenda preference that browsers still hold', () => {
+	localStorage.setItem('pad-agenda-show-events:user-a', '0');
+	clearPersistentIdentityState();
+	expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBeNull();
 });
 
 it('clears chat drafts and pending attempts in every conversation', () => {

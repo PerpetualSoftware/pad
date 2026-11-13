@@ -57,10 +57,12 @@ export function clearPersistentIdentityState(): void {
 	// `pad-last-scroll-<ws>-<pathname>` embeds the path in its own KEY. Both are
 	// keyed by workspace with no user in them, so two accounts with access to
 	// the same workspace slug share them, and the second one is legible from
-	// the key list alone without reading a single value.
+	// the key list alone without reading a single value. The agenda's per-user
+	// preferences go too, including the earlier combined one
+	// (`pad-agenda-show-events:`) that browsers still hold.
 	try {
 		for (const key of Object.keys(localStorage)) {
-			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX) || key.startsWith('pad-agenda-show-events:')) {
+			if (key.startsWith(LAST_ROUTE_PREFIX) || key.startsWith(LAST_SCROLL_PREFIX) || key.startsWith('pad-agenda-completed:') || key.startsWith('pad-agenda-show-events:')) {
 				localStorage.removeItem(key);
 			}
 		}

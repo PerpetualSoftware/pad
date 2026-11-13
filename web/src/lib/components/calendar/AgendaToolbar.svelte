@@ -19,7 +19,7 @@
 		groups: WorkspaceGroup[] | null;
 		selectedGroup: string;
 		workspaces: Workspace[] | null;
-		showEvents: boolean;
+		showCompleted: boolean;
 		/** The period heading, which takes focus when a moved row leaves the view. */
 		heading?: HTMLHeadingElement;
 		onmode: (mode: Mode) => void;
@@ -27,10 +27,10 @@
 		ontoday: () => void;
 		ongroup: (id: string) => void;
 		onmanage: () => void;
-		onshowevents: (show: boolean) => void;
+		onshowcompleted: (show: boolean) => void;
 	}
 
-	let { mode, period, zone, mobile = false, groups, selectedGroup, workspaces, showEvents, heading = $bindable(), onmode, onmove, ontoday, ongroup, onmanage, onshowevents }: Props = $props();
+	let { mode, period, zone, mobile = false, groups, selectedGroup, workspaces, showCompleted, heading = $bindable(), onmode, onmove, ontoday, ongroup, onmanage, onshowcompleted }: Props = $props();
 
 	const RANGES: { value: Mode; label: string }[] = [{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }];
 	let open = $state<'filter' | 'view' | 'range' | null>(null);
@@ -77,7 +77,7 @@
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
 		</Button>
 		<Menu open={open === 'view'} {trigger} mode="portal" width={260} sheetOnMobile sheetMenu sheetTitle="View options" ariaLabel="View options" onclose={() => open = null}>
-			<MenuItem checked={showEvents} onclick={() => pick(() => onshowevents(!showEvents))}>Show created and completed</MenuItem>
+			<MenuItem checked={showCompleted} onclick={() => pick(() => onshowcompleted(!showCompleted))}>Show completed</MenuItem>
 			<MenuItem href="/console/settings" hint={zone}>Time zone</MenuItem>
 		</Menu>
 	{/snippet}

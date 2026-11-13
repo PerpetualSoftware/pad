@@ -1,14 +1,14 @@
 <script lang="ts">
 	import Chip from '$lib/components/common/Chip.svelte';
-	import AgendaEvents from './AgendaEvents.svelte';
+	import AgendaCompleted from './AgendaCompleted.svelte';
 	import AgendaRow from './AgendaRow.svelte';
-	import { entryKey, isAllDay, isEvent, localTime, longDay, roleDay, shortDay, type AgendaAction } from '$lib/calendar/presentation';
+	import { entryKey, isAllDay, isCompleted, localTime, longDay, roleDay, shortDay, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, CommitmentMoveResult } from '$lib/types';
 
 	interface Props {
 		day: string;
 		today: string;
-		/** The day's rows, in display order. Created and completed entries fold into one line. */
+		/** The day's rows, in display order. Completed entries fold into one line. */
 		entries: AgendaEntry[];
 		/** One line beside the heading, such as "2 owed · 1 done". */
 		summary?: string;
@@ -44,11 +44,11 @@
 		dragging = null, hover = false, impact = null, titles = {}, onaction, ondragstart, ondragend, onenter, ondrop }: Props = $props();
 
 	const uid = $props.id();
-	const rows = $derived(entries.filter(entry => !isEvent(entry)));
-	const events = $derived(entries.filter(isEvent));
+	const rows = $derived(entries.filter(entry => !isCompleted(entry)));
+	const completed = $derived(entries.filter(isCompleted));
 	const linked = $derived(impact?.changes.filter(change => !change.root && roleDay(change.to, zone) === day) ?? []);
 	const landing = $derived(hover && dragging && dragging.day !== day ? dragging : null);
-	const empty = $derived(rows.length + events.length + deadlines.length + forecasts.length === 0);
+	const empty = $derived(rows.length + completed.length + deadlines.length + forecasts.length === 0);
 </script>
 
 <section class="day" class:drop={hover && !!dragging} data-day={day} aria-labelledby={heading ? `${uid}-h` : undefined} aria-label={heading ? undefined : longDay(day)}
@@ -83,7 +83,7 @@
 				{#if impact?.violations?.some(violation => violation.item_id === change.item_id && violation.role === change.role)}<Chip size="sm" color="var(--accent-red)">Outside its bound</Chip>{/if}
 			</li>
 		{/each}
-		<AgendaEvents {events} {zone} {now} {compact} {onaction} />
+		<AgendaCompleted {completed} {zone} {now} {compact} {onaction} />
 		{#if empty && complete && !landing && !linked.length}<li class="empty">{lifted > 0 ? 'Listed under Needs attention.' : 'Nothing scheduled.'}</li>{/if}
 	</ul>
 </section>
