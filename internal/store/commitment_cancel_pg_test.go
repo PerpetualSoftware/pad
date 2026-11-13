@@ -20,7 +20,7 @@ func (f *linkPG) cancelLink(t *testing.T, parent, child int) {
 }
 
 func (f *linkPG) skip(i int) error {
-	_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*f.scs[i].NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true})
+	_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*f.scs[i].NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, EndSchedule: true})
 	return err
 }
 

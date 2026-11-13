@@ -171,7 +171,7 @@ func TestNaiveChildPinDeadlocksAgainstAResolveOfThatChild(t *testing.T) {
 	errs := f.run(t,
 		func() error { return f.naivePin(f.items[0].ID, f.items[1].ID) },
 		func() error {
-			_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"})
+			_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", EndSchedule: true})
 			return err
 		})
 	if deadlocked(errs) != 1 {
@@ -208,7 +208,7 @@ func TestCascadeAgainstAResolveOfOneOfItsChildrenDoesNotDeadlock(t *testing.T) {
 	errs := f.run(t,
 		func() error { return f.move(0, "2030-03-10T09:00:00Z") },
 		func() error {
-			_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"})
+			_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", EndSchedule: true})
 			return err
 		})
 	for _, err := range errs {
@@ -260,7 +260,7 @@ func TestLinkWriteAgainstAResolveOfItsChildDoesNotDeadlock(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"})
+			_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", EndSchedule: true})
 			return err
 		})
 	for _, err := range errs {
@@ -407,7 +407,7 @@ func TestLinkedResolveCrossingPlainChildResolveDoesNotDeadlock(t *testing.T) {
 		_, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[0].ID, ResolveInput{State: "move", OccurrenceAt: rt(*f.scs[0].NextAt), Until: ptr(rt("2030-03-10T09:00:00Z")), Actor: "user"}, rt("2030-03-03T12:00:00Z"))
 		return err
 	}, func() error {
-		_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{State: "done", OccurrenceAt: rt(*f.scs[1].NextAt), Actor: "user"})
+		_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[1].ID, ResolveInput{State: "done", OccurrenceAt: rt(*f.scs[1].NextAt), Actor: "user", EndSchedule: true})
 		return err
 	})
 	assertLinkedConcurrencyResults(t, errs)
