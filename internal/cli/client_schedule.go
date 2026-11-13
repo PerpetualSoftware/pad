@@ -64,6 +64,13 @@ func (c *Client) ResolveItemCommitment(wsSlug, ref string, in any) (json.RawMess
 	return result, c.post(commitmentBase(wsSlug, ref)+"/resolve", in, &result)
 }
 
+// DismissEndedCommitment dismisses an ended schedule from Outstanding while
+// its item stays open (TASK-4537).
+func (c *Client) DismissEndedCommitment(wsSlug, ref string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.post(commitmentBase(wsSlug, ref)+"/dismiss-ended", map[string]any{}, &result)
+}
+
 // RenegotiateItemCommitment previews (in.preview true) or applies a deadline
 // change. A preview answers {preview, revision}; an apply answers the schedule view.
 func (c *Client) RenegotiateItemCommitment(wsSlug, ref string, in map[string]any) (json.RawMessage, error) {

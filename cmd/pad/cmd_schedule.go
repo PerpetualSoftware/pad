@@ -280,7 +280,8 @@ var resolveVerbs = []resolveVerb{
 const commentHelp = "comment recorded on the item; optional"
 
 func remindResolveCmd(v resolveVerb) *cobra.Command {
-	var comment, occurrence, until, at, role, to string
+	var comment, occurrence, until, at, role, to, closeItem string
+	var endSchedule bool
 	var linked linkedWriteFlags
 	needsUntil := v.state == "snooze" || v.state == "move"
 	use := v.use + " <ref>"
@@ -292,6 +293,12 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		long += "\n\nAcknowledge a fired occurrence for everyone while keeping its work outstanding. Dates and recurrence do not advance; a configured lapse still applies."
 	case "done", "skip":
 		long += "\n\nA recurring schedule arms its next occurrence; a one-shot ends."
+		long += "\n\nOn the schedule's last occurrence of an item that is still open the server refuses and nothing is written: " +
+			"--end-schedule ends the schedule and keeps the item open (it stays in Outstanding until it is closed or 'pad remind dismiss' is run)"
+		if v.state == "done" {
+			long += ", and --close-item[=VALUE] ends it and then closes the item with VALUE, or with the collection's only delivering close when VALUE is omitted"
+		}
+		long += ". Without either flag, close the item first and run this again."
 		if v.state == "done" {
 			long += "\n\n--at records when the work was really finished, if that was not now: an RFC3339 instant or a wall time read in your zone (2026-11-08T17:30); a bare date is refused. It cannot be in the future or before the schedule was created; the server says so unchanged."
 		}
@@ -324,7 +331,11 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 					}
 				}
 			}
-			req := schedule.CommitmentResolve{State: v.state, Comment: comment}
+			req := schedule.CommitmentResolve{State: v.state, Comment: comment, EndSchedule: endSchedule}
+			wantClose := v.state == "done" && cmd.Flags().Changed("close-item")
+			if wantClose && endSchedule {
+				return fmt.Errorf("--close-item and --end-schedule cannot be combined: --close-item ends the schedule and closes the item, --end-schedule keeps the item open")
+			}
 			if v.state != "ack" && cmd.Flags().Changed("at") {
 				if v.state != "done" {
 					return fmt.Errorf("--at records an actual completion time and applies to done only, not %s", v.state)
@@ -371,7 +382,24 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				req.OccurrenceAt = sv.NextOccurrence.At
 			}
 			raw, err := client.ResolveItemCommitment(ws, args[0], req)
-			if err != nil {
+			closedWith := ""
+			if d, open := itemStillOpenDetailsOf(err); open {
+				if !wantClose {
+					return itemStillOpenHint(err, args[0], v.state, d)
+				}
+				value, perr := pickCloseValue(closeItem, args[0], d)
+				if perr != nil {
+					return perr
+				}
+				req.EndSchedule = true
+				if raw, err = client.ResolveItemCommitment(ws, args[0], req); err != nil {
+					return linkedResolveHint(err, args[0], "target", req.Until)
+				}
+				if _, uerr := client.UpdateItem(ws, args[0], models.ItemUpdate{FieldsPatch: map[string]any{d.DoneField: value}}); uerr != nil {
+					return fmt.Errorf("Marked done %s; the schedule has ended. Closing the item failed: %v. It stays open in Outstanding.", args[0], uerr)
+				}
+				closedWith = value
+			} else if err != nil {
 				return linkedResolveHint(err, args[0], "target", req.Until)
 			}
 			if formatFlag == "json" {
@@ -379,11 +407,28 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			}
 			var resp struct {
 				Commitment scheduleView `json:"commitment"`
+				Resolution struct {
+					ItemStillOpen bool `json:"item_still_open"`
+				} `json:"resolution"`
 			}
 			_ = json.Unmarshal(raw, &resp)
-			fmt.Println(resolveSentence(v.state, args[0], req, resp.Commitment))
+			line := resolveSentence(v.state, args[0], req, resp.Commitment)
+			switch {
+			case closedWith != "":
+				line += fmt.Sprintf("; closed %s (%s)", args[0], closedWith)
+			case resp.Resolution.ItemStillOpen:
+				line += fmt.Sprintf(". %s stays open in Outstanding until it is closed or dismissed (pad remind dismiss %s).", args[0], args[0])
+			}
+			fmt.Println(line)
 			return nil
 		},
+	}
+	if v.state == "done" || v.state == "skip" {
+		c.Flags().BoolVar(&endSchedule, "end-schedule", false, "on the last occurrence of an open item: end the schedule and keep the item open")
+	}
+	if v.state == "done" {
+		c.Flags().StringVar(&closeItem, "close-item", "", "on the last occurrence of an open item: end the schedule, then close the item with this value (omit the value to use the only delivering close)")
+		c.Flags().Lookup("close-item").NoOptDefVal = closeItemAuto
 	}
 	if v.state == "move" {
 		c.Flags().StringVar(&role, "role", "", "preview or move a linked date: target | earliest | deadline | occupied_until")
@@ -938,7 +983,7 @@ func addRemindSubcommands(cmd *cobra.Command) {
 	for _, v := range resolveVerbs {
 		cmd.AddCommand(remindResolveCmd(v))
 	}
-	cmd.AddCommand(remindLinkCmd(), remindGateCmd(), remindRenegotiateCmd(), remindAgendaCmd(), remindEditCmd(), remindRmCmd())
+	cmd.AddCommand(remindLinkCmd(), remindGateCmd(), remindRenegotiateCmd(), remindAgendaCmd(), remindEditCmd(), remindRmCmd(), remindDismissCmd())
 }
 
 func acknowledgementLine(at *string, by *models.AcknowledgedBy, loc *time.Location) string {

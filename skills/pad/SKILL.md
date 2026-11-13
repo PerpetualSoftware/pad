@@ -231,6 +231,7 @@ pad remind TASK-5 --start 2026-11-14 --deadline hard           # a due date (all
 pad remind show TASK-5                                        # kind, rule, next occurrence, missed count
 pad remind done TASK-5 -m "shipped"                           # also skip; snooze/move take --until <RFC3339|2026-11-10T09:00|2h>
 pad remind done TASK-5 --at 2026-11-08T17:30                       # done earlier than now: records when the work really finished (not future)
+pad remind done TASK-5 --close-item[=done]                    # last occurrence of an open item (409 item_still_open): end the schedule and close it; --end-schedule keeps it open in Outstanding, `pad remind dismiss TASK-5` clears that
 pad remind renegotiate TASK-5 --reason "why" --deadline <RFC3339>  # preview; add --apply to commit (--scope series: --deadline-offset-days/-secs, --behavior, --remove-deadline)
 pad remind link add|list|edit|rm / pad remind gate add|list|rm   # link dates with offsets or wait for a blocker occurrence
 pad remind agenda --days 7                                    # occurrences and dated items; edit/rm change or delete a schedule
