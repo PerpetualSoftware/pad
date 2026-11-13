@@ -186,26 +186,30 @@ func TestChatArmHasNoMCPPath(t *testing.T) {
 	// fan-out handlers. Registered schemas do not expose cmdPaths. Replace only
 	// the terminal dispatcher so enumeration cannot execute production writes.
 	// Restore whole maps; never mutate the original catalog's maps in place.
-	original := mcp.Catalog
+	// AppCatalog (pad_board, remote with Apps on) is wrapped the same way.
+	original, originalApps := mcp.Catalog, mcp.AppCatalog
 	mcp.Catalog = append([]mcp.ToolDef(nil), original...)
-	t.Cleanup(func() { mcp.Catalog = original })
-	for i := range mcp.Catalog {
-		actions := maps.Clone(mcp.Catalog[i].Actions)
-		for name, fn := range actions {
-			toolName, actionName := mcp.Catalog[i].Name, name
-			actions[name] = func(ctx context.Context, input map[string]any, env mcp.ActionEnv) (*mcp.CallToolResult, error) {
-				originalEnv := env
-				env.Dispatcher = rec
-				res, err := fn(ctx, input, env)
-				// playbook.run alone branches on the concrete dispatcher type.
-				// Exercise its HTTP branch too, against the in-memory sink below.
-				if _, isHTTP := originalEnv.Dispatcher.(*mcp.HTTPHandlerDispatcher); isHTTP && toolName == "pad_playbook" && actionName == "run" && err == nil && res != nil && !res.IsError {
-					return fn(ctx, input, originalEnv)
+	mcp.AppCatalog = append([]mcp.ToolDef(nil), originalApps...)
+	t.Cleanup(func() { mcp.Catalog, mcp.AppCatalog = original, originalApps })
+	for _, catalog := range [][]mcp.ToolDef{mcp.Catalog, mcp.AppCatalog} {
+		for i := range catalog {
+			actions := maps.Clone(catalog[i].Actions)
+			for name, fn := range actions {
+				toolName, actionName := catalog[i].Name, name
+				actions[name] = func(ctx context.Context, input map[string]any, env mcp.ActionEnv) (*mcp.CallToolResult, error) {
+					originalEnv := env
+					env.Dispatcher = rec
+					res, err := fn(ctx, input, env)
+					// playbook.run alone branches on the concrete dispatcher type.
+					// Exercise its HTTP branch too, against the in-memory sink below.
+					if _, isHTTP := originalEnv.Dispatcher.(*mcp.HTTPHandlerDispatcher); isHTTP && toolName == "pad_playbook" && actionName == "run" && err == nil && res != nil && !res.IsError {
+						return fn(ctx, input, originalEnv)
+					}
+					return res, err
 				}
-				return res, err
 			}
+			catalog[i].Actions = actions
 		}
-		mcp.Catalog[i].Actions = actions
 	}
 
 	for _, transport := range []string{"stdio", "remote-http", "chatgpt"} {
