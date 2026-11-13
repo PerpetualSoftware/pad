@@ -13,9 +13,9 @@ Actions:
   show — Open a live board with status columns and a snapshot cursor.
     Required: workspace, collection. Optional: parent (ref).
   changes — Read changes since the snapshot, including removals.
-    Required: workspace, collection, since, access_epoch. Optional: parent.`,
+    Required: workspace, collection (the collection show returned), since, access_epoch. Optional: parent.`,
 	Schema: ToolSchema{Workspace: true, Params: []ParamDef{
-		{Name: "collection", Type: "string", Description: "Collection slug. Required for both actions; show accepts singular forms."},
+		{Name: "collection", Type: "string", Description: "Collection slug. Required for both actions. Show accepts singular forms; pass changes the collection value show returned (matched exactly)."},
 		{Name: "parent", Type: "string", Description: "Parent item ref to filter the board. Optional; pass the same value to changes as to show."},
 		{Name: "since", Type: "string", Description: "Opaque cursor from show or changes. Required for changes."},
 		{Name: "access_epoch", Type: "string", Description: "Access epoch from show or changes. Required for changes."},

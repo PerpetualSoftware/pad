@@ -58,7 +58,7 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 			removed := []string{}
 			parent, _ := input["parent"].(string)
 			for _, row := range page.Changes {
-				if !row.Deleted && !row.MovedOut && boardSlugMatches(row.CollectionSlug, collection) && boardParentMatches(row.ParentRef, parent) {
+				if !row.Deleted && !row.MovedOut && row.CollectionSlug == collection && boardParentMatches(row.ParentRef, parent) {
 					upserts = append(upserts, projectBoardItem(row.Item))
 				} else {
 					removed = append(removed, row.ID)
@@ -219,18 +219,11 @@ func boardCollection(res *CallToolResult, slug, key string) (*models.Collection,
 	return nil, NewErrorResult(ErrorPayload{Code: ErrNotFound, Message: "Collection not found"})
 }
 
-// boardSlugCandidates lists the slugs a collection input may name, so show
-// and changes accept the same singular and plural forms.
+// boardSlugCandidates lists the slugs a show input may name (singular and
+// plural forms). Changes takes the slug show returned and matches it exactly.
 func boardSlugCandidates(slug string) []string {
 	folded := strings.ToLower(strings.TrimSpace(slug))
 	return []string{slug, folded, folded + "s", strings.TrimSuffix(folded, "s"), collections.NormalizeSlug(folded)}
-}
-
-// boardSlugMatches reports whether a change row's collection is the board's.
-// It does not tell apart two collections whose slugs differ only by a
-// trailing s; the view passes back the slug show returned.
-func boardSlugMatches(rowSlug, input string) bool {
-	return rowSlug != "" && slices.Contains(boardSlugCandidates(input), rowSlug)
 }
 
 // boardParentMatches applies the optional parent filter (refs compare

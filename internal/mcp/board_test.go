@@ -354,8 +354,8 @@ func TestMCPApps_BoardRegistration(t *testing.T) {
 	}
 }
 
-// A parent-filtered board stays filtered across changes, singular collection
-// forms resolve in changes as they do in show, and the assignee is projected.
+// A parent-filtered board stays filtered across changes when changes is
+// passed the collection show returned, and the assignee is projected.
 func TestPadBoard_ParentFilterAndSlugForms(t *testing.T) {
 	f := newBoardFixture(t)
 	parent := f.item(t, f.other, "open")
@@ -386,7 +386,7 @@ func TestPadBoard_ParentFilterAndSlugForms(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ch := boardJSON(t, f.call(t, context.Background(), "changes", map[string]any{"collection": "task", "parent": ref, "since": base["cursor"], "access_epoch": base["access_epoch"]}))
+	ch := boardJSON(t, f.call(t, context.Background(), "changes", map[string]any{"collection": base["collection"], "parent": ref, "since": base["cursor"], "access_epoch": base["access_epoch"]}))
 	ups := ch["upserts"].([]any)
 	if len(ups) != 1 || ups[0].(map[string]any)["id"] != in.ID {
 		t.Fatalf("upserts: %v", ch)
@@ -394,5 +394,33 @@ func TestPadBoard_ParentFilterAndSlugForms(t *testing.T) {
 	removed := ch["removed_ids"].([]any)
 	if len(removed) != 1 || removed[0] != out.ID {
 		t.Fatalf("removed_ids: %v", ch)
+	}
+}
+
+// Two collections whose slugs differ only by a trailing s never mix: changes
+// matches the collection show returned exactly.
+func TestPadBoard_ChangesExactCollection(t *testing.T) {
+	f := newBoardFixture(t)
+	single, err := f.st.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Task", Slug: "task", Prefix: "TSK", Schema: boardTestSchema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	plural := f.item(t, f.col, "open")
+	one := f.item(t, single, "open")
+	for _, slug := range []string{"task", "tasks"} {
+		base := boardJSON(t, f.call(t, context.Background(), "show", map[string]any{"collection": slug}))
+		if base["collection"] != slug {
+			t.Fatalf("show %s resolved %v", slug, base["collection"])
+		}
+		ch := boardJSON(t, f.call(t, context.Background(), "changes", map[string]any{"collection": base["collection"], "since": "0", "access_epoch": base["access_epoch"]}))
+		want, other := plural.ID, one.ID
+		if slug == "task" {
+			want, other = one.ID, plural.ID
+		}
+		ups := ch["upserts"].([]any)
+		if len(ups) != 1 || ups[0].(map[string]any)["id"] != want {
+			t.Fatalf("changes %s upserts: %v", slug, ch)
+		}
+		_ = other
 	}
 }
