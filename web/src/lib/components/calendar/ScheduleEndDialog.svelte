@@ -64,7 +64,7 @@
 					<div class="field">
 						<label for={`${id}-value`}>Close as</label>
 						<select id={`${id}-value`} bind:value>
-							{#each options as option (option)}<option value={option}>{option}</option>{/each}
+							{#each options as option, index (index)}<option value={option}>{option}</option>{/each}
 						</select>
 					</div>
 				{/if}
