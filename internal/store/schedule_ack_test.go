@@ -286,8 +286,16 @@ func TestAcknowledgedLinkedPastMoveDoesNotResurrectAlert(t *testing.T) {
 				}
 			}
 			after := f.reload(t, f.items[0].ID)
-			if f.reminderRows(t, 0) != 0 || *after.NextAt != before || after.NextOverrideAt == nil {
+			// The fired, acknowledged row stays as it was: no new alert, the
+			// acknowledgement holds, and the moved occurrence can still be acked.
+			if f.reminderRows(t, 0) != 1 || *after.NextAt != before || after.NextOverrideAt == nil {
 				t.Fatalf("past move=%+v", after)
+			}
+			if n := f.count(t, `SELECT COUNT(*) FROM item_reminders WHERE schedule_id=? AND fired_at IS NOT NULL AND acked_at IS NOT NULL`, sc.ID); n != 1 {
+				t.Fatalf("reminder lost its fired or acked mark: %d", n)
+			}
+			if _, err := f.s.ResolveOccurrence(f.ws.ID, f.items[0].ID, ResolveInput{State: "ack", OccurrenceAt: rt(before), Actor: "user"}); err != nil {
+				t.Fatalf("re-ack after past move: %v", err)
 			}
 		})
 	}
