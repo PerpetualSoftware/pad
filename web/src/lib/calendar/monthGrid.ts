@@ -168,6 +168,14 @@ export function calendarRows(data: CalendarResponse, collection: Collection, fie
    forecast:entry.forecast,allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,missedCount:entry.missed_count,stale:entry.stale,
    attention:!!entry.overdue || entry.state === 'lapsed' || entry.state === 'missed'});
  }
+ for (const row of data.forecasts ?? []) {
+  const key = JSON.stringify([row.workspace,row.owner_username,row.schedule_id]);
+  if (forecastKeys.has(key) || data.entries.some(entry => entry.state === 'outstanding' && entry.day === row.day && JSON.stringify([entry.workspace,entry.owner_username,entry.schedule_id]) === key)) continue;
+  const day = row.day;
+  if ((days && !days.includes(day)) || (data.next_from && day >= data.next_from)) continue;
+  forecastKeys.add(key);
+  rows.push({key:`forecast:${key}`,kind:'forecast',day,ref:row.item_ref,target:row.item_ref,title:row.item_title,forecast:row.forecast,at:row.forecast.value,allDay:!!row.all_day});
+ }
  return collapseFieldRows(rows).sort((a,b) => a.day.localeCompare(b.day) || Number(b.allDay) - Number(a.allDay));
 }
 export function incomplete(data: CalendarResponse): boolean {

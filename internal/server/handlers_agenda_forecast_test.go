@@ -278,6 +278,38 @@ func TestAgendaForecastOnlyAdmission(t *testing.T) {
 			}
 		})
 	}
+	t.Run("calendar filters", func(t *testing.T) {
+		body := forecastOnlyBody(t, forecastOnlyGet(t, w, w.owner, forecastOnlyPaths(w)["calendar"], forecastApril+"&search=unmatched-forecast-title"))
+		rows, ok := body["forecasts"].([]any)
+		if !ok || len(rows) != 0 || body["forecasts_complete"] != true {
+			t.Fatalf("filtered forecasts: %v", body)
+		}
+	})
+	t.Run("empty forecasts", func(t *testing.T) {
+		for name, path := range forecastOnlyPaths(w) {
+			body := forecastOnlyBody(t, forecastOnlyGet(t, w, w.owner, path, "from=2031-05-01T00:00:00Z&to=2031-05-02T00:00:00Z&tz=UTC"))
+			rows, ok := body["forecasts"].([]any)
+			if !ok || len(rows) != 0 || body["forecasts_complete"] != true {
+				t.Fatalf("%s empty forecasts: %v", name, body)
+			}
+		}
+	})
+	t.Run("expired personal workspace", func(t *testing.T) {
+		calls := 0
+		w.srv.agendaClock = func() time.Time {
+			calls++
+			if calls > 1 {
+				return meAgendaNow.Add(time.Hour)
+			}
+			return meAgendaNow
+		}
+		body := forecastOnlyBody(t, forecastOnlyGet(t, w, w.owner, "/api/v1/me/agenda", forecastApril))
+		rows, ok := body["forecasts"].([]any)
+		if !ok || len(rows) != 0 || body["forecasts_complete"] != false {
+			t.Fatalf("expired forecasts: %v", body)
+		}
+	})
+
 }
 
 func TestForecastOnlyGuestItemAOnly(t *testing.T) {
@@ -384,4 +416,21 @@ func TestForecastOnlyLeavesPagingUnchanged(t *testing.T) {
 			}
 		})
 	}
+	t.Run("shared earliest across workspaces", func(t *testing.T) {
+		other := meAgendaWorkspace(t, w, "Z earlier forecast")
+		_, id := forecastOnlyItem(t, other, "Earlier forecast", "2031-04-01")
+		body := forecastOnlyBody(t, forecastOnlyGet(t, w, w.owner, "/api/v1/me/agenda", forecastApril))
+		rows, _ := body["forecasts"].([]any)
+		if len(rows) != 500 || body["forecasts_complete"] != false {
+			t.Fatalf("shared cap: %d complete=%v", len(rows), body["forecasts_complete"])
+		}
+		first := rows[0].(map[string]any)
+		if first["schedule_id"] != id || first["workspace"] != other.ws.Slug || first["owner_username"] != w.owner.Username {
+			t.Fatalf("earliest workspace: %v", first)
+		}
+		if got := rows[499].(map[string]any)["forecast"].(map[string]any)["value"]; got != "2031-04-02T00:08:18Z" {
+			t.Fatalf("earliest shared forecasts: last=%v", got)
+		}
+	})
+
 }

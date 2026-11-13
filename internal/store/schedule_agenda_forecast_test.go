@@ -53,22 +53,25 @@ func TestListForecastsForAgendaExcludes(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	for _, kind := range []string{"ended", "errored", "terminal", "deleted", "other-workspace", "deleted-collection"} {
-		item, sc := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC"}, "2031-03-01T00:00:00Z")
-		if err := f.s.SetForecast(f.ws.ID, item.ID, "unknown", "user", "2031-04-02", ""); err != nil {
+		world := f
+		if kind == "other-workspace" {
+			ws := createTestWorkspace(t, f.s, "Other forecasts")
+			col := createTestCollection(t, f.s, ws.ID, "Tasks")
+			world = &schedFixture{s: f.s, ws: ws, item: createTestItem(t, f.s, ws.ID, col.ID, "Other forecast", "")}
+		}
+		item, sc := world.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC"}, "2031-03-01T00:00:00Z")
+		if err := f.s.SetForecast(world.ws.ID, item.ID, "unknown", "user", "2031-04-02", ""); err != nil {
 			t.Fatal(err)
 		}
 		switch kind {
 		case "ended":
-			f.exec(t, `UPDATE item_schedules SET ended_at='2031-03-11T00:00:00Z' WHERE id=?`, sc.ID)
+			f.exec(t, `UPDATE item_schedules SET ended_at='2031-03-11T00:00:00Z', next_at=NULL WHERE id=?`, sc.ID)
 		case "errored":
 			f.exec(t, `UPDATE item_schedules SET error_code='internal' WHERE id=?`, sc.ID)
 		case "terminal":
 			f.exec(t, `UPDATE items SET fields='{"status":"done"}' WHERE id=?`, item.ID)
 		case "deleted":
 			f.exec(t, `UPDATE items SET deleted_at='2031-03-11T00:00:00Z' WHERE id=?`, item.ID)
-		case "other-workspace":
-			other := createTestWorkspace(t, f.s, "Other forecasts")
-			f.exec(t, `UPDATE schedule_forecasts SET workspace_id=? WHERE schedule_id=?`, other.ID, sc.ID)
 		case "deleted-collection":
 			col := createTestCollection(t, f.s, f.ws.ID, "Deleted forecasts")
 			f.exec(t, `UPDATE items SET collection_id=? WHERE id=?`, col.ID, item.ID)

@@ -1,5 +1,5 @@
 import type { CalendarRow } from './monthGrid';
-import type { AgendaEntry, AgendaWorkEntry, CommitmentForecastSummary, CommitmentRoles } from '$lib/types';
+import type { AgendaForecast, AgendaEntry, AgendaWorkEntry, CommitmentForecastSummary, CommitmentRoles } from '$lib/types';
 
 const DAY = 86_400_000;
 
@@ -384,7 +384,7 @@ export interface RoleMarkers { deadlines: AgendaEntry[]; forecasts: AgendaEntry[
  * Deadlines and forecasts that land on a different day from their target, keyed by the day they land on.
  * Deadlines come from live occurrences only; a schedule's forecast is marked once.
  */
-export function roleMarkers(entries: AgendaEntry[], zone: string): Map<string, RoleMarkers> {
+export function roleMarkers(entries: AgendaEntry[], zone: string, forecasts: AgendaForecast[] = [], nextFrom?: string): Map<string, RoleMarkers> {
 	const markers = new Map<string, RoleMarkers>();
 	const on = (day: string) => markers.get(day) ?? markers.set(day, { deadlines: [], forecasts: [] }).get(day)!;
 	const forecast = new Set<string>();
@@ -396,5 +396,15 @@ export function roleMarkers(entries: AgendaEntry[], zone: string): Map<string, R
 		if (forecast.has(schedule)) continue;
 		forecast.add(schedule); on(roleDay(entry.forecast.value, zone)).forecasts.push(entry);
 	}
+	for (const row of forecasts) {
+		const key = JSON.stringify([row.workspace, row.owner_username, row.schedule_id]);
+		if (forecast.has(key) || entries.some(entry => entry.state === 'outstanding' && entry.day === row.day && JSON.stringify([entry.workspace, entry.owner_username, entry.schedule_id]) === key)) continue;
+		if (nextFrom && row.day >= roleDay(nextFrom, zone)) continue;
+		forecast.add(key);
+		on(row.day).forecasts.push({ type: 'schedule', state: 'outstanding', at: row.forecast.value, day: row.day, all_day: row.all_day,
+			item_ref: row.item_ref, item_title: row.item_title, collection: row.collection, schedule_id: row.schedule_id,
+			workspace: row.workspace, workspace_name: row.workspace_name, owner_username: row.owner_username, forecast: row.forecast });
+	}
+
 	return markers;
 }

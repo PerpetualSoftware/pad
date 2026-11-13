@@ -91,6 +91,8 @@ type agendaUnexpanded struct {
 }
 
 type agendaResponse struct {
+	Forecasts            []agendaForecast    `json:"forecasts"`
+	ForecastsComplete    bool                `json:"forecasts_complete"`
 	WindowComplete       bool                `json:"window_complete"`
 	PriorityList         []agendaEntry       `json:"priority_list"`
 	PriorityListComplete bool                `json:"priority_list_complete"`
@@ -205,6 +207,7 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	}
 
 	run := s.newAgendaRead(from, to, zone, note)
+	run.response.Forecasts, run.response.ForecastsComplete = []agendaForecast{}, true
 	run.recipient = strings.TrimSpace(r.URL.Query().Get("recipient"))
 	run.listNoDate = run.recipient != ""
 	if !run.listNoDate {
@@ -216,6 +219,10 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := s.appendWorkspaceAgenda(run, workspaceID, scope); err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	if err := s.appendWorkspaceForecasts(run, workspaceID, scope, nil); err != nil {
 		writeInternalError(w, err)
 		return
 	}

@@ -1984,6 +1984,8 @@ export interface CalendarEntry {
 }
 
 export interface CalendarResponse {
+ forecasts?: AgendaForecast[];
+ forecasts_complete?: boolean;
 	from: string;
 	to: string;
 	tz: string;
@@ -3798,6 +3800,19 @@ export interface ChatConversationsResponse {
 	unread_total: number;
 }
 
+export interface AgendaForecast {
+ schedule_id: string;
+ item_ref: string;
+ item_title: string;
+ collection: string;
+ day: string;
+ all_day?: boolean;
+ forecast: CommitmentForecastSummary;
+ workspace?: string;
+ workspace_name?: string;
+ owner_username?: string;
+}
+
 export interface AgendaEntry {
  forecast?: CommitmentForecastSummary;
 	type: 'schedule' | 'date' | 'created' | 'completed';
@@ -3846,6 +3861,8 @@ export type AgendaWorkEntry = Omit<AgendaEntry, 'type' | 'at' | 'day'> & {
 };
 
 export interface AgendaResponse {
+ forecasts?: AgendaForecast[];
+ forecasts_complete?: boolean;
  /** Present when workspace no_date is not listed without a recipient filter. */
  no_date_scope?: 'personal_only';
  window_complete: boolean;
