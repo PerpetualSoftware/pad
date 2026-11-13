@@ -1980,6 +1980,8 @@ export interface CalendarEntry {
 	overdue?: boolean;
 	missed_count?: number;
 	stale?: boolean;
+ acknowledged_at?: string;
+ acknowledged_by?: AcknowledgedBy;
 	[key: string]: unknown;
 }
 

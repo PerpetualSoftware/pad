@@ -2,7 +2,7 @@
  import { dayLabel, timeLabel, type CalendarRow } from '$lib/calendar/monthGrid';
  import { shouldOpenInPane } from '../collections/itemCardClick';
  import { canonicalValueColor, formatFieldLabel } from '$lib/utils/fieldColors';
- import { forecastText, occurrenceState, type OccurrenceState } from '$lib/calendar/presentation';
+ import { acknowledgedText, forecastText, occurrenceState, type OccurrenceState } from '$lib/calendar/presentation';
  import Chip from '../common/Chip.svelte';
  import StateMark from './StateMark.svelte';
  let {row, zone, basePath = '', onopen, preview = false, keyboard = true}: {row:CalendarRow;zone:string;basePath?:string;onopen?:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
@@ -14,12 +14,13 @@
   : row.terminal ? {state: row.abandoned ? 'skipped' : 'done', label: formatFieldLabel(row.terminal)}
   : {label: row.kind === 'forecast' ? 'Forecast' : row.label ?? 'Date'});
  let bad = $derived(state?.tone === '--accent-red');
+ let acknowledged = $derived(row.state === 'acknowledged' ? acknowledgedText(row.acknowledgedAt, row.acknowledgedBy, zone) : '');
  let time = $derived(row.allDay || !row.at ? '' : timeLabel(row.at, zone));
  let name = $derived(row.continues && preview ? 'Continues' : row.title);
  // Everything the one-line preview leaves out, for its tooltip and accessible name.
  // A forecast marker is an estimate, not the entry itself: it says so first.
  let tip = $derived([row.kind === 'forecast' ? 'Forecast' : '', row.title, time || 'All day', row.label, state?.label ?? (row.terminal ? formatFieldLabel(row.terminal) : ''),
-  row.overdue ? 'Overdue' : '', row.workspaceName].filter(Boolean).join(' · '));
+  row.overdue ? 'Overdue' : '', acknowledged, row.workspaceName].filter(Boolean).join(' · '));
  let href = $derived(row.href === undefined ? `${basePath}/${encodeURIComponent(row.target)}` : row.href ?? undefined);
  function click(e: MouseEvent) { if (onopen && shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }
 </script>
@@ -36,6 +37,7 @@
   {#if row.label}<span>{row.label}</span>{/if}
   {#if row.terminal}<Chip size="sm" color={row.abandoned ? 'var(--accent-gray)' : (canonicalValueColor(row.terminal) ?? 'var(--accent-green)')}>{formatFieldLabel(row.terminal)}</Chip>{/if}
   {#if state}<Chip size="sm" color={`var(${state.tone})`}>{state.label}</Chip>{/if}
+  {#if acknowledged}<span>{acknowledged}</span>{/if}
   {#if row.overdue}<Chip size="sm" color="var(--accent-red)">Overdue</Chip>{/if}
   {#if row.stale}<Chip size="sm" color="var(--accent-amber)">Stale</Chip>{/if}
  </span>

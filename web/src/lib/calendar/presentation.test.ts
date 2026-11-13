@@ -123,16 +123,17 @@ it('maps agenda rows on authoritative days, all-day first in stable server order
 
 
 import type { AgendaWorkEntry } from '$lib/types';
-import { OCCURRENCE_STATES, attentionEntries, daySummary, shortDay, shortRoleDate, deadlineTone, deadlinePill, forecastLate, forecastPill, type OccurrenceState } from './presentation';
+import { OCCURRENCE_STATES, acknowledgedText, attentionEntries, canAcknowledge, canResolve, isOpenState, roleMarkers, workOccurrence, daySummary, shortDay, shortRoleDate, deadlineTone, deadlinePill, forecastLate, forecastPill, type OccurrenceState } from './presentation';
 
 describe('the one occurrence state table', () => {
- const ALL = ['outstanding', 'scheduled', 'done', 'skipped', 'moved', 'missed', 'lapsed', 'unrecorded'] as const satisfies readonly OccurrenceState[];
- // Acknowledged presentation ships separately; the new API state uses the neutral fallback here.
- // All currently presented states remain covered.
- type Unlisted = Exclude<OccurrenceState, (typeof ALL)[number] | 'acknowledged'>;
+ const ALL = ['outstanding', 'acknowledged', 'scheduled', 'done', 'skipped', 'moved', 'missed', 'lapsed', 'unrecorded'] as const satisfies readonly OccurrenceState[];
+ // Type-level: a state added to the AgendaEntry union fails the check until it is listed and given a row.
+ type Unlisted = Exclude<OccurrenceState, (typeof ALL)[number]>;
+ type Rowless = Exclude<OccurrenceState, keyof typeof OCCURRENCE_STATES>;
  const listed: [Unlisted] extends [never] ? true : false = true;
- it('has exactly one complete row per currently presented state', () => {
-  expect(listed).toBe(true);
+ const rowed: [Rowless] extends [never] ? true : false = true;
+ it('has exactly one complete row per state in the entry union', () => {
+  expect(listed && rowed).toBe(true);
   expect(Object.keys(OCCURRENCE_STATES).sort()).toEqual([...ALL].sort());
   for (const state of ALL) {
    const { label, tone, mark } = OCCURRENCE_STATES[state];
@@ -141,6 +142,12 @@ describe('the one occurrence state table', () => {
    expect(mark).toMatch(/^(ring|ring-thin|ring-dashed|check|dash|arrow|cross)$/);
   }
   expect(new Set(ALL.map(state => OCCURRENCE_STATES[state].label)).size).toBe(ALL.length);
+ });
+ it('draws acknowledged as open, owed work: not green, not completed, and not the plain outstanding chip', () => {
+  const { label, tone, mark } = OCCURRENCE_STATES.acknowledged;
+  expect(label).toBe('Acknowledged');
+  expect(['--accent-green', '--status-completed', OCCURRENCE_STATES.outstanding.tone]).not.toContain(tone);
+  expect(mark).toBe('ring');
  });
  it('labels the unrecorded state "Not recorded"', () => {
   expect(OCCURRENCE_STATES.unrecorded.label).toBe('Not recorded');
@@ -200,7 +207,8 @@ describe('daySummary', () => {
   [['outstanding'], '1 owed'],
   [['outstanding', 'outstanding', 'done'], '2 owed · 1 done'],
   [['done', 'done', 'skipped'], '2 done'],
-  [['outstanding', 'lapsed', 'missed', 'done'], '1 owed · 1 done · 2 missed']
+  [['outstanding', 'lapsed', 'missed', 'done'], '1 owed · 1 done · 2 missed'],
+  [['outstanding', 'acknowledged', 'done'], '2 owed · 1 done']
  ] as [OccurrenceState[], string][])('words %j as "%s"', (states, text) => {
   expect(daySummary(states.map(state => row({ state })))).toBe(text);
  });
@@ -323,4 +331,55 @@ it('roleMarkers merges forecasts once', async () => {
 it('renders a neutral chip for an unknown occurrence state', () => {
  expect(entryChips(row({ state: 'future_state' as AgendaEntry['state'] }))).toEqual([{ text: 'Unknown', color: 'var(--accent-gray)' }]);
  expect(entryChips(row({ state: 'constructor' as AgendaEntry['state'] }))).toEqual([{ text: 'Unknown', color: 'var(--accent-gray)' }]);
+});
+
+describe('acknowledged: seen, still owed', () => {
+ it('is an open state wherever outstanding is, and nothing else is', () => {
+  expect(isOpenState('outstanding')).toBe(true); expect(isOpenState('acknowledged')).toBe(true);
+  for (const state of ['scheduled', 'done', 'skipped', 'moved', 'missed', 'lapsed', 'unrecorded', 'future_state', undefined]) expect(isOpenState(state)).toBe(false);
+  expect(canResolve(row({ state: 'acknowledged' }))).toBe(true);
+  expect(canMove(row({ state: 'acknowledged' }))).toBe(true);
+ });
+ it('can be acknowledged only once it fired and while it is plainly outstanding', () => {
+  expect(canAcknowledge(row({ fired: true }))).toBe(true);
+  expect(canAcknowledge(row({ fired: false }))).toBe(false);
+  expect(canAcknowledge(row())).toBe(false);
+  expect(canAcknowledge(row({ state: 'acknowledged', fired: true }))).toBe(false);
+  expect(canAcknowledge(row({ state: 'scheduled', fired: true }))).toBe(false);
+  expect(canAcknowledge(row({ type: 'date', fired: true }))).toBe(false);
+ });
+ it('carries the same overdue, missed and stale chips as outstanding', () => {
+  const ack = OCCURRENCE_STATES.acknowledged;
+  expect(entryChips(row({ state: 'acknowledged', overdue: true, missed_count: 2, stale: true })).map(chip => chip.text))
+   .toEqual([ack.label, 'Overdue', '2 missed occurrences', 'Stale']);
+ });
+ it('lists an acknowledged occurrence once in attention, keyed with its priority row', () => {
+  const work: AgendaWorkEntry = { type: 'schedule', item_ref: 'EX-30', item_title: 'Owed', collection: 'tasks', workspace: 'work', owner_username: 'alice', schedule_id: 's1', occurrence_key: 'k1', state: 'acknowledged', reason: 'target_passed' };
+  const found = attentionEntries([row({ schedule_id: 's1', state: 'acknowledged', missed_count: 1 })], [work]);
+  expect(found).toHaveLength(1);
+  expect(found[0]).toMatchObject({ reason: 'target_passed', inWindow: true });
+ });
+ it('keeps its state when a priority row stands in for the occurrence', () => {
+  const work: AgendaWorkEntry = { type: 'schedule', item_ref: 'EX-30', item_title: 'Owed', collection: 'tasks', reason: 'outstanding', state: 'acknowledged', fired: true, roles: { target: '2026-03-08T04:00:00Z', earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' } };
+  expect(workOccurrence(work, 'UTC')?.state).toBe('acknowledged');
+  expect(workOccurrence({ ...work, state: undefined }, 'UTC')?.state).toBe('outstanding');
+ });
+ it('marks the deadline of an acknowledged occurrence, and its forecast once', () => {
+  const roles = { target: null, earliest: null, deadline: '2026-03-10', deadline_behavior: 'stays_owed' as const, occupied_until: null, outcome: '', roles_origin: 'native' as const };
+  const forecast = { value: '2026-03-09', set_by: 'u1', set_by_kind: 'user' as const, set_at: 'now', source: '' };
+  const entry = row({ state: 'acknowledged', schedule_id: 's1', roles });
+  expect(roleMarkers([entry], 'UTC').get('2026-03-10')?.deadlines).toHaveLength(1);
+  const f = { schedule_id: 's1', item_ref: 'EX-30', item_title: 'Example', collection: 'tasks', workspace: 'work', owner_username: 'alice', day: entry.day, forecast };
+  expect(roleMarkers([entry], 'UTC', [f]).size).toBe(1);
+ });
+ it('says who acknowledged it and when', () => {
+  const now = new Date('2026-03-08T12:00:00Z');
+  const at = '2026-03-08T09:15:00Z';
+  expect(acknowledgedText(at, { user_id: 'u1', name: 'Alice', actor: 'user' }, 'UTC', now)).toBe('Acknowledged by Alice · Sun 8, 09:15');
+  expect(acknowledgedText(at, { user_id: 'u1', name: 'Alice', actor: 'agent', agent_name: 'builder' }, 'UTC', now)).toBe('Acknowledged by Alice (builder, agent) · Sun 8, 09:15');
+  expect(acknowledgedText(at, { user_id: 'u1', name: 'Alice', actor: 'agent' }, 'UTC', now)).toBe('Acknowledged by Alice (agent) · Sun 8, 09:15');
+  expect(acknowledgedText(at, { user_id: '', name: '', actor: 'user' }, 'UTC', now)).toBe('Acknowledged by unknown user · Sun 8, 09:15');
+  expect(acknowledgedText(at, undefined, 'UTC', now)).toBe('Acknowledged by unknown user · Sun 8, 09:15');
+  expect(acknowledgedText(undefined, { user_id: 'u1', name: 'Alice', actor: 'user' }, 'UTC', now)).toBe('Acknowledged by Alice');
+ });
 });

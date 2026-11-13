@@ -1,5 +1,5 @@
 import type { CalendarRow } from './monthGrid';
-import type { AgendaForecast, AgendaEntry, AgendaWorkEntry, CommitmentForecastSummary, CommitmentRoles } from '$lib/types';
+import type { AcknowledgedBy, AgendaForecast, AgendaEntry, AgendaWorkEntry, CommitmentForecastSummary, CommitmentRoles } from '$lib/types';
 
 const DAY = 86_400_000;
 
@@ -121,8 +121,31 @@ export function entryHref(entry: AgendaEntry): string | null {
 	return parts.every(Boolean) ? `/${parts.map(part => encodeURIComponent(part!)).join('/')}` : null;
 }
 
+/**
+ * An open occurrence: still owed work. Acknowledged is open too: it was seen and no longer
+ * alerts, but nothing about it is done.
+ */
+export function isOpenState(state: string | null | undefined): state is 'outstanding' | 'acknowledged' {
+	return state === 'outstanding' || state === 'acknowledged';
+}
+
 export function canResolve(entry: AgendaEntry): boolean {
-	return entry.type === 'schedule' && entry.state === 'outstanding';
+	return entry.type === 'schedule' && isOpenState(entry.state);
+}
+
+/** Only an occurrence whose reminder has fired has an alert to acknowledge. */
+export function canAcknowledge(entry: AgendaEntry): boolean {
+	return entry.type === 'schedule' && entry.state === 'outstanding' && entry.fired === true;
+}
+
+/** Help text for the Acknowledge action. */
+export const ACKNOWLEDGE_HELP = 'Silences this occurrence for everyone. The work stays owed.';
+
+/** "Acknowledged by Alex (builder, agent) · Thu 5, 09:15": who acknowledged it and when. */
+export function acknowledgedText(at: string | undefined, by: AcknowledgedBy | undefined, zone: string, now = new Date(Date.now())): string {
+	const name = by?.name || 'unknown user';
+	const agent = by?.actor === 'agent' ? ` (${by.agent_name ? `${by.agent_name}, ` : ''}agent)` : '';
+	return `Acknowledged by ${name}${agent}${at ? ` · ${shortRoleDate(at, zone, now)}` : ''}`;
 }
 
 export function canMove(entry: AgendaEntry): boolean {
@@ -143,8 +166,10 @@ export interface OccurrenceStateRow {
 }
 
 /** The one table of occurrence states. Every chip, mark and label reads it. */
-export const OCCURRENCE_STATES: Record<string, OccurrenceStateRow> = {
+export const OCCURRENCE_STATES = {
 	outstanding: { label: 'Outstanding', tone: '--accent-amber', mark: 'ring' },
+	// Still owed, so the same open ring; the chip names it in its own tone, apart from plain outstanding.
+	acknowledged: { label: 'Acknowledged', tone: '--accent-cyan', mark: 'ring' },
 	scheduled: { label: 'Scheduled', tone: '--status-blue', mark: 'ring-thin' },
 	done: { label: 'Done', tone: '--accent-green', mark: 'check' },
 	skipped: { label: 'Skipped', tone: '--accent-gray', mark: 'dash' },
@@ -152,7 +177,7 @@ export const OCCURRENCE_STATES: Record<string, OccurrenceStateRow> = {
 	missed: { label: 'Missed', tone: '--accent-red', mark: 'cross' },
 	lapsed: { label: 'Lapsed', tone: '--accent-red', mark: 'cross' },
 	unrecorded: { label: 'Not recorded', tone: '--accent-gray', mark: 'ring-dashed' }
-};
+} as const satisfies Record<OccurrenceState, OccurrenceStateRow>;
 
 /** The table row for a loosely typed state value, or undefined when it is not a known state. */
 export function occurrenceState(state: string | null | undefined): OccurrenceStateRow | undefined {
@@ -169,7 +194,7 @@ export function entryChips(entry: AgendaEntry): { text: string; color: string }[
 	}
 	const state = occurrenceState(entry.state);
 	const chips = entry.state ? [state ? chip(state.label, state.tone) : chip('Unknown')] : [];
-	if (entry.state === 'outstanding') {
+	if (isOpenState(entry.state)) {
 		if (entry.overdue) chips.push(chip('Overdue', '--accent-amber'));
 		if (entry.missed_count && entry.missed_count > 0) chips.push(chip(`${entry.missed_count} missed occurrence${entry.missed_count === 1 ? '' : 's'}`, '--accent-amber'));
 		if (entry.stale) chips.push(chip('Stale', '--accent-amber'));
@@ -177,7 +202,7 @@ export function entryChips(entry: AgendaEntry): { text: string; color: string }[
 	return chips;
 }
 
-export type AgendaAction = 'done' | 'skip' | 'snooze' | 'move' | 'today' | 'forecast';
+export type AgendaAction = 'done' | 'skip' | 'snooze' | 'move' | 'today' | 'forecast' | 'ack';
 
 export function weekWindow(start: string, zone: string): { from: string; to: string } {
 	return { from: dayWindow(start, zone).from, to: dayWindow(shiftDay(start, 7), zone).from };
@@ -239,7 +264,8 @@ export function agendaRows(entries: AgendaEntry[]): CalendarRow[] {
   key: entryKey(entry), day: entry.day, ref: entry.item_ref, target: entry.item_ref, title: entry.item_title,
   href: entryHref(entry), workspaceName: entry.workspace_name, allDay: isAllDay(entry), at: entry.at,
   ...(entry.type === 'schedule'
-   ? { state: entry.state, overdue: entry.overdue, missedCount: entry.missed_count, stale: entry.stale, forecast: entry.forecast }
+   ? { state: entry.state, overdue: entry.overdue, missedCount: entry.missed_count, stale: entry.stale, forecast: entry.forecast,
+    ...(entry.state === 'acknowledged' ? { acknowledgedAt: entry.acknowledged_at, acknowledgedBy: entry.acknowledged_by } : {}) }
    : { label: entryChips(entry)[0]?.text, overdue: entry.overdue })
  })));
 }
@@ -258,7 +284,7 @@ const ATTENTION_ORDER: AttentionReason[] = ['deadline_still_owed', 'target_passe
 
 /** One schedule has at most one outstanding occurrence, so that occurrence is keyed by its schedule. */
 function attentionKey(entry: AgendaEntry | AgendaWorkEntry): string {
-	const occurrence = entry.state === 'outstanding' ? 'outstanding' : entry.occurrence_key ?? entry.at ?? '';
+	const occurrence = isOpenState(entry.state) ? 'outstanding' : entry.occurrence_key ?? entry.at ?? '';
 	return `${entry.workspace ?? ''}|${entry.owner_username ?? ''}|${entry.item_ref}|${entry.schedule_id ?? ''}|${occurrence}`;
 }
 
@@ -293,7 +319,7 @@ export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWor
 /** One line for a day heading: "2 owed · 1 done". Empty when the day has nothing owed, done or missed. */
 export function daySummary(entries: AgendaEntry[]): string {
 	const count = (...states: OccurrenceState[]) => entries.filter(entry => entry.type === 'schedule' && entry.state !== undefined && states.includes(entry.state)).length;
-	return ([[count('outstanding'), 'owed'], [count('done'), 'done'], [count('lapsed', 'missed'), 'missed']] as const)
+	return ([[count('outstanding', 'acknowledged'), 'owed'], [count('done'), 'done'], [count('lapsed', 'missed'), 'missed']] as const)
 		.filter(([n]) => n > 0).map(([n, word]) => `${n} ${word}`).join(' · ');
 }
 
@@ -371,12 +397,17 @@ export function forecastPill(forecast: string, deadline: string | null | undefin
 	return { late: true, text: `${text} · ${days === 0 ? 'late' : `${days} day${days === 1 ? '' : 's'} late`}` };
 }
 
-/** A rail row as the outstanding occurrence it stands for, or null when it has no target to act on. */
+/** The open state a rail row stands for: its own when it says acknowledged, else outstanding. */
+export function workState(row: AgendaWorkEntry): 'outstanding' | 'acknowledged' {
+	return row.state === 'acknowledged' ? 'acknowledged' : 'outstanding';
+}
+
+/** A rail row as the open occurrence it stands for, or null when it has no target to act on. */
 export function workOccurrence(row: AgendaWorkEntry, zone: string): AgendaEntry | null {
 	if (row.type !== 'schedule' || !row.roles?.target) return null;
 	const target = row.roles.target;
 	const at = isDateOnly(target) ? wallToInstant(`${target}T00:00`, zone) : target;
-	return { ...row, type: 'schedule', state: 'outstanding', at, day: roleDay(target, zone), all_day: row.all_day ?? isDateOnly(target) };
+	return { ...row, type: 'schedule', state: workState(row), at, day: roleDay(target, zone), all_day: row.all_day ?? isDateOnly(target) };
 }
 
 export interface RoleMarkers { deadlines: AgendaEntry[]; forecasts: AgendaEntry[] }
@@ -390,7 +421,7 @@ export function roleMarkers(entries: AgendaEntry[], zone: string, forecasts: Age
 	const on = (day: string) => markers.get(day) ?? markers.set(day, { deadlines: [], forecasts: [] }).get(day)!;
 	const forecast = new Set<string>();
 	for (const entry of entries) {
-		const deadline = entry.type === 'schedule' && (entry.state === 'outstanding' || entry.state === 'scheduled') ? entry.roles?.deadline : null;
+		const deadline = entry.type === 'schedule' && (isOpenState(entry.state) || entry.state === 'scheduled') ? entry.roles?.deadline : null;
 		if (deadline && roleDay(deadline, zone) !== entry.day) on(roleDay(deadline, zone)).deadlines.push(entry);
 		if (!entry.forecast || roleDay(entry.forecast.value, zone) === entry.day) continue;
 		const schedule = JSON.stringify([entry.workspace, entry.owner_username, entry.schedule_id]);
@@ -399,7 +430,7 @@ export function roleMarkers(entries: AgendaEntry[], zone: string, forecasts: Age
 	}
 	for (const row of forecasts) {
 		const key = JSON.stringify([row.workspace, row.owner_username, row.schedule_id]);
-		if (forecast.has(key) || entries.some(entry => entry.state === 'outstanding' && entry.day === row.day && JSON.stringify([entry.workspace, entry.owner_username, entry.schedule_id]) === key)) continue;
+		if (forecast.has(key) || entries.some(entry => isOpenState(entry.state) && entry.day === row.day && JSON.stringify([entry.workspace, entry.owner_username, entry.schedule_id]) === key)) continue;
 		if (nextFrom && row.day >= roleDay(nextFrom, zone)) continue;
 		forecast.add(key);
 		on(row.day).forecasts.push({ type: 'schedule', state: 'outstanding', at: row.forecast.value, day: row.day, all_day: row.all_day,

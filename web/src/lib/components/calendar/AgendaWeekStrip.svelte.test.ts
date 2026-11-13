@@ -34,6 +34,12 @@ describe('AgendaWeekStrip', () => {
 		expect(tones('2031-03-12')).toEqual(['bad']); expect(tones('2031-03-13')).toEqual([]);
 		expect(button('2031-03-10')).toHaveAccessibleName(/5 entries, 3 owed/);
 	});
+	it('counts an acknowledged occurrence as owed, and red once overdue', () => {
+		mount({ entries: [entry({ state: 'acknowledged' }), entry({ state: 'acknowledged', overdue: true }), entry({ state: 'done' })] });
+		const tones = [...button('2031-03-10').querySelectorAll('.pip')].map(pip => (pip as HTMLElement).dataset.tone);
+		expect(tones).toEqual(['bad', 'owed', 'done']);
+		expect(button('2031-03-10')).toHaveAccessibleName(/3 entries, 2 owed/);
+	});
 	it('caps the pips so they fit the cell, keeping the most severe, and still names every entry', () => {
 		const busy = [entry({ state: 'done' }), entry({ state: 'done' }), entry({ state: 'scheduled' }), entry({ state: 'skipped' }), entry(), entry(), entry({ state: 'missed' }), entry({ state: 'lapsed' })];
 		const tones = () => [...button('2031-03-10').querySelectorAll('.pip')].map(pip => (pip as HTMLElement).dataset.tone);
