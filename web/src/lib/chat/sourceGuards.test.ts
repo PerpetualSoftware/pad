@@ -41,6 +41,38 @@ describe('chat UI sources', () => {
 		expect(row).toMatch(/\.bubble\s+:global\(a\)\s*\{[^}]*-webkit-touch-callout:\s*default/);
 	});
 
+	// TASK-4515: chat controls are Button / IconButton, which carry their own CSS over app.css's
+	// global button reset. A raw <button> is left only where the control is not button-shaped; each
+	// one counted here is a known remainder, and the count only goes down.
+	it('uses raw <button> only where the census allows', () => {
+		const allowed: Record<string, number> = {
+			'ChatInboxView.svelte': 2,
+			'MessageBubble.svelte': 5,
+			'PendingBubble.svelte': 2,
+			'RosterRow.svelte': 1
+		};
+		const found: Record<string, number> = {};
+		for (const [name, src] of Object.entries(sources)) {
+			const count = (src.match(/<button[\s>]/g) ?? []).length;
+			if (count) found[name.split('/').pop()!] = count;
+		}
+		expect(found).toEqual(allowed);
+	});
+
+	// --radius-md is not a token (app.css defines --radius-sm, --radius and --radius-lg).
+	it('names no undefined radius token', () => {
+		for (const [name, src] of Object.entries(sources)) expect(src, name).not.toMatch(/--radius-md/);
+	});
+
+	// The composer paints no slab of its own, and its text is 16px on a phone (no iOS focus zoom).
+	it('keeps the composer transparent and 16px on the size axis', () => {
+		const c = Object.entries(sources).find(([n]) => n.endsWith('/Composer.svelte'))![1];
+		expect(c).not.toMatch(/background:\s*var\(--bg-primary\)/);
+		const size = c.match(/@media \(max-width: 768px\), \(pointer: coarse\) \{([\s\S]*?)\n\t\}/);
+		expect(size, 'size-axis media block').not.toBeNull();
+		expect(size![1]).toMatch(/textarea\s*\{[^}]*font-size:\s*16px/);
+	});
+
 	// U32: no direction toggle and no accept-instructions control in the chat UI (flex-direction is CSS).
 	it('has no direction or accept-instructions control', () => {
 		for (const [name, src] of Object.entries(sources)) {

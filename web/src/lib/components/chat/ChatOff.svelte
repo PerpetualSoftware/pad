@@ -1,5 +1,11 @@
 <script lang="ts">
+	import Button from '$lib/components/common/Button.svelte';
+	import ChatState from '$lib/components/chat/ChatState.svelte';
 	import { chatSetting } from '$lib/stores/chatSetting.svelte';
+
+	// On the /messages route this is the page (h1); in the Chat host it sits under the
+	// header's "Chat" h1, so it is a section (h2).
+	let { level = 1 }: { level?: 1 | 2 } = $props();
 
 	// Shown in place of /messages while the user's Chat setting is off (TASK-4315).
 	// The page is not a 404: a link an agent or the connect instructions sent the
@@ -22,38 +28,38 @@
 	}
 </script>
 
-<section class="chat-off">
-	<h1>Chat is off</h1>
-	<p>
-		Chat is for talking with agent sessions. It is hidden until you turn it on. Messages sent
-		while it is off are kept, and show as unread once it is on.
-	</p>
-	<button type="button" disabled={saving} onclick={() => void turnOn()}>Turn on Chat</button>
-	<p class="status" role="status">{failed ? "Couldn't turn Chat on. Try again." : ''}</p>
-	<a class="settings" href="/console/settings">Account settings</a>
-</section>
+<div class="chat-off">
+	<ChatState heading="Chat is off" {level}>
+		<p>
+			Chat is for talking with agent sessions. It is hidden until you turn it on. Messages sent
+			while it is off are kept, and show as unread once it is on.
+		</p>
+		{#snippet actions()}
+			<Button variant="primary" touch disabled={saving} onclick={() => void turnOn()}>Turn on Chat</Button>
+			<p class="status" role="status">{failed ? "Couldn't turn Chat on. Try again." : ''}</p>
+			<a class="settings" href="/console/settings">Account settings</a>
+		{/snippet}
+	</ChatState>
+</div>
 
 <style>
 	.chat-off {
+		flex: 1;
+		min-height: 0;
 		display: flex;
-		flex-direction: column;
-		align-items: flex-start;
-		gap: var(--space-3);
+		overflow-y: auto;
 	}
-	h1 {
+	p.status {
 		margin: 0;
-		font-size: 1.5rem;
-	}
-	p {
-		margin: 0;
+		min-height: 1.2em;
+		font-size: 13px;
 		color: var(--text-secondary);
 	}
-	.status {
-		min-height: 1.2em;
-		font-size: 0.85rem;
+	p.status:empty {
+		min-height: 0;
 	}
 	.settings {
 		color: var(--text-secondary);
-		font-size: 0.85rem;
+		font-size: 13px;
 	}
 </style>

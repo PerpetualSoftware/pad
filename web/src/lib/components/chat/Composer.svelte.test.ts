@@ -748,3 +748,81 @@ it('refreshes a restored reply preview from authorized messages and allows cance
 	await fireEvent.click(r.send);
 	expect(r.onSend).toHaveBeenCalledWith('reply draft', undefined);
 });
+
+describe('one box, one caption line (TASK-4515)', () => {
+	beforeEach(() => vi.useFakeTimers());
+	afterEach(() => { cleanup(); vi.useRealTimers(); });
+	async function save() { await vi.advanceTimersByTimeAsync(500); flushSync(); }
+	const hidden = (el: Element | null) => !!el && el.classList.contains('sr-only');
+
+	it('the placeholder names the agent, and falls back to Message', () => {
+		expect(mount({ agentKey: 'rook' }).box.getAttribute('placeholder')).toBe('Message rook');
+		cleanup();
+		expect(mount().box.getAttribute('placeholder')).toBe('Message');
+	});
+
+	it('the textarea starts one line high and keeps its accessible name', () => {
+		const { box, getByRole } = mount({ agentKey: 'rook' });
+		expect(box.getAttribute('rows')).toBe('1');
+		expect(getByRole('textbox', { name: 'Message' })).toBe(box);
+	});
+
+	it('the destination line is kept for assistive technology only', () => {
+		const { container } = mount({ agentKey: 'rook', title: 'Importer' });
+		const t = container.querySelector('.target')!;
+		expect(hidden(t)).toBe(true);
+		expect(t.textContent).toContain('To rook');
+	});
+
+	it('Send is a primary Button inside the box with a touch size', () => {
+		const { send, container } = mount({ agentKey: 'rook' });
+		expect(send.matches('.box button.send.btn.primary.touch')).toBe(true);
+		expect(container.querySelector('.box textarea')).not.toBeNull();
+	});
+
+	it('the presence note outranks the draft note; the draft note stays for assistive technology', async () => {
+		const r = mount({ agentKey: 'rook', presence: 'offline' });
+		await type(r.box, 'keep');
+		await save();
+		expect(hidden(r.container.querySelector('.presence-note'))).toBe(false);
+		const draft = r.container.querySelector('.draft-note')!;
+		expect(draft.textContent).toBe('Draft kept in this tab');
+		expect(hidden(draft)).toBe(true);
+	});
+
+	it('the draft note shows when nothing outranks it', async () => {
+		const r = mount({ agentKey: 'rook', presence: 'online' });
+		await type(r.box, 'keep');
+		await save();
+		expect(hidden(r.container.querySelector('.draft-note'))).toBe(false);
+	});
+
+	it('a status outranks the presence note', async () => {
+		const r = mount({ agentKey: 'rook', presence: 'offline' });
+		await type(r.box, 'x'.repeat(50_000));
+		expect(hidden(r.container.querySelector('[role=status]'))).toBe(false);
+		expect(hidden(r.container.querySelector('.presence-note'))).toBe(true);
+		expect(r.container.querySelector('.presence-note')!.textContent).toContain('No live armed session');
+	});
+
+	it('the key hint shows only when the caption is otherwise empty, and keeps its text', async () => {
+		const quiet = mount({ agentKey: 'rook', presence: 'online' });
+		const hint = quiet.container.querySelector('.key-hint')!;
+		expect(hint.textContent).toContain('Enter sends');
+		expect(hidden(hint)).toBe(false);
+		cleanup();
+		const noted = mount({ agentKey: 'rook', presence: 'offline' });
+		const h2 = noted.container.querySelector('.key-hint')!;
+		expect(h2.textContent).toContain('Enter sends');
+		expect(hidden(h2)).toBe(true);
+	});
+
+	it('with the soft keyboard up, presence and draft notes leave the screen; a status still shows', async () => {
+		const r = mount({ agentKey: 'rook', presence: 'offline' });
+		kb.visible = true;
+		flushSync();
+		expect(hidden(r.container.querySelector('.presence-note'))).toBe(true);
+		await type(r.box, 'x'.repeat(50_000));
+		expect(hidden(r.container.querySelector('[role=status]'))).toBe(false);
+	});
+});

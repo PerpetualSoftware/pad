@@ -62,6 +62,9 @@ describe('ChatEmptyState', () => {
 		expect(codes).toEqual(['/pad:connect', 'pad watch --stream --for-session']);
 		// Only the slash command is copyable; the monitor line is run by the harness.
 		expect(container.querySelectorAll('button').length).toBe(1);
+		// TASK-4515: the shared centred state, an h2 under the page's h1, and a real Button.
+		expect(container.querySelector('.chat-state h2')?.textContent).toBe(NONE);
+		expect(container.querySelector('button')!.matches('.btn.secondary')).toBe(true);
 		expect(text).toContain('linked to this workspace (.pad.toml)');
 		// Under another harness the session must be armed; the detail is in docs/api.md.
 		expect(text).toContain('pad session arm');

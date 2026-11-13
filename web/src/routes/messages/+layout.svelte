@@ -74,7 +74,8 @@
 
 <style>
 	.messages-main {
-		max-width: 960px;
+		/* A reading measure (TASK-4515). */
+		max-width: 760px;
 		margin: 0 auto;
 		padding: var(--space-8) var(--space-6);
 		min-height: 100vh;
@@ -92,7 +93,12 @@
 		height: 100%;
 		min-height: 0;
 		box-sizing: border-box;
-		padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
+		padding: var(--space-4) var(--space-6) calc(var(--space-4) + env(safe-area-inset-bottom));
+	}
+
+	/* A standalone phone thread is edge to edge: its header, scroller and composer pad themselves. */
+	.messages-main.thread.standalone {
+		padding: 0 0 env(safe-area-inset-bottom);
 	}
 
 	/* The bar below (GlobalBottomBar) takes its height, and the body's bottom padding

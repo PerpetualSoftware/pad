@@ -1,6 +1,8 @@
 <script lang="ts">
 	import { onDestroy, onMount, tick, untrack } from 'svelte';
-	import ChatBackLink from '$lib/components/chat/ChatBackLink.svelte';
+	import Button from '$lib/components/common/Button.svelte';
+	import ChatHeader from '$lib/components/chat/ChatHeader.svelte';
+	import ChatState from '$lib/components/chat/ChatState.svelte';
 	import Composer from '$lib/components/chat/Composer.svelte';
 	import MessageBubble from '$lib/components/chat/MessageBubble.svelte';
 	import PendingBubble from '$lib/components/chat/PendingBubble.svelte';
@@ -139,6 +141,28 @@
 		if (el) el.scrollTop = el.scrollHeight - before;
 	}
 
+	// The pill is for a divider the reader cannot see. The observer writes this
+	// flag and nothing it reads; with no IntersectionObserver the pill stays. Until the
+	// observer first reports, the divider counts as in view, so the pill does not blink.
+	const canObserve = typeof IntersectionObserver !== 'undefined';
+	let dividerInView = $state(canObserve);
+	// A factory over the root, so the attachment re-runs once the scroller binds.
+	const watchDivider = (root: HTMLElement | null) => (el: HTMLElement) => {
+		if (!root || typeof IntersectionObserver === 'undefined') return;
+		const io = new IntersectionObserver(
+			(entries) => {
+				const last = entries[entries.length - 1];
+				if (last) dividerInView = last.isIntersecting;
+			},
+			{ root }
+		);
+		io.observe(el);
+		return () => {
+			io.disconnect();
+			dividerInView = canObserve;
+		};
+	};
+
 	function jumpToUnread() {
 		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
 	}
@@ -186,172 +210,183 @@
 	let dividerAt = $derived(thread.dividerIndex);
 </script>
 
-<header class="chat-header">
-	{#if variant === 'host'}
-		<button type="button" class="close-chat" onclick={() => chatSurface.close()}>Close Chat</button>
-	{:else}
-		<ChatBackLink />
-	{/if}
-	<a class="all-chats" href="/messages" onclick={(e) => chatSurface.handleLinkClick(e, '/messages')}
-		>All conversations</a
-	>
+{#snippet presence()}
 	{#if conversation}
-		<span class="presence">
-			<PresenceDot
-				state={chatInbox.presenceFor(conversation.agent_key)}
-				checkedAt={chatInbox.checkedAt}
-				detail={chatInbox.armedCount(conversation.agent_key) > 1
-					? `${chatInbox.armedCount(conversation.agent_key)} armed sessions`
-					: ''}
-				showLabel
-			/>
-			{conversation.agent_key}
-		</span>
+		<PresenceDot
+			state={chatInbox.presenceFor(conversation.agent_key)}
+			checkedAt={chatInbox.checkedAt}
+			detail={chatInbox.armedCount(conversation.agent_key) > 1
+				? `${chatInbox.armedCount(conversation.agent_key)} armed sessions`
+				: ''}
+			showLabel
+		/>
 	{/if}
-</header>
+{/snippet}
+
+<!-- One header row (TASK-4515): back, the name over its presence, and Close in the host. -->
+<ChatHeader
+	back
+	title={thread.status === 'notFound' || thread.status === 'failed'
+		? ''
+		: conversation
+			? conversation.title || conversation.agent_key
+			: 'Chat'}
+	onClose={variant === 'host' ? () => chatSurface.close() : undefined}
+	sub={conversation && thread.status !== 'notFound' && thread.status !== 'failed' ? presence : undefined}
+/>
 
 {#if thread.status === 'notFound'}
-	<h1>Conversation not found</h1>
+	<div class="pane"><ChatState heading="Conversation not found" level={1} /></div>
 {:else if thread.status === 'failed'}
-	<h1>Could not load this conversation</h1>
-	<button type="button" class="retry" onclick={() => retry++}>Try again</button>
-{:else}
-	<h1>{conversation ? conversation.title || conversation.agent_key : 'Chat'}</h1>
-	{#if thread.status === 'ready'}
-		{#if thread.refreshFailed}
-			<p class="banner" role="status">
-				Couldn't refresh this conversation.
-				<button type="button" class="retry" onclick={() => void thread.refresh()}>Try again</button>
-			</p>
-		{/if}
-		{#if dividerAt >= 0}
-			<button type="button" class="jump" onclick={jumpToUnread}>Jump to unread</button>
-		{/if}
-		<div class="scroller" bind:this={scroller}>
-			{#if thread.hasOlder}
-				<div class="edge">
-					<button
-						type="button"
-						class="older"
-						disabled={thread.loadingOlder}
-						onclick={() => void loadOlder()}>Load earlier</button
-					>
-					{#if thread.olderFailed}
-						<span class="banner" role="status">Couldn't load earlier messages. Try again.</span>
-					{/if}
-				</div>
-			{/if}
-			<div class="messages">
-				{#each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)}
-					{#if item.kind === 'message'}
-						{#if i === dividerAt}
-							<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} />
-						{/if}
-						<MessageBubble
-							message={item.message}
-							canDelete={canDeleteMessage({ message: item.message, conversation, emailVerified: authStore.emailVerified })}
-							refs={thread.refs}
-							onJumpToQuote={jumpToQuote}
-							onReply={startReply}
-							onDelete={deleteMessage}
-						/>
-					{:else}
-						<PendingBubble
-							pending={item.pending}
-							onRetry={(k) => {
-								const body = item.pending.body;
-								// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send.
-								void thread.retry(k).then((outcome) => {
-									if (outcome !== 'sent' && outcome !== 'failed' && outcome !== 'stale') composer?.restore(body, outcome);
-								});
-								refocusComposer();
-							}}
-							onDiscard={(k) => {
-								thread.discard(k);
-								refocusComposer();
-							}}
-						/>
-					{/if}
-				{:else}
-					<p class="empty">No messages yet.</p>
-				{/each}
+	<div class="pane">
+		<ChatState heading="Could not load this conversation" level={1}>
+			{#snippet actions()}
+				<Button variant="primary" touch class="retry" onclick={() => retry++}>Try again</Button>
+			{/snippet}
+		</ChatState>
+	</div>
+{:else if thread.status === 'ready'}
+	{#if thread.refreshFailed}
+		<p class="notice" role="status">
+			<span>Couldn't refresh this conversation.</span>
+			<Button size="sm" touch class="retry" onclick={() => void thread.refresh()}>Try again</Button>
+		</p>
+	{/if}
+	<div class="scroller" class:empty={thread.items.length === 0 && thread.detached.length === 0} bind:this={scroller}>
+		{#if thread.hasOlder}
+			<div class="edge">
+				<Button
+					variant="ghost"
+					size="sm"
+					touch
+					class="older"
+					disabled={thread.loadingOlder}
+					onclick={() => void loadOlder()}>Load earlier</Button
+				>
+				{#if thread.olderFailed}
+					<span class="banner" role="status">Couldn't load earlier messages. Try again.</span>
+				{/if}
 			</div>
-			{#if thread.hasNewer}
-				<div class="edge">
-					<button
-						type="button"
-						class="newer"
-						disabled={thread.loadingNewer || sending}
-						aria-busy={sending ? 'true' : undefined}
-						onclick={() => void thread.loadNewer()}>Show newer messages</button
-					>
-					{#if thread.newerFailed}
-						<span class="banner" role="status">Couldn't load newer messages. Try again.</span>
+		{/if}
+		{#if dividerAt >= 0 && !dividerInView}
+			<!-- A zero-height sticky strip: the pill floats over the rows and takes no line. It
+			     sits below Load earlier so it never covers that button, and shows only while
+			     the divider is out of view, so it never covers the divider's label. -->
+			<div class="jump">
+				<Button size="sm" touch class="jump-pill" onclick={jumpToUnread}>Jump to unread</Button>
+			</div>
+		{/if}
+		<div class="messages">
+			{#each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)}
+				{#if item.kind === 'message'}
+					{#if i === dividerAt}
+						<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} {@attach watchDivider(scroller)} />
 					{/if}
-				</div>
-			{/if}
-			<!-- Detached confirmed sends use the same full-width rows. -->
-			<div class="detached">
-				{#each thread.detached as m (m.seq)}
 					<MessageBubble
-						message={m}
-						canDelete={canDeleteMessage({ message: m, conversation, emailVerified: authStore.emailVerified })}
+						message={item.message}
+						canDelete={canDeleteMessage({ message: item.message, conversation, emailVerified: authStore.emailVerified })}
 						refs={thread.refs}
 						onJumpToQuote={jumpToQuote}
 						onReply={startReply}
 						onDelete={deleteMessage}
 					/>
-				{/each}
-			</div>
-			<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
+				{:else}
+					<PendingBubble
+						pending={item.pending}
+						onRetry={(k) => {
+							const body = item.pending.body;
+							// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send.
+							void thread.retry(k).then((outcome) => {
+								if (outcome !== 'sent' && outcome !== 'failed' && outcome !== 'stale') composer?.restore(body, outcome);
+							});
+							refocusComposer();
+						}}
+						onDiscard={(k) => {
+							thread.discard(k);
+							refocusComposer();
+						}}
+					/>
+				{/if}
+			{:else}
+				{#if thread.detached.length === 0}
+					<ChatState heading="No messages yet">
+						<p>
+							{conversation?.agent_key
+								? `Send ${conversation.agent_key} a message to start the conversation.`
+								: 'Send a message to start the conversation.'}
+						</p>
+					</ChatState>
+				{/if}
+			{/each}
 		</div>
-		{#if n !== null}
-			{#key n}
-				<Composer
-					bind:this={composer}
-					{n}
-					agentKey={conversation?.agent_key ?? ''}
-					title={conversation?.title ?? ''}
-					presence={conversation ? chatInbox.presenceFor(conversation.agent_key) : 'unknown'}
-					{replyTo}
-					messages={thread.messages}
-					onClearReply={() => (replyTo = null)}
-					onSend={(body, replyToSeq) => thread.send(body, replyToSeq)}
-				/>
-			{/key}
+		{#if thread.hasNewer}
+			<div class="edge">
+				<Button
+					variant="ghost"
+					size="sm"
+					touch
+					class="newer"
+					disabled={thread.loadingNewer || sending}
+					aria-busy={sending ? 'true' : undefined}
+					onclick={() => void thread.loadNewer()}>Show newer messages</Button
+				>
+				{#if thread.newerFailed}
+					<span class="banner" role="status">Couldn't load newer messages. Try again.</span>
+				{/if}
+			</div>
 		{/if}
+		<!-- Detached confirmed sends use the same full-width rows. -->
+		<div class="detached">
+			{#each thread.detached as m (m.seq)}
+				<MessageBubble
+					message={m}
+					canDelete={canDeleteMessage({ message: m, conversation, emailVerified: authStore.emailVerified })}
+					refs={thread.refs}
+					onJumpToQuote={jumpToQuote}
+					onReply={startReply}
+					onDelete={deleteMessage}
+				/>
+			{/each}
+		</div>
+		<div class="sentinel" bind:this={sentinel} aria-hidden="true"></div>
+	</div>
+	{#if n !== null}
+		{#key n}
+			<Composer
+				bind:this={composer}
+				{n}
+				agentKey={conversation?.agent_key ?? ''}
+				title={conversation?.title ?? ''}
+				presence={conversation ? chatInbox.presenceFor(conversation.agent_key) : 'unknown'}
+				{replyTo}
+				messages={thread.messages}
+				onClearReply={() => (replyTo = null)}
+				onSend={(body, replyToSeq) => thread.send(body, replyToSeq)}
+			/>
+		{/key}
 	{/if}
 {/if}
 
 <style>
-	.close-chat {
-		align-self: flex-start;
-	}
-	.chat-header {
+	.pane {
+		flex: 1;
+		min-height: 0;
 		display: flex;
-		gap: var(--space-4);
-		margin-bottom: var(--space-4);
-	}
-	.presence {
-		display: inline-flex;
-		align-items: center;
-		gap: var(--space-2);
-		margin-left: auto;
-		font-size: 0.85rem;
-	}
-	.all-chats {
-		color: var(--text-secondary);
-		font-size: 0.85rem;
-	}
-	h1 {
-		margin: 0 0 var(--space-3);
-		font-size: 1.5rem;
+		overflow-y: auto;
 	}
 	.scroller {
+		position: relative;
 		flex: 1;
 		min-height: 0;
 		overflow-y: auto;
-		padding-bottom: var(--space-3);
+		padding: var(--space-3) var(--space-4) var(--space-2);
+	}
+	.scroller.empty {
+		display: flex;
+		flex-direction: column;
+	}
+	.scroller.empty .messages {
+		flex: 1;
 	}
 	.messages,
 	.detached {
@@ -364,16 +399,40 @@
 		gap: var(--space-3);
 		align-items: center;
 		justify-content: center;
-		padding: var(--space-2) 0;
+		padding-bottom: var(--space-2);
 	}
-	.banner,
-	.empty {
+	.banner {
 		color: var(--text-secondary);
-		font-size: 0.85rem;
+		font-size: 12px;
+	}
+	.notice {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		margin: var(--space-2) var(--space-4) 0;
+		padding: var(--space-2) var(--space-3);
+		border-radius: var(--radius);
+		border: 1px solid color-mix(in srgb, var(--accent-red) 40%, transparent);
+		background: color-mix(in srgb, var(--accent-red) 10%, transparent);
+		font-size: 13px;
+		color: var(--text-primary);
+	}
+	.notice span {
+		flex: 1;
 	}
 	.jump {
-		align-self: flex-start;
-		margin-bottom: var(--space-2);
+		position: sticky;
+		top: 0;
+		z-index: 2;
+		display: flex;
+		justify-content: center;
+		height: 0;
+	}
+	.jump :global(.jump-pill) {
+		height: 28px;
+		border-radius: 999px;
+		background: var(--bg-raised);
+		box-shadow: var(--shadow-md);
 	}
 	.sentinel {
 		height: 1px;
