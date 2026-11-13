@@ -60,6 +60,7 @@
 		const sameIdentity = authStore.identityFence();
 		const current = () => mounted && sameIdentity();
 		const proof: StepUpProof = factor === 'password' ? { password } : recovery ? { recovery_code: code.trim() } : { code: code.trim() };
+		let failed = false;
 		busy = true; error = '';
 		try {
 			await api.auth.stepUp.verify(proof);
@@ -67,10 +68,18 @@
 			password = ''; code = '';
 			onverified();
 		} catch (err) {
-			if (current()) error = err instanceof Error ? err.message : 'Verification failed.';
+			if (current()) { error = err instanceof Error ? err.message : 'Verification failed.'; failed = true; }
 		} finally {
 			if (current()) busy = false;
 		}
+		// busy disabled the focused control, so return focus to the field once it is enabled again.
+		if (failed && current()) void focusField();
+	}
+	async function focusField() {
+		await tick();
+		if (!mounted) return;
+		if (factor === 'password') passwordEl?.focus();
+		else codeEl?.focus();
 	}
 </script>
 

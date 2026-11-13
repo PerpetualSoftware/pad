@@ -57,4 +57,15 @@ describe('TASK-4516: step-up prompt focus and labelling', () => {
 		expect(input.getAttribute('aria-describedby')).toBe(alert.id);
 		expect(alert.id).not.toBe('');
 	});
+	it('a failed verify returns focus to the field', async () => {
+		mount('password');
+		const input = screen.getByLabelText('Password');
+		await fireEvent.input(input, { target: { value: 'wrong' } });
+		const verify = screen.getByRole('button', { name: 'Verify' });
+		// A click moves focus to Verify, which busy then disables.
+		verify.focus();
+		await fireEvent.click(verify);
+		await screen.findByRole('alert');
+		await waitFor(() => expect(input).toHaveFocus());
+	});
 });
