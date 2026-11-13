@@ -51,22 +51,31 @@ func TestMCPApps_KillSwitch(t *testing.T) {
 				if response.Error != nil || response.Result == nil {
 					t.Fatalf("%s: %s", method, raw)
 				}
-				found := false
+				found, boardFound := false, false
 				if method == "tools/list" {
 					for _, tool := range response.Result["tools"] {
-						if tool["name"] == "pad_board" {
+						if tool["name"] == "pad_item" {
 							_, found = tool["_meta"]
+						}
+						if tool["name"] == "pad_board" {
+							boardFound = true
 						}
 					}
 				} else {
 					for _, r := range response.Result["resources"] {
-						if r["uri"] == "ui://pad/board" {
+						if strings.HasPrefix(r["uri"].(string), "ui://") {
 							found = true
+						}
+						if r["uri"] == "ui://pad/board" {
+							boardFound = true
 						}
 					}
 				}
 				if found != enabled {
 					t.Fatalf("%s apps=%v, want %v", method, found, enabled)
+				}
+				if boardFound != enabled {
+					t.Fatalf("%s board=%v, want %v", method, boardFound, enabled)
 				}
 			}
 		})
