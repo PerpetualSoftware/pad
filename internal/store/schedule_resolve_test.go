@@ -249,7 +249,7 @@ func TestCompletionAnchor(t *testing.T) {
 			u := f.user(t, "completion-la@example.com", c.floatingTZ)
 			f.assign(t, item.ID, u.ID)
 		}
-		res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(c.x), State: "done", Actor: "user"}, c.done)
+		res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(c.x), State: "done", Actor: "user", EndSchedule: true}, c.done)
 		got := res.Schedule
 		if c.wantAt == "" && c.wantWall == "" {
 			if got.EndedAt == nil || got.NextAt != nil || got.ReminderID != nil {
@@ -438,7 +438,7 @@ func TestResolveStale(t *testing.T) {
 	if f.occTotal(t, sc.ID) != 0 {
 		t.Error("a stale resolve wrote")
 	}
-	in := ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "user"}
+	in := ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "user", EndSchedule: true}
 	f.mustResolve(t, item, in, now)
 	_, err := f.resolve(t, item, in, now)
 	st := isStale(err)
@@ -599,7 +599,7 @@ func TestResolveEndsOneShotAndBrokenRule(t *testing.T) {
 	u := f.user(t, "res-end@example.com", "")
 	item, sc := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"}, "2026-10-29T12:00:00Z")
 	f.fire(t, "2026-10-30T09:00:30Z")
-	res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "user"}, "2026-10-30T09:05:00Z")
+	res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "user", EndSchedule: true}, "2026-10-30T09:05:00Z")
 	got := res.Schedule
 	if got.EndedAt == nil || got.NextAt != nil || got.NextWall != nil || got.ReminderID != nil {
 		t.Fatalf("ended schedule: %+v", got)

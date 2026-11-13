@@ -353,7 +353,7 @@ func TestAgendaFourRolesOneOccurrenceAndRoleOnlyWindows(t *testing.T) {
 		}
 	}
 	// A terminal item's role-only history window must be admitted too.
-	f.mustResolve(t, f.item, ResolveInput{State: "done", OccurrenceAt: rt(*sc.NextAt), Actor: "user"}, "2026-10-27T10:00:00Z")
+	f.mustResolve(t, f.item, ResolveInput{State: "done", OccurrenceAt: rt(*sc.NextAt), Actor: "user", EndSchedule: true}, "2026-10-27T10:00:00Z")
 	fields := `{"status":"done"}`
 	if _, err := f.s.UpdateItem(f.item.ID, models.ItemUpdate{Fields: &fields}); err != nil {
 		t.Fatal(err)

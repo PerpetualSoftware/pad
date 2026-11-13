@@ -101,8 +101,11 @@ type ScheduleExport struct {
 	NextOverrideAt string `json:"next_override_at,omitempty"`
 	AnchorWall     string `json:"anchor_wall,omitempty"`
 	EndedAt        string `json:"ended_at,omitempty"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	// EndedDismissedAt is when the ended schedule was dismissed from
+	// Outstanding (TASK-4537); it requires EndedAt.
+	EndedDismissedAt string `json:"ended_dismissed_at,omitempty"`
+	CreatedAt        string `json:"created_at"`
+	UpdatedAt        string `json:"updated_at"`
 
 	// Reminder is the managed reminder row's state; nil on an ended schedule.
 	// The row itself is rebuilt on import (export skips managed rows).

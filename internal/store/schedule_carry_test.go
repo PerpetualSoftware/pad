@@ -121,7 +121,7 @@ func TestExportImportRoundTripSchedules(t *testing.T) {
 		Comment: f.comment(completion, u.ID, "completed it")}, "2026-10-30T09:10:00Z")
 	until := rt("2026-10-30T11:00:00Z")
 	f.mustResolve(t, snoozed, ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "snooze", Until: &until, Actor: "user"}, "2026-10-30T09:10:00Z")
-	f.mustResolve(t, ended, ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "agent",
+	f.mustResolve(t, ended, ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "agent", EndSchedule: true,
 		Comment: f.comment(ended, u.ID, "all done")}, "2026-10-30T09:10:00Z")
 
 	src := f.exportBundle(t)

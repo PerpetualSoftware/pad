@@ -98,6 +98,15 @@ type ResolveInput struct {
 	// depend on assignment.
 	MaySkipBeforeDeadline bool
 	ExpectedAssignee      *string
+	// EndSchedule is the caller's consent to a done or skip that ends the
+	// schedule while the item is still open. The zero value refuses that with
+	// ErrScheduleWouldEnd; it has no effect when a next occurrence exists or the
+	// item is closed.
+	EndSchedule bool
+
+	// The non-terminal filter, loaded before the transaction for the guard.
+	openFilter string
+	openArgs   []any
 }
 
 // ResolveResult is the committed resolution.
@@ -109,6 +118,22 @@ type ResolveResult struct {
 	// TargetAfterDeadline is set by a move that put the target after the row's
 	// own deadline. The move is saved; the deadline and its miss are unchanged.
 	TargetAfterDeadline bool
+	// EndedItemOpen is set when the resolution ended the schedule, with the
+	// caller's consent, while the item stayed open.
+	EndedItemOpen bool
+}
+
+// ErrScheduleWouldEnd refuses a done or skip of the last occurrence of an open
+// item's schedule when the caller did not consent to ending it. Nothing is
+// written. Fired and Acknowledged describe the occurrence, so a caller can
+// offer an acknowledgement instead.
+type ErrScheduleWouldEnd struct {
+	Fired        bool
+	Acknowledged bool
+}
+
+func (e *ErrScheduleWouldEnd) Error() string {
+	return "the schedule ends with this occurrence and the item is still open"
 }
 
 // ErrSkipDeadlineAuthority refuses a skip of an occurrence whose hard deadline
@@ -172,11 +197,12 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	// it is loaded before the transaction holds it (as renegotiation does).
 	var openFilter string
 	var openArgs []any
-	if in.State == "skip" || in.State == "move" {
+	if in.State == "skip" || in.State == "move" || in.State == "done" {
 		openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
 	}
+	in.openFilter, in.openArgs = openFilter, openArgs
 	moveChecksDeadline := false
-	if s.beforeCommitmentPin != nil && in.State == "skip" {
+	if s.beforeCommitmentPin != nil && (in.State == "skip" || in.State == "done") {
 		s.beforeCommitmentPin() // test seam: the item changes between the handler's read and the lock
 	}
 
@@ -457,6 +483,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, err
 	}
 	res.MissedRecorded += closed.MissedRecorded
+	res.EndedItemOpen = closed.EndedItemOpen
 	if in.State == "skip" {
 		// A skip cancels the occurrence: a link under the cancel policy marks its
 		// paired child occurrence No longer needed, in this transaction.
@@ -568,6 +595,20 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	if err != nil {
 		return nil, err
 	}
+	endedItemOpen := false
+	if !found && (in.State == "done" || in.State == "skip") {
+		// The last occurrence: ending the schedule of an open item drops it from
+		// every dated view, so it needs the caller's consent. The item is read
+		// under the pin, after any concurrent close or reopen committed.
+		open, err := s.itemOpenTx(tx, sc.ItemID, in.openFilter, in.openArgs)
+		if err != nil {
+			return nil, err
+		}
+		if open && !in.EndSchedule {
+			return nil, &ErrScheduleWouldEnd{Fired: sc.ReminderFired, Acknowledged: sc.ReminderAckedAt != nil}
+		}
+		endedItemOpen = open
+	}
 	if in.State != "lapsed" {
 		// Done and skip record passed-over instances. Lapse judges each
 		// occurrence's own deadline instead, in the evaluator.
@@ -645,10 +686,36 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		// The miss journal is the evidence; reuse the skip journal change type.
 		change = "skip"
 	}
+	if endedItemOpen {
+		// The consent is the journal reason, so a later undo can tell the
+		// ending was chosen with the item open.
+		after, err := s.scheduleSnapshotTx(tx, sc.ID)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.journalScheduleChangeReasonTx(tx, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, after, in.Actor, "ended_item_open", "system"); err != nil {
+			return nil, err
+		}
+		res.EndedItemOpen = true
+		return res, nil
+	}
 	if err := s.journalScheduleAfterTx(tx, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, in.Actor); err != nil {
 		return nil, err
 	}
 	return res, nil
+}
+
+// itemOpenTx reads whether the item is non-terminal through a filter loaded
+// before the transaction (nonTerminalFilter reads through the pool).
+func (s *Store) itemOpenTx(tx *sql.Tx, itemID, openFilter string, openArgs []any) (bool, error) {
+	if openFilter == "" {
+		return false, fmt.Errorf("item open check: no terminal filter loaded")
+	}
+	var open bool
+	if err := tx.QueryRow(s.q(`SELECT `+openFilter+` FROM items i WHERE i.id=?`), append(append([]any{}, openArgs...), itemID)...).Scan(&open); err != nil {
+		return false, fmt.Errorf("item open check: %w", err)
+	}
+	return open, nil
 }
 
 // skipDeadlineGuardTx judges a skip of a native row's outstanding occurrence

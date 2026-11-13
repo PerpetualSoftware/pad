@@ -55,7 +55,7 @@ func TestTASK4423_R11SkipAuthority(t *testing.T) {
 			if linked {
 				f.cancelLink(t, 0, 1, models.LinkCancelChildOccurrence)
 			}
-			res, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[0].ID, ResolveInput{OccurrenceAt: rt(*f.reload(t, f.items[0].ID).NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, LinkAccess: f.access(0)}, rt("2029-01-01T00:00:00Z"))
+			res, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[0].ID, ResolveInput{OccurrenceAt: rt(*f.reload(t, f.items[0].ID).NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, LinkAccess: f.access(0), EndSchedule: true}, rt("2029-01-01T00:00:00Z"))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -89,7 +89,7 @@ func TestTASK4423_R11SkipAuthority(t *testing.T) {
 			if mode == "child-edit" {
 				acc = f.allEdit()
 			}
-			in := ResolveInput{OccurrenceAt: rt(*f.reload(t, f.items[0].ID).NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true}
+			in := ResolveInput{OccurrenceAt: rt(*f.reload(t, f.items[0].ID).NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, EndSchedule: true}
 			if mode != "nil" {
 				in.LinkAccess = acc
 			}

@@ -1078,7 +1078,7 @@ func TestMoveCarriesADueButUnfiredOccurrence(t *testing.T) {
 
 			// Resolved in the destination, a recurring schedule continues on its
 			// grid and a one-shot is done.
-			if _, err := c.s.resolveOccurrenceAt(c.wsB.ID, res.Item.ID, ResolveInput{State: "done", OccurrenceAt: rt("2026-10-28T09:00:00Z"), Actor: "user"}, copyNow); err != nil {
+			if _, err := c.s.resolveOccurrenceAt(c.wsB.ID, res.Item.ID, ResolveInput{State: "done", OccurrenceAt: rt("2026-10-28T09:00:00Z"), Actor: "user", EndSchedule: true}, copyNow); err != nil {
 				t.Fatal(err)
 			}
 			b = c.sched(t, c.wsB.ID, res.Item.ID)

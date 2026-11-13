@@ -358,18 +358,18 @@ func nextOccurrence(c *schedule.Compiled, view *time.Location, nowT time.Time) (
 }
 
 const scheduleColumns = `id, workspace_id, item_id, kind, dtstart, dtend, tz, floating, rrule, rdates, exdates,
-	anchor, audience, lead_minutes, next_at, next_wall, next_override_at, anchor_wall, ended_at, error_code,
+	anchor, audience, lead_minutes, next_at, next_wall, next_override_at, anchor_wall, ended_at, error_code, ended_dismissed_at,
 	(SELECT r.id FROM item_reminders r WHERE r.schedule_id = item_schedules.id),
 	(SELECT r.fired_at FROM item_reminders r WHERE r.schedule_id = item_schedules.id),
  (SELECT r.acked_at FROM item_reminders r WHERE r.schedule_id = item_schedules.id), created_at, updated_at`
 
 func scanSchedule(row interface{ Scan(...any) error }) (*models.ItemSchedule, error) {
 	var sc models.ItemSchedule
-	var dtend, tz, rrule, nextAt, nextWall, override, anchorWall, endedAt, errCode, reminderID, reminderFired, reminderAcked sql.NullString
+	var dtend, tz, rrule, nextAt, nextWall, override, anchorWall, endedAt, errCode, dismissed, reminderID, reminderFired, reminderAcked sql.NullString
 	var rdates, exdates string
 	if err := row.Scan(&sc.ID, &sc.WorkspaceID, &sc.ItemID, &sc.Kind, &sc.Dtstart, &dtend, &tz, &sc.Floating,
 		&rrule, &rdates, &exdates, &sc.Anchor, &sc.Audience, &sc.LeadMinutes, &nextAt, &nextWall, &override,
-		&anchorWall, &endedAt, &errCode, &reminderID, &reminderFired, &reminderAcked, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
+		&anchorWall, &endedAt, &errCode, &dismissed, &reminderID, &reminderFired, &reminderAcked, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
 		return nil, err
 	}
 	for _, f := range []struct {
@@ -377,7 +377,7 @@ func scanSchedule(row interface{ Scan(...any) error }) (*models.ItemSchedule, er
 		src sql.NullString
 	}{{&sc.Dtend, dtend}, {&sc.Tz, tz}, {&sc.Rrule, rrule}, {&sc.NextAt, nextAt}, {&sc.NextWall, nextWall},
 		{&sc.NextOverrideAt, override}, {&sc.AnchorWall, anchorWall}, {&sc.EndedAt, endedAt},
-		{&sc.ErrorCode, errCode}, {&sc.ReminderID, reminderID}, {&sc.ReminderAckedAt, reminderAcked}} {
+		{&sc.EndedDismissedAt, dismissed}, {&sc.ErrorCode, errCode}, {&sc.ReminderID, reminderID}, {&sc.ReminderAckedAt, reminderAcked}} {
 		if f.src.Valid {
 			v := f.src.String
 			*f.dst = &v
@@ -562,10 +562,10 @@ func (s *Store) insertScheduleTx(tx *sql.Tx, sc *models.ItemSchedule, native *sc
 		r = *native
 	}
 	_, err := tx.Exec(s.q(`INSERT INTO item_schedules (id,workspace_id,item_id,kind,dtstart,dtend,tz,floating,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,next_override_at,anchor_wall,ended_at,error_code,created_at,updated_at,
- target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin)
- VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
+ target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin,ended_dismissed_at)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`),
 		sc.ID, sc.WorkspaceID, sc.ItemID, sc.Kind, sc.Dtstart, nullStr(sc.Dtend), nullStr(sc.Tz), s.dialect.BoolToInt(sc.Floating), nullStr(sc.Rrule), mustJSON(sc.RDates), mustJSON(sc.ExDates), sc.Anchor, sc.Audience, sc.LeadMinutes, nullStr(sc.NextAt), nullStr(sc.NextWall), nullStr(sc.NextOverrideAt), nullStr(sc.AnchorWall), nullStr(sc.EndedAt), nullStr(sc.ErrorCode), sc.CreatedAt, sc.UpdatedAt,
-		r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, r.Origin)
+		r.TargetDays, r.TargetSecs, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs, r.Outcome, r.Origin, nullStr(sc.EndedDismissedAt))
 	if isUniqueViolation(err) {
 		return ErrScheduleExists
 	}
@@ -913,6 +913,11 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 		kind, dtend = edited.Kind, derefStr(edited.Dtend)
 		dtendVal = nullStr(edited.Dtend)
 	}
+	// A dismissal belongs to the ending it dismissed: a revival clears it.
+	dismissed := cur.EndedDismissedAt
+	if endedAt == nil {
+		dismissed = nil
+	}
 	derivedColumns := "kind=?,dtend=?,"
 	args := []any{kind, dtendVal}
 	if roles != nil {
@@ -921,9 +926,9 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	}
 	args = append(args, spec.Start.String(), tzVal, s.dialect.BoolToInt(spec.Floating), rrule,
 		mustJSON(wallStrings(spec.RDates)), mustJSON(wallStrings(spec.ExDates)), anchor, audience, lead,
-		nullStr(nextAt), nullStr(nextWall), nullStr(override), nullStr(anchorWall), nullStr(endedAt), nullStr(errCode), ts, cur.ID)
+		nullStr(nextAt), nullStr(nextWall), nullStr(override), nullStr(anchorWall), nullStr(endedAt), nullStr(errCode), nullStr(dismissed), ts, cur.ID)
 	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET `+derivedColumns+`dtstart=?,tz=?,floating=?,rrule=?,rdates=?,exdates=?,
- anchor=?,audience=?,lead_minutes=?,next_at=?,next_wall=?,next_override_at=?,anchor_wall=?,ended_at=?,error_code=?,updated_at=? WHERE id=?`), args...); err != nil {
+ anchor=?,audience=?,lead_minutes=?,next_at=?,next_wall=?,next_override_at=?,anchor_wall=?,ended_at=?,error_code=?,ended_dismissed_at=?,updated_at=? WHERE id=?`), args...); err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
 	}
 

@@ -57,7 +57,7 @@ func TestNeedsDueOccurrences(t *testing.T) {
 		}
 		if tc.action != "" && tc.action != "future" {
 			until := now.Add(time.Hour)
-			input := ResolveInput{OccurrenceAt: due, State: tc.action, Actor: "user"}
+			input := ResolveInput{OccurrenceAt: due, State: tc.action, Actor: "user", EndSchedule: true}
 			if tc.action == "move" || tc.action == "snooze" {
 				input.Until = &until
 			}

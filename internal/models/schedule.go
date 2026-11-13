@@ -41,6 +41,10 @@ type ItemSchedule struct {
 	NextOverrideAt *string `json:"next_override_at,omitempty"`
 	AnchorWall     *string `json:"anchor_wall,omitempty"`
 	EndedAt        *string `json:"ended_at,omitempty"`
+	// EndedDismissedAt is when an editor dismissed the ended schedule from
+	// Outstanding while its item stayed open; nil while not dismissed. Only an
+	// ended schedule carries one, and a timing edit that revives it clears it.
+	EndedDismissedAt *string `json:"ended_dismissed_at,omitempty"`
 	// ErrorCode is nil while healthy. Otherwise it says why the stored rule
 	// could not be advanced, never third-party text: a schedule.Code (syntax,
 	// unknown_part, duplicate_part, missing_part, range, combination,
