@@ -132,10 +132,17 @@ parent_ref, seq, updated_at}`. At most 300 non-terminal items overall and 20
 per terminal column are included, newest updated first; totals are uncapped,
 `truncated` marks a cut, and `unplaced` counts items with unknown statuses.
 
-`changes` requires `workspace`, `collection`, `since` and `access_epoch`. It
-returns `{upserts, removed_ids, cursor, access_epoch, resync}` from up to 500
-rows of the existing changes door. Upserts use the same projection; deletions,
-moved-out tombstones and other-collection rows supply removal IDs. `resync` is
+`changes` requires `workspace`, `collection` (the value `show` returned,
+matched exactly), `since` and `access_epoch`. It returns `{upserts, removed_ids,
+departed_ids, cursor, access_epoch, resync}` from up to 500 rows of the existing
+changes door. Upserts use the same projection. `removed_ids` holds this
+collection's deletions and parent-filter misses plus every moved-out tombstone
+(tombstones do not name their source collection); on an incomplete board
+(`truncated` or `unplaced`) an id the view does not display makes it re-run
+`show`. `departed_ids` holds live rows in other collections, which include a full
+member's move out of this one; the view drops any it displays and never re-runs
+`show` for them. Blind spot: a truncated item that moves to another collection
+leaves its column total one too high until the next `show`. `resync` is
 true on an epoch mismatch or a full 500-row page. Door cursors and epochs pass
 through untouched; invalid cursors retain the door error. Both actions use the
 normal authenticated request path and write nothing. The board polls changes

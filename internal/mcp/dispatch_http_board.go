@@ -55,16 +55,30 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 				return dispatcherErrorResult(key, "decode changes", err), nil
 			}
 			upserts := []boardItem{}
-			removed := []string{}
+			removed, departed := []string{}, []string{}
 			parent, _ := input["parent"].(string)
 			for _, row := range page.Changes {
-				if !row.Deleted && !row.MovedOut && row.CollectionSlug == collection && boardParentMatches(row.ParentRef, parent) {
-					upserts = append(upserts, projectBoardItem(row.Item))
-				} else {
+				switch {
+				case row.MovedOut:
+					// A tombstone carries only id and seq, not the collection
+					// it left, so it may have been on this board.
 					removed = append(removed, row.ID)
+				case row.CollectionSlug != collection:
+					// A live row elsewhere is either an unrelated item or a
+					// full member's move out of this board; the door does not
+					// say which. Blind spot: an item the snapshot omitted
+					// (truncated) that moves away leaves its column total one
+					// too high until the next show.
+					if !row.Deleted {
+						departed = append(departed, row.ID)
+					}
+				case row.Deleted || !boardParentMatches(row.ParentRef, parent):
+					removed = append(removed, row.ID)
+				default:
+					upserts = append(upserts, projectBoardItem(row.Item))
 				}
 			}
-			return boardResult(map[string]any{"upserts": upserts, "removed_ids": removed, "cursor": page.Cursor, "access_epoch": page.AccessEpoch, "resync": page.AccessEpoch != input["access_epoch"] || len(page.Changes) == 500}), nil
+			return boardResult(map[string]any{"upserts": upserts, "removed_ids": removed, "departed_ids": departed, "cursor": page.Cursor, "access_epoch": page.AccessEpoch, "resync": page.AccessEpoch != input["access_epoch"] || len(page.Changes) == 500}), nil
 		}
 		col, failure := boardCollection(get(base+"/collections"), collection, key)
 		if failure != nil {

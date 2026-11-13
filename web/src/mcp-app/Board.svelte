@@ -242,7 +242,7 @@
 		if (!board) return;
 		const here = next.collection_slug === board.collection;
 		board = applyChanges(board, {
-			upserts: here ? [boardItemFrom(next, row)] : [], removed_ids: here ? [] : [row.id],
+			upserts: here ? [boardItemFrom(next, row)] : [], removed_ids: here ? [] : [row.id], departed_ids: [],
 			cursor: board.cursor, access_epoch: board.access_epoch, resync: false
 		});
 	}

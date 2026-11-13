@@ -6,7 +6,7 @@ const board = (): Board => ({ workspace: 'demo', collection: 'tasks', columns: [
 	{ status: 'open', terminal: false, abandoned: false, total: 2, items: [item('a', 'open'), item('b', 'open')] },
 	{ status: 'done', terminal: true, abandoned: false, total: 0, items: [] }
 ], truncated: false, unplaced: 0, cursor: '2', access_epoch: 'epoch' });
-const changes = (upserts: BoardItem[], removed_ids: string[] = []) => ({ upserts, removed_ids, cursor: '8', access_epoch: 'epoch', resync: false });
+const changes = (upserts: BoardItem[], removed_ids: string[] = [], departed_ids: string[] = []) => ({ upserts, removed_ids, departed_ids, cursor: '8', access_epoch: 'epoch', resync: false });
 describe('applyChanges', () => {
 	it('moves status, updates in place, keeps totals, and removes ids without mutating the snapshot', () => {
 		const original = board();
@@ -38,6 +38,13 @@ describe('needsResync', () => {
 			expect(needsResync(incomplete, changes([], ['unseen']))).toBe(true);
 		}
 	});
+	it('never asks for one for departed ids, which only drop displayed items', () => {
+		const incomplete = { ...board(), truncated: true };
+		expect(needsResync(incomplete, changes([], [], ['unseen', 'a']))).toBe(false);
+		const updated = applyChanges(incomplete, changes([], [], ['unseen', 'a']));
+		expect(updated.columns[0].items.map(i => i.id)).toEqual(['b']);
+		expect(updated.columns.map(c => c.total)).toEqual([1, 0]);
+	});
 	it('treats a board an unknown-status upsert made incomplete as incomplete', () => {
 		const updated = applyChanges(board(), changes([item('a', 'unknown')]));
 		expect(updated.unplaced).toBe(1);
@@ -64,9 +71,9 @@ describe('parsing tool results', () => {
 		for (const bad of [null, [], { columns: [] }, { ...board(), columns: [{}] }, { ...board(), cursor: 3 }, { upserts: [], cursor: 'c', access_epoch: 'e' }]) expect(parseBoard(bad)).toBeNull();
 	});
 	it('accepts a changes result and refuses other shapes', () => {
-		expect(parseChanges({ upserts: [item('a', 'open'), {}], removed_ids: ['b', 4], cursor: 'c', access_epoch: 'e', resync: true }))
-			.toEqual({ upserts: [item('a', 'open')], removed_ids: ['b'], cursor: 'c', access_epoch: 'e', resync: true });
-		expect(parseChanges({ cursor: 'c', access_epoch: 'e' })).toEqual({ upserts: [], removed_ids: [], cursor: 'c', access_epoch: 'e', resync: false });
+		expect(parseChanges({ upserts: [item('a', 'open'), {}], removed_ids: ['b', 4], departed_ids: ['d', null], cursor: 'c', access_epoch: 'e', resync: true }))
+			.toEqual({ upserts: [item('a', 'open')], removed_ids: ['b'], departed_ids: ['d'], cursor: 'c', access_epoch: 'e', resync: true });
+		expect(parseChanges({ cursor: 'c', access_epoch: 'e' })).toEqual({ upserts: [], removed_ids: [], departed_ids: [], cursor: 'c', access_epoch: 'e', resync: false });
 		expect(parseChanges({ upserts: [] })).toBeNull();
 	});
 	it('projects a pad_item result onto its board row without carrying content', () => {

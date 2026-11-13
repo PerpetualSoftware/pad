@@ -84,7 +84,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Read-only collection board backing the board view. Both actions are read-only.\n\nActions:\n  show — Open a live board with status columns and a snapshot cursor.\n    Required: workspace, collection. Optional: parent (ref).\n  changes — Read changes since the snapshot, including removals.\n    Required: workspace, collection (the collection show returned), since, access_epoch. Optional: parent.",
+      "description": "Read-only collection board backing the board view. Both actions are read-only.\n\nActions:\n  show — Open a live board with status columns and a snapshot cursor.\n    Required: workspace, collection. Optional: parent (ref).\n  changes — Read changes since the snapshot: upserts, removed_ids (deleted, filtered out or moved out of view; may name items the board never held) and departed_ids (live items in other collections; drop any shown).\n    Required: workspace, collection (the collection show returned), since, access_epoch. Optional: parent.",
       "inputSchema": {
         "properties": {
           "access_epoch": {

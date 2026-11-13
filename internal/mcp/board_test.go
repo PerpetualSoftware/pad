@@ -192,15 +192,16 @@ func TestPadBoard_ChangesUpsertRemove(t *testing.T) {
 	if len(ups) != 1 || ups[0].(map[string]any)["id"] != up.ID || out["resync"] != false {
 		t.Fatalf("upserts: %v", out)
 	}
-	ids := []string{}
-	for _, id := range out["removed_ids"].([]any) {
-		ids = append(ids, id.(string))
+	// A full member gets no moved-out tombstone: the move arrives as a live
+	// row in the target collection, as indistinguishable from the other
+	// collection's update as it is.
+	if got := boardIDs(out["removed_ids"]); !reflect.DeepEqual(got, []string{del.ID}) {
+		t.Fatalf("removed: %v want %v", got, []string{del.ID})
 	}
-	sort.Strings(ids)
-	want := []string{del.ID, move.ID, other.ID}
-	sort.Strings(want)
-	if !reflect.DeepEqual(ids, want) {
-		t.Fatalf("removed: %v want %v", ids, want)
+	departed := []string{move.ID, other.ID}
+	sort.Strings(departed)
+	if got := boardIDs(out["departed_ids"]); !reflect.DeepEqual(got, departed) {
+		t.Fatalf("departed: %v want %v", got, departed)
 	}
 	resync := boardJSON(t, f.call(t, context.Background(), "changes", map[string]any{"since": out["cursor"], "access_epoch": "stale"}))
 	if resync["resync"] != true {
@@ -221,6 +222,14 @@ func TestPadBoard_ChangesUpsertRemove(t *testing.T) {
 		t.Fatalf("full page: upserts=%d resync=%v", len(full["upserts"].([]any)), full["resync"])
 	}
 
+}
+func boardIDs(v any) []string {
+	ids := []string{}
+	for _, id := range v.([]any) {
+		ids = append(ids, id.(string))
+	}
+	sort.Strings(ids)
+	return ids
 }
 func (f *boardFixture) restrict(t *testing.T) {
 	t.Helper()
@@ -258,7 +267,7 @@ func TestPadBoard_RestrictedCursorNoLeak(t *testing.T) {
 	}
 	out = boardJSON(t, f.call(t, context.Background(), "changes", map[string]any{"since": base, "access_epoch": d["access_epoch"]}))
 	ids := out["removed_ids"].([]any)
-	if len(ids) != 1 || ids[0] != visible.ID {
+	if len(ids) != 1 || ids[0] != visible.ID || len(out["departed_ids"].([]any)) != 0 {
 		t.Fatalf("moved_out: %v", out)
 	}
 }
@@ -421,7 +430,12 @@ func TestPadBoard_ChangesExactCollection(t *testing.T) {
 		if len(ups) != 1 || ups[0].(map[string]any)["id"] != want {
 			t.Fatalf("changes %s upserts: %v", slug, ch)
 		}
-		_ = other
+		if got := boardIDs(ch["removed_ids"]); len(got) != 0 {
+			t.Fatalf("changes %s removes another collection's row: %v", slug, ch)
+		}
+		if got := boardIDs(ch["departed_ids"]); !reflect.DeepEqual(got, []string{other}) {
+			t.Fatalf("changes %s departed: %v", slug, ch)
+		}
 	}
 }
 

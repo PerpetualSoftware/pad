@@ -29,6 +29,8 @@ export interface Board {
 export interface BoardChanges {
 	upserts: BoardItem[];
 	removed_ids: string[];
+	/** Live items now in other collections: dropped where shown, never a reason to resync. */
+	departed_ids: string[];
 	cursor: string;
 	access_epoch: string;
 	resync: boolean;
@@ -39,7 +41,8 @@ export interface BoardChanges {
  * An incomplete board (truncated columns, or items counted only as unplaced)
  * cannot tell which total an item it does not display was counted in. A
  * complete board displays every item, so an unknown upsert is new and an
- * unknown removal is a no-op.
+ * unknown removal is a no-op. Departed ids never count: they only drop
+ * items the board shows.
  */
 export function needsResync(board: Board, changes: BoardChanges): boolean {
 	if (!board.truncated && board.unplaced === 0) return false;
@@ -57,7 +60,7 @@ export function applyChanges(board: Board, changes: BoardChanges): Board {
 			if (index !== -1) { column.items.splice(index, 1); column.total--; }
 		}
 	};
-	for (const id of changes.removed_ids) remove(id);
+	for (const id of [...changes.removed_ids, ...changes.departed_ids]) remove(id);
 	for (const item of changes.upserts) {
 		remove(item.id);
 		const column = columns.find(column => column.status === item.status);
@@ -106,10 +109,12 @@ export function parseBoard(x: unknown): Board | null {
 	};
 }
 
+const parseIds = (x: unknown): string[] => Array.isArray(x) ? x.filter((id): id is string => typeof id === 'string') : [];
+
 export function parseChanges(x: unknown): BoardChanges | null {
 	if (!isObject(x) || typeof x.cursor !== 'string' || typeof x.access_epoch !== 'string') return null;
 	return {
-		upserts: parseItems(x.upserts), removed_ids: Array.isArray(x.removed_ids) ? x.removed_ids.filter(id => typeof id === 'string') : [],
+		upserts: parseItems(x.upserts), removed_ids: parseIds(x.removed_ids), departed_ids: parseIds(x.departed_ids),
 		cursor: x.cursor, access_epoch: x.access_epoch, resync: x.resync === true
 	};
 }

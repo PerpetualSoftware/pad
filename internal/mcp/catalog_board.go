@@ -12,7 +12,9 @@ var padBoardTool = ToolDef{
 Actions:
   show — Open a live board with status columns and a snapshot cursor.
     Required: workspace, collection. Optional: parent (ref).
-  changes — Read changes since the snapshot, including removals.
+  changes — Read changes since the snapshot: upserts, removed_ids (deleted,
+    filtered out or moved out of view; may name items the board never held)
+    and departed_ids (live items in other collections; drop any shown).
     Required: workspace, collection (the collection show returned), since, access_epoch. Optional: parent.`,
 	Schema: ToolSchema{Workspace: true, Params: []ParamDef{
 		{Name: "collection", Type: "string", Description: "Collection slug. Required for both actions. Show accepts singular forms; pass changes the collection value show returned (matched exactly)."},

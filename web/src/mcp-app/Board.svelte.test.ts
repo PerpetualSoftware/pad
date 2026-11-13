@@ -34,7 +34,7 @@ const snapshot = (over: Record<string, unknown> = {}) => ({
 const ok = (structuredContent: unknown): ToolResultLike => ({ structuredContent });
 const fail = (code: string, message: string): ToolResultLike => ({ isError: true, structuredContent: { error: { code, message } } });
 const noChanges = (over: Record<string, unknown> = {}) =>
-	ok({ upserts: [], removed_ids: [], cursor: 'c2', access_epoch: 'e1', resync: false, ...over });
+	ok({ upserts: [], removed_ids: [], departed_ids: [], cursor: 'c2', access_epoch: 'e1', resync: false, ...over });
 // What pad_item answers with: the full item, status inside `fields`.
 const fullItem = (id: string, status: string, seq: number, over: Record<string, unknown> = {}) => ({
 	id, ref: `TASK-${id}`, title: `Title ${id}`, seq, collection_slug: 'tasks', updated_at: '2026-11-13T09:00:00Z',
@@ -230,6 +230,18 @@ describe('Board', () => {
 		await vi.advanceTimersByTimeAsync(10_000);
 		expect(ctx.callsTo('pad_board', 'changes')[1]).toMatchObject({ since: 'c7' });
 		expect(ctx.callsTo('pad_board', 'show')).toHaveLength(1);
+	});
+
+	it('drops a displayed departed item on a truncated board without re-running show', async () => {
+		vi.useFakeTimers();
+		const ctx = setup(() => noChanges({ departed_ids: ['2', 'unseen'] }));
+		const truncated = snapshot({ truncated: true });
+		(truncated.columns as { total: number }[])[0].total = 57;
+		await show(ctx, ok(truncated), SHOW_ARGS, { displayMode: 'fullscreen' });
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(titlesIn('open')).toEqual(['Title 1']);
+		expect(within(column('open')).getByText('showing 1 of 56')).toBeInTheDocument();
+		expect(ctx.callsTo('pad_board', 'show')).toEqual([]);
 	});
 
 	it('backs off after a rate-limit error and returns to the usual pace after a success', async () => {
