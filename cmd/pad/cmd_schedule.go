@@ -832,9 +832,9 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 			}
 		}
 		if e.State == "acknowledged" {
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d (%s)\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil), e.MissedCount, e.State)
-			_ = w.Flush()
-			fmt.Fprintln(out, acknowledgementLine(e.AcknowledgedAt, e.AcknowledgedBy, showLoc))
+			// The last column is not tab-terminated, so the attribution there
+			// does not widen or split the table's columns.
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d (%s; %s)\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil), e.MissedCount, e.State, acknowledgementLine(e.AcknowledgedAt, e.AcknowledgedBy, showLoc))
 		} else {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil), e.MissedCount)
 		}
@@ -899,11 +899,13 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 			if e.Stale {
 				flags = append(flags, "stale")
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", day, clock, state, e.ItemRef, e.ItemTitle, kind, strings.Join(flags, ","))
+			flagText := strings.Join(flags, ",")
 			if e.State == "acknowledged" {
-				_ = w.Flush()
-				fmt.Fprintln(out, acknowledgementLine(e.AcknowledgedAt, e.AcknowledgedBy, loc))
+				// In the last column, which is not tab-terminated, so it does
+				// not widen or split the table's columns.
+				flagText = strings.TrimPrefix(flagText+"; "+acknowledgementLine(e.AcknowledgedAt, e.AcknowledgedBy, loc), "; ")
 			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", day, clock, state, e.ItemRef, e.ItemTitle, kind, flagText)
 		}
 		_ = w.Flush()
 	}

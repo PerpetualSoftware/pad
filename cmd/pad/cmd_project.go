@@ -275,7 +275,7 @@ func nextCmd() *cobra.Command {
 					dim.Sprint(s.Reason),
 				)
 				if s.ScheduleID != nil && s.OccurrenceAt != nil {
-					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad remind ack %s --occurrence %s", s.ItemRef, *s.OccurrenceAt))
+					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad remind ack %s --occurrence %s", ackTarget(s.ItemRef, s.ItemSlug), *s.OccurrenceAt))
 				} else if s.ReminderID != "" {
 					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad item ack %s", s.ReminderID))
 				}
@@ -1525,3 +1525,12 @@ func watchCmd() *cobra.Command {
 }
 
 // --- agent roles ---
+
+// ackTarget names an item for a `pad remind ack` hint: its issue ID, or its
+// slug when the item has no number.
+func ackTarget(ref, slug string) string {
+	if ref != "" {
+		return ref
+	}
+	return slug
+}

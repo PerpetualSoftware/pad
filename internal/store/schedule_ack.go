@@ -63,6 +63,9 @@ func (s *Store) fillScheduleAcknowledgements(q Queryer, schedules []*models.Item
 	var ids []any
 	for _, sc := range schedules {
 		if sc.ReminderAckedAt != nil && sc.NextAt != nil && sc.NextWall != nil && sc.EndedAt == nil {
+			// The reminder row is the source of the time; the journal row only
+			// adds who acknowledged, so a missing journal row still shows when.
+			sc.AcknowledgedAt = sc.ReminderAckedAt
 			current[sc.ID] = sc
 			ids = append(ids, sc.ID)
 		}
@@ -93,7 +96,6 @@ func (s *Store) fillScheduleAcknowledgements(q Queryer, schedules []*models.Item
 		if json.Unmarshal([]byte(raw), &v) != nil || v.AckedAt == nil || *v.AckedAt != *sc.ReminderAckedAt {
 			continue
 		}
-		sc.AcknowledgedAt = v.AckedAt
 		sc.AcknowledgedBy = &models.AcknowledgedBy{UserID: v.ActorUserID, Actor: actor, AgentName: v.AgentName}
 		if v.ActorUserID != "" {
 			users[v.ActorUserID] = true
@@ -155,4 +157,38 @@ func (s *Store) AcknowledgedScheduleItemIDs(workspaceID string) (map[string]bool
 		out[id] = true
 	}
 	return out, rows.Err()
+}
+
+// importedAckEvidenceTx keeps an imported acknowledgement's actor_user_id only
+// when that user is a member of the destination workspace. A bundle is not
+// trusted to name an account: without this, a crafted row could attribute an
+// acknowledgement to any user and read that user's name back on the agenda.
+// The actor kind and agent name stay; the agenda then shows an unknown user.
+func (s *Store) importedAckEvidenceTx(tx *sql.Tx, workspaceID string, after *string) (*string, error) {
+	if after == nil {
+		return nil, nil
+	}
+	var v map[string]any
+	if json.Unmarshal([]byte(*after), &v) != nil {
+		return after, nil
+	}
+	uid, _ := v["actor_user_id"].(string)
+	if uid == "" {
+		return after, nil
+	}
+	var one int
+	err := tx.QueryRow(s.q(`SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?`), workspaceID, uid).Scan(&one)
+	if err == nil {
+		return after, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("check imported acknowledgement actor: %w", err)
+	}
+	delete(v, "actor_user_id")
+	b, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	out := string(b)
+	return &out, nil
 }

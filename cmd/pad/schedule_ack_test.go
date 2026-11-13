@@ -70,3 +70,45 @@ func TestRemindAcknowledgedAgendaAttribution(t *testing.T) {
 		t.Fatalf("JSON=%s err=%v", out, err)
 	}
 }
+
+// The attribution rides in the last column, so the rows after an acknowledged
+// entry keep the table's alignment.
+func TestRemindAcknowledgedAgendaKeepsColumns(t *testing.T) {
+	body := `{"window_complete":true,"entries":[` +
+		`{"type":"schedule","at":"2026-11-09T14:00:00Z","state":"acknowledged","item_ref":"TASK-5","item_title":"Still owed","acknowledged_at":"2026-11-09T15:00:00Z","acknowledged_by":{"user_id":"u","name":"Alex","actor":"user"}},` +
+		`{"type":"schedule","at":"2026-11-10T14:00:00Z","state":"scheduled","item_ref":"TASK-5","item_title":"Still owed"}]}`
+	out, _, err, _ := runSched(t, okReply(body), "", "remind", "agenda", "--from", "2026-11-09", "--days", "2", "--tz", "UTC")
+	if err != nil {
+		t.Fatalf("err=%v", err)
+	}
+	var header, ack, next string
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "DAY"):
+			header = line
+		case strings.Contains(line, "acknowledged by Alex"):
+			ack = line
+		case strings.Contains(line, "scheduled"):
+			next = line
+		}
+	}
+	if header == "" || ack == "" || next == "" {
+		t.Fatalf("missing rows:\n%s", out)
+	}
+	if !strings.HasPrefix(ack, "2026-11-09") {
+		t.Fatalf("attribution is not on the entry's own row:\n%s", out)
+	}
+	col := strings.Index(header, "REF")
+	if strings.Index(ack, "TASK-5") != col || strings.Index(next, "TASK-5") != col {
+		t.Fatalf("REF column misaligned (header at %d):\n%s", col, out)
+	}
+}
+
+func TestAckTargetFallsBackToSlug(t *testing.T) {
+	if got := ackTarget("TASK-5", "still-owed"); got != "TASK-5" {
+		t.Fatalf("ref: %q", got)
+	}
+	if got := ackTarget("", "still-owed"); got != "still-owed" {
+		t.Fatalf("slug fallback: %q", got)
+	}
+}

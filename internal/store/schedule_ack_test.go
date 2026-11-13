@@ -376,3 +376,52 @@ func TestScheduleAckBundleValidationAndFreshCopy(t *testing.T) {
 		t.Fatalf("copy inherited ack=%+v", fresh)
 	}
 }
+
+// An imported acknowledgement keeps actor_user_id only for a member of the
+// destination workspace, so a bundle cannot name an arbitrary account.
+func TestImportedAckActorMustBeMember(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	member := f.user(t, "ack-member@example.com", "UTC")
+	outsider := f.user(t, "ack-outsider@example.com", "UTC")
+	f.exec(t, `DELETE FROM workspace_members WHERE workspace_id=? AND user_id=?`, f.ws.ID, outsider.ID)
+	for _, tc := range []struct {
+		uid  string
+		keep bool
+	}{{member.ID, true}, {outsider.ID, false}, {"no-such-user", false}} {
+		in := `{"acked_at":"` + ackNow + `","agent_name":"rook","actor_user_id":"` + tc.uid + `"}`
+		tx, err := f.s.db.Begin()
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := f.s.importedAckEvidenceTx(tx, f.ws.ID, &in)
+		_ = tx.Rollback()
+		if err != nil || out == nil {
+			t.Fatalf("%s: out=%v err=%v", tc.uid, out, err)
+		}
+		var v map[string]any
+		if err := json.Unmarshal([]byte(*out), &v); err != nil {
+			t.Fatal(err)
+		}
+		_, kept := v["actor_user_id"]
+		if kept != tc.keep || v["agent_name"] != "rook" || v["acked_at"] != ackNow {
+			t.Fatalf("%s: keep=%v want %v, evidence=%v", tc.uid, kept, tc.keep, v)
+		}
+	}
+}
+
+// The acknowledgement time comes from the reminder row, so a schedule whose ack
+// journal row is missing still reads as acknowledged with its time.
+func TestAcknowledgedAtWithoutJournalRow(t *testing.T) {
+	t.Parallel()
+	f, _ := ackFixture(t, "FREQ=DAILY", "calendar")
+	f.mustResolve(t, f.item, ackInput(), ackNow)
+	f.exec(t, `DELETE FROM schedule_changes WHERE change_type='ack'`)
+	sc, err := f.s.GetSchedule(f.ws.ID, f.item.ID)
+	if err != nil || sc == nil {
+		t.Fatalf("schedule=%v err=%v", sc, err)
+	}
+	if sc.AcknowledgedAt == nil || *sc.AcknowledgedAt != ackNow || sc.AcknowledgedBy != nil {
+		t.Fatalf("at=%v by=%+v", sc.AcknowledgedAt, sc.AcknowledgedBy)
+	}
+}
