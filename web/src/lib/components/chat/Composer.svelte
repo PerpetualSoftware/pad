@@ -351,7 +351,8 @@
 		max-height: 160px;
 		overflow-y: auto;
 	}
-	.box textarea:focus,
+	/* A text field always matches :focus-visible when focused; the box's :focus-within ring is
+	   the indicator, so the field's own ring would be a second one inside it. */
 	.box textarea:focus-visible {
 		border: 0;
 		outline: none;
