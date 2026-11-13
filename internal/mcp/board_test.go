@@ -353,3 +353,46 @@ func TestMCPApps_BoardRegistration(t *testing.T) {
 		}
 	}
 }
+
+// A parent-filtered board stays filtered across changes, singular collection
+// forms resolve in changes as they do in show, and the assignee is projected.
+func TestPadBoard_ParentFilterAndSlugForms(t *testing.T) {
+	f := newBoardFixture(t)
+	parent := f.item(t, f.other, "open")
+	in := f.item(t, f.col, "open")
+	out := f.item(t, f.col, "open")
+	if _, err := f.st.SetParentLink(f.ws.ID, in.ID, parent.ID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	assignee := f.user.ID
+	if _, err := f.st.UpdateItem(in.ID, models.ItemUpdate{AssignedUserID: &assignee}); err != nil {
+		t.Fatal(err)
+	}
+	ref := strings.ToLower(parent.Ref)
+	if ref == "" {
+		t.Fatal("parent has no ref")
+	}
+	base := boardJSON(t, f.call(t, context.Background(), "show", map[string]any{"collection": "task", "parent": ref}))
+	if base["collection"] != "tasks" {
+		t.Fatalf("show resolved %v", base["collection"])
+	}
+	items := boardCols(t, f.call(t, context.Background(), "show", map[string]any{"parent": ref}))[0].(map[string]any)["items"].([]any)
+	if len(items) != 1 || items[0].(map[string]any)["id"] != in.ID || items[0].(map[string]any)["assignee"] != "Board" {
+		t.Fatalf("parent-filtered show: %v", items)
+	}
+	title := "Touched"
+	for _, id := range []string{in.ID, out.ID} {
+		if _, err := f.st.UpdateItem(id, models.ItemUpdate{Title: &title}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ch := boardJSON(t, f.call(t, context.Background(), "changes", map[string]any{"collection": "task", "parent": ref, "since": base["cursor"], "access_epoch": base["access_epoch"]}))
+	ups := ch["upserts"].([]any)
+	if len(ups) != 1 || ups[0].(map[string]any)["id"] != in.ID {
+		t.Fatalf("upserts: %v", ch)
+	}
+	removed := ch["removed_ids"].([]any)
+	if len(removed) != 1 || removed[0] != out.ID {
+		t.Fatalf("removed_ids: %v", ch)
+	}
+}

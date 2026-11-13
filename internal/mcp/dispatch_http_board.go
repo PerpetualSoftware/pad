@@ -56,8 +56,9 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 			}
 			upserts := []boardItem{}
 			removed := []string{}
+			parent, _ := input["parent"].(string)
 			for _, row := range page.Changes {
-				if !row.Deleted && !row.MovedOut && row.CollectionSlug == collection {
+				if !row.Deleted && !row.MovedOut && boardSlugMatches(row.CollectionSlug, collection) && boardParentMatches(row.ParentRef, parent) {
 					upserts = append(upserts, projectBoardItem(row.Item))
 				} else {
 					removed = append(removed, row.ID)
@@ -116,7 +117,7 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 		open, unplaced := 0, 0
 		truncated := false
 		for _, it := range page.Items {
-			if parent != "" && it.ParentRef != parent {
+			if !boardParentMatches(it.ParentRef, parent) {
 				continue
 			}
 			item := projectBoardItem(it)
@@ -208,9 +209,7 @@ func boardCollection(res *CallToolResult, slug, key string) (*models.Collection,
 	if err := decodeBoardResult(res, &cols); err != nil {
 		return nil, dispatcherErrorResult(key, "decode collections", err)
 	}
-	folded := strings.ToLower(strings.TrimSpace(slug))
-	candidates := []string{slug, folded, folded + "s", strings.TrimSuffix(folded, "s"), collections.NormalizeSlug(folded)}
-	for _, name := range candidates {
+	for _, name := range boardSlugCandidates(slug) {
 		for i := range cols {
 			if cols[i].Slug == name {
 				return &cols[i], nil
@@ -218,4 +217,25 @@ func boardCollection(res *CallToolResult, slug, key string) (*models.Collection,
 		}
 	}
 	return nil, NewErrorResult(ErrorPayload{Code: ErrNotFound, Message: "Collection not found"})
+}
+
+// boardSlugCandidates lists the slugs a collection input may name, so show
+// and changes accept the same singular and plural forms.
+func boardSlugCandidates(slug string) []string {
+	folded := strings.ToLower(strings.TrimSpace(slug))
+	return []string{slug, folded, folded + "s", strings.TrimSuffix(folded, "s"), collections.NormalizeSlug(folded)}
+}
+
+// boardSlugMatches reports whether a change row's collection is the board's.
+// It does not tell apart two collections whose slugs differ only by a
+// trailing s; the view passes back the slug show returned.
+func boardSlugMatches(rowSlug, input string) bool {
+	return rowSlug != "" && slices.Contains(boardSlugCandidates(input), rowSlug)
+}
+
+// boardParentMatches applies the optional parent filter (refs compare
+// case-insensitively). An empty filter matches every item.
+func boardParentMatches(itemParent, filter string) bool {
+	filter = strings.TrimSpace(filter)
+	return filter == "" || strings.EqualFold(itemParent, filter)
 }
