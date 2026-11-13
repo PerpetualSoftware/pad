@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyChanges, boardItemFrom, nextDelay, parseBoard, parseChanges, shouldPoll, type Board, type BoardItem } from './boardModel';
+import { applyChanges, boardItemFrom, needsResync, nextDelay, parseBoard, parseChanges, shouldPoll, type Board, type BoardItem } from './boardModel';
 
 const item = (id: string, status: string): BoardItem => ({ id, ref: id, title: id, status, priority: '', assignee: '', parent_ref: '', seq: 1, updated_at: '' });
 const board = (): Board => ({ workspace: 'demo', collection: 'tasks', columns: [
@@ -24,6 +24,24 @@ describe('applyChanges', () => {
 		expect(updated.columns[0].total).toBe(2);
 		expect(updated.columns[0].items.map(i => i.id).sort()).toEqual(['b', 'c']);
 		expect(updated.unplaced).toBe(1);
+	});
+});
+describe('needsResync', () => {
+	it('never asks for a resync on a complete board', () => {
+		expect(needsResync(board(), changes([item('new', 'open')], ['gone']))).toBe(false);
+	});
+	it('asks for one on an incomplete board when a delta names an id it does not display', () => {
+		for (const incomplete of [{ ...board(), truncated: true }, { ...board(), unplaced: 1 }]) {
+			expect(needsResync(incomplete, changes([item('a', 'done')], ['b']))).toBe(false);
+			expect(needsResync(incomplete, changes([]))).toBe(false);
+			expect(needsResync(incomplete, changes([item('unseen', 'open')]))).toBe(true);
+			expect(needsResync(incomplete, changes([], ['unseen']))).toBe(true);
+		}
+	});
+	it('treats a board an unknown-status upsert made incomplete as incomplete', () => {
+		const updated = applyChanges(board(), changes([item('a', 'unknown')]));
+		expect(updated.unplaced).toBe(1);
+		expect(needsResync(updated, changes([], ['a']))).toBe(true);
 	});
 });
 it('backs off from 10 seconds to 120 seconds and resets on success', () => {

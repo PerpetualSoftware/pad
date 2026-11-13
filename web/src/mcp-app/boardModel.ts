@@ -25,8 +25,6 @@ export interface Board {
 	unplaced: number;
 	cursor: string;
 	access_epoch: string;
-	// IDs learned from deltas, since the snapshot only gives the unplaced count.
-	unplacedIds?: string[];
 }
 export interface BoardChanges {
 	upserts: BoardItem[];
@@ -36,25 +34,37 @@ export interface BoardChanges {
 	resync: boolean;
 }
 
+/**
+ * Whether a delta must be answered with a fresh show instead of applyChanges.
+ * An incomplete board (truncated columns, or items counted only as unplaced)
+ * cannot tell which total an item it does not display was counted in. A
+ * complete board displays every item, so an unknown upsert is new and an
+ * unknown removal is a no-op.
+ */
+export function needsResync(board: Board, changes: BoardChanges): boolean {
+	if (!board.truncated && board.unplaced === 0) return false;
+	const shown = new Set(board.columns.flatMap(column => column.items.map(item => item.id)));
+	return changes.upserts.some(item => !shown.has(item.id)) || changes.removed_ids.some(id => !shown.has(id));
+}
+
+/** Applies a delta to a board; the caller checks needsResync first. */
 export function applyChanges(board: Board, changes: BoardChanges): Board {
 	const columns = board.columns.map(column => ({ ...column, items: [...column.items] }));
-	const unplacedIds = new Set(board.unplacedIds);
 	let unplaced = board.unplaced;
 	const remove = (id: string) => {
 		for (const column of columns) {
 			const index = column.items.findIndex(item => item.id === id);
 			if (index !== -1) { column.items.splice(index, 1); column.total--; }
 		}
-		if (unplacedIds.delete(id)) unplaced--;
 	};
 	for (const id of changes.removed_ids) remove(id);
 	for (const item of changes.upserts) {
 		remove(item.id);
 		const column = columns.find(column => column.status === item.status);
 		if (column) { column.items.push(item); column.total++; }
-		else { unplacedIds.add(item.id); unplaced++; }
+		else unplaced++;
 	}
-	return { ...board, columns, unplaced, unplacedIds: [...unplacedIds], cursor: changes.cursor, access_epoch: changes.access_epoch };
+	return { ...board, columns, unplaced, cursor: changes.cursor, access_epoch: changes.access_epoch };
 }
 
 export function nextDelay(prev: number, rateLimited: boolean): number {

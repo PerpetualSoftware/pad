@@ -8,7 +8,7 @@
 	import { uniqueBy } from '../lib/utils/unique';
 	import { buildUpdateArgs, isItemResult, parseToolError, type ItemLike, type ToolResultLike } from './model';
 	import {
-		applyChanges, boardItemFrom, nextDelay, parseBoard, parseChanges, shouldPoll,
+		applyChanges, boardItemFrom, needsResync, nextDelay, parseBoard, parseChanges, shouldPoll,
 		type Board, type BoardChanges, type BoardItem
 	} from './boardModel';
 
@@ -193,7 +193,8 @@
 			const error = parseToolError(result);
 			const changes = error ? null : parseChanges(result.structuredContent);
 			if (error && isRateLimit(error)) limited = true;
-			else if (!changes || changes.resync) limited = (await reload()) === 'limited';
+			// An incomplete board cannot place a delta for an item it does not show.
+			else if (!changes || changes.resync || (board !== null && needsResync(board, changes))) limited = (await reload()) === 'limited';
 			else if (board && board.cursor === at.cursor && board.access_epoch === at.access_epoch) board = applyChanges(board, newerOnly(board, changes));
 			if (mine !== generation) return;
 			if (!limited) syncedAt = new Date();

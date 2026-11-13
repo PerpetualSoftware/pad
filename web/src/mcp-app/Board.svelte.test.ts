@@ -214,6 +214,24 @@ describe('Board', () => {
 		expect(ctx.callsTo('pad_board', 'show')).toEqual([]);
 	});
 
+	it('re-runs show once instead of applying a delta for an unseen id on a truncated board', async () => {
+		vi.useFakeTimers();
+		const ctx = setup((_tool, args) => args.action === 'show'
+			? ok(snapshot({ cursor: 'c7' }))
+			: args.since === 'c1' ? noChanges({ upserts: [card('9', 'open')] }) : noChanges({ cursor: 'c8' }));
+		const truncated = snapshot({ truncated: true });
+		(truncated.columns as { total: number }[])[0].total = 57;
+		await show(ctx, ok(truncated), SHOW_ARGS, { displayMode: 'fullscreen' });
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(ctx.callsTo('pad_board', 'show')).toEqual([SHOW_ARGS]);
+		// The fresh snapshot replaced the board; the delta was not applied on top.
+		expect(titlesIn('open')).toEqual(['Title 1', 'Title 2']);
+		expect(column('open').getAttribute('aria-label')).toBe('open, 2 items');
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(ctx.callsTo('pad_board', 'changes')[1]).toMatchObject({ since: 'c7' });
+		expect(ctx.callsTo('pad_board', 'show')).toHaveLength(1);
+	});
+
 	it('backs off after a rate-limit error and returns to the usual pace after a success', async () => {
 		vi.useFakeTimers();
 		let limited = true;
