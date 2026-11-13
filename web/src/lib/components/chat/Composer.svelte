@@ -394,7 +394,8 @@
 	.caption p {
 		margin: 0;
 	}
-	.caption p:empty {
+	/* The status region is never removed from the page: idle, it is sr-only (r5 H5). */
+	.caption p:not([role="status"]):empty {
 		display: none;
 	}
 	.caption .key-hint {
