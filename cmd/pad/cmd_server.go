@@ -1482,10 +1482,12 @@ func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispa
 	// pad_set_workspace's bootstrap embed (BUG-3326), so the embed reads
 	// through the same per-user auth/consent perimeter as the resource.
 	resourceFetcher := mcpserver.NewHTTPResourceFetcher(dispatcher)
+	// The board is optional in CI placeholder builds. A missing file is empty HTML.
+	boardHTML, _ := pad.MCPAppFS.ReadFile("web/build-mcp-app/board.html")
 	if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
 		Doc:   mcpDoc,
 		Apps:  mcpAppsEnabled(os.Getenv("PAD_MCP_APPS")),
-		AppUI: mcpserver.AppUI{ItemCardHTML: pad.MCPAppItemCardHTML},
+		AppUI: mcpserver.AppUI{ItemCardHTML: pad.MCPAppItemCardHTML, BoardHTML: boardHTML},
 		// Shared multi-user state: this one stateless process
 		// dispatches for every OAuth user, so the session
 		// workspace must NEVER be trusted as a per-call

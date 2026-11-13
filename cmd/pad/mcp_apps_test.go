@@ -51,11 +51,14 @@ func TestMCPApps_KillSwitch(t *testing.T) {
 				if response.Error != nil || response.Result == nil {
 					t.Fatalf("%s: %s", method, raw)
 				}
-				found := false
+				found, boardFound := false, false
 				if method == "tools/list" {
 					for _, tool := range response.Result["tools"] {
 						if tool["name"] == "pad_item" {
 							_, found = tool["_meta"]
+						}
+						if tool["name"] == "pad_board" {
+							boardFound = true
 						}
 					}
 				} else {
@@ -63,10 +66,16 @@ func TestMCPApps_KillSwitch(t *testing.T) {
 						if strings.HasPrefix(r["uri"].(string), "ui://") {
 							found = true
 						}
+						if r["uri"] == "ui://pad/board" {
+							boardFound = true
+						}
 					}
 				}
 				if found != enabled {
 					t.Fatalf("%s apps=%v, want %v", method, found, enabled)
+				}
+				if boardFound != enabled {
+					t.Fatalf("%s board=%v, want %v", method, boardFound, enabled)
 				}
 			}
 		})
@@ -78,13 +87,23 @@ func TestMCPApps_EmbeddedBundleSelfContained(t *testing.T) {
 	if html == "placeholder" || html == "// placeholder" {
 		t.Skip("MCP App placeholder; build the card to validate the bundle")
 	}
-	if !strings.HasPrefix(strings.ToLower(html), "<!doctype html") {
-		t.Fatal("missing HTML doctype")
+	// A real card means build-mcp-app.mjs ran, and it writes the board too.
+	// The server reads an absent board.html as empty HTML (placeholder builds
+	// create only the card), so a real build must prove the board is there.
+	board, err := pad.MCPAppFS.ReadFile("web/build-mcp-app/board.html")
+	if err != nil {
+		t.Fatalf("real card build without board.html: %v", err)
 	}
-	if len(pad.MCPAppItemCardHTML) > 512*1024 {
-		t.Fatal("card exceeds 512 KiB")
-	}
-	if regexp.MustCompile(`(?i)(src|href)\s*=\s*["']https?://`).MatchString(html) {
-		t.Fatal("card references external assets")
+	for name, raw := range map[string][]byte{"card": pad.MCPAppItemCardHTML, "board": board} {
+		text := strings.TrimSpace(string(raw))
+		if !strings.HasPrefix(strings.ToLower(text), "<!doctype html") {
+			t.Fatalf("%s: missing HTML doctype", name)
+		}
+		if len(raw) > 512*1024 {
+			t.Fatalf("%s exceeds 512 KiB", name)
+		}
+		if regexp.MustCompile(`(?i)(src|href)\s*=\s*["']https?://`).MatchString(text) {
+			t.Fatalf("%s references external assets", name)
+		}
 	}
 }

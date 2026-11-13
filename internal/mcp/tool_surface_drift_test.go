@@ -42,8 +42,8 @@ func TestInstructionsMDCoversEveryCatalogAction(t *testing.T) {
 		t.Fatal("Catalog is empty — init() registration broke; drift guard cannot run")
 	}
 
-	for _, def := range Catalog {
-		line := findToolLine(Instructions, "- `"+def.Name+"`")
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
+		line := findToolLine(Instructions+"\n"+AppsInstructions, "- `"+def.Name+"`")
 		if line == "" {
 			t.Errorf("tool %q is in the catalog but has no '- `%s` — …' bullet in instructions.md — document it under the '## Tool surface' section", def.Name, def.Name)
 			continue
@@ -62,7 +62,7 @@ func TestInstructionsMDCoversEveryCatalogAction(t *testing.T) {
 func TestReadmeTableCoversEveryCatalogAction(t *testing.T) {
 	readme := readRepoFile(t, "README.md")
 
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		row := findToolLine(readme, "| `"+def.Name+"` |")
 		if row == "" {
 			t.Errorf("tool %q is in the catalog but has no '| `%s` | … |' row in the README catalog table", def.Name, def.Name)

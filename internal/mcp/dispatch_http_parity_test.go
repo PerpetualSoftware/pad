@@ -39,6 +39,7 @@ import (
 // anything not in the command's declared args/flags.
 func parityFixtureInput() map[string]any {
 	return map[string]any{
+		"since": "0", "access_epoch": "epoch", "workspace": "docapp",
 		"target": "C12", "body": "hello", "seq": float64(4), "to": float64(4),
 		"email":             "test@example.com",
 		"name":              "test-name",
@@ -114,7 +115,7 @@ func TestHTTPTransport_EveryCatalogActionRouted(t *testing.T) {
 		}
 	}
 
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		if def.Name == "pad_meta" {
 			continue // inline-handled; never dispatches a cmdPath
 		}

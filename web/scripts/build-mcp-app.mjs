@@ -1,4 +1,4 @@
-// Build one self-contained HTML MCP App, alongside the materializer output.
+// Build self-contained HTML MCP Apps, alongside the materializer output.
 import { build, transform } from 'esbuild';
 import { compile, compileModule } from 'svelte/compiler';
 import path from 'node:path';
@@ -6,10 +6,9 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const entry = path.join(web, 'src/mcp-app/card.ts');
-const outfile = path.join(web, 'build-mcp-app/item-card.html');
-
-try {
+async function buildApp(source, output, title) {
+	const entry = path.join(web, 'src/mcp-app', source);
+	const outfile = path.join(web, 'build-mcp-app', output);
 	if (!fs.existsSync(entry)) throw new Error(`entry file missing: ${entry}`);
 	const result = await build({
 		entryPoints: [entry],
@@ -58,13 +57,19 @@ try {
 	if (/<script/i.test(bundle)) throw new Error('bundle contains "<script", which can break the inline script tag');
 	const template = fs.readFileSync(path.join(web, 'src/mcp-app/template.html'), 'utf8');
 	if (!template.includes('<!--BUNDLE-->')) throw new Error('template is missing <!--BUNDLE-->');
-	const html = template.replace('<!--BUNDLE-->', () => `<script>${bundle}</script>`);
+	if (!template.includes('<!--TITLE-->')) throw new Error('template is missing <!--TITLE-->');
+	const html = template.replace('<!--TITLE-->', () => title).replace('<!--BUNDLE-->', () => `<script>${bundle}</script>`);
 	const bytes = Buffer.byteLength(html);
 	if (bytes > 512 * 1024) throw new Error(`output exceeds 512 KiB (${bytes} bytes)`);
 	if (/(?:src|href)=["']http/i.test(html)) throw new Error('output contains an external HTTP asset URL');
 	fs.mkdirSync(path.dirname(outfile), { recursive: true });
 	fs.writeFileSync(outfile, html);
 	console.log(`build-mcp-app: wrote ${path.relative(process.cwd(), outfile)} (${bytes} bytes)`);
+}
+
+try {
+	await buildApp('card.ts', 'item-card.html', 'Pad item card');
+	await buildApp('board.ts', 'board.html', 'Pad board');
 } catch (error) {
 	console.error(`build-mcp-app: ${error.message}`);
 	process.exit(1);

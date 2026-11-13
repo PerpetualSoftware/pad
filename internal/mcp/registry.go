@@ -106,6 +106,7 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 		return 0, fmt.Errorf("register catalog: %w", err)
 	}
 	if opts.Apps {
+		server.WithInstructions(Instructions + "\n" + AppsInstructions)(srv)
 		RegisterAppResources(srv, opts.AppUI)
 	}
 	return count + catalogCount, nil

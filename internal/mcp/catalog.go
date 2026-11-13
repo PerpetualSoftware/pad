@@ -241,11 +241,19 @@ func RegisterCatalog(srv *server.MCPServer, opts CatalogOptions) (int, error) {
 		StructuredOnly: opts.StructuredOnly,
 		TextOnly:       opts.TextOnly,
 	}
+	catalog := Catalog
+	if opts.Apps {
+		catalog = append(append([]ToolDef{}, Catalog...), AppCatalog...)
+	}
+	env.Catalog = catalog
 	count := 0
-	for _, def := range Catalog {
+	for _, def := range catalog {
 		tool := buildToolFromDef(def)
 		if opts.Apps && def.Name == "pad_item" {
 			tool.Meta = &mcp.Meta{AdditionalFields: itemToolUIMeta()}
+		}
+		if opts.Apps && def.Name == "pad_board" {
+			tool.Meta = &mcp.Meta{AdditionalFields: boardToolUIMeta()}
 		}
 		handler := makeFanOutHandler(def, env)
 		srv.AddTool(tool, handler)
@@ -325,7 +333,12 @@ func annotationForDef(def ToolDef) mcp.ToolAnnotation {
 			destructive = true
 		}
 	}
+	title := ""
+	if def.Name == "pad_board" {
+		title = "Pad board"
+	}
 	return mcp.ToolAnnotation{
+		Title:           title,
 		ReadOnlyHint:    mcp.ToBoolPtr(allReadOnly),
 		DestructiveHint: mcp.ToBoolPtr(destructive),
 		IdempotentHint:  mcp.ToBoolPtr(allReadOnly),

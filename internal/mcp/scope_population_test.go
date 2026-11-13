@@ -174,7 +174,7 @@ func runScopePopulation(t *testing.T, doc *cmdhelp.Document, scopes string) map[
 		}
 		results[label] = res
 	}
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		for actionName, handler := range def.Actions {
 			key := def.Name + "." + actionName
 			ro := !CallNeedsWriteScope(def.Name, actionName)

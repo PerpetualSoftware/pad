@@ -125,6 +125,9 @@ type ExecDispatcher struct {
 // Dispatch runs `<Binary> <cmdPath...> <cliArgs...>` and packages the
 // output for an MCP client.
 func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs []string) (*CallToolResult, error) {
+	if len(cmdPath) > 0 && cmdPath[0] == "board" {
+		return NewErrorResult(ErrorPayload{Code: ErrServerError, Message: "pad_board requires the remote HTTP MCP transport with Apps enabled"}), nil
+	}
 	if d.Binary == "" {
 		return errorResult("dispatcher: binary path not configured"), nil
 	}

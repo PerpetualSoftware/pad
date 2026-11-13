@@ -24,8 +24,8 @@ export async function connectApp(handlers: {
 	onToolInput(args: Record<string, unknown>): void;
 	onToolResult(result: ToolResultLike): void;
 	onHostContext?(ctx: HostContext): void;
-}): Promise<Bridge> {
-	const app = new App({ name: 'Pad item card', version: '1.0.0' }, {});
+}, name = 'Pad'): Promise<Bridge> {
+	const app = new App({ name, version: '1.0.0' }, {});
 	// Register before connecting: hosts can deliver initial data during the handshake.
 	app.ontoolinput = params => handlers.onToolInput(params.arguments ?? {});
 	app.ontoolresult = result => handlers.onToolResult(result);
