@@ -99,7 +99,7 @@
 					{#if entry.workspace_name}<WorkspaceTile name={entry.workspace_name} />{/if}
 					<span class="ref">{entry.item_ref}</span>
 					{#if entry.audience === 'agent'}<span>· for agents</span>{/if}
-					{#if acknowledged}<span class="ack"><span aria-hidden="true">· </span><span>{acknowledged}</span></span>{/if}
+					{#if acknowledged}<span class="ack"><span aria-hidden="true">·</span><span>{acknowledged}</span></span>{/if}
 					{#if compact}{@render pills()}{/if}
 				</div>
 			{/if}
@@ -129,7 +129,8 @@
 	.title a:hover { text-decoration: underline; }
 	.title a:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; border-radius: var(--radius-sm); }
 	.meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); margin-top: 1px; }
-	.ack { color: var(--text-secondary); }
+	/* Its own flex item, so the dot keeps its space and a wrap never strands it at the end of a line. */
+	.ack { display: inline-flex; gap: 6px; min-width: 0; color: var(--text-secondary); }
 	.ref { font-family: var(--font-mono); font-size: 11.5px; }
 	.inline-meta { flex: 0 0 auto; font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
 	.trail { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
