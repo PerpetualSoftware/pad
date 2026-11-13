@@ -22,7 +22,7 @@ func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 		// pad_meta is from TASK-979; the read-only tools are TASK-980;
 		// pad_item is TASK-981; pad_playbook is TASK-1381 (PLAN-1377).
 		"pad_meta":       false,
- "pad_board": false,
+		"pad_board":      false,
 		"pad_workspace":  false,
 		"pad_collection": false,
 		"pad_project":    false,
@@ -53,7 +53,7 @@ func TestReadOnlyCatalog_AllToolsRegistered(t *testing.T) {
 		}
 	}
 	if len(Catalog)+len(AppCatalog) != len(want) {
-		t.Errorf("Catalog has %d tools, expected exactly %d", len(Catalog), len(want))
+		t.Errorf("Catalog has %d tools, expected exactly %d", len(Catalog)+len(AppCatalog), len(want))
 	}
 }
 
@@ -81,8 +81,8 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 	// handlers (workspace audit-log) appear here too — they dispatch
 	// to the listed cmdPath even though the input shape differs.
 	expected := map[[2]string][]string{
- {"pad_board", "show"}: {"board", "show"},
- {"pad_board", "changes"}: {"board", "changes"},
+		{"pad_board", "show"}:          {"board", "show"},
+		{"pad_board", "changes"}:       {"board", "changes"},
 		{"pad_chat", "list"}:           {"chat", "list"},
 		{"pad_chat", "inbox"}:          {"chat", "inbox"},
 		{"pad_chat", "show"}:           {"chat", "show"},
@@ -210,9 +210,12 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 
 	// Direction 1: every expected cmdPath resolves in cmdhelp.
 	for key, cmdPath := range expected {
- if key[0] == "pad_board" {
- if _, ok := (&HTTPHandlerDispatcher{}).specialRoutes()[strings.Join(cmdPath, " ")]; !ok { t.Errorf("app route %v missing",cmdPath) }; continue
- }
+		if key[0] == "pad_board" {
+			if _, ok := (&HTTPHandlerDispatcher{}).specialRoutes()[strings.Join(cmdPath, " ")]; !ok {
+				t.Errorf("app route %v missing", cmdPath)
+			}
+			continue
+		}
 		joined := strings.Join(cmdPath, " ")
 		if _, ok := doc.Commands[joined]; !ok {
 			t.Errorf("expected[%s.%s] = %q is not in cmdhelp",
@@ -277,8 +280,8 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 	// renamed cmdPath fails THIS test loudly with the actual
 	// dispatched path printed in the error message.
 	expected := map[[2]string][]string{
- {"pad_board", "show"}: {"board", "show"},
- {"pad_board", "changes"}: {"board", "changes"},
+		{"pad_board", "show"}:          {"board", "show"},
+		{"pad_board", "changes"}:       {"board", "changes"},
 		{"pad_chat", "list"}:           {"chat", "list"},
 		{"pad_chat", "inbox"}:          {"chat", "inbox"},
 		{"pad_chat", "show"}:           {"chat", "show"},
@@ -399,6 +402,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		"code": "123456",
 		// pad_attachment.show needs an attachment_id positional.
 		"attachment_id": "att-1",
+		"since":         "0", "access_epoch": "epoch",
 		// Exercise the by-id ack form; the per-action fixture removes ref.
 		"reminder_id": "rem-1",
 		"remind_at":   "2026-08-01T09:00:00Z",

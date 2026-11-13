@@ -61,7 +61,7 @@ func TestMCPApps_ItemToolCarriesUIMeta(t *testing.T) {
 					if !ok || ui["resourceUri"] != "ui://pad/item-card" || m["ui/resourceUri"] != "ui://pad/item-card" {
 						t.Fatalf("bad meta: %v", m)
 					}
-				} else if present {
+				} else if present && !(enabled && tool["name"] == "pad_board") {
 					t.Fatalf("unexpected meta: %v", tool)
 				}
 			}

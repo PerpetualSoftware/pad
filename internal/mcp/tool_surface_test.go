@@ -174,7 +174,7 @@ func TestToolSurfaceJSON_ReadOnlyFlags(t *testing.T) {
 func TestReadOnlyActions_NoStaleEntries(t *testing.T) {
 	live := map[[2]string]bool{}
 	knownTool := map[string]bool{}
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		knownTool[def.Name] = true
 		for action := range def.Actions {
 			live[[2]string{def.Name, action}] = true

@@ -466,6 +466,8 @@ func (d *HTTPHandlerDispatcher) specialRoutes() map[string]specialDispatchFn {
 
 func (d *HTTPHandlerDispatcher) buildSpecialRoutes() map[string]specialDispatchFn {
 	return map[string]specialDispatchFn{
+		"board show":          d.dispatchBoard("show"),
+		"board changes":       d.dispatchBoard("changes"),
 		"chat show":           d.dispatchChat("show"),
 		"chat send":           d.dispatchChat("send"),
 		"chat delete":         d.dispatchChat("delete"),

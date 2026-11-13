@@ -23,3 +23,9 @@ var MaterializerJS []byte
 //
 //go:embed web/build-mcp-app/item-card.html
 var MCPAppItemCardHTML []byte
+
+// MCPAppFS includes optional app outputs without requiring board.html in
+// placeholder builds (CI creates only item-card.html).
+//
+//go:embed all:web/build-mcp-app
+var MCPAppFS embed.FS

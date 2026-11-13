@@ -127,6 +127,25 @@ func TestPadBoard_ShowColumns(t *testing.T) {
 	if out["cursor"] != d["cursor"] || out["access_epoch"] != d["access_epoch"] {
 		t.Fatalf("cursor or epoch changed: %v vs %v", out, d)
 	}
+	// Declared abandoned options replace the negative-name fallback.
+	explicit := strings.Replace(boardTestSchema, `"terminal_options":["done","cancelled"]`, `"terminal_options":["done","cancelled"],"abandoned_options":["done"]`, 1)
+	if _, err := f.st.UpdateCollection(f.col.ID, models.CollectionUpdate{Schema: &explicit}); err != nil {
+		t.Fatal(err)
+	}
+	declared := boardCols(t, f.call(t, context.Background(), "show", nil))
+	if declared[1].(map[string]any)["abandoned"] != true || declared[2].(map[string]any)["abandoned"] != false {
+		t.Fatalf("declared abandoned options: %v", declared)
+	}
+	noStatus := `{"fields":[]}`
+	if _, err := f.st.UpdateCollection(f.col.ID, models.CollectionUpdate{Schema: &noStatus}); err != nil {
+		t.Fatal(err)
+	}
+	invalid := f.call(t, context.Background(), "show", nil)
+	raw, _ := json.Marshal(invalid)
+	if !invalid.IsError || !strings.Contains(string(raw), "validation_failed") {
+		t.Fatalf("missing status: %s", raw)
+	}
+
 }
 func TestPadBoard_ShowCaps(t *testing.T) {
 	f := newBoardFixture(t)
@@ -194,6 +213,14 @@ func TestPadBoard_ChangesUpsertRemove(t *testing.T) {
 	if !bad.IsError || string(a) != string(b) {
 		t.Fatalf("bad cursor differs: %s vs %s", a, b)
 	}
+	for range 500 {
+		f.item(t, f.col, "open")
+	}
+	full := boardJSON(t, f.call(t, context.Background(), "changes", map[string]any{"since": out["cursor"], "access_epoch": out["access_epoch"]}))
+	if len(full["upserts"].([]any)) != 500 || full["resync"] != true {
+		t.Fatalf("full page: upserts=%d resync=%v", len(full["upserts"].([]any)), full["resync"])
+	}
+
 }
 func (f *boardFixture) restrict(t *testing.T) {
 	t.Helper()
@@ -282,6 +309,13 @@ func TestPadBoard_ReadOnly(t *testing.T) {
 		}
 		boardJSON(t, f.call(t, ctx, a, map[string]any{"since": "0", "access_epoch": ""}))
 	}
+	for _, action := range []string{"show", "changes"} {
+		res, err := (&ExecDispatcher{}).Dispatch(context.Background(), []string{"board", action}, nil)
+		if err != nil || !res.IsError || !containsToolText(res, "remote HTTP") {
+			t.Fatalf("stdio must refuse board %s: %v %v", action, res, err)
+		}
+	}
+
 }
 func TestMCPApps_BoardRegistration(t *testing.T) {
 	for _, enabled := range []bool{true, false} {

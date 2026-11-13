@@ -2329,7 +2329,9 @@ const CmdhelpVersion = "0.1"
 // v0.112 adds schedule-forecast: a hand-set estimate, set or clear, with provenance.
 // v0.113 — BUG-4501: additive ack-reminder by ref when exactly one unmanaged
 // fired reminder is unacknowledged; reminder_id remains supported, both refuse.
-const ToolSurfaceVersion = "0.113"
+// v0.114 — TASK-4465: additive read-only pad_board show/changes tool,
+// remote HTTP with Apps only. Stdio tools are unchanged.
+const ToolSurfaceVersion = "0.114"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

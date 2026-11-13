@@ -35,7 +35,7 @@ func TestCatalogTools_AnnotationsExplicit(t *testing.T) {
 	)
 	table := map[string]string{
 		"pad_search":     read,
- "pad_board": read,
+		"pad_board":      read,
 		"pad_project":    read,
 		"pad_attachment": read,
 		"pad_meta":       read,

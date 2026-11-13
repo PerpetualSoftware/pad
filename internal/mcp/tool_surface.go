@@ -72,7 +72,8 @@ type toolSurfaceToolSummary struct {
 //   - pad_attachment: list/show read (metadata only; no upload/download).
 //   - pad_meta:       server-info/version/tool-surface/bootstrap all read.
 var readOnlyActions = map[string]map[string]bool{
-	"pad_chat": {"list": true, "inbox": true},
+	"pad_board": {"show": true, "changes": true},
+	"pad_chat":  {"list": true, "inbox": true},
 	"pad_item": {
 		"reminders":     true,
 		"get":           true,
@@ -237,7 +238,7 @@ func isReadOnlyAction(toolName, action string) bool {
 // dispatcher actually refuses by
 // TestScopePopulation_WriteActionsAreRefusedForReadTokens.
 func CallNeedsWriteScope(toolName, action string) bool {
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		if def.Name != toolName {
 			continue
 		}

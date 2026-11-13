@@ -22,3 +22,8 @@ import _ "embed"
 //
 //go:embed instructions.md
 var Instructions string
+
+// AppsInstructions is appended only on the remote HTTP Apps surface.
+//
+//go:embed apps_instructions.md
+var AppsInstructions string

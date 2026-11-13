@@ -96,12 +96,12 @@ The remote HTTP `/mcp` server advertises an item card on `pad_item` through
 `_meta.ui.resourceUri` and the legacy `_meta["ui/resourceUri"]`, both pointing to
 `ui://pad/item-card`. Hosts that support MCP Apps can render that HTML resource
 (`text/html;profile=mcp-app`) as an item card. Other hosts can ignore the extra
-`_meta` key. Tool names, parameters, annotations and results are unchanged.
+`_meta` key. The item tool parameters, annotations and results are unchanged.
 The stdio server (`pad mcp serve`) is unchanged and advertises no app metadata
 or app resource.
 
 Apps are on by default for remote MCP. Set `PAD_MCP_APPS` to `off`, `false`,
-`no` or `0` (case-insensitive) to disable both the metadata and the resource.
+`no` or `0` (case-insensitive) to disable app metadata, resources and the board tool.
 
 The view bridge restricts its allowed calls to `pad_item:get`, `pad_item:update`,
 `pad_collection:list`, `pad_board:show` and `pad_board:changes`. This allowlist is
@@ -116,6 +116,32 @@ non-computed select field are editable; an edit is one `pad_item update` carryin
 `expected_seq`, and on `update_conflict` the card reloads the item instead of
 retrying. The card never sends `content`, and it follows the host's theme and
 style variables.
+
+The read-only `pad_board` tool is available only on remote HTTP with Apps on.
+Its metadata points to `ui://pad/board`, an HTML resource preferring fullscreen.
+`show` requires `workspace` and `collection` (singular forms accepted); optional
+`parent` filters by parent ref. A collection needs a `status` select field.
+Hidden and missing collections return the same `not_found` response.
+
+`show` returns `{workspace, collection, columns, truncated, unplaced, cursor,
+access_epoch}`. Columns follow schema status order and contain `{status,
+terminal, abandoned, total, items}`. Terminal and abandoned flags follow the
+schema, with the usual negative-terminal fallback for undeclared abandoned
+options. Items contain exactly `{id, ref, title, status, priority, assignee,
+parent_ref, seq, updated_at}`. At most 300 non-terminal items overall and 20
+per terminal column are included, newest updated first; totals are uncapped,
+`truncated` marks a cut, and `unplaced` counts items with unknown statuses.
+
+`changes` requires `workspace`, `collection`, `since` and `access_epoch`. It
+returns `{upserts, removed_ids, cursor, access_epoch, resync}` from up to 500
+rows of the existing changes door. Upserts use the same projection; deletions,
+moved-out tombstones and other-collection rows supply removal IDs. `resync` is
+true on an epoch mismatch or a full 500-row page. Door cursors and epochs pass
+through untouched; invalid cursors retain the door error. Both actions use the
+normal authenticated request path and write nothing. The board polls changes
+only while fullscreen and visible, starting at 10 seconds and backing off to
+120 seconds on rate limits. Views write only title and select fields through
+the existing item tool; the board tool itself is read-only.
 
 ## Tool description detail (moved for the prompt budget)
 
