@@ -473,3 +473,81 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out, nil
 }
+
+// AgendaForecast is a live schedule forecast, independent of occurrence admission.
+type AgendaForecast struct {
+	ScheduleID string
+	ItemID     string
+	ItemRef    string
+	ItemTitle  string
+	Collection string
+	Day        string
+	AllDay     bool
+	Forecast   models.ForecastSummary
+}
+
+// ListForecastsForAgenda reads visible open schedules whose forecasts fall in
+// the window. The lexical prefilter is padded for every viewer zone; only rows
+// passing the exact date or instant check consume the limit.
+func (s *Store) ListForecastsForAgenda(workspaceID string, scope PendingReminderScope, from, to time.Time, loc *time.Location, limit int) ([]AgendaForecast, bool, error) {
+	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
+		return nil, false, nil
+	}
+	scopeSQL, scopeArgs := scopeClause("i", scope)
+	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
+	args := []any{workspaceID, workspaceID, workspaceID}
+	args = append(args, scopeArgs...)
+	args = append(args, openArgs...)
+	args = append(args, from.Add(-24*time.Hour).UTC().Format("2006-01-02"), to.Add(48*time.Hour).UTC().Format("2006-01-02"))
+	rows, err := s.db.Query(s.q(`SELECT f.schedule_id, i.id, i.title, i.slug, c.slug, c.prefix, i.item_number,
+  f.value, f.set_by, COALESCE(u.name,''), f.set_by_kind, f.set_at, f.source
+ FROM schedule_forecasts f JOIN item_schedules s ON s.id=f.schedule_id
+ JOIN items i ON i.id=s.item_id JOIN collections c ON c.id=i.collection_id
+ LEFT JOIN users u ON u.id=f.set_by
+ WHERE f.workspace_id=? AND s.workspace_id=? AND i.workspace_id=?
+  AND s.ended_at IS NULL AND s.error_code IS NULL AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`
+  AND f.value >= ? AND f.value < ? ORDER BY f.value, f.schedule_id`), args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("list forecasts for agenda: %w", err)
+	}
+	defer rows.Close()
+	fromDay, toDay := from.In(loc).Format("2006-01-02"), to.Add(-time.Nanosecond).In(loc).Format("2006-01-02")
+	var out []AgendaForecast
+	for rows.Next() {
+		var row AgendaForecast
+		var prefix string
+		var number *int64
+		f := &row.Forecast
+		if err := rows.Scan(&row.ScheduleID, &row.ItemID, &row.ItemTitle, &row.ItemRef, &row.Collection, &prefix, &number,
+			&f.Value, &f.SetBy, &f.SetByName, &f.SetByKind, &f.SetAt, &f.Source); err != nil {
+			return nil, false, fmt.Errorf("scan agenda forecast: %w", err)
+		}
+		row.AllDay = len(f.Value) == 10
+		if row.AllDay {
+			if f.Value < fromDay || f.Value > toDay {
+				continue
+			}
+			row.Day = f.Value
+		} else {
+			instant, err := time.Parse(time.RFC3339, f.Value)
+			if err != nil {
+				return nil, false, fmt.Errorf("parse agenda forecast: %w", err)
+			}
+			if instant.Before(from) || !instant.Before(to) {
+				continue
+			}
+			row.Day = instant.In(loc).Format("2006-01-02")
+		}
+		if number != nil {
+			row.ItemRef = fmt.Sprintf("%s-%d", prefix, *number)
+		}
+		out = append(out, row)
+		if len(out) > limit {
+			return out[:limit], true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	return out, false, nil
+}

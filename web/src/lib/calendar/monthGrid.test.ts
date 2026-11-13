@@ -141,3 +141,23 @@ describe('month cell order, collapse and phone runs', () => {
   expect([0, 1, 2, 20].map(entryCount)).toEqual(['0 entries', '1 entry', '2 entries', '20 entries']);
  });
 });
+
+const forecastOnly = () => ({ schedule_id: 's1', item_ref: 'TASK-1', item_title: 'Forecast work', collection: 'tasks', day: '2026-04-02', all_day: true,
+ forecast: { value: '2026-04-02', set_by: 'u1', set_by_kind: 'user' as const, set_at: 'now', source: '' } });
+it('forecast-only row draws a marker', () => {
+ const data = { ...response('2026-04-01'), items: [], forecasts: [forecastOnly(), forecastOnly()] };
+ expect(calendarRows(data, collection, 'due', '2026-04')).toMatchObject([{ kind: 'forecast', day: '2026-04-02', ref: 'TASK-1', allDay: true }]);
+ expect(calendarRows(data, collection, 'due', '2026-03')).toEqual([]);
+ expect(calendarRows({ ...data, next_from: '2026-04-02' }, collection, 'due', '2026-04')).toEqual([]);
+});
+it('forecast-only row deduped against an inline entry', () => {
+ const f = forecastOnly();
+ const entry = { type: 'schedule' as const, state: 'outstanding', at: '2026-04-01T09:00:00Z', ...f, day: '2026-04-01' };
+ const data = { ...response('2026-04-01'), items: [], entries: [entry], forecasts: [f] };
+ expect(calendarRows(data, collection, 'due', '2026-04').filter(r => r.kind === 'forecast')).toHaveLength(1);
+ data.entries[0].day = f.day;
+ expect(calendarRows(data, collection, 'due', '2026-04').filter(r => r.kind === 'forecast')).toHaveLength(0);
+ const other = { ...f, workspace: 'other', owner_username: 'alice' };
+ data.forecasts = [other];
+ expect(calendarRows(data, collection, 'due', '2026-04').filter(r => r.kind === 'forecast')).toHaveLength(1);
+});

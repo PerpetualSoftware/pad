@@ -24,7 +24,7 @@
 	import OutstandingPanel from '$lib/components/calendar/OutstandingPanel.svelte';
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
 	import WeekSummary from '$lib/components/calendar/WeekSummary.svelte';
-	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
+	import type { AgendaEntry, AgendaForecast, AgendaResponse, AgendaWorkEntry, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
 
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
@@ -121,7 +121,7 @@
 		});
 	});
 	const lifted = $derived(new Set(attention.filter(item => item.inWindow).map(item => entryKey(item.entry))));
-	const markers = $derived(roleMarkers(entries, zone));
+	const markers = $derived(roleMarkers(entries, zone, data?.forecasts ?? [], data?.next_from));
 	const dayRows = (date: string) => groups.find(group => group.day === date)?.entries ?? [];
 	function summary(date: string) {
 		const deadlines = markers.get(date)?.deadlines.length ?? 0;
@@ -378,10 +378,13 @@
 	// The window stopped at next_from: ask for the remainder and join it to what is shown.
 	function joinRest(shown: AgendaResponse, rest: AgendaResponse): AgendaResponse {
 		const seen = new Set(shown.entries.map(entryKey));
+		const forecastKey = (row: AgendaForecast) => JSON.stringify([row.workspace, row.owner_username, row.schedule_id]);
+		const forecastSeen = new Set((shown.forecasts ?? []).map(forecastKey));
 		return {
 			...shown, entries: [...shown.entries, ...rest.entries.filter(entry => !seen.has(entryKey(entry)))],
 			window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from, events_truncated: shown.events_truncated || rest.events_truncated,
-			unavailable: [...(shown.unavailable ?? []), ...(rest.unavailable ?? [])], unexpanded: [...(shown.unexpanded ?? []), ...(rest.unexpanded ?? [])]
+			unavailable: [...(shown.unavailable ?? []), ...(rest.unavailable ?? [])], unexpanded: [...(shown.unexpanded ?? []), ...(rest.unexpanded ?? [])],
+			forecasts: [...(shown.forecasts ?? []), ...(rest.forecasts ?? []).filter(row => !forecastSeen.has(forecastKey(row)))]
 		};
 	}
 	async function loadRest() {

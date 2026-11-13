@@ -60,6 +60,7 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		zone, note = usertz.Zone{Name: tz, Loc: loc, Set: true}, ""
 	}
 	run := s.newAgendaRead(from, to, zone, note)
+	run.response.Forecasts, run.response.ForecastsComplete = []agendaForecast{}, true
 	run.recipient, run.audience = user.ID, "human"
 	if actor, _ := actorFromRequest(r); actor == "agent" {
 		run.audience = "agent"
@@ -113,6 +114,7 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		if s.agendaExpired(run) {
+			run.response.ForecastsComplete = false
 			countsCut = true
 			break
 		}
@@ -157,6 +159,11 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			if u != nil {
 				owner = u.Username
 			}
+		}
+		ws.OwnerUsername = owner
+		if err := s.appendWorkspaceForecasts(run, ws.ID, scope, &ws); err != nil {
+			writeInternalError(w, err)
+			return
 		}
 		for i := entryStart; i < len(run.response.Entries); i++ {
 			e := &run.response.Entries[i]

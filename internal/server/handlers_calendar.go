@@ -35,17 +35,19 @@ type calendarItem struct {
 }
 
 type calendarResponse struct {
-	From         string              `json:"from"`
-	To           string              `json:"to"`
-	Tz           string              `json:"tz"`
-	TimezoneNote string              `json:"timezone_note,omitempty"`
-	Items        []calendarItem      `json:"items"`
-	Entries      []agendaEntry       `json:"entries"`
-	Truncated    bool                `json:"truncated,omitempty"`
-	NextFrom     string              `json:"next_from,omitempty"`
-	PartialDay   string              `json:"partial_day,omitempty"`
-	Unexpanded   []agendaUnexpanded  `json:"unexpanded,omitempty"`
-	Unavailable  []agendaUnavailable `json:"unavailable,omitempty"`
+	Forecasts         []agendaForecast    `json:"forecasts"`
+	ForecastsComplete bool                `json:"forecasts_complete"`
+	From              string              `json:"from"`
+	To                string              `json:"to"`
+	Tz                string              `json:"tz"`
+	TimezoneNote      string              `json:"timezone_note,omitempty"`
+	Items             []calendarItem      `json:"items"`
+	Entries           []agendaEntry       `json:"entries"`
+	Truncated         bool                `json:"truncated,omitempty"`
+	NextFrom          string              `json:"next_from,omitempty"`
+	PartialDay        string              `json:"partial_day,omitempty"`
+	Unexpanded        []agendaUnexpanded  `json:"unexpanded,omitempty"`
+	Unavailable       []agendaUnavailable `json:"unavailable,omitempty"`
 }
 
 // calendarCell is one shown thing on one day, for the single cap.
@@ -189,6 +191,7 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 	resp := calendarResponse{
 		From: from.Format(time.RFC3339), To: to.Format(time.RFC3339), Tz: zone.Name, TimezoneNote: note,
 		Items: []calendarItem{}, Entries: []agendaEntry{},
+		Forecasts: []agendaForecast{}, ForecastsComplete: true,
 	}
 
 	placed, err := s.calendarItems(workspaceID, coll.ID, params, dateField, endField, fromDay, toDay, loc)
@@ -297,6 +300,37 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 			resp.Items = append(resp.Items, *c.item)
 		} else {
 			resp.Entries = append(resp.Entries, *c.entry)
+		}
+	}
+	forecasts, forecastMore, err := s.store.ListForecastsForAgenda(workspaceID, scope, from, to, loc, agendaMaxForecasts)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	resp.ForecastsComplete = !forecastMore
+	// The page filters apply exactly as on the schedules above: only when active.
+	if !calendarFilterActive(params) {
+		for _, row := range forecasts {
+			resp.Forecasts = append(resp.Forecasts, agendaForecastRow(row))
+		}
+	} else if len(forecasts) > 0 {
+		candidates := make([]store.AgendaSchedule, 0, len(forecasts))
+		for _, row := range forecasts {
+			candidates = append(candidates, store.AgendaSchedule{Schedule: &models.ItemSchedule{ID: row.ScheduleID, ItemID: row.ItemID}})
+		}
+		candidates, err = s.calendarFollowItems(workspaceID, params, candidates)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		kept := make(map[string]bool, len(candidates))
+		for _, row := range candidates {
+			kept[row.Schedule.ID] = true
+		}
+		for _, row := range forecasts {
+			if kept[row.ScheduleID] {
+				resp.Forecasts = append(resp.Forecasts, agendaForecastRow(row))
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, resp)
