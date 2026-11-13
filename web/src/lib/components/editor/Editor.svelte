@@ -573,6 +573,8 @@
 	import { htmlProseExtensions } from './extensions/htmlProse';
 	import { SLASH_ITEMS } from './block-types';
 	import { atCaret, type CaretRect } from './caretPopup';
+	import MobileToolbarIcon from './MobileToolbarIcon.svelte';
+	import { scrollHint, type ScrollHint } from './toolbarScrollHint';
 	import ImportFromUrlModal, { type InsertContext } from './ImportFromUrlModal.svelte';
 	import type { ImportURLResponse } from '$lib/api/client';
 	import {
@@ -703,6 +705,11 @@
 	let editorFocused = $state(false);
 	let editorTick = $state(0);
 	let toolbarBottom = $state(0);
+	// Which ends of the sideways-scrolling toolbar hide buttons (TASK-4521).
+	let toolbarMore = $state<ScrollHint>({ start: false, end: false });
+	function setToolbarMore(hint: ScrollHint) {
+		if (hint.start !== toolbarMore.start || hint.end !== toolbarMore.end) toolbarMore = hint;
+	}
 	let keyboardOverlap = $state(false);
 	let keyboardVisible = $derived(keyboardOverlap || uiStore.keyboardVisible);
 	let suppressUpdate = false;
@@ -1627,26 +1634,28 @@
 	{@const listItemType = getActiveListItemType()}
 	{@const canIndent = canIndentListItem(listItemType)}
 	{@const canOutdent = canOutdentListItem(listItemType)}
-	<div class="mobile-toolbar" role="toolbar" aria-label="Formatting" tabindex="0" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
-		<button class="mt-btn mt-btn-add" onclick={openSlashFromToolbar} title="Insert block" aria-label="Insert block">+</button>
-		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bold')} aria-pressed={_tick >= 0 && editor.isActive('bold')} aria-label="Bold" onclick={() => editor?.chain().focus().toggleBold().run()}>B</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('italic')} aria-pressed={_tick >= 0 && editor.isActive('italic')} aria-label="Italic" onclick={() => editor?.chain().focus().toggleItalic().run()}><em>I</em></button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('strike')} aria-pressed={_tick >= 0 && editor.isActive('strike')} aria-label="Strikethrough" onclick={() => editor?.chain().focus().toggleStrike().run()}><s>S</s></button>
-		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 2 })} aria-pressed={_tick >= 0 && editor.isActive('heading', { level: 2 })} aria-label="Heading 2" onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}>H2</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 3 })} aria-pressed={_tick >= 0 && editor.isActive('heading', { level: 3 })} aria-label="Heading 3" onclick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}>H3</button>
-		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bulletList')} aria-pressed={_tick >= 0 && editor.isActive('bulletList')} aria-label="Bulleted list" onclick={() => editor?.chain().focus().toggleBulletList().run()}>•</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('orderedList')} aria-pressed={_tick >= 0 && editor.isActive('orderedList')} aria-label="Numbered list" onclick={() => editor?.chain().focus().toggleOrderedList().run()}>1.</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('taskList')} aria-pressed={_tick >= 0 && editor.isActive('taskList')} aria-label="Task list" onclick={() => editor?.chain().focus().toggleTaskList().run()}>☐</button>
-		<button class="mt-btn" disabled={!canOutdent} onclick={outdentCurrentListItem} title="Outdent list item" aria-label="Outdent">&lt;</button>
-		<button class="mt-btn" disabled={!canIndent} onclick={indentCurrentListItem} title="Indent list item" aria-label="Indent">&gt;</button>
-		<span class="mt-sep"></span>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('codeBlock')} aria-pressed={_tick >= 0 && editor.isActive('codeBlock')} aria-label="Code block" onclick={() => editor?.chain().focus().toggleCodeBlock().run()}>&lt;&gt;</button>
-		<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('blockquote')} aria-pressed={_tick >= 0 && editor.isActive('blockquote')} aria-label="Quote" onclick={() => editor?.chain().focus().toggleBlockquote().run()}>❝</button>
-		<span class="mt-sep"></span>
-		<button class="mt-btn" onclick={triggerAttachPicker} title="Attach file" aria-label="Attach file">📎</button>
+	<div class="mobile-toolbar" class:more-start={toolbarMore.start} class:more-end={toolbarMore.end} role="toolbar" aria-label="Formatting" tabindex="0" style:bottom="{toolbarBottom}px" onmousedown={(e) => e.preventDefault()}>
+		<div class="mt-scroll" use:scrollHint={setToolbarMore}>
+			<button class="mt-btn mt-btn-add" onclick={openSlashFromToolbar} title="Insert block" aria-label="Insert block"><MobileToolbarIcon name="plus" /></button>
+			<span class="mt-sep"></span>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bold')} aria-pressed={_tick >= 0 && editor.isActive('bold')} aria-label="Bold" onclick={() => editor?.chain().focus().toggleBold().run()}><MobileToolbarIcon name="bold" /></button>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('italic')} aria-pressed={_tick >= 0 && editor.isActive('italic')} aria-label="Italic" onclick={() => editor?.chain().focus().toggleItalic().run()}><MobileToolbarIcon name="italic" /></button>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('strike')} aria-pressed={_tick >= 0 && editor.isActive('strike')} aria-label="Strikethrough" onclick={() => editor?.chain().focus().toggleStrike().run()}><MobileToolbarIcon name="strikethrough" /></button>
+			<span class="mt-sep"></span>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 2 })} aria-pressed={_tick >= 0 && editor.isActive('heading', { level: 2 })} aria-label="Heading 2" onclick={() => editor?.chain().focus().toggleHeading({ level: 2 }).run()}><MobileToolbarIcon name="heading-2" /></button>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('heading', { level: 3 })} aria-pressed={_tick >= 0 && editor.isActive('heading', { level: 3 })} aria-label="Heading 3" onclick={() => editor?.chain().focus().toggleHeading({ level: 3 }).run()}><MobileToolbarIcon name="heading-3" /></button>
+			<span class="mt-sep"></span>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('bulletList')} aria-pressed={_tick >= 0 && editor.isActive('bulletList')} aria-label="Bulleted list" onclick={() => editor?.chain().focus().toggleBulletList().run()}><MobileToolbarIcon name="list" /></button>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('orderedList')} aria-pressed={_tick >= 0 && editor.isActive('orderedList')} aria-label="Numbered list" onclick={() => editor?.chain().focus().toggleOrderedList().run()}><MobileToolbarIcon name="list-ordered" /></button>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('taskList')} aria-pressed={_tick >= 0 && editor.isActive('taskList')} aria-label="Task list" onclick={() => editor?.chain().focus().toggleTaskList().run()}><MobileToolbarIcon name="list-todo" /></button>
+			<button class="mt-btn" disabled={!canOutdent} onclick={outdentCurrentListItem} title="Outdent list item" aria-label="Outdent"><MobileToolbarIcon name="outdent" /></button>
+			<button class="mt-btn" disabled={!canIndent} onclick={indentCurrentListItem} title="Indent list item" aria-label="Indent"><MobileToolbarIcon name="indent" /></button>
+			<span class="mt-sep"></span>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('codeBlock')} aria-pressed={_tick >= 0 && editor.isActive('codeBlock')} aria-label="Code block" onclick={() => editor?.chain().focus().toggleCodeBlock().run()}><MobileToolbarIcon name="code" /></button>
+			<button class="mt-btn" class:active={_tick >= 0 && editor.isActive('blockquote')} aria-pressed={_tick >= 0 && editor.isActive('blockquote')} aria-label="Quote" onclick={() => editor?.chain().focus().toggleBlockquote().run()}><MobileToolbarIcon name="quote" /></button>
+			<span class="mt-sep"></span>
+			<button class="mt-btn" onclick={triggerAttachPicker} title="Attach file" aria-label="Attach file"><MobileToolbarIcon name="paperclip" /></button>
+		</div>
 	</div>
 {/if}
 
@@ -2161,36 +2170,68 @@
 		border-color: var(--accent-blue);
 	}
 
-	/* Mobile keyboard toolbar */
+	/* Mobile keyboard toolbar. The outer bar is fixed; the row inside it
+	   scrolls sideways, and the edge fades say which way more buttons are
+	   (TASK-4521). */
 	.mobile-toolbar {
 		position: fixed;
 		left: 0;
 		right: 0;
 		z-index: 100;
-		display: flex;
-		align-items: center;
-		gap: 2px;
-		padding: var(--space-2) var(--space-3);
 		background: var(--bg-secondary);
 		border-top: 1px solid var(--border);
+	}
+	.mt-scroll {
+		display: flex;
+		align-items: center;
+		padding: 0 var(--space-1);
 		overflow-x: auto;
 		-webkit-overflow-scrolling: touch;
 	}
+	.mobile-toolbar::before,
+	.mobile-toolbar::after {
+		content: '';
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		width: 32px;
+		pointer-events: none;
+		opacity: 0;
+		transition: opacity 150ms ease;
+		z-index: 1;
+	}
+	.mobile-toolbar::before {
+		left: 0;
+		background: linear-gradient(to right, var(--bg-secondary) 20%, transparent);
+	}
+	.mobile-toolbar::after {
+		right: 0;
+		background: linear-gradient(to left, var(--bg-secondary) 20%, transparent);
+	}
+	.mobile-toolbar.more-start::before,
+	.mobile-toolbar.more-end::after {
+		opacity: 1;
+	}
+	/* 44px: the minimum touch target. */
 	.mt-btn {
-		padding: var(--space-1) var(--space-2);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		min-width: 44px;
+		min-height: 44px;
+		padding: 0;
 		border-radius: var(--radius-sm);
-		font-size: 0.85em;
-		font-weight: 600;
 		color: var(--text-secondary);
-		min-width: 32px;
-		text-align: center;
-		font-family: var(--font-mono);
 		flex-shrink: 0;
 	}
 	@media (hover: hover) {
 		.mt-btn:hover { background: var(--bg-hover); color: var(--text-primary); }
 	}
-	.mt-btn:focus { outline: none; }
+	/* Inset so the scrolling row doesn't clip the ring. */
+	.mt-btn:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: -2px;
+	}
 	.mt-btn.active {
 		background: var(--bg-active);
 		color: var(--accent-blue);
@@ -2309,7 +2350,6 @@
 
 	/* Mobile + button */
 	.mt-btn-add {
-		font-size: 1.1em;
 		color: var(--accent-blue);
 	}
 
