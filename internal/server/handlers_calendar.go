@@ -308,7 +308,12 @@ func (s *Server) handleGetCalendar(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	resp.ForecastsComplete = !forecastMore
-	if len(forecasts) > 0 {
+	// The page filters apply exactly as on the schedules above: only when active.
+	if !calendarFilterActive(params) {
+		for _, row := range forecasts {
+			resp.Forecasts = append(resp.Forecasts, agendaForecastRow(row))
+		}
+	} else if len(forecasts) > 0 {
 		candidates := make([]store.AgendaSchedule, 0, len(forecasts))
 		for _, row := range forecasts {
 			candidates = append(candidates, store.AgendaSchedule{Schedule: &models.ItemSchedule{ID: row.ScheduleID, ItemID: row.ItemID}})
