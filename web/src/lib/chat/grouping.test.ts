@@ -80,6 +80,10 @@ describe('layoutRows', () => {
 		const t = at(2026, 11, 13, 9, 0);
 		const rows = layoutRows([msg(t), msg(t, { deleted: true, body: '' }), msg(t)], { now: NOW });
 		expect(heads(rows)).toEqual([true, false, false]);
+		// The server drops a tombstone's context workspace; that is not a source change.
+		const a = { context_workspace: { slug: 'a', name: 'A' } };
+		const withCtx = layoutRows([msg(t, a), msg(t, { deleted: true, body: '' }), msg(t, a)], { now: NOW });
+		expect(heads(withCtx)).toEqual([true, false, false]);
 	});
 
 	it('a pending row continues a preceding own group, and otherwise heads its own', () => {

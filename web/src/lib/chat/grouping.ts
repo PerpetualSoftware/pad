@@ -58,14 +58,16 @@ export function listTime(iso: string, now: Date = new Date()): string {
 interface Facts {
 	sender: string;
 	at: Date | null;
-	source: string;
+	/** null matches any source (a pending row, a tombstone). */
+	source: string | null;
 }
 
 function facts(item: WindowItem, now: Date): Facts {
-	if (item.kind === 'pending') return { sender: 'mine', at: now, source: '' };
+	if (item.kind === 'pending') return { sender: 'mine', at: now, source: null };
 	const m = item.message;
 	const sender = m.mine ? 'mine' : `${m.author_is_human ? 'h' : 'a'}:${m.author_agent_key}`;
-	return { sender, at: parse(m.created_at), source: m.context_workspace?.slug ?? '' };
+	// A tombstone loses its context workspace: it has no source to split on.
+	return { sender, at: parse(m.created_at), source: m.deleted ? null : (m.context_workspace?.slug ?? '') };
 }
 
 /**
@@ -93,7 +95,7 @@ export function layoutRows(
 		let head = true;
 		if (prev?.at && prevItem && f.at && i !== divider && !newDay && f.sender === prev.sender) {
 			const gap = Math.abs(f.at.getTime() - prev.at.getTime());
-			const sameSource = item.kind === 'pending' || f.source === prev.source;
+			const sameSource = f.source === null || prev.source === null || f.source === prev.source;
 			head = !(gap <= GROUP_WINDOW_MS && sameSource);
 			if (item.kind === 'pending' && prevItem.kind === 'pending') head = false;
 		}
