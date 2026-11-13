@@ -90,7 +90,7 @@ func writeRootStructuredError(w io.Writer, err error) {
 			structured = true
 		case "invalid_body":
 			structured = cli.IsCommitmentRoute(commitmentErr.RequestPath)
-		case "hard_deadline", "deadline_owner_required", "commitment_changed",
+		case "not_fired", "stale", "schedule_error", "schedule_busy", "hard_deadline", "deadline_owner_required", "commitment_changed",
 			"schedule_linked", "deadline_approval_required", "link_violation_ack", "link_budget", "link_edit_required", "schedule_link_not_found",
 			"link_cycle", "link_self", "link_duplicate_incoming", "link_limit", "link_invalid", "gate_duplicate", "commitment_preview_required":
 			structured = true
@@ -101,7 +101,7 @@ func writeRootStructuredError(w io.Writer, err error) {
 			}
 			if json.Unmarshal(commitmentErr.Details, &detail) == nil && detail.Code != "" {
 				switch detail.Field {
-				case "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker":
+				case "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment":
 					structured = true
 				}
 			}

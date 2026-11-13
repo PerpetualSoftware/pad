@@ -49,4 +49,24 @@ func TestRemindAckOccurrenceSelection(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "changed") || len(calls) != 1 {
 		t.Fatalf("stale=%v calls=%v", err, calls)
 	}
+	var marker strings.Builder
+	writeRootStructuredError(&marker, err)
+	if !strings.Contains(marker.String(), `"code":"stale"`) {
+		t.Fatalf("lost stale envelope: %s", marker.String())
+	}
+}
+
+func TestRemindAcknowledgedAgendaAttribution(t *testing.T) {
+	for _, tc := range []struct{ name, actor, agent, want string }{{"Alex", "user", "", "acknowledged by Alex at "}, {"Alex", "agent", "rook", "acknowledged by Alex (rook via agent) at "}, {"", "user", "", "acknowledged by unknown user at "}} {
+		body := `{"window_complete":true,"entries":[{"type":"schedule","at":"2026-11-09T14:00:00Z","state":"acknowledged","item_ref":"TASK-5","item_title":"Still owed","acknowledged_at":"2026-11-09T15:00:00Z","acknowledged_by":{"user_id":"u","name":"` + tc.name + `","actor":"` + tc.actor + `","agent_name":"` + tc.agent + `"}}]}`
+		out, _, err, _ := runSched(t, okReply(body), "", "remind", "agenda", "--from", "2026-11-09", "--days", "1")
+		if err != nil || !strings.Contains(out, "acknowledged") || !strings.Contains(out, tc.want) {
+			t.Fatalf("agenda=%s err=%v", out, err)
+		}
+	}
+	raw := strings.Replace(resolved, `"state":"done"`, `"state":"ack"`, 1)
+	out, _, err, calls := runSched(t, okReply(raw), "", "remind", "ack", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--format", "json")
+	if err != nil || len(calls) != 1 || !strings.Contains(out, `"state": "ack"`) {
+		t.Fatalf("JSON=%s err=%v", out, err)
+	}
 }

@@ -270,6 +270,7 @@ type resolveVerb struct {
 }
 
 var resolveVerbs = []resolveVerb{
+	{"ack", "ack", "Acknowledge the fired occurrence; keep its work outstanding"},
 	{"done", "done", "Mark the outstanding occurrence done"},
 	{"skip", "skip", "Skip the outstanding occurrence"},
 	{"snooze", "snooze", "Re-fire the outstanding occurrence later"},
@@ -287,6 +288,8 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		"Without --occurrence the CLI reads the schedule first and resolves the occurrence it reports.\n" +
 		"If that occurrence changed meanwhile (409 stale) the current one is printed."
 	switch v.state {
+	case "ack":
+		long += "\n\nAcknowledge a fired occurrence for everyone while keeping its work outstanding. Dates and recurrence do not advance; a configured lapse still applies."
 	case "done", "skip":
 		long += "\n\nA recurring schedule arms its next occurrence; a one-shot ends."
 		if v.state == "done" {
@@ -300,10 +303,14 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	if v.state == "move" {
 		long += "\n\nUse --role target|earliest|deadline|occupied_until with --to WHEN to preview a linked cascade. Repeat with --apply --revision TOKEN to commit; --reason records why, and --ack-violations accepts previewed bound crossings. This form refuses --until and --occurrence."
 	}
+	example := "  pad remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state]
+	if v.state != "ack" {
+		example += ` -m "why"`
+	}
 	c := &cobra.Command{
 		Use:     use,
 		Short:   v.short,
-		Example: "  pad remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state] + ` -m "why"`,
+		Example: example,
 		Long:    long,
 		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -318,7 +325,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				}
 			}
 			req := schedule.CommitmentResolve{State: v.state, Comment: comment}
-			if cmd.Flags().Changed("at") {
+			if v.state != "ack" && cmd.Flags().Changed("at") {
 				if v.state != "done" {
 					return fmt.Errorf("--at records an actual completion time and applies to done only, not %s", v.state)
 				}
@@ -344,8 +351,12 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			client, _ := getClient()
 			ws := getWorkspace()
 			if occurrence != "" {
-				if _, err := time.Parse(time.RFC3339, occurrence); err != nil {
+				parsed, err := time.Parse(time.RFC3339, occurrence)
+				if err != nil {
 					return fmt.Errorf("--occurrence %q: want an RFC3339 instant, as 'pad item remind show' reports it", occurrence)
+				}
+				if v.state == "ack" && (parsed.Nanosecond() != 0 || strings.ContainsAny(occurrence, ".,")) {
+					return fmt.Errorf("--occurrence must use whole seconds")
 				}
 				req.OccurrenceAt = occurrence
 			} else {
@@ -379,8 +390,10 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		c.Flags().StringVar(&to, "to", "", "linked move destination: RFC3339 or a wall time in your zone")
 		linked.addFlags(c)
 	}
-	c.Flags().StringVarP(&comment, "comment", "m", "", commentHelp)
-	c.Flags().StringVar(&at, "at", "", "when the work was really finished (done only): an RFC3339 instant or a wall time in your zone (2026-11-08T17:30)")
+	if v.state != "ack" {
+		c.Flags().StringVarP(&comment, "comment", "m", "", commentHelp)
+		c.Flags().StringVar(&at, "at", "", "when the work was really finished (done only): an RFC3339 instant or a wall time in your zone (2026-11-08T17:30)")
+	}
 	c.Flags().StringVar(&occurrence, "occurrence", "", "the occurrence's RFC3339 instant (default: the schedule's current one)")
 	if needsUntil {
 		c.Flags().StringVar(&until, "until", "", "when: an RFC3339 instant, a wall time in your zone (2026-11-10T09:00)"+map[bool]string{true: ", or a duration (2h, 1d)", false: ""}[v.state == "snooze"])
@@ -391,6 +404,8 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 func resolveSentence(state, ref string, req schedule.CommitmentResolve, s scheduleView) string {
 	occ := fmtInstant(req.OccurrenceAt, nil)
 	switch state {
+	case "ack":
+		return fmt.Sprintf("Acknowledged %s; this occurrence remains outstanding.", ref)
 	case "snooze":
 		return fmt.Sprintf("Snoozed %s until %s", ref, fmtInstant(req.Until, nil))
 	case "move":
@@ -424,12 +439,12 @@ func staleHintWith(err error, ref string, advise bool) error {
 	_ = json.Unmarshal(apiErr.Details, &d)
 	switch {
 	case d.NextOccurrence != nil && d.NextOccurrence.At != "" && !advise:
-		return fmt.Errorf("%s\ncurrent occurrence of %s: %s", apiErr.Message, ref, fmtInstant(d.NextOccurrence.At, nil))
+		return fmt.Errorf("%w\ncurrent occurrence of %s: %s", err, ref, fmtInstant(d.NextOccurrence.At, nil))
 	case d.NextOccurrence != nil && d.NextOccurrence.At != "":
-		return fmt.Errorf("%s\ncurrent occurrence of %s: %s (pass --occurrence %s to resolve it)",
-			apiErr.Message, ref, fmtInstant(d.NextOccurrence.At, nil), d.NextOccurrence.At)
+		return fmt.Errorf("%w\ncurrent occurrence of %s: %s (pass --occurrence %s to resolve it)",
+			err, ref, fmtInstant(d.NextOccurrence.At, nil), d.NextOccurrence.At)
 	case d.Ended:
-		return fmt.Errorf("%s\nthe schedule on %s has ended", apiErr.Message, ref)
+		return fmt.Errorf("%w\nthe schedule on %s has ended", err, ref)
 	}
 	return err
 }
@@ -570,20 +585,22 @@ confirmation unless --yes is given.`,
 // ---- agenda ----
 
 type agendaEntry struct {
-	Forecast    *models.ForecastSummary `json:"forecast"`
-	Type        string                  `json:"type"`
-	At          string                  `json:"at"`
-	Day         string                  `json:"day"`
-	Date        string                  `json:"date"`
-	AllDay      bool                    `json:"all_day"`
-	State       string                  `json:"state"`
-	ItemRef     string                  `json:"item_ref"`
-	ItemTitle   string                  `json:"item_title"`
-	Roles       models.CommitmentRoles  `json:"roles"`
-	Field       string                  `json:"field"`
-	Overdue     bool                    `json:"overdue"`
-	MissedCount int                     `json:"missed_count"`
-	Stale       bool                    `json:"stale"`
+	Forecast       *models.ForecastSummary `json:"forecast"`
+	Type           string                  `json:"type"`
+	At             string                  `json:"at"`
+	Day            string                  `json:"day"`
+	Date           string                  `json:"date"`
+	AllDay         bool                    `json:"all_day"`
+	State          string                  `json:"state"`
+	AcknowledgedAt *string                 `json:"acknowledged_at"`
+	AcknowledgedBy *models.AcknowledgedBy  `json:"acknowledged_by"`
+	ItemRef        string                  `json:"item_ref"`
+	ItemTitle      string                  `json:"item_title"`
+	Roles          models.CommitmentRoles  `json:"roles"`
+	Field          string                  `json:"field"`
+	Overdue        bool                    `json:"overdue"`
+	MissedCount    int                     `json:"missed_count"`
+	Stale          bool                    `json:"stale"`
 }
 
 type agendaResponse struct {
@@ -733,12 +750,15 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 }
 
 type staleAgendaRow struct {
-	Ref         string                 `json:"ref"`
-	Title       string                 `json:"title"`
-	At          string                 `json:"at"`
-	AllDay      bool                   `json:"all_day"`
-	Roles       models.CommitmentRoles `json:"roles"`
-	MissedCount int                    `json:"missed_count"`
+	State          string                 `json:"state"`
+	AcknowledgedAt *string                `json:"acknowledged_at"`
+	AcknowledgedBy *models.AcknowledgedBy `json:"acknowledged_by"`
+	Ref            string                 `json:"ref"`
+	Title          string                 `json:"title"`
+	At             string                 `json:"at"`
+	AllDay         bool                   `json:"all_day"`
+	Roles          models.CommitmentRoles `json:"roles"`
+	MissedCount    int                    `json:"missed_count"`
 }
 
 type staleAgendaAnswer struct {
@@ -811,7 +831,13 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 				due = t.Format("2006-01-02") + " all day"
 			}
 		}
-		fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil), e.MissedCount)
+		if e.State == "acknowledged" {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d (%s)\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil), e.MissedCount, e.State)
+			_ = w.Flush()
+			fmt.Fprintln(out, acknowledgementLine(e.AcknowledgedAt, e.AcknowledgedBy, showLoc))
+		} else {
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%d\n", due, e.Ref, strings.Join(strings.Fields(e.Title), " "), schedule.CommitmentKind(e.Roles.Deadline != nil, e.Roles.OccupiedUntil != nil), e.MissedCount)
+		}
 	}
 	_ = w.Flush()
 	if resp.Truncated {
@@ -874,6 +900,10 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 				flags = append(flags, "stale")
 			}
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", day, clock, state, e.ItemRef, e.ItemTitle, kind, strings.Join(flags, ","))
+			if e.State == "acknowledged" {
+				_ = w.Flush()
+				fmt.Fprintln(out, acknowledgementLine(e.AcknowledgedAt, e.AcknowledgedBy, loc))
+			}
 		}
 		_ = w.Flush()
 	}
@@ -907,4 +937,25 @@ func addRemindSubcommands(cmd *cobra.Command) {
 		cmd.AddCommand(remindResolveCmd(v))
 	}
 	cmd.AddCommand(remindLinkCmd(), remindGateCmd(), remindRenegotiateCmd(), remindAgendaCmd(), remindEditCmd(), remindRmCmd())
+}
+
+func acknowledgementLine(at *string, by *models.AcknowledgedBy, loc *time.Location) string {
+	name, agent := "unknown user", ""
+	if by != nil {
+		if by.Name != "" {
+			name = by.Name
+		}
+		if by.Actor == "agent" {
+			if by.AgentName != "" {
+				agent = " (" + by.AgentName + " via agent)"
+			} else {
+				agent = " (via agent)"
+			}
+		}
+	}
+	stamp := ""
+	if at != nil {
+		stamp = fmtInstant(*at, loc)
+	}
+	return "acknowledged by " + name + agent + " at " + stamp
 }

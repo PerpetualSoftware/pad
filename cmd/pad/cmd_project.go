@@ -240,12 +240,14 @@ func nextCmd() *cobra.Command {
 					// suggestion, and it is the handle an ack needs — a
 					// surface that shows a reminder without it can be read
 					// and not acted on (IDEA-2641).
-					ReminderID string `json:"reminder_id,omitempty"`
-					ItemSlug   string `json:"item_slug"`
-					ItemRef    string `json:"item_ref,omitempty"`
-					ItemTitle  string `json:"item_title"`
-					Collection string `json:"collection"`
-					Reason     string `json:"reason"`
+					ReminderID   string  `json:"reminder_id,omitempty"`
+					ScheduleID   *string `json:"schedule_id,omitempty"`
+					OccurrenceAt *string `json:"occurrence_at,omitempty"`
+					ItemSlug     string  `json:"item_slug"`
+					ItemRef      string  `json:"item_ref,omitempty"`
+					ItemTitle    string  `json:"item_title"`
+					Collection   string  `json:"collection"`
+					Reason       string  `json:"reason"`
 				} `json:"suggested_next"`
 			}
 
@@ -272,7 +274,9 @@ func nextCmd() *cobra.Command {
 					bold.Sprint(s.ItemTitle),
 					dim.Sprint(s.Reason),
 				)
-				if s.ReminderID != "" {
+				if s.ScheduleID != nil && s.OccurrenceAt != nil {
+					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad remind ack %s --occurrence %s", s.ItemRef, *s.OccurrenceAt))
+				} else if s.ReminderID != "" {
 					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad item ack %s", s.ReminderID))
 				}
 			}

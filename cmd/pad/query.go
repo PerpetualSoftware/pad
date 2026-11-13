@@ -81,7 +81,9 @@ Blocked items are never listed; 'pad project stale' shows them.`,
 				// fired reminder on the surface an agent polls and withholding
 				// the id it needs to retire it means the same entry comes back
 				// on every poll forever.
-				if s.ReminderID != "" {
+				if s.ScheduleID != nil && s.OccurrenceAt != nil {
+					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad remind ack %s --occurrence %s", s.ItemRef, *s.OccurrenceAt))
+				} else if s.ReminderID != "" {
 					fmt.Printf("     %s\n", dim.Sprintf("acknowledge with: pad item ack %s", s.ReminderID))
 				}
 			}
