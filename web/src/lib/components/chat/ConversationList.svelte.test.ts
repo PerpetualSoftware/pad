@@ -170,6 +170,46 @@ describe('ConversationList (TASK-4044)', () => {
 	});
 });
 
+describe('ConversationList rows (TASK-4515)', () => {
+	const when = new Date(Date.now() - 60_000).toISOString();
+	const last = (over: Record<string, unknown> = {}) => ({
+		seq: 1, author_agent_key: 'agent-7', author_is_human: false, excerpt: 'hello there', deleted: false,
+		created_at: when, ...over
+	});
+
+	it('shows the last message time in a <time>', () => {
+		const { container } = render(ConversationList, { props: { conversations: [conv(7, { last_message: last() })] } });
+		const t = container.querySelector('a.row time')!;
+		expect(t).not.toBeNull();
+		expect(t.getAttribute('datetime')).toBe(when);
+		expect(t.textContent!.trim()).not.toBe('');
+	});
+
+	it('shows no time without a last message', () => {
+		const { container } = render(ConversationList, { props: { conversations: [conv(7)] } });
+		expect(container.querySelector('a.row time')).toBeNull();
+	});
+
+	it('the name carries the full title, and the preview is on its own line, not in the name line', () => {
+		const { container } = render(ConversationList, {
+			props: { conversations: [conv(7, { title: 'A very long release conversation title', last_message: last() })] }
+		});
+		const name = container.querySelector('a.row .name')!;
+		expect(name.getAttribute('title')).toBe('A very long release conversation title');
+		const line = name.parentElement!;
+		expect(line.querySelector('.preview')).toBeNull();
+		expect(container.querySelector('a.row .preview')!.textContent).toBe('hello there');
+		expect(container.querySelector('a.row .avatar')).not.toBeNull();
+	});
+
+	it('an unread row is marked so its preview reads stronger', () => {
+		h.unreadByNumber = { 7: 2 };
+		const { container } = render(ConversationList, { props: { conversations: [conv(7, { last_message: last() })] } });
+		flushSync();
+		expect(container.querySelector('a.row')!.classList.contains('unread')).toBe(true);
+	});
+});
+
 describe('opening a conversation (TASK-4315 PR 3b)', () => {
 	beforeEach(() => {
 		h.opened = [];

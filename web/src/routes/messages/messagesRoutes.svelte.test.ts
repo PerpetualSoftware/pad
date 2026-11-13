@@ -361,6 +361,42 @@ describe('/messages page (TASK-4044)', () => {
 		expect(container.textContent).not.toContain("Couldn't refresh");
 	});
 
+	// TASK-4515: the inbox sits under the shared header; a failure is a notice strip with a Button.
+	it('the inbox title is the header h1, with Back in the header on the route', async () => {
+		const { container, getByText } = render(MessagesPage);
+		await settle();
+		const h1s = container.querySelectorAll('h1');
+		expect(h1s).toHaveLength(1);
+		expect(h1s[0].textContent).toBe('Chat');
+		expect(h1s[0].closest('header.chat-header')).not.toBeNull();
+		expect(getByText('Back').closest('header.chat-header')).not.toBeNull();
+	});
+
+	it('a load failure is a notice strip whose Try again is a Button', async () => {
+		h.listConversations.mockRejectedValue(new Error('boom'));
+		const { container, getByRole } = render(MessagesPage);
+		await settle();
+		const notice = container.querySelector('.notice')!;
+		expect(notice.textContent).toContain('Could not load your conversations.');
+		expect(getByRole('button', { name: 'Try again' }).matches('.notice .btn')).toBe(true);
+	});
+
+	it('the first load shows the inline skeleton, not a Loading line', async () => {
+		h.listConversations.mockReturnValue(new Promise(() => {}));
+		const { container, getByRole } = render(MessagesPage);
+		await settle();
+		expect(getByRole('status', { name: 'Loading content' })).toBeTruthy();
+		expect(container.textContent).not.toContain('Loading...');
+	});
+
+	it('labels both sections when the roster and the conversations both show', async () => {
+		h.sessions.mockResolvedValue({ sessions: [{ id: 's-g', agent: 'ghost', state: 'online', armed: true, connected_at: '' }], count: 1 });
+		const { getByRole } = render(MessagesPage);
+		await settle();
+		expect(getByRole('heading', { level: 2, name: 'Start a conversation' })).toBeTruthy();
+		expect(getByRole('heading', { level: 2, name: 'Conversations' })).toBeTruthy();
+	});
+
 	it('Back goes to /console when no workspace is remembered', async () => {
 		const { getByText } = render(MessagesPage);
 		await settle();
@@ -597,6 +633,40 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		expect(back.closest('header.chat-header')).not.toBeNull();
 		// The route has no Close: the page is the destination.
 		expect(container.querySelector('header.chat-header button')).toBeNull();
+	});
+
+	// TASK-4515: rows group by sender within a day; each local day opens with a separator.
+	it('a window over two days has two day separators, and one meta line per group', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 4, read_seq: 4, unread: 0 });
+		const d1 = new Date(2026, 9, 25, 12, 0).toISOString();
+		const d1b = new Date(2026, 9, 25, 12, 2).toISOString();
+		const d2 = new Date(2026, 9, 26, 9, 0).toISOString();
+		const d2b = new Date(2026, 9, 26, 9, 1).toISOString();
+		h.listMessages.mockResolvedValue(
+			pageOf([message(1, { created_at: d1 }), message(2, { created_at: d1b }), message(3, { created_at: d2 }), message(4, { created_at: d2b })], { read_seq: 4 })
+		);
+		const { container } = render(ThreadPage);
+		await settle();
+		const days = container.querySelectorAll('.scroller [role="separator"].day');
+		expect(days).toHaveLength(2);
+		// The separator sits right before the first row of its day.
+		expect(days[1].nextElementSibling!.getAttribute('data-seq')).toBe('3');
+		expect(container.querySelectorAll('.scroller .meta')).toHaveLength(2);
+		expect([...container.querySelectorAll('article')].map((a) => a.classList.contains('head'))).toEqual([true, false, true, false]);
+	});
+
+	it('with unread, the day separator comes before the divider at the same row', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockResolvedValue({ ...conv(3), last_seq: 2, read_seq: 1, unread: 1 });
+		h.listMessages.mockResolvedValue(
+			pageOf([message(1, { created_at: new Date(2026, 9, 25, 12, 0).toISOString() }), message(2, { created_at: new Date(2026, 9, 26, 12, 0).toISOString() })], { read_seq: 1 })
+		);
+		const { container } = render(ThreadPage);
+		await settle();
+		const divider = container.querySelector('#unread-divider')!;
+		expect(divider.previousElementSibling!.matches('.day')).toBe(true);
+		expect(divider.nextElementSibling!.getAttribute('data-seq')).toBe('2');
 	});
 
 	it('the empty thread is the shared centred state and names the agent', async () => {

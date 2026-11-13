@@ -7,16 +7,18 @@
 {/if}
 
 <style>
+	/* --accent-primary-strong under --text-on-accent holds AA in both themes (TASK-4515). */
 	.unread-badge {
 		display: inline-block;
-		min-width: 1.25rem;
-		padding: 0 var(--space-1);
+		box-sizing: border-box;
+		min-width: 20px;
+		padding: 0 5px;
 		border-radius: 999px;
-		background: var(--accent-blue);
-		color: #fff;
-		font-size: 0.7rem;
+		background: var(--accent-primary-strong);
+		color: var(--text-on-accent);
+		font-size: 11px;
 		font-weight: 600;
-		line-height: 1.25rem;
+		line-height: 20px;
 		text-align: center;
 	}
 </style>

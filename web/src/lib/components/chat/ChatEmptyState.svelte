@@ -113,9 +113,14 @@
 {/if}
 
 <style>
+	/* The inbox's section label (TASK-4515), the sidebar's "COLLECTIONS" style. */
 	.heading {
-		margin: 0 0 var(--space-3);
-		font-size: 1.1rem;
+		margin: 0 0 var(--space-2) var(--space-1);
+		font-size: 11px;
+		font-weight: 600;
+		letter-spacing: 0.06em;
+		text-transform: uppercase;
+		color: var(--text-muted);
 	}
 	.snippets {
 		list-style: none;

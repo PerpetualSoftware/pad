@@ -42,13 +42,11 @@ describe('chat UI sources', () => {
 	});
 
 	// TASK-4515: chat controls are Button / IconButton, which carry their own CSS over app.css's
-	// global button reset. A raw <button> is left only where the control is not button-shaped; each
-	// one counted here is a known remainder, and the count only goes down.
-	it('uses raw <button> only where the census allows', () => {
+	// global button reset. A raw <button> is left only where the control is a row, not a button
+	// shape: the roster row and the quote chip. Both carry their full CSS.
+	it('uses raw <button> only for the two row-shaped controls', () => {
 		const allowed: Record<string, number> = {
-			'ChatInboxView.svelte': 2,
-			'MessageBubble.svelte': 5,
-			'PendingBubble.svelte': 2,
+			'MessageBubble.svelte': 1,
 			'RosterRow.svelte': 1
 		};
 		const found: Record<string, number> = {};

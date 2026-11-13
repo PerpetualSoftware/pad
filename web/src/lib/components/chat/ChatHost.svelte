@@ -178,10 +178,7 @@
 		<ChatHeader title="Chat" onClose={() => chatSurface.close()} />
 		<ChatOff level={2} />
 	{:else if t.kind === 'inbox'}
-		<!-- The inbox keeps its own padding until it is rebuilt on ChatHeader too. -->
-		<div class="inbox-pad">
-			<ChatInboxView variant="host" />
-		</div>
+		<ChatInboxView variant="host" />
 	{:else}
 		<ChatThreadView n={t.kind === 'thread' ? t.n : null} variant="host" {active} />
 	{/if}
@@ -267,10 +264,5 @@
 		overflow-y: auto;
 		/* The header is full-bleed; the scroller, the states and the composer own their padding. */
 		padding: 0 0 env(safe-area-inset-bottom);
-	}
-	.inbox-pad {
-		display: flex;
-		flex-direction: column;
-		padding: var(--space-4);
 	}
 </style>
