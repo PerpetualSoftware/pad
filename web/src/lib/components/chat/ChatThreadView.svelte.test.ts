@@ -4,7 +4,7 @@ import { tick } from 'svelte';
 import type { ChatConversation, ChatMessage } from '$lib/types';
 
 const h = vi.hoisted(() => ({
-	userId: 'user-1', emailVerified: true, request: vi.fn(), remove: vi.fn(), toast: vi.fn(),
+	userId: 'user-1', emailVerified: true, request: vi.fn(), remove: vi.fn(), toast: vi.fn(), dividerIndex: -1,
 	thread: null as unknown as { conversation: ChatConversation | null }
 }));
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: {
@@ -21,7 +21,7 @@ vi.mock('$lib/stores/chatThread.svelte', () => ({ ChatThread: class {
 	conversation = $state<ChatConversation | null>({ id: 'c1', number: 1, kind: 'direct', title: '', agent_key: 'agent', last_seq: 5, created_at: '', updated_at: '' });
 	status = 'ready';
 	items = [{ kind: 'message', message: { id: 'm5', conversation_id: 'c1', seq: 5, author_agent_key: 'agent', author_is_human: false, mine: false, source: 'cli', body: 'keep this message', created_at: '2026-11-01T12:00:00Z', deleted: false } satisfies ChatMessage }];
-	detached = []; refs = new Map(); newestSeq = 5; ownSendTick = 0; dividerIndex = -1; atBottom = false;
+	detached = []; refs = new Map(); newestSeq = 5; ownSendTick = 0; dividerIndex = h.dividerIndex; unreadCount = 1; hasNewer = false; atBottom = false;
 	constructor() { h.thread = this; }
 	open() {} dispose() {} tryMarkRead() {}
 	remove = h.remove;
@@ -29,7 +29,7 @@ vi.mock('$lib/stores/chatThread.svelte', () => ({ ChatThread: class {
 import ChatThreadView from './ChatThreadView.svelte';
 
 beforeEach(() => {
-	h.userId = 'user-1'; h.emailVerified = true;
+	h.userId = 'user-1'; h.emailVerified = true; h.dividerIndex = -1;
 	h.request.mockReset(); h.remove.mockReset(); h.toast.mockReset();
 	h.remove.mockResolvedValue({ ok: true });
 });
@@ -115,5 +115,74 @@ describe('one-row header (TASK-4515)', () => {
 		await tick();
 		expect(screen.queryByRole('button', { name: 'Close Chat' })).toBeNull();
 		expect(screen.getByRole('link', { name: 'All conversations' })).toBeTruthy();
+	});
+});
+
+describe('Jump to unread shows only while the divider is out of view (TASK-4515)', () => {
+	type Obs = { cb: IntersectionObserverCallback; root: Element | Document | null | undefined; targets: Element[]; live: boolean };
+	let observers: Obs[] = [];
+	beforeEach(() => {
+		observers = [];
+		vi.stubGlobal('IntersectionObserver', class {
+			o: Obs;
+			constructor(cb: IntersectionObserverCallback, opts?: IntersectionObserverInit) {
+				this.o = { cb, root: opts?.root, targets: [], live: true };
+				observers.push(this.o);
+			}
+			observe(el: Element) { this.o.targets.push(el); }
+			unobserve() {}
+			disconnect() { this.o.live = false; }
+			takeRecords() { return []; }
+		});
+	});
+	afterEach(() => vi.unstubAllGlobals());
+	async function see(el: Element, isIntersecting: boolean) {
+		for (const o of observers.filter((x) => x.live && x.targets.includes(el))) {
+			o.cb([{ target: el, isIntersecting } as unknown as IntersectionObserverEntry], {} as IntersectionObserver);
+		}
+		await tick();
+	}
+	it('no pill while the divider is in the scroller viewport; the pill once it leaves', async () => {
+		h.dividerIndex = 0;
+		const { container } = render(ChatThreadView, { n: 1 });
+		await tick();
+		const divider = container.querySelector('#unread-divider')!;
+		expect(divider).toBeTruthy();
+		const watching = observers.filter((o) => o.live && o.targets.some((t) => t.contains(divider)));
+		expect(watching).toHaveLength(1);
+		expect(watching[0].root).toBe(container.querySelector('.scroller'));
+		const watched = watching[0].targets.find((t) => t.contains(divider))!;
+		await see(watched, true);
+		expect(screen.queryByRole('button', { name: 'Jump to unread' })).toBeNull();
+		await see(watched, false);
+		expect(screen.getByRole('button', { name: 'Jump to unread' })).toBeTruthy();
+		await see(watched, true);
+		expect(screen.queryByRole('button', { name: 'Jump to unread' })).toBeNull();
+	});
+	it('disconnects the divider observer on unmount', async () => {
+		h.dividerIndex = 0;
+		const { container, unmount } = render(ChatThreadView, { n: 1 });
+		await tick();
+		const divider = container.querySelector('#unread-divider')!;
+		const watching = observers.filter((o) => o.live && o.targets.some((t) => t.contains(divider)));
+		expect(watching).toHaveLength(1);
+		unmount();
+		expect(watching[0].live).toBe(false);
+	});
+	it('no divider, no pill', async () => {
+		render(ChatThreadView, { n: 1 });
+		await tick();
+		expect(screen.queryByRole('button', { name: 'Jump to unread' })).toBeNull();
+	});
+});
+
+describe('Jump to unread without IntersectionObserver (TASK-4515)', () => {
+	it('shows the pill when the divider exists and nothing can say it is in view', async () => {
+		vi.stubGlobal('IntersectionObserver', undefined);
+		h.dividerIndex = 0;
+		render(ChatThreadView, { n: 1 });
+		await tick();
+		expect(screen.getByRole('button', { name: 'Jump to unread' })).toBeTruthy();
+		vi.unstubAllGlobals();
 	});
 });

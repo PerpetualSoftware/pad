@@ -73,11 +73,15 @@ vi.mock('$lib/stores/confirmDialog.svelte', () => ({ confirmDialog: { request: v
 
 type IOCallback = (e: Array<{ isIntersecting: boolean }>) => void;
 let lastIO: { cb: IOCallback } | null = null;
+// `lastIO` is the bottom sentinel's observer; the unread divider has its own.
 class FakeIO {
+	cb: IOCallback;
 	constructor(cb: IOCallback) {
-		lastIO = { cb };
+		this.cb = cb;
 	}
-	observe() {}
+	observe(el: Element) {
+		if (el.classList.contains('sentinel')) lastIO = { cb: this.cb };
+	}
 	disconnect() {}
 }
 const live = $state({ chatOn: true });

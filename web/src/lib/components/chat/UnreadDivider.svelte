@@ -1,10 +1,11 @@
 <script lang="ts">
 	// The "N new" line at the read marker as of open (TASK-4044 PR 3a). `more`
 	// is true when rows beyond the window are unread too, so the count is a floor.
-	let { count, more = false }: { count: number; more?: boolean } = $props();
+	// `rest` carries an attachment from the thread, which watches whether the line is in view.
+	let { count, more = false, ...rest }: { count: number; more?: boolean } & Record<symbol, unknown> = $props();
 </script>
 
-<div class="divider" role="separator" id="unread-divider">
+<div {...rest} class="divider" role="separator" id="unread-divider">
 	<span>{count}{more ? '+' : ''} new</span>
 </div>
 

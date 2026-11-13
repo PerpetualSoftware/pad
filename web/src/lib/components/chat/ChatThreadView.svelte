@@ -141,6 +141,26 @@
 		if (el) el.scrollTop = el.scrollHeight - before;
 	}
 
+	// The pill is for a divider the reader cannot see. The observer writes this
+	// flag and nothing it reads; with no IntersectionObserver the pill stays.
+	let dividerInView = $state(false);
+	// A factory over the root, so the attachment re-runs once the scroller binds.
+	const watchDivider = (root: HTMLElement | null) => (el: HTMLElement) => {
+		if (!root || typeof IntersectionObserver === 'undefined') return;
+		const io = new IntersectionObserver(
+			(entries) => {
+				const last = entries[entries.length - 1];
+				if (last) dividerInView = last.isIntersecting;
+			},
+			{ root }
+		);
+		io.observe(el);
+		return () => {
+			io.disconnect();
+			dividerInView = false;
+		};
+	};
+
 	function jumpToUnread() {
 		scroller?.querySelector('#unread-divider')?.scrollIntoView?.({ block: 'start' });
 	}
@@ -246,9 +266,10 @@
 				{/if}
 			</div>
 		{/if}
-		{#if dividerAt >= 0}
+		{#if dividerAt >= 0 && !dividerInView}
 			<!-- A zero-height sticky strip: the pill floats over the rows and takes no line. It
-			     sits below Load earlier so it never covers that button. -->
+			     sits below Load earlier so it never covers that button, and shows only while
+			     the divider is out of view, so it never covers the divider's label. -->
 			<div class="jump">
 				<Button size="sm" class="jump-pill" onclick={jumpToUnread}>Jump to unread</Button>
 			</div>
@@ -257,7 +278,7 @@
 			{#each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)}
 				{#if item.kind === 'message'}
 					{#if i === dividerAt}
-						<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} />
+						<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} {@attach watchDivider(scroller)} />
 					{/if}
 					<MessageBubble
 						message={item.message}

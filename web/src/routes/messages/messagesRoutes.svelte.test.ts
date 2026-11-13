@@ -97,14 +97,18 @@ vi.mock('$lib/stores/chat.svelte', () => ({
 vi.mock('$lib/stores/confirmDialog.svelte', () => ({ confirmDialog: { request: vi.fn(async () => true) } }));
 vi.mock('$app/navigation', () => ({ goto: h.goto }));
 
-// An IntersectionObserver double: the test fires the callback by hand.
+// An IntersectionObserver double: the test fires the callback by hand. `lastIO`
+// is the bottom sentinel's observer; the unread divider has its own.
 type IOCallback = (e: Array<{ isIntersecting: boolean }>) => void;
 let lastIO: { cb: IOCallback } | null = null;
 class FakeIO {
+	cb: IOCallback;
 	constructor(cb: IOCallback) {
-		lastIO = { cb };
+		this.cb = cb;
 	}
-	observe() {}
+	observe(el: Element) {
+		if (el.classList.contains('sentinel')) lastIO = { cb: this.cb };
+	}
 	disconnect() {}
 }
 
