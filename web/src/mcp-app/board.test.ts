@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { applyChanges, boardItemFrom, needsResync, nextDelay, parseBoard, parseChanges, shouldPoll, type Board, type BoardItem } from './boardModel';
+import { applyChanges, boardItemFrom, incompleteReshowDue, INCOMPLETE_RESHOW_MS, needsResync, nextDelay, parseBoard, parseChanges, shouldPoll, type Board, type BoardItem } from './boardModel';
 
 const item = (id: string, status: string): BoardItem => ({ id, ref: id, title: id, status, priority: '', assignee: '', parent_ref: '', seq: 1, updated_at: '' });
 const board = (): Board => ({ workspace: 'demo', collection: 'tasks', columns: [
@@ -80,5 +80,17 @@ describe('parsing tool results', () => {
 		const row = { ...item('a', 'open'), ref: 'TASK-1', assignee: 'Ada', parent_ref: 'PLAN-2', updated_at: 't0' };
 		const full = { id: 'a', title: 'New', seq: 9, collection_slug: 'tasks', content: 'body', fields: { status: 'done', priority: 'high' }, assigned_user_name: 'Bo', updated_at: 't1' };
 		expect(boardItemFrom(full, row)).toEqual({ id: 'a', ref: 'TASK-1', title: 'New', status: 'done', priority: 'high', assignee: 'Bo', parent_ref: '', seq: 9, updated_at: 't1' });
+	});
+});
+
+describe('incompleteReshowDue', () => {
+	it('is due only for an incomplete board after the bound', () => {
+		const complete = board();
+		const truncated = { ...board(), truncated: true };
+		const unplaced = { ...board(), unplaced: 1 };
+		expect(incompleteReshowDue(complete, 0, INCOMPLETE_RESHOW_MS * 2)).toBe(false);
+		expect(incompleteReshowDue(truncated, 0, INCOMPLETE_RESHOW_MS - 1)).toBe(false);
+		expect(incompleteReshowDue(truncated, 0, INCOMPLETE_RESHOW_MS)).toBe(true);
+		expect(incompleteReshowDue(unplaced, 1000, 1000 + INCOMPLETE_RESHOW_MS)).toBe(true);
 	});
 });

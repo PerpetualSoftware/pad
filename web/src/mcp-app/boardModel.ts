@@ -50,6 +50,19 @@ export function needsResync(board: Board, changes: BoardChanges): boolean {
 	return changes.upserts.some(item => !shown.has(item.id)) || changes.removed_ids.some(id => !shown.has(id));
 }
 
+/** How long an incomplete board may go between full shows. */
+export const INCOMPLETE_RESHOW_MS = 300_000;
+
+/**
+ * Whether an incomplete board is due a full show. Totals on such a board can
+ * drift when an item it does not display leaves for another collection
+ * (departed_ids cannot say where an item came from), so the drift is bounded
+ * by re-reading the snapshot at least every INCOMPLETE_RESHOW_MS.
+ */
+export function incompleteReshowDue(board: Board, shownAt: number, now: number): boolean {
+	return (board.truncated || board.unplaced > 0) && now - shownAt >= INCOMPLETE_RESHOW_MS;
+}
+
 /** Applies a delta to a board; the caller checks needsResync first. */
 export function applyChanges(board: Board, changes: BoardChanges): Board {
 	const columns = board.columns.map(column => ({ ...column, items: [...column.items] }));

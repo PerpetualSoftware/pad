@@ -8,7 +8,7 @@
 	import { uniqueBy } from '../lib/utils/unique';
 	import { buildUpdateArgs, isItemResult, parseToolError, type ItemLike, type ToolResultLike } from './model';
 	import {
-		applyChanges, boardItemFrom, needsResync, nextDelay, parseBoard, parseChanges, shouldPoll,
+		applyChanges, boardItemFrom, incompleteReshowDue, needsResync, nextDelay, parseBoard, parseChanges, shouldPoll,
 		type Board, type BoardChanges, type BoardItem
 	} from './boardModel';
 
@@ -39,6 +39,8 @@
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let delay = 0;
 	let dueAt = 0;
+	// When the current snapshot was adopted; plain, read only by poll.
+	let shownAt = 0;
 	let polling = false;
 	let reloading: Promise<Reload> | undefined;
 	let destroyed = false;
@@ -105,6 +107,7 @@
 
 	function adopt(next: Board) {
 		board = next;
+		shownAt = Date.now();
 		failure = null;
 		slowed = false;
 		syncedAt = new Date();
@@ -194,7 +197,8 @@
 			const changes = error ? null : parseChanges(result.structuredContent);
 			if (error && isRateLimit(error)) limited = true;
 			// An incomplete board cannot place a delta for an item it does not show.
-			else if (!changes || changes.resync || (board !== null && needsResync(board, changes))) limited = (await reload()) === 'limited';
+			// Its totals can also drift on departures it cannot see, so it re-reads on a fixed bound.
+			else if (!changes || changes.resync || (board !== null && (needsResync(board, changes) || incompleteReshowDue(board, shownAt, Date.now())))) limited = (await reload()) === 'limited';
 			else if (board && board.cursor === at.cursor && board.access_epoch === at.access_epoch) board = applyChanges(board, newerOnly(board, changes));
 			if (mine !== generation) return;
 			if (!limited) syncedAt = new Date();

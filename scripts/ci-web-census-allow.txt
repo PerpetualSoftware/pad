@@ -2,6 +2,8 @@
 embed.go	all:web/build	Production frontend embed; parity builds web before compiling Go.
 embed.go	web/build-materializer/materializer.js	Production materializer embed; parity builds and runs the real bundle.
 embed.go	web/build-mcp-app/item-card.html	Production MCP App embed; the bundle test validates the real output and skips placeholders.
+embed.go	all:web/build-mcp-app	Production MCP App directory embed for the board view; board.html is optional (placeholder builds create only item-card.html) and its absence reads as empty HTML.
+cmd/pad/cmd_server.go	web/build-mcp-app/board.html	ReadFile of the reviewed MCP App directory embed above, not a repository path read at test time.
 cmd/pad/cmd_server.go	web/build	fs.Sub of the reviewed production frontend embed, exercised by parity's web build.
 internal/store/items_test.go	expected false when only web/skill items exist	Diagnostic source labels (web versus skill), not a repository path.
 internal/server/plan3555_unguarded_write_test.go	%s: cli/content=%v cli/fields=%v web/content=%v, want %v/%v/%v	Diagnostic counters by API surface, not repository paths.

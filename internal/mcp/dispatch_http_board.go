@@ -67,7 +67,8 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 					// full member's move out of this board; the door does not
 					// say which. Blind spot: an item the snapshot omitted
 					// (truncated) that moves away leaves its column total one
-					// too high until the next show.
+					// too high until the next show (the view re-shows an
+					// incomplete board at least every five minutes).
 					if !row.Deleted {
 						departed = append(departed, row.ID)
 					}

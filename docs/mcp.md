@@ -143,7 +143,8 @@ collection's deletions and parent-filter misses plus every moved-out tombstone
 `show`. `departed_ids` holds live rows in other collections, which include a full
 member's move out of this one; the view drops any it displays and never re-runs
 `show` for them. Blind spot: a truncated item that moves to another collection
-leaves its column total one too high until the next `show`. `resync` is
+leaves its column total one too high until the next `show`, which the view
+runs at least every five minutes while the board is incomplete. `resync` is
 true on an epoch mismatch or a full 500-row page. Door cursors and epochs pass
 through untouched; invalid cursors retain the door error. Both actions use the
 normal authenticated request path and write nothing. The board polls changes

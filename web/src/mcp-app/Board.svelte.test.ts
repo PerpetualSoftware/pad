@@ -244,6 +244,23 @@ describe('Board', () => {
 		expect(ctx.callsTo('pad_board', 'show')).toEqual([]);
 	});
 
+	it('re-reads a truncated board at least every five minutes, and a complete one never', async () => {
+		vi.useFakeTimers();
+		const ctx = setup((_tool, args) => args.action === 'show' ? ok(snapshot({ truncated: true })) : noChanges());
+		const truncated = snapshot({ truncated: true });
+		(truncated.columns as { total: number }[])[0].total = 57;
+		await show(ctx, ok(truncated), SHOW_ARGS, { displayMode: 'fullscreen' });
+		await vi.advanceTimersByTimeAsync(290_000);
+		expect(ctx.callsTo('pad_board', 'show')).toEqual([]);
+		await vi.advanceTimersByTimeAsync(10_000);
+		expect(ctx.callsTo('pad_board', 'show')).toEqual([SHOW_ARGS]);
+
+		const whole = setup(() => noChanges());
+		await show(whole, ok(snapshot()), SHOW_ARGS, { displayMode: 'fullscreen' });
+		await vi.advanceTimersByTimeAsync(600_000);
+		expect(whole.callsTo('pad_board', 'show')).toEqual([]);
+	});
+
 	it('backs off after a rate-limit error and returns to the usual pace after a success', async () => {
 		vi.useFakeTimers();
 		let limited = true;
