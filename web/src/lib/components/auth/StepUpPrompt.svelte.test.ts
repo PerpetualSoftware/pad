@@ -39,6 +39,18 @@ describe('TASK-4516: step-up prompt focus and labelling', () => {
 		await waitFor(() => expect(api.auth.stepUp.sendEmailCode).toHaveBeenCalledOnce());
 		await waitFor(() => expect(screen.getByLabelText('Email code')).toHaveFocus());
 	});
+	it('email: a failed send returns focus to Send code', async () => {
+		const { api } = await import('$lib/api/client');
+		vi.mocked(api.auth.stepUp.sendEmailCode).mockRejectedValueOnce(new Error('Too many codes'));
+		mount('email');
+		const send = screen.getByRole('button', { name: 'Send code' });
+		await waitFor(() => expect(send).toHaveFocus());
+		// Move focus away to prove the failure path puts it back.
+		screen.getByLabelText('Email code').focus();
+		await fireEvent.click(send);
+		await screen.findByRole('alert');
+		await waitFor(() => expect(send).toHaveFocus());
+	});
 	it('unavailable: focuses the heading', async () => {
 		mount('unavailable');
 		const heading = screen.getByRole('heading', { name: 'Verify it’s you' });

@@ -51,8 +51,11 @@
 		} finally {
 			if (current()) busy = false;
 		}
-		// The input is disabled while busy, so focus it only once busy has cleared.
-		if (ok && current()) void focusCode();
+		// busy disabled Send code, so move focus only once busy has cleared:
+		// to the code input on success, back to Send code on failure.
+		if (!current()) return;
+		if (ok) void focusCode();
+		else { await tick(); if (mounted) sendEl?.focus(); }
 	}
 	async function verify(event: SubmitEvent) {
 		event.preventDefault();
