@@ -320,3 +320,8 @@ it('roleMarkers merges forecasts once', async () => {
  expect(roleMarkers([], 'UTC', [f], '2026-04-03T00:00:00Z').get(f.day)?.forecasts).toHaveLength(1);
  expect(roleMarkers([entry], 'UTC', [f, { ...f, owner_username: 'bob' }]).get(f.day)?.forecasts).toHaveLength(2);
 });
+
+it('renders a neutral chip for an unknown occurrence state', () => {
+ expect(entryChips(row({ state: 'future_state' as AgendaEntry['state'] }))).toEqual([{ text: 'Unknown', color: 'var(--accent-gray)' }]);
+ expect(entryChips(row({ state: 'constructor' as AgendaEntry['state'] }))).toEqual([{ text: 'Unknown', color: 'var(--accent-gray)' }]);
+});

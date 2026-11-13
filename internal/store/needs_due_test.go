@@ -23,6 +23,7 @@ func TestNeedsDueOccurrences(t *testing.T) {
 		{name: "human", audience: "human", want: true},
 		{name: "both", audience: "both", want: true},
 		{name: "agent", audience: "agent"},
+		{name: "ack", audience: "human", action: "ack"},
 		{name: "done", audience: "human", action: "done"},
 		{name: "skip", audience: "human", action: "skip"},
 		{name: "move", audience: "human", action: "move"},
@@ -59,6 +60,9 @@ func TestNeedsDueOccurrences(t *testing.T) {
 			input := ResolveInput{OccurrenceAt: due, State: tc.action, Actor: "user"}
 			if tc.action == "move" || tc.action == "snooze" {
 				input.Until = &until
+			}
+			if tc.action == "ack" {
+				f.exec(t, `UPDATE item_reminders SET fired_at=? WHERE item_id=?`, due.Format(time.RFC3339), it.ID)
 			}
 			f.mustResolve(t, it, input, "2031-03-10T11:00:00Z")
 		}
