@@ -5,6 +5,7 @@
 	import ChatInboxView from '$lib/components/chat/ChatInboxView.svelte';
 	import ChatThreadView from '$lib/components/chat/ChatThreadView.svelte';
 	import ChatOff from '$lib/components/chat/ChatOff.svelte';
+	import ChatHeader from '$lib/components/chat/ChatHeader.svelte';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 	import { useViewportFit } from '$lib/chat/viewportOwner.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -174,10 +175,13 @@
 
 {#snippet body(t: ChatTarget)}
 	{#if !chatSetting.enabled}
-		<button type="button" class="close-chat" onclick={() => chatSurface.close()}>Close Chat</button>
-		<ChatOff />
+		<ChatHeader title="Chat" onClose={() => chatSurface.close()} />
+		<ChatOff level={2} />
 	{:else if t.kind === 'inbox'}
-		<ChatInboxView variant="host" />
+		<!-- The inbox keeps its own padding until it is rebuilt on ChatHeader too. -->
+		<div class="inbox-pad">
+			<ChatInboxView variant="host" />
+		</div>
 	{:else}
 		<ChatThreadView n={t.kind === 'thread' ? t.n : null} variant="host" {active} />
 	{/if}
@@ -245,9 +249,9 @@
 		width: min(480px, 100vw);
 		box-shadow: var(--shadow-md);
 	}
-	/* Inside the phone sheet the bar below owns the bottom safe area. */
+	/* Inside the phone sheet the bar below owns the bottom safe area, and the composer pads itself. */
 	.chat-body.phone {
-		padding-bottom: var(--space-4);
+		padding-bottom: 0;
 	}
 	.chat-backdrop {
 		position: fixed;
@@ -261,7 +265,12 @@
 		display: flex;
 		flex-direction: column;
 		overflow-y: auto;
+		/* The header is full-bleed; the scroller, the states and the composer own their padding. */
+		padding: 0 0 env(safe-area-inset-bottom);
+	}
+	.inbox-pad {
+		display: flex;
+		flex-direction: column;
 		padding: var(--space-4);
-		padding-bottom: calc(var(--space-4) + env(safe-area-inset-bottom));
 	}
 </style>

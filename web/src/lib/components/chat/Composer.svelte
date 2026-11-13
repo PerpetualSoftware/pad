@@ -17,6 +17,8 @@
 	import { signOutDiscarding } from '$lib/stores/signOutGuard.svelte';
 	import type { SendOutcome } from '$lib/stores/chatThread.svelte';
 	import type { ChatMessage } from '$lib/types';
+	import Button from '$lib/components/common/Button.svelte';
+	import IconButton from '$lib/components/common/IconButton.svelte';
 
 	// The message composer (TASK-4044 PR 3b). It knows nothing of the store: the
 	// page hands it `onSend`, whose outcome says whether the text is gone (a
@@ -76,7 +78,7 @@
 	let composing = false;
 
 	let box = $state<HTMLTextAreaElement | null>(null);
-	let sendButton = $state<HTMLButtonElement | null>(null);
+	let sendButton = $state<HTMLButtonElement | undefined>(undefined);
 	/** Reply puts the reader straight into the box (r5 H3). */
 	export function focus() {
 		box?.focus();
@@ -168,6 +170,24 @@
 				: 'No live armed session. Saving a message does not confirm receipt.'
 	);
 
+	// The caption line's priority (TASK-4515): status > presence note > draft note. Read in the
+	// template only; the soft keyboard hides the two notes but never a status.
+	let keyboardUp = $derived(uiStore.keyboardVisible);
+	let statusShown = $derived(live || block === 'too_long');
+	let presenceShown = $derived(!!presenceNote && !statusShown && !keyboardUp);
+	let draftShown = $derived(!!text && !!draftNotice && !statusShown && !presenceShown && !keyboardUp);
+
+	// The box grows with its text to the CSS max-height, then scrolls. Reads `text` and writes
+	// only the element's style: no $state write, so it cannot invalidate itself.
+	$effect(() => {
+		void text;
+		const el = box;
+		if (!el) return;
+		el.style.height = 'auto';
+		if (el.scrollHeight > 0) el.style.height = `${el.scrollHeight}px`;
+		else el.style.height = '';
+	});
+
 	async function send() {
 		if (block) return;
 		const body = text;
@@ -208,121 +228,149 @@
 		void send();
 	}}
 >
+	<!-- The header, the placeholder and Send's name say where this goes on screen; the full
+	     line stays for assistive technology (TASK-4515 ruling 1). -->
 	{#if agentKey}
-		<p class="target">
+		<p class="target sr-only">
 			<strong>To {agentKey}</strong> · C{n}{#if title}<span class="target-title"> · {title}</span>{/if}
 		</p>
 	{/if}
-	{#if replySeq !== undefined}
-		<div class="reply">
-			<span class="reply-text">
-				{#if replyPreview}
-					Replying to {replyPreview.mine ? 'yourself' : replyPreview.author_agent_key}: {replyPreview.body}
-				{:else}
-					Replying to message #{replySeq}
-				{/if}
-			</span>
-			<button type="button" aria-label="Cancel reply" onclick={clearReply}>×</button>
-		</div>
-	{/if}
-	<div class="row">
-		<textarea
-			bind:this={box}
-			bind:value={text}
-			rows="2"
-			placeholder="Message"
-			aria-label="Message"
-			enterkeyhint={inputMode.hardware ? 'send' : 'enter'}
-			oninput={() => {
-				notice = '';
-				saved = '';
-			}}
-			onkeydown={onKeydown}
-			oncompositionstart={() => (composing = true)}
-			oncompositionend={onCompositionEnd}
-			onpointerdown={(e) => {
-				if (e.pointerType === 'touch') inputMode.enterByTouch();
-			}}
-		></textarea>
-		<button
-			bind:this={sendButton}
-			type="submit"
-			class="send"
-			onpointerdown={(e) => e.preventDefault()}
-			onmousedown={(e) => e.preventDefault()}
-			disabled={block !== null}
-			aria-label={agentKey ? `Send to ${agentKey}, conversation ${n}` : undefined}>Send</button
-		>
-	</div>
-	{#if text && draftNotice}<p class="draft-note">{draftNotice}</p>{/if}
-	<p class="presence-note">{presenceNote}</p>
-	<p class="key-hint">
-		{inputMode.hardware ? 'Enter sends · Shift+Enter adds a line' : 'Enter adds a line · use Send to send'}
-	</p>
-	<!-- Mounted from the start, only its text changes: a region inserted with its text is not announced by some screen readers (r5 H5). -->
-	<p class="status" class:idle={!live} class:over={block === 'too_long' || block === 'too_large'} role="status">
-		{#if block === 'too_long'}
-			{NOTICE.too_long}
-		{:else if block === 'too_large'}
-			{NOTICE.too_large}
-		{:else if notice}
-			{notice}
-		{:else if saved}
-			{saved}
+	<div class="box">
+		{#if replySeq !== undefined}
+			<div class="reply">
+				<span class="reply-text">
+					{#if replyPreview}
+						<strong>Replying to {replyPreview.mine ? 'yourself' : replyPreview.author_agent_key}:</strong> {replyPreview.body}
+					{:else}
+						Replying to message #{replySeq}
+					{/if}
+				</span>
+				<IconButton label="Cancel reply" size="sm" touch onclick={clearReply}>
+					<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
+						><path d="m5 5 10 10M15 5 5 15" /></svg
+					>
+				</IconButton>
+			</div>
 		{/if}
-		{#if showCount}<span class="count">{bytes.toLocaleString()} / {MAX_BODY_BYTES.toLocaleString()} bytes</span>{/if}
-	</p>
+		<div class="row">
+			<textarea
+				bind:this={box}
+				bind:value={text}
+				rows="1"
+				placeholder={agentKey ? `Message ${agentKey}` : 'Message'}
+				aria-label="Message"
+				enterkeyhint={inputMode.hardware ? 'send' : 'enter'}
+				oninput={() => {
+					notice = '';
+					saved = '';
+				}}
+				onkeydown={onKeydown}
+				oncompositionstart={() => (composing = true)}
+				oncompositionend={onCompositionEnd}
+				onpointerdown={(e) => {
+					if (e.pointerType === 'touch') inputMode.enterByTouch();
+				}}
+			></textarea>
+			<Button
+				bind:element={sendButton}
+				type="submit"
+				variant="primary"
+				touch
+				class="send"
+				onpointerdown={(e) => e.preventDefault()}
+				onmousedown={(e) => e.preventDefault()}
+				disabled={block !== null}
+				aria-label={agentKey ? `Send to ${agentKey}, conversation ${n}` : undefined}>Send</Button
+			>
+		</div>
+	</div>
+	<!-- One caption line, first of: status > presence note > draft note; the key hint only when
+	     nothing else shows. The rest stay for assistive technology. With the soft keyboard up
+	     only a status shows (ruling 5). -->
+	<div class="caption">
+		<!-- Mounted from the start, only its text changes: a region inserted with its text is not announced by some screen readers (r5 H5). -->
+		<p class="status" class:sr-only={!statusShown} class:over={block === 'too_long' || block === 'too_large'} role="status">
+			{#if block === 'too_long'}
+				{NOTICE.too_long}
+			{:else if block === 'too_large'}
+				{NOTICE.too_large}
+			{:else if notice}
+				{notice}
+			{:else if saved}
+				{saved}
+			{/if}
+			{#if showCount}<span class="count">{bytes.toLocaleString()} / {MAX_BODY_BYTES.toLocaleString()} bytes</span>{/if}
+		</p>
+		<p class="presence-note" class:sr-only={!presenceShown}>{presenceNote}</p>
+		{#if text && draftNotice}<p class="draft-note" class:sr-only={!draftShown}>{draftNotice}</p>{/if}
+		<p class="key-hint" class:sr-only={statusShown || presenceShown || draftShown}>
+			{inputMode.hardware ? 'Enter sends · Shift+Enter adds a line' : 'Enter adds a line · use Send to send'}
+		</p>
+	</div>
 </form>
 
 <style>
 	.composer {
+		flex-shrink: 0;
+		padding: var(--space-2) var(--space-3) var(--space-3);
+	}
+	.box {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-1);
-		padding-top: var(--space-2);
-		border-top: 1px solid var(--border);
-		background: var(--bg-primary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		background: var(--bg-tertiary);
+		transition: border-color 0.12s, box-shadow 0.12s;
+	}
+	.box:focus-within {
+		border-color: var(--accent-primary);
+		box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-primary) 30%, transparent);
 	}
 	.row {
 		display: flex;
 		gap: var(--space-2);
 		align-items: flex-end;
+		padding: 6px;
 	}
-	textarea {
+	/* The box carries focus; the field draws nothing of its own (outranks app.css's ring). */
+	.box textarea {
 		flex: 1;
+		min-width: 0;
+		box-sizing: border-box;
 		resize: none;
-		font: inherit;
-		padding: var(--space-2);
-		border: 1px solid var(--border);
-		border-radius: var(--radius-md, 6px);
-		background: var(--bg-secondary);
+		margin: 0;
+		border: 0;
+		outline: none;
+		background: transparent;
 		color: var(--text-primary);
+		font: inherit;
+		font-size: 14px;
+		line-height: 1.45;
+		padding: 5px 6px;
+		min-height: 32px;
+		max-height: 160px;
+		overflow-y: auto;
 	}
-	.target {
-		margin: 0;
-		font-size: 0.85rem;
-		overflow-wrap: anywhere;
+	.box textarea:focus,
+	.box textarea:focus-visible {
+		border: 0;
+		outline: none;
 	}
-	.target-title {
-		color: var(--text-secondary);
-	}
-	.draft-note,
-	.presence-note,
-	.key-hint {
-		margin: 0;
-		font-size: 0.75rem;
-		color: var(--text-secondary);
-	}
-	.presence-note:empty {
-		display: none;
+	.box :global(.send) {
+		height: 32px;
+		flex-shrink: 0;
 	}
 	.reply {
 		display: flex;
 		gap: var(--space-2);
 		align-items: center;
-		padding: var(--space-1) var(--space-2);
-		border-left: 3px solid var(--border);
-		font-size: 0.8rem;
+		min-width: 0;
+		margin: 6px 6px 0;
+		padding: 2px 2px 2px 8px;
+		border-left: 3px solid var(--accent-primary);
+		border-radius: 0 var(--radius-sm) var(--radius-sm) 0;
+		background: var(--bg-hover);
+		font-size: 12px;
 		color: var(--text-secondary);
 	}
 	.reply-text {
@@ -331,19 +379,57 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.status {
-		margin: 0;
-		font-size: 0.75rem;
-		color: var(--text-secondary);
+	.reply-text strong {
+		color: var(--text-primary);
 	}
-	/* Empty, but kept in the page: cancel the form's flex gap above it. */
-	.status.idle {
-		margin-top: calc(-1 * var(--space-1));
+	.caption {
+		display: flex;
+		gap: var(--space-3);
+		margin: 6px 4px 0;
+		font-size: 12px;
+		line-height: 1.4;
+		color: var(--text-muted);
+	}
+	.caption p {
+		margin: 0;
+	}
+	.caption p:empty {
+		display: none;
+	}
+	.caption .key-hint {
+		margin-left: auto;
+		white-space: nowrap;
 	}
 	.status.over {
-		color: var(--accent-red, var(--text-primary));
+		color: var(--accent-red);
 	}
 	.count {
 		margin-left: var(--space-2);
+	}
+	@media (max-width: 768px), (pointer: coarse) {
+		.composer {
+			padding: var(--space-2) var(--space-3);
+		}
+		.row {
+			padding: 4px;
+		}
+		.box textarea {
+			font-size: 16px;
+			padding: 10px 8px;
+			min-height: 44px;
+			max-height: 132px;
+		}
+		.box :global(.send) {
+			height: auto;
+		}
+		/* Visually hidden on the size axis, still read (the same recipe as app.css .sr-only). */
+		.caption .key-hint {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			margin: -1px;
+			overflow: hidden;
+			clip: rect(0, 0, 0, 0);
+		}
 	}
 </style>

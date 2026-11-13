@@ -1,5 +1,7 @@
 <script lang="ts">
 	import { onDestroy, tick } from 'svelte';
+	import Button from '$lib/components/common/Button.svelte';
+	import ChatState from '$lib/components/chat/ChatState.svelte';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import { chatEmptyKind, NAME_ORDER, ARM_COMMAND } from '$lib/chat/emptyState';
 
@@ -75,8 +77,7 @@
 {#if kind === 'start'}
 	<h2 class="heading">Start a conversation</h2>
 {:else if kind === 'no-agents'}
-	<section class="empty" aria-label="No agents yet">
-		<h2 class="heading">No one to message yet</h2>
+	<ChatState heading="No one to message yet" level={2} tone="accent" label="No agents yet">
 		<p>
 			Chats are with your agents. An agent appears here once it's connected to this account with a
 			name — then you can start a conversation.
@@ -85,17 +86,20 @@
 			{#each snippets as s (s.cmd)}
 				<li>
 					<span class="label">{s.label}</span>
-					<code>{s.cmd}</code>
-					{#if s.copyable}
-						<button
-							type="button"
-							class="copy-btn"
-							aria-label={`Copy ${s.label} command`}
-							onclick={() => void copy(s.cmd)}
-						>
-							{copied[s.cmd] ? 'Copied' : 'Copy'}
-						</button>
-					{/if}
+					<span class="cmd">
+						<code>{s.cmd}</code>
+						{#if s.copyable}
+							<Button
+								size="sm"
+								touch
+								class="copy-btn"
+								aria-label={`Copy ${s.label} command`}
+								onclick={() => void copy(s.cmd)}
+							>
+								{copied[s.cmd] ? 'Copied' : 'Copy'}
+							</Button>
+						{/if}
+					</span>
 				</li>
 			{/each}
 		</ul>
@@ -105,7 +109,7 @@
 			directory linked to this workspace (.pad.toml), and a name: {NAME_ORDER}. Details: docs/api.md,
 			"Agent chat identity and arming".
 		</p>
-	</section>
+	</ChatState>
 {/if}
 
 <style>
@@ -113,40 +117,56 @@
 		margin: 0 0 var(--space-3);
 		font-size: 1.1rem;
 	}
-	.empty p {
-		color: var(--text-secondary);
-	}
 	.snippets {
 		list-style: none;
-		margin: 0 0 var(--space-3);
+		width: 100%;
+		margin: var(--space-2) 0 0;
 		padding: 0;
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+		gap: var(--space-3);
+		text-align: left;
 	}
 	.snippets li {
 		display: flex;
-		flex-wrap: wrap;
-		align-items: center;
-		gap: var(--space-2);
+		flex-direction: column;
+		gap: 4px;
 	}
 	.label {
-		color: var(--text-muted);
-		min-width: 6rem;
+		font-size: 12px;
+		color: var(--text-secondary);
+	}
+	.cmd {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		min-height: 40px;
+		box-sizing: border-box;
+		padding: 4px 4px 4px 12px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-tertiary);
 	}
 	code {
+		flex: 1;
+		font-family: var(--font-mono);
+		font-size: 13px;
 		overflow-wrap: anywhere;
 	}
-	.copy-btn {
-		font-size: 0.85rem;
-	}
-	.status {
-		margin: 0 0 var(--space-2);
+	p.status {
 		min-height: 1.2em;
-		font-size: 0.9rem;
+		font-size: 13px;
 	}
-	.note {
+	p.status:empty {
+		min-height: 0;
+	}
+	p.note {
+		width: 100%;
+		box-sizing: border-box;
+		padding-top: var(--space-3);
+		border-top: 1px solid var(--border-subtle);
+		text-align: left;
 		color: var(--text-muted);
-		font-size: 0.9rem;
+		font-size: 12px;
 	}
 </style>

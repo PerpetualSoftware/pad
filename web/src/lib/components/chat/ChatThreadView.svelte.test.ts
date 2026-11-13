@@ -98,3 +98,22 @@ describe('frozen delete confirmation (TASK-4315)', () => {
 		expect(screen.queryByRole('menuitem', { name: 'Delete' })).toBeNull();
 	});
 });
+
+describe('one-row header (TASK-4515)', () => {
+	it('the host variant names Close Chat and All conversations by role, in one header', async () => {
+		const { container } = render(ChatThreadView, { n: 1, variant: 'host' });
+		await tick();
+		const close = screen.getByRole('button', { name: 'Close Chat' });
+		const back = screen.getByRole('link', { name: 'All conversations' });
+		expect(close.closest('header.chat-header')).toBe(back.closest('header.chat-header'));
+		expect(screen.getByText('Close Chat')).toBeTruthy();
+		expect(container.querySelectorAll('header.chat-header')).toHaveLength(1);
+		expect(container.querySelectorAll('h1')).toHaveLength(1);
+	});
+	it('the route variant has no Close', async () => {
+		render(ChatThreadView, { n: 1 });
+		await tick();
+		expect(screen.queryByRole('button', { name: 'Close Chat' })).toBeNull();
+		expect(screen.getByRole('link', { name: 'All conversations' })).toBeTruthy();
+	});
+});

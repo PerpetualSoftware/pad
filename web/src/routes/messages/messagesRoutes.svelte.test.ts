@@ -251,6 +251,16 @@ describe('/messages with the Chat setting off (TASK-4315)', () => {
 		expect(h.goto).not.toHaveBeenCalled();
 	});
 
+	// TASK-4515: the off page is the shared centred state with a real primary Button.
+	it('the off page is one h1 and a primary Turn on Chat button', async () => {
+		live.chatOn = false;
+		const { getByRole, container } = render(MessagesLayout, { props: { children: child } });
+		await settle();
+		expect(getByRole('heading', { level: 1, name: /chat is off/i })).toBeTruthy();
+		expect(container.querySelectorAll('h1')).toHaveLength(1);
+		expect(getByRole('button', { name: /turn on chat/i }).matches('.chat-state .btn.primary')).toBe(true);
+	});
+
 	it('turning it on saves the setting and then shows the page that was asked for, in place', async () => {
 		live.chatOn = false;
 		h.setChat.mockResolvedValue({ chat_enabled: true });
@@ -564,6 +574,50 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		expect(rows[1].textContent).toContain('You');
 		expect(container.querySelector('#unread-divider')).toBeNull();
 		expect(container.textContent).not.toContain('Jump to unread');
+	});
+
+	// TASK-4515: one header row; the title is the only h1 and the agent is named once there.
+	it('a thread has exactly one h1, in the header, with the back chevron to the inbox', async () => {
+		page.params = { n: '3' };
+		const { container, getByRole } = render(ThreadPage);
+		await settle();
+		const h1s = container.querySelectorAll('h1');
+		expect(h1s).toHaveLength(1);
+		expect(h1s[0].closest('header.chat-header')).not.toBeNull();
+		expect(h1s[0].textContent).toBe('agent-3');
+		expect(h1s[0].getAttribute('title')).toBe('agent-3');
+		const back = getByRole('link', { name: 'All conversations' });
+		expect(back.getAttribute('href')).toBe('/messages');
+		expect(back.closest('header.chat-header')).not.toBeNull();
+		// The route has no Close: the page is the destination.
+		expect(container.querySelector('header.chat-header button')).toBeNull();
+	});
+
+	it('the empty thread is the shared centred state and names the agent', async () => {
+		page.params = { n: '3' };
+		h.listMessages.mockResolvedValue(pageOf([], { read_seq: 0 }));
+		const { container } = render(ThreadPage);
+		await settle();
+		const state = container.querySelector('.scroller .chat-state')!;
+		expect(state.textContent).toContain('No messages yet');
+		expect(state.textContent).toContain('Send agent-3 a message to start the conversation.');
+	});
+
+	it('not found keeps its h1 as the only heading level 1', async () => {
+		page.params = { n: 'abc' };
+		const { container, getByRole } = render(ThreadPage);
+		await settle();
+		expect(getByRole('heading', { level: 1, name: 'Conversation not found' }).closest('.chat-state')).not.toBeNull();
+		expect(container.querySelectorAll('h1')).toHaveLength(1);
+	});
+
+	it('a failed load offers a primary Try again in the centred state', async () => {
+		page.params = { n: '3' };
+		h.getConversation.mockRejectedValue(new Error('500'));
+		const { container, getByRole } = render(ThreadPage);
+		await settle();
+		expect(container.querySelectorAll('h1')).toHaveLength(1);
+		expect(getByRole('button', { name: 'Try again' }).matches('.chat-state .btn.primary')).toBe(true);
 	});
 
 	it.each(['abc', '0', '-1', '1.5', '3x', ''])('"%s" is not a conversation number: not found, no request', async (raw) => {

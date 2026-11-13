@@ -68,7 +68,7 @@ describe('chat link census', () => {
 			'lib/components/chat/ChatButton.svelte',
 			'lib/components/chat/ConversationList.svelte',
 			'lib/components/chat/RosterRow.svelte',
-			'lib/components/chat/ChatThreadView.svelte',
+			'lib/components/chat/ChatHeader.svelte',
 			'lib/components/layout/Sidebar.svelte'
 		]) {
 			expect(have.has(want), want).toBe(true);
