@@ -142,8 +142,10 @@
 	}
 
 	// The pill is for a divider the reader cannot see. The observer writes this
-	// flag and nothing it reads; with no IntersectionObserver the pill stays.
-	let dividerInView = $state(false);
+	// flag and nothing it reads; with no IntersectionObserver the pill stays. Until the
+	// observer first reports, the divider counts as in view, so the pill does not blink.
+	const canObserve = typeof IntersectionObserver !== 'undefined';
+	let dividerInView = $state(canObserve);
 	// A factory over the root, so the attachment re-runs once the scroller binds.
 	const watchDivider = (root: HTMLElement | null) => (el: HTMLElement) => {
 		if (!root || typeof IntersectionObserver === 'undefined') return;
@@ -157,7 +159,7 @@
 		io.observe(el);
 		return () => {
 			io.disconnect();
-			dividerInView = false;
+			dividerInView = canObserve;
 		};
 	};
 
@@ -271,7 +273,7 @@
 			     sits below Load earlier so it never covers that button, and shows only while
 			     the divider is out of view, so it never covers the divider's label. -->
 			<div class="jump">
-				<Button size="sm" class="jump-pill" onclick={jumpToUnread}>Jump to unread</Button>
+				<Button size="sm" touch class="jump-pill" onclick={jumpToUnread}>Jump to unread</Button>
 			</div>
 		{/if}
 		<div class="messages">

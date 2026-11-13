@@ -98,9 +98,10 @@ vi.mock('$lib/stores/confirmDialog.svelte', () => ({ confirmDialog: { request: v
 vi.mock('$app/navigation', () => ({ goto: h.goto }));
 
 // An IntersectionObserver double: the test fires the callback by hand. `lastIO`
-// is the bottom sentinel's observer; the unread divider has its own.
+// is the bottom sentinel's observer; `dividerIO` is the unread divider's.
 type IOCallback = (e: Array<{ isIntersecting: boolean }>) => void;
 let lastIO: { cb: IOCallback } | null = null;
+let dividerIO: { cb: IOCallback } | null = null;
 class FakeIO {
 	cb: IOCallback;
 	constructor(cb: IOCallback) {
@@ -108,6 +109,7 @@ class FakeIO {
 	}
 	observe(el: Element) {
 		if (el.classList.contains('sentinel')) lastIO = { cb: this.cb };
+		if (el.id === 'unread-divider') dividerIO = { cb: this.cb };
 	}
 	disconnect() {}
 }
@@ -730,6 +732,7 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 		beforeEach(() => {
 			scrolled = [];
 			lastIO = null;
+			dividerIO = null;
 			Element.prototype.scrollIntoView = function (this: Element) {
 				scrolled.push(this);
 			};
@@ -753,6 +756,9 @@ describe('/messages/[n] thread (TASK-4044 PR 3a)', () => {
 			expect(divider.nextElementSibling!.getAttribute('data-seq')).toBe('3');
 			expect(scrolled).toContain(divider);
 			scrolled.length = 0;
+			// The pill shows only once the divider is reported out of view.
+			dividerIO!.cb([{ isIntersecting: false }]);
+			await settle();
 			getByText('Jump to unread').click();
 			expect(scrolled).toEqual([divider]);
 		});
