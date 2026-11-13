@@ -21,13 +21,6 @@ describe('IconButton', () => {
 		expect(onclick).toHaveBeenCalledTimes(1);
 	});
 
-	it('renders a link when given href', () => {
-		render(IconButton, { props: { label: 'All conversations', href: '/messages', children: glyph } });
-		const a = screen.getByRole('link', { name: 'All conversations' });
-		expect(a.getAttribute('href')).toBe('/messages');
-		expect(screen.queryByRole('button')).toBeNull();
-	});
-
 	it('sizes: md is the default and grows on touch; sm does not unless asked', () => {
 		const md = render(IconButton, { props: { label: 'a', children: glyph } }).container.querySelector('.icon-btn')!;
 		expect([...md.classList]).toEqual(expect.arrayContaining(['md', 'touch']));

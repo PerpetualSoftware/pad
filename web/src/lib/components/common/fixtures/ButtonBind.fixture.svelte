@@ -5,7 +5,7 @@
 
 	let { onbound }: { onbound: (button: HTMLElement | undefined, icon: HTMLElement | undefined) => void } = $props();
 	let button = $state<HTMLButtonElement>();
-	let icon = $state<HTMLElement>();
+	let icon = $state<HTMLButtonElement>();
 	$effect(() => onbound(button, icon));
 </script>
 

@@ -3,16 +3,14 @@
 	import type { HTMLButtonAttributes } from 'svelte/elements';
 
 	// An icon-only control (TASK-4515). The name is required: it is the aria-label and also
-	// visually hidden text, so a lookup by role or by text finds the control. `href` makes it a
-	// link. md is 32px (44px on a phone or a coarse pointer); sm is 28px and grows only with
+	// visually hidden text, so a lookup by role or by text finds the control. md is 32px (44px on a phone or a coarse pointer); sm is 28px and grows only with
 	// `touch`. The glyph (children) is decoration.
 	interface Props extends Omit<HTMLButtonAttributes, 'children'> {
 		label: string;
 		size?: 'sm' | 'md';
 		touch?: boolean;
-		href?: string;
 		onclick?: (e: MouseEvent) => void;
-		element?: HTMLElement;
+		element?: HTMLButtonElement;
 		children: Snippet;
 	}
 
@@ -20,7 +18,6 @@
 		label,
 		size = 'md',
 		touch = size === 'md',
-		href,
 		element = $bindable(),
 		class: className = '',
 		type = 'button',
@@ -30,32 +27,18 @@
 	}: Props = $props();
 </script>
 
-{#if href}
-	<a
-		bind:this={element}
-		{href}
-		class="icon-btn {size} {className}"
-		class:touch
-		aria-label={label}
-		{onclick}
-	>
-		<span class="glyph" aria-hidden="true">{@render children()}</span>
-		<span class="sr-only">{label}</span>
-	</a>
-{:else}
-	<button
-		bind:this={element}
-		{...rest}
-		{type}
-		class="icon-btn {size} {className}"
-		class:touch
-		aria-label={label}
-		{onclick}
-	>
-		<span class="glyph" aria-hidden="true">{@render children()}</span>
-		<span class="sr-only">{label}</span>
-	</button>
-{/if}
+<button
+	bind:this={element}
+	{...rest}
+	{type}
+	class="icon-btn {size} {className}"
+	class:touch
+	aria-label={label}
+	{onclick}
+>
+	<span class="glyph" aria-hidden="true">{@render children()}</span>
+	<span class="sr-only">{label}</span>
+</button>
 
 <style>
 	.icon-btn {
@@ -69,7 +52,6 @@
 		background: none;
 		color: var(--text-secondary);
 		cursor: pointer;
-		text-decoration: none;
 		transition: background 0.12s, color 0.12s;
 	}
 	.icon-btn.md {
@@ -83,7 +65,6 @@
 	.icon-btn:hover:not(:disabled) {
 		background: var(--bg-hover);
 		color: var(--text-primary);
-		text-decoration: none;
 	}
 	.icon-btn:disabled {
 		opacity: 0.5;
