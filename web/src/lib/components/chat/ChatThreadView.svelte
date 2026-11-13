@@ -213,9 +213,11 @@
 	// Which rows head a group and where each local day opens (TASK-4515). Pure: rows keep
 	// their keys and ids, so scroll anchoring, #msg-N and #unread-divider are unaffected.
 	let layout = $derived(layoutRows(thread.items, { dividerIndex: dividerAt, now: new Date() }));
-	let detachedLayout = $derived(
-		layoutRows(thread.detached.map((message) => ({ kind: 'message' as const, message })), { now: new Date() })
-	);
+	// Keyed by seq, so the detached each keeps its census key (no index).
+	let detachedLayout = $derived.by(() => {
+		const rows = layoutRows(thread.detached.map((message) => ({ kind: 'message' as const, message })), { now: new Date() });
+		return new Map(thread.detached.map((m, i) => [m.seq, rows[i]]));
+	});
 </script>
 
 {#snippet jump()}
@@ -350,13 +352,14 @@
 		{/if}
 		<!-- Detached confirmed sends use the same full-width rows. -->
 		<div class="detached">
-			{#each thread.detached as m, i (m.seq)}
-				{#if detachedLayout[i]?.day}
-					<DaySeparator label={detachedLayout[i].day!} />
+			{#each thread.detached as m (m.seq)}
+				{@const row = detachedLayout.get(m.seq)}
+				{#if row?.day}
+					<DaySeparator label={row.day} />
 				{/if}
 				<MessageBubble
 					message={m}
-					head={detachedLayout[i]?.head ?? true}
+					head={row?.head ?? true}
 					canDelete={canDeleteMessage({ message: m, conversation, emailVerified: authStore.emailVerified })}
 					refs={thread.refs}
 					onJumpToQuote={jumpToQuote}
