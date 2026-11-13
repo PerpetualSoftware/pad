@@ -36,8 +36,8 @@
 	aria-label={label}
 	{onclick}
 >
-	<span class="glyph" aria-hidden="true">{@render children()}</span>
-	<span class="sr-only">{label}</span>
+	<!-- No whitespace between the two: the control's text is exactly its name. -->
+	<span class="glyph" aria-hidden="true">{@render children()}</span><span class="sr-only">{label}</span>
 </button>
 
 <style>

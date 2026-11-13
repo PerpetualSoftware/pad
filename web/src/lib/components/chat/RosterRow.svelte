@@ -1,4 +1,5 @@
 <script lang="ts">
+	import ChatAvatar from '$lib/components/chat/ChatAvatar.svelte';
 	import PresenceDot from '$lib/components/chat/PresenceDot.svelte';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	import { chatStore } from '$lib/stores/chat.svelte';
@@ -22,14 +23,19 @@
 	} = $props();
 </script>
 
+<!-- TASK-4515: avatar, the name over its presence, and a "Start chat" pill. The whole row is
+     the control (the one raw button the census allows here); the pill is drawn, not a button. -->
 {#if entry.number !== null}
 	<a
 		class="row"
 		href="/messages/{entry.number}"
 		onclick={(e) => chatSurface.handleLinkClick(e, `/messages/${entry.number}`)}
 	>
-		<PresenceDot state={entry.presence} {checkedAt} showLabel />
-		<span class="name">{entry.key}</span>
+		<ChatAvatar key={entry.key} size="lg" />
+		<span class="main">
+			<span class="name" title={entry.key}>{entry.key}</span>
+			<PresenceDot state={entry.presence} {checkedAt} showLabel />
+		</span>
 		<UnreadBadge count={chatStore.unreadByNumber[entry.number] ?? 0} />
 	</a>
 {:else}
@@ -39,8 +45,11 @@
 		disabled={pending || rateLimited}
 		onclick={() => onensure(entry.key)}
 	>
-		<PresenceDot state={entry.presence} {checkedAt} showLabel />
-		<span class="name">{entry.key}</span>
+		<ChatAvatar key={entry.key} size="lg" />
+		<span class="main">
+			<span class="name" title={entry.key}>{entry.key}</span>
+			<PresenceDot state={entry.presence} {checkedAt} showLabel />
+		</span>
 		<span class="action">Start chat</span>
 	</button>
 	{#if rateLimited}
@@ -52,12 +61,17 @@
 
 <style>
 	.row {
-		display: flex;
+		display: grid;
+		grid-template-columns: 36px minmax(0, 1fr) auto;
+		column-gap: var(--space-3);
 		align-items: center;
-		gap: var(--space-3);
+		box-sizing: border-box;
 		width: 100%;
-		padding: var(--space-3) var(--space-4);
+		min-height: 60px;
+		margin: 0;
+		padding: var(--space-2) var(--space-3);
 		border: 0;
+		border-radius: 0;
 		background: none;
 		font: inherit;
 		color: var(--text-primary);
@@ -69,25 +83,49 @@
 		background: var(--bg-hover);
 		text-decoration: none;
 	}
+	.row:focus-visible {
+		outline: 2px solid color-mix(in srgb, var(--accent-primary) 65%, transparent);
+		outline-offset: -2px;
+	}
 	.row:disabled {
 		cursor: default;
 		opacity: 0.6;
 	}
+	.main {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		min-width: 0;
+	}
 	.name {
-		flex: 1;
 		font-weight: 600;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	.action {
+	.main :global(.presence-wrap) {
+		font-size: 12px;
 		color: var(--text-secondary);
-		font-size: 0.9rem;
+	}
+	/* Drawn as Button secondary sm. */
+	.action {
+		padding: 3px 10px;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		background: var(--bg-tertiary);
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.5;
+		white-space: nowrap;
+		color: var(--text-primary);
+	}
+	.row:hover:not(:disabled) .action {
+		border-color: var(--border-strong);
 	}
 	.note {
 		margin: 0;
-		padding: 0 var(--space-4) var(--space-3);
+		padding: 0 var(--space-3) var(--space-2) calc(var(--space-3) + 36px + var(--space-3));
 		color: var(--text-muted);
-		font-size: 0.9rem;
+		font-size: 12px;
 	}
 </style>

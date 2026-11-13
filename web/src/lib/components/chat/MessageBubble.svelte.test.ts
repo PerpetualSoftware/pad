@@ -348,3 +348,102 @@ describe('MessageBubble refs', () => {
 		expect(q.container.querySelector('.quote-text')!.textContent).toBe('see [[docapp::TASK-1]]');
 	});
 });
+
+// TASK-4515: a group head carries the chrome; a continuation row is the body, and still names
+// its author, kind and time to a screen reader.
+describe('MessageBubble group rows (TASK-4515)', () => {
+	const ctx = { ...base, context_workspace: { slug: 'docapp', name: 'DocApp' } };
+
+	it('a head has the meta line, avatar and the Agent chip', () => {
+		const { container } = render(MessageBubble, { props: { message: ctx } });
+		const meta = container.querySelector('.meta')!;
+		expect(meta).not.toBeNull();
+		expect(meta.querySelector('.avatar')).not.toBeNull();
+		expect(meta.querySelector('.author')!.textContent).toBe('codex');
+		expect(meta.querySelector('.kind')!.textContent).toBe('Agent');
+		expect(meta.textContent).toContain('sent from DocApp');
+		expect(container.querySelector('.bubble')!.classList.contains('head')).toBe(true);
+	});
+
+	it('a continuation has no .meta, keeps author, kind and time in .sr-only, and no "sent from"', () => {
+		const { container } = render(MessageBubble, { props: { message: ctx, head: false } });
+		expect(container.querySelector('.meta')).toBeNull();
+		const hidden = container.querySelector('article .sr-only')!;
+		expect(hidden.textContent).toContain('codex');
+		expect(hidden.textContent).toContain('Agent');
+		expect(hidden.querySelector('time')).not.toBeNull();
+		expect(container.textContent).not.toContain('sent from');
+		expect(container.querySelector('.bubble')!.classList.contains('head')).toBe(false);
+	});
+
+	it.each([true, false])('More is tabbable on a head and on a continuation (head=%s)', (head) => {
+		render(MessageBubble, { props: { message: base, head } });
+		expect(screen.getByRole('button', { name: /More/ }).tabIndex).toBe(0);
+	});
+
+	it('Reply and Copy are named icon buttons beside More', () => {
+		const onReply = vi.fn();
+		render(MessageBubble, { props: { message: base, onReply } });
+		expect(screen.getByRole('button', { name: 'Reply' }).matches('.icon-btn')).toBe(true);
+		expect(screen.getByRole('button', { name: 'Copy' }).matches('.icon-btn')).toBe(true);
+		expect(screen.getByRole('button', { name: /More/ }).matches('.icon-btn')).toBe(true);
+	});
+
+	it('an own head shows You, keeps Human for assistive tech only, and has no avatar', () => {
+		const own = { ...base, mine: true, author_is_human: true, author_agent_key: '' };
+		const { container } = render(MessageBubble, { props: { message: own } });
+		expect(screen.getByText('You')).toBeInTheDocument();
+		expect(screen.getByText('Human').classList.contains('sr-only')).toBe(true);
+		expect(container.querySelector('.avatar')).toBeNull();
+	});
+
+	it('an own continuation keeps You and Human in the DOM', () => {
+		const own = { ...base, mine: true, author_is_human: true, author_agent_key: '' };
+		const { container } = render(MessageBubble, { props: { message: own, head: false } });
+		const hidden = container.querySelector('article > .sr-only')!;
+		expect(hidden.textContent).toContain('You');
+		expect(hidden.textContent).toContain('Human');
+	});
+
+	it('a tombstone on a continuation is still announced by author', () => {
+		const { container } = render(MessageBubble, { props: { message: { ...base, deleted: true, body: '' }, head: false } });
+		expect(container.querySelector('.sr-only')!.textContent).toContain('codex');
+		expect(container.textContent).toContain('Message deleted');
+	});
+
+	it('the copy-fallback Close is a Button', async () => {
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined });
+		render(MessageBubble, { props: { message: base } });
+		await fireEvent.click(screen.getByRole('button', { name: /More/ }));
+		await tick();
+		await fireEvent.click(screen.getByRole('menuitem', { name: 'Copy' }));
+		await tick();
+		const dialog = screen.getByRole('dialog', { name: 'Select and copy this message.' });
+		expect(within(dialog).getByRole('button', { name: 'Close' }).matches('.btn')).toBe(true);
+	});
+});
+
+describe('PendingBubble shapes (TASK-4515)', () => {
+	const sending = { op_key: 'k1', body: 'hello', status: 'sending' as const };
+	it('a failed send offers Retry (secondary) and Discard (ghost) as touch Buttons', () => {
+		render(PendingBubble, { props: { pending: { ...sending, status: 'failed' as const }, onRetry: vi.fn(), onDiscard: vi.fn() } });
+		expect(screen.getByRole('button', { name: 'Retry' }).matches('.btn.secondary.sm.touch')).toBe(true);
+		expect(screen.getByRole('button', { name: 'Discard' }).matches('.btn.ghost.sm.touch')).toBe(true);
+	});
+	it('a continuation pending row hides You and Human on screen but keeps them', () => {
+		const { container } = render(PendingBubble, { props: { pending: sending, head: false, onRetry: vi.fn(), onDiscard: vi.fn() } });
+		expect(container.querySelector('.meta')).toBeNull();
+		expect(container.querySelector('.sr-only')!.textContent).toContain('You');
+		expect(container.querySelector('.sr-only')!.textContent).toContain('Human');
+	});
+});
+
+describe('UnreadDivider and DaySeparator (TASK-4515)', () => {
+	it('the day separator is a labelled separator', async () => {
+		const { default: DaySeparator } = await import('./DaySeparator.svelte');
+		const { container } = render(DaySeparator, { props: { label: 'Yesterday' } });
+		const sep = container.querySelector('.day')!;
+		expect(sep.getAttribute('role')).toBe('separator');
+		expect(sep.textContent).toContain('Yesterday');
+	});
+});

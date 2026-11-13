@@ -129,7 +129,8 @@
 		padding: var(--space-2);
 		border: 1px solid var(--border);
 		border-radius: var(--radius);
-		background: var(--bg-primary);
+		/* --bg-primary was invisible on the dock (TASK-4515). */
+		background: var(--bg-tertiary);
 		overflow-x: auto;
 		white-space: pre;
 		max-width: 100%;
