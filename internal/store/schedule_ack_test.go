@@ -393,11 +393,21 @@ func TestImportedAckActorMustBeMember(t *testing.T) {
 	member := f.user(t, "ack-member@example.com", "UTC")
 	outsider := f.user(t, "ack-outsider@example.com", "UTC")
 	f.exec(t, `DELETE FROM workspace_members WHERE workspace_id=? AND user_id=?`, f.ws.ID, outsider.ID)
+	head := `{"acked_at":"` + ackNow + `","agent_name":"rook",`
 	for _, tc := range []struct {
-		uid  string
-		keep bool
-	}{{member.ID, true}, {outsider.ID, false}, {"no-such-user", false}} {
-		in := `{"acked_at":"` + ackNow + `","agent_name":"rook","actor_user_id":"` + tc.uid + `"}`
+		name, in, want string
+	}{
+		{"member", head + `"actor_user_id":"` + member.ID + `"}`, member.ID},
+		{"outsider", head + `"actor_user_id":"` + outsider.ID + `"}`, ""},
+		{"unknown user", head + `"actor_user_id":"no-such-user"}`, ""},
+		// encoding/json matches struct fields without regard to case, so a
+		// differently cased key must be checked like the canonical one.
+		{"outsider, upper-case key", head + `"ACTOR_USER_ID":"` + outsider.ID + `"}`, ""},
+		{"member, upper-case key", head + `"Actor_User_ID":"` + member.ID + `"}`, member.ID},
+		// With two matching keys the decoder keeps the last; that is the value checked.
+		{"member then outsider", head + `"actor_user_id":"` + member.ID + `","ACTOR_USER_ID":"` + outsider.ID + `"}`, ""},
+	} {
+		in := tc.in
 		tx, err := f.s.db.Begin()
 		if err != nil {
 			t.Fatal(err)
@@ -405,16 +415,78 @@ func TestImportedAckActorMustBeMember(t *testing.T) {
 		out, err := f.s.importedAckEvidenceTx(tx, f.ws.ID, &in)
 		_ = tx.Rollback()
 		if err != nil || out == nil {
-			t.Fatalf("%s: out=%v err=%v", tc.uid, out, err)
+			t.Fatalf("%s: out=%v err=%v", tc.name, out, err)
 		}
-		var v map[string]any
+		// The stored text is canonical: what the reader decodes is what was checked.
+		var raw map[string]any
+		if err := json.Unmarshal([]byte(*out), &raw); err != nil {
+			t.Fatal(err)
+		}
+		for k := range raw {
+			if k != "acked_at" && k != "reminder_id" && k != "occurrence_at" && k != "actor_user_id" && k != "agent_name" {
+				t.Fatalf("%s: non-canonical key %q in %s", tc.name, k, *out)
+			}
+		}
+		var v scheduleAckEvidence
 		if err := json.Unmarshal([]byte(*out), &v); err != nil {
 			t.Fatal(err)
 		}
-		_, kept := v["actor_user_id"]
-		if kept != tc.keep || v["agent_name"] != "rook" || v["acked_at"] != ackNow {
-			t.Fatalf("%s: keep=%v want %v, evidence=%v", tc.uid, kept, tc.keep, v)
+		if v.ActorUserID != tc.want || v.AgentName != "rook" || v.AckedAt == nil || *v.AckedAt != ackNow {
+			t.Fatalf("%s: evidence=%+v, want actor %q", tc.name, v, tc.want)
 		}
+	}
+	tx, err := f.s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	ctrl := `{"acked_at":"` + ackNow + `","agent_name":"ro\u0007ok\nx"}`
+	if out, err := f.s.importedAckEvidenceTx(tx, f.ws.ID, &ctrl); err != nil || out == nil || strings.ContainsAny(*out, "\u0007") || strings.Contains(*out, `\n`) || strings.Contains(*out, `\u0007`) {
+		t.Fatalf("agent name not normalized: out=%v err=%v", out, err)
+	}
+	junk := `not json`
+	if out, err := f.s.importedAckEvidenceTx(tx, f.ws.ID, &junk); err != nil || out != nil {
+		t.Fatalf("junk evidence kept: out=%v err=%v", out, err)
+	}
+}
+
+// End to end through workspace import: a bundle whose ack row names a
+// non-member under a differently cased key reads back with no user.
+func TestImportedAckBundleCannotNameOutsider(t *testing.T) {
+	t.Parallel()
+	f, _ := ackFixture(t, "FREQ=DAILY", "calendar")
+	outsider := f.user(t, "ack-bundle-outsider@example.com", "UTC")
+	f.mustResolve(t, f.item, ackInput(), ackNow)
+	b := jsonRoundTrip(t, f.exportBundle(t))
+	n := 0
+	for i := range b.ScheduleChanges {
+		c := &b.ScheduleChanges[i]
+		if c.ChangeType != "ack" {
+			continue
+		}
+		var v scheduleAckEvidence
+		if c.AfterJSON == nil || json.Unmarshal([]byte(*c.AfterJSON), &v) != nil || v.AckedAt == nil {
+			t.Fatalf("exported ack evidence=%v", c.AfterJSON)
+		}
+		crafted := `{"acked_at":"` + *v.AckedAt + `","ACTOR_USER_ID":"` + outsider.ID + `"}`
+		c.AfterJSON, c.BeforeJSON = &crafted, &crafted
+		c.Actor = "nonsense"
+		n++
+	}
+	if n != 1 {
+		t.Fatalf("ack rows in bundle=%d", n)
+	}
+	ws, _ := f.importBundle(t, b, "Ack outsider import")
+	it := f.itemByTitle(t, ws.ID, f.item.Title)
+	sc, err := f.s.GetSchedule(ws.ID, it.ID)
+	if err != nil || sc == nil || sc.AcknowledgedAt == nil {
+		t.Fatalf("schedule=%+v err=%v", sc, err)
+	}
+	if by := sc.AcknowledgedBy; by == nil || by.UserID != "" || by.Name != "" || by.Actor != "user" {
+		t.Fatalf("acknowledged_by=%+v", sc.AcknowledgedBy)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND change_type='ack' AND (after_json LIKE ? OR before_json LIKE ?)`, sc.ID, "%"+outsider.ID+"%", "%"+outsider.ID+"%"); n != 0 {
+		t.Fatalf("outsider id stored in %d ack rows", n)
 	}
 }
 

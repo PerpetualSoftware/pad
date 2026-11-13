@@ -159,32 +159,33 @@ func (s *Store) AcknowledgedScheduleItemIDs(workspaceID string) (map[string]bool
 	return out, rows.Err()
 }
 
-// importedAckEvidenceTx keeps an imported acknowledgement's actor_user_id only
-// when that user is a member of the destination workspace. A bundle is not
+// importedAckEvidenceTx rewrites an imported acknowledgement's before or after
+// JSON into the canonical evidence shape. It decodes through the same struct
+// the agenda reader uses (encoding/json matches field names without regard to
+// case, so checking a map key would let ACTOR_USER_ID through), keeps
+// actor_user_id only when that user is a member of the destination workspace,
+// and normalizes the agent name as the live write path does. A bundle is not
 // trusted to name an account: without this, a crafted row could attribute an
 // acknowledgement to any user and read that user's name back on the agenda.
-// The actor kind and agent name stay; the agenda then shows an unknown user.
-func (s *Store) importedAckEvidenceTx(tx *sql.Tx, workspaceID string, after *string) (*string, error) {
-	if after == nil {
+// Text that does not decode as evidence is not stored.
+func (s *Store) importedAckEvidenceTx(tx *sql.Tx, workspaceID string, raw *string) (*string, error) {
+	if raw == nil {
 		return nil, nil
 	}
-	var v map[string]any
-	if json.Unmarshal([]byte(*after), &v) != nil {
-		return after, nil
+	var v scheduleAckEvidence
+	if json.Unmarshal([]byte(*raw), &v) != nil {
+		return nil, nil
 	}
-	uid, _ := v["actor_user_id"].(string)
-	if uid == "" {
-		return after, nil
+	v.AgentName = models.NormalizeAgentName(v.AgentName)
+	if v.ActorUserID != "" {
+		var one int
+		err := tx.QueryRow(s.q(`SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?`), workspaceID, v.ActorUserID).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			v.ActorUserID = ""
+		} else if err != nil {
+			return nil, fmt.Errorf("check imported acknowledgement actor: %w", err)
+		}
 	}
-	var one int
-	err := tx.QueryRow(s.q(`SELECT 1 FROM workspace_members WHERE workspace_id=? AND user_id=?`), workspaceID, uid).Scan(&one)
-	if err == nil {
-		return after, nil
-	}
-	if !errors.Is(err, sql.ErrNoRows) {
-		return nil, fmt.Errorf("check imported acknowledgement actor: %w", err)
-	}
-	delete(v, "actor_user_id")
 	b, err := json.Marshal(v)
 	if err != nil {
 		return nil, err
