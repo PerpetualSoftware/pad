@@ -10,12 +10,18 @@
 		 *  --accent-red-strong). */
 		variant?: 'primary' | 'secondary' | 'ghost' | 'danger' | 'danger-solid';
 		size?: 'sm' | 'md';
+		/** At least 44x44 and 14px text on a phone or a coarse pointer (a touch target). */
+		touch?: boolean;
+		/** The rendered <button>, for a caller that needs the node (focus, contains). */
+		element?: HTMLButtonElement;
 		children: Snippet;
 	}
 
 	let {
 		variant = 'secondary',
 		size = 'md',
+		touch = false,
+		element = $bindable(),
 		type = 'button',
 		class: className = '',
 		children,
@@ -23,7 +29,7 @@
 	}: Props = $props();
 </script>
 
-<button {...rest} class="btn {variant} {size} {className}" {type}>
+<button bind:this={element} {...rest} class="btn {variant} {size} {className}" class:touch {type}>
 	{@render children()}
 </button>
 
@@ -51,6 +57,14 @@
 	.btn.sm {
 		padding: 3px 10px;
 		font-size: 12px;
+	}
+
+	@media (max-width: 768px), (pointer: coarse) {
+		.btn.touch {
+			min-height: 44px;
+			min-width: 44px;
+			font-size: 14px;
+		}
 	}
 
 	.btn:disabled {
