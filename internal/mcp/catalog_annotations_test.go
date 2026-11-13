@@ -35,6 +35,7 @@ func TestCatalogTools_AnnotationsExplicit(t *testing.T) {
 	)
 	table := map[string]string{
 		"pad_search":     read,
+ "pad_board": read,
 		"pad_project":    read,
 		"pad_attachment": read,
 		"pad_meta":       read,
@@ -58,7 +59,7 @@ func TestCatalogTools_AnnotationsExplicit(t *testing.T) {
 	}
 
 	seen := map[string]bool{}
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		seen[def.Name] = true
 		class, ok := table[def.Name]
 		if !ok {
@@ -112,7 +113,7 @@ func TestSetWorkspaceTool_AnnotationsExplicit(t *testing.T) {
 // the drift this guards.
 func TestAdditiveWriteActions_NoStaleEntries(t *testing.T) {
 	byName := map[string]ToolDef{}
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		byName[def.Name] = def
 	}
 	for tool, set := range additiveWriteActions {
@@ -148,7 +149,7 @@ var openWorldTools = map[string]bool{
 // data goes, not whether anything is written (pad_playbook.match).
 func TestOpenWorldActions_NoStaleEntries(t *testing.T) {
 	byName := map[string]ToolDef{}
-	for _, def := range Catalog {
+	for _, def := range append(append([]ToolDef{}, Catalog...), AppCatalog...) {
 		byName[def.Name] = def
 	}
 	for tool, set := range openWorldActions {

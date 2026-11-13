@@ -54,13 +54,13 @@ func TestMCPApps_KillSwitch(t *testing.T) {
 				found := false
 				if method == "tools/list" {
 					for _, tool := range response.Result["tools"] {
-						if tool["name"] == "pad_item" {
+						if tool["name"] == "pad_board" {
 							_, found = tool["_meta"]
 						}
 					}
 				} else {
 					for _, r := range response.Result["resources"] {
-						if strings.HasPrefix(r["uri"].(string), "ui://") {
+						if r["uri"] == "ui://pad/board" {
 							found = true
 						}
 					}
