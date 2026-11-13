@@ -306,3 +306,17 @@ describe('deadline and forecast tone outside UTC', () => {
   expect(forecastPill('2026-11-15', null, NY, now)).toEqual({ late: false, text: 'Sun 15' });
  });
 });
+
+it('roleMarkers merges forecasts once', async () => {
+ const { roleMarkers } = await import('./presentation');
+ const forecast = { value: '2026-04-02', set_by: 'u1', set_by_kind: 'user' as const, set_at: 'now', source: '' };
+ const f = { schedule_id: 's1', item_ref: 'EX-30', item_title: 'Forecast work', collection: 'tasks', workspace: 'work', workspace_name: 'Work', owner_username: 'alice', day: '2026-04-02', all_day: true, forecast };
+ const markers = roleMarkers([], 'UTC', [f, f]);
+ expect(markers.get(f.day)?.forecasts).toMatchObject([{ type: 'schedule', state: 'outstanding', at: forecast.value, day: f.day, schedule_id: 's1', workspace: 'work', workspace_name: 'Work', owner_username: 'alice', forecast }]);
+ const entry = row({ schedule_id: 's1', forecast });
+ expect(roleMarkers([entry], 'UTC', [f]).get(f.day)?.forecasts).toHaveLength(1);
+ expect(roleMarkers([{ ...entry, day: f.day }], 'UTC', [f]).size).toBe(0);
+ expect(roleMarkers([], 'UTC', [f], '2026-04-02T00:00:00Z').size).toBe(0);
+ expect(roleMarkers([], 'UTC', [f], '2026-04-03T00:00:00Z').get(f.day)?.forecasts).toHaveLength(1);
+ expect(roleMarkers([entry], 'UTC', [f, { ...f, owner_username: 'bob' }]).get(f.day)?.forecasts).toHaveLength(2);
+});
