@@ -244,9 +244,14 @@
 	/** Puts one freshly read item where it now belongs, leaving the poll cursor alone. */
 	function place(next: ItemLike, row: BoardItem) {
 		if (!board) return;
+		const fresh = boardItemFrom(next, row);
+		// A poll may have delivered a newer state while this read was out; the
+		// cursor has moved past it, so overwriting it would lose it for good.
+		const held = board.columns.flatMap(column => column.items).find(item => item.id === row.id);
+		if (held && held.seq > fresh.seq) return;
 		const here = next.collection_slug === board.collection;
 		board = applyChanges(board, {
-			upserts: here ? [boardItemFrom(next, row)] : [], removed_ids: here ? [] : [row.id], departed_ids: [],
+			upserts: here ? [fresh] : [], removed_ids: here ? [] : [row.id], departed_ids: [],
 			cursor: board.cursor, access_epoch: board.access_epoch, resync: false
 		});
 	}

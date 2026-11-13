@@ -412,6 +412,25 @@ describe('Board', () => {
 		expect(titlesIn('in-progress')).toEqual(['Title 3']);
 	});
 
+	it('keeps a newer polled item when a slower status save answers with an older one', async () => {
+		vi.useFakeTimers();
+		let release!: (result: ToolResultLike) => void;
+		const ctx = setup((tool) => tool === 'pad_item'
+			? new Promise<ToolResultLike>(resolve => { release = resolve; })
+			: noChanges({ cursor: 'c2', upserts: [card('1', 'in-progress', { seq: 9 })] }));
+		await show(ctx, ok(snapshot()), SHOW_ARGS, { displayMode: 'fullscreen' });
+		await fireEvent.change(statusOf('TASK-1'), { target: { value: 'done' } });
+		await settle();
+		// The poll lands first, carrying a change made after this save.
+		await vi.advanceTimersByTimeAsync(10_000);
+		release(ok(fullItem('1', 'done', 8)));
+		await vi.advanceTimersByTimeAsync(0);
+		await settle();
+		expect(screen.queryByText('Saving…')).toBeNull();
+		expect(titlesIn('in-progress')).toEqual(['Title 3', 'Title 1']);
+		expect(titlesIn('done')).toEqual([]);
+	});
+
 	it('only ever calls the board reads and a status-only item update', async () => {
 		vi.useFakeTimers();
 		const ctx = setup((tool, args) => tool === 'pad_board'
