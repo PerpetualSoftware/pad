@@ -1,4 +1,4 @@
-// Build one self-contained HTML MCP App, alongside the materializer output.
+// Build self-contained HTML MCP Apps, alongside the materializer output.
 import { build, transform } from 'esbuild';
 import { compile, compileModule } from 'svelte/compiler';
 import path from 'node:path';
@@ -6,10 +6,9 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const web = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const entry = path.join(web, 'src/mcp-app/card.ts');
-const outfile = path.join(web, 'build-mcp-app/item-card.html');
-
-try {
+async function buildApp(source, output) {
+	const entry = path.join(web, 'src/mcp-app', source);
+	const outfile = path.join(web, 'build-mcp-app', output);
 	if (!fs.existsSync(entry)) throw new Error(`entry file missing: ${entry}`);
 	const result = await build({
 		entryPoints: [entry],
@@ -65,6 +64,11 @@ try {
 	fs.mkdirSync(path.dirname(outfile), { recursive: true });
 	fs.writeFileSync(outfile, html);
 	console.log(`build-mcp-app: wrote ${path.relative(process.cwd(), outfile)} (${bytes} bytes)`);
+}
+
+try {
+	await buildApp('card.ts', 'item-card.html');
+	await buildApp('board.ts', 'board.html');
 } catch (error) {
 	console.error(`build-mcp-app: ${error.message}`);
 	process.exit(1);
