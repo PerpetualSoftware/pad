@@ -4,7 +4,7 @@
 	import RolePill from './RolePill.svelte';
 	import StateMark from './StateMark.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
-	import { OCCURRENCE_STATES, canMove, canResolve, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { OCCURRENCE_STATES, acknowledgedText, canMove, canResolve, isOpenState, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
@@ -34,7 +34,7 @@
 
 	const href = $derived(entryHref(entry));
 	const schedule = $derived(entry.type === 'schedule');
-	const live = $derived(schedule && (entry.state === 'outstanding' || entry.state === 'scheduled'));
+	const live = $derived(schedule && (isOpenState(entry.state) || entry.state === 'scheduled'));
 	const actionable = $derived(canResolve(entry) || (schedule && entry.state === 'lapsed'));
 	const density = $derived(marker ? 'marker' : actionable || entry.type === 'date' || (schedule && entry.state === 'missed') ? 'full' : 'quiet');
 	const deadline = $derived(live ? entry.roles?.deadline ?? null : null);
@@ -53,6 +53,7 @@
 		...(schedule && entry.roles?.earliest ? [`from ${beside(entry.roles.earliest)}`] : []),
 		...(schedule && entry.roles?.occupied_until ? [`until ${beside(entry.roles.occupied_until)}`] : [])
 	]);
+	const acknowledged = $derived(schedule && entry.state === 'acknowledged' ? acknowledgedText(entry.acknowledged_at, entry.acknowledged_by, zone, now) : '');
 	const deadlineTitle = $derived(deadline ? `Deadline ${roleText(deadline, zone)}${entry.roles?.deadline_behavior === 'stays_owed' ? ' · Still owed' : entry.roles?.deadline_behavior === 'lapses' ? ' · Lapses' : ''}` : '');
 </script>
 
@@ -98,6 +99,7 @@
 					{#if entry.workspace_name}<WorkspaceTile name={entry.workspace_name} />{/if}
 					<span class="ref">{entry.item_ref}</span>
 					{#if entry.audience === 'agent'}<span>· for agents</span>{/if}
+					{#if acknowledged}<span class="ack"><span aria-hidden="true">· </span><span>{acknowledged}</span></span>{/if}
 					{#if compact}{@render pills()}{/if}
 				</div>
 			{/if}
@@ -109,7 +111,7 @@
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></svg>
 				</span>
 			{/if}
-			{#if actionable}<OccurrenceActions {entry} {zone} {pending} disabled={saved} {onaction} />{/if}
+			{#if actionable}<OccurrenceActions {entry} {zone} {pending} {compact} disabled={saved} {onaction} />{/if}
 		</div>
 	{/if}
 </li>
@@ -127,6 +129,7 @@
 	.title a:hover { text-decoration: underline; }
 	.title a:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; border-radius: var(--radius-sm); }
 	.meta { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12px; color: var(--text-muted); margin-top: 1px; }
+	.ack { color: var(--text-secondary); }
 	.ref { font-family: var(--font-mono); font-size: 11.5px; }
 	.inline-meta { flex: 0 0 auto; font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
 	.trail { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }

@@ -206,3 +206,26 @@ describe('OutstandingPanel row menu', () => {
 		expect(rowOf('TASK-3').querySelector('.spinner')).toBeNull();
 	});
 });
+
+describe('OutstandingPanel acknowledged work', () => {
+	const by = { user_id: 'u1', name: 'Alex', actor: 'agent' as const, agent_name: 'builder' };
+	it('offers Acknowledge first on a fired outstanding row, and not on one that has not fired', async () => {
+		const { onaction } = mount({ priority_list: [work({ fired: true }), work({ fired: false })] });
+		await fireEvent.click(within(rowOf('TASK-1')).getByRole('button', { name: 'Actions for TASK-1' }));
+		expect(items()[0]).toBe('Acknowledge');
+		expect(screen.getAllByRole('menuitem')[0]).toHaveAttribute('title', 'Silences this occurrence for everyone. The work stays owed.');
+		await fireEvent.click(screen.getAllByRole('menuitem')[0]);
+		expect(onaction).toHaveBeenCalledWith(expect.objectContaining({ item_ref: 'TASK-1', state: 'outstanding' }), 'ack');
+		await fireEvent.click(within(rowOf('TASK-2')).getByRole('button', { name: 'Actions for TASK-2' }));
+		expect(items()).not.toContain('Acknowledge');
+	});
+	it('an acknowledged row stays in the list, says so and by whom, and keeps its follow-up actions', async () => {
+		const { onaction } = mount({ priority_list: [work({ state: 'acknowledged', fired: true, acknowledged_at: '2026-11-05T09:15:00Z', acknowledged_by: by })] });
+		const row = rowOf('TASK-1');
+		expect(within(row).getByText('Acknowledged by Alex (builder, agent) · Thu 5, 09:15')).toBeTruthy();
+		await fireEvent.click(within(row).getByRole('button', { name: 'Actions for TASK-1' }));
+		expect(items()).toEqual(['Forecast…', 'Move target…', 'Bring to today']);
+		await fireEvent.click(screen.getByRole('menuitem', { name: 'Move target…' }));
+		expect(onaction).toHaveBeenCalledWith(expect.objectContaining({ state: 'acknowledged' }), 'move');
+	});
+});

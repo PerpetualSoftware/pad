@@ -90,4 +90,57 @@ describe('AgendaRow', () => {
 		expect(screen.getByRole('button', { name: 'Done TASK-1' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Actions TASK-1' })).toBeDisabled();
 		expect(screen.getByText('Saving…')).toBeTruthy();
 	});
+	describe('acknowledge', () => {
+		const help = 'Silences this occurrence for everyone. The work stays owed.';
+		const by = { user_id: 'u1', name: 'Alex', actor: 'user' as const };
+		it('a fired outstanding row offers Acknowledge in one click, with its help text', async () => {
+			const { onaction } = mount({ fired: true });
+			const ack = screen.getByRole('button', { name: 'Acknowledge TASK-1' });
+			expect(ack).toHaveAttribute('title', help);
+			await fireEvent.click(ack);
+			expect(onaction).toHaveBeenCalledWith(expect.objectContaining({ item_ref: 'TASK-1' }), 'ack');
+		});
+		it('an occurrence that has not fired offers no Acknowledge', async () => {
+			mount({ fired: false });
+			expect(screen.queryByRole('button', { name: 'Acknowledge TASK-1' })).toBeNull();
+			await fireEvent.click(screen.getByRole('button', { name: 'Actions TASK-1' }));
+			expect(screen.queryByRole('menuitem', { name: /Acknowledge/ })).toBeNull();
+		});
+		it('on a phone Acknowledge leads the menu instead of crowding the row', async () => {
+			const { onaction } = mount({ fired: true }, { compact: true });
+			expect(screen.queryByRole('button', { name: 'Acknowledge TASK-1' })).toBeNull();
+			await fireEvent.click(screen.getByRole('button', { name: 'Actions TASK-1' }));
+			const item = screen.getAllByRole('menuitem')[0];
+			expect(item.textContent?.trim()).toBe('Acknowledge');
+			expect(item).toHaveAttribute('title', help);
+			await fireEvent.click(item);
+			expect(onaction).toHaveBeenCalledWith(expect.objectContaining({ item_ref: 'TASK-1' }), 'ack');
+		});
+		it('an acknowledged row stays open and owed: Done and every follow-up stay, Acknowledge becomes its status', async () => {
+			const { row } = mount({ state: 'acknowledged', fired: true, acknowledged_at: '2031-03-09T08:30:00Z', acknowledged_by: by });
+			expect(row.dataset.density).toBe('full');
+			expect(row.classList.contains('closed')).toBe(false); expect(row.classList.contains('done')).toBe(false);
+			expect(screen.getByRole('img', { name: 'Acknowledged' })).toHaveAttribute('data-mark', 'ring');
+			expect(screen.queryByRole('button', { name: 'Acknowledge TASK-1' })).toBeNull();
+			expect(row.querySelector('.chips')?.textContent).toContain('Acknowledged');
+			expect(screen.getByText('Acknowledged by Alex · Sun 9, 08:30')).toBeTruthy();
+			expect(screen.getByRole('button', { name: 'Done TASK-1' })).toBeEnabled();
+			await fireEvent.click(screen.getByRole('button', { name: 'Actions TASK-1' }));
+			expect(screen.getAllByRole('menuitem').map(item => item.textContent?.trim())).toEqual(['Set forecast…', 'Skip', 'Snooze…', 'Move target…', 'Bring to today']);
+		});
+		it('an acknowledged row keeps its overdue chip and its draggability', () => {
+			const { row } = mount({ state: 'acknowledged', overdue: true, missed_count: 1, acknowledged_at: '2031-03-09T08:30:00Z', acknowledged_by: by }, { movable: true });
+			expect(row.querySelector('.chips')?.textContent).toMatch(/Overdue.*1 missed occurrence/);
+			expect(row.getAttribute('draggable')).toBe('true');
+		});
+		it.each([
+			[{ user_id: 'u1', name: 'Alex', actor: 'agent' as const, agent_name: 'builder' }, 'Acknowledged by Alex (builder, agent) · Sun 9, 08:30'],
+			[{ user_id: '', name: '', actor: 'user' as const }, 'Acknowledged by unknown user · Sun 9, 08:30']
+		])('names who acknowledged it, on desktop and phone: %j', (acknowledged_by, text) => {
+			mount({ state: 'acknowledged', acknowledged_at: '2031-03-09T08:30:00Z', acknowledged_by });
+			expect(screen.getByText(text)).toBeTruthy();
+			cleanup(); mount({ state: 'acknowledged', acknowledged_at: '2031-03-09T08:30:00Z', acknowledged_by }, { compact: true });
+			expect(screen.getByText(text)).toBeTruthy();
+		});
+	});
 });
