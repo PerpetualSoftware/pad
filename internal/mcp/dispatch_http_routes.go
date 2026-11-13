@@ -476,6 +476,10 @@ func init() {
 			method:       http.MethodDelete,
 			pathTemplate: itemSchedulePathTemplate,
 		}.toRouteMapper(),
+		"item remind dismiss": routeSpec{
+			method:       http.MethodPost,
+			pathTemplate: itemSchedulePathTemplate + "/dismiss-ended",
+		}.toRouteMapper(),
 		"item remind ack":         mapScheduleResolve("ack"),
 		"item remind done":        mapScheduleResolve("done"),
 		"item remind skip":        mapScheduleResolve("skip"),

@@ -108,6 +108,7 @@ var padItemTool = ToolDef{
 		"schedule-edit":        actionItemScheduleEdit,
 		"schedule-forecast":    actionItemScheduleForecast,
 		"schedule-delete":      actionItemScheduleDelete,
+		"schedule-dismiss":     passThrough([]string{"item", "remind", "dismiss"}),
 		"schedule-resolve":     actionItemScheduleResolve,
 		"schedule-renegotiate": actionItemScheduleRenegotiate,
 		"schedule-link":        actionItemScheduleGraph("schedule-link"),
@@ -236,6 +237,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required: snooze, move."},
 	{Name: "occurrence_at", Type: "string", Description: "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required: schedule-resolve."},
 	{Name: "actual_done_at", Type: "string", Description: "RFC3339 instant the work really finished. For: schedule-resolve, done only."},
+	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
 	{Name: "reason", Type: "string", Description: "Why dates change; required for schedule-renegotiate and graph changes moving hard deadlines."},
 	{Name: "scope", Type: "string", Description: "occurrence (default) | series. For: schedule-renegotiate."},
 	{Name: "deadline_days", Type: "number", Description: "Series offset in days. For: schedule-renegotiate."},
@@ -462,7 +464,7 @@ Actions:
   schedule — Read the item's schedule. Required: ref.
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
-    snooze and move also need until. Optional: comment, actual_done_at (done only).
+    snooze and move also need until. Optional: comment, actual_done_at (done only), end_schedule.
   schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
     series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a
@@ -477,9 +479,10 @@ Actions:
     bound crossings also need acknowledge_violations. Both ends must be readable and editable.
   schedule-gate — Wait for blocker success (fixed occurrence if scheduled): ref, blocker.
     With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
+  schedule-dismiss — Clear an ended schedule from Outstanding. ref required.
   schedule-delete — Irreversibly delete schedule/rule/history/managed reminder; stops pending firing. ref required. Keeps item/comments/one-shot reminders.
   agenda — Occurrences/dated items: from, to (RFC3339, <=92 days); tz optional.
-    no_date_scope:personal_only means undated work is not listed, never empty. /me/agenda priority_list/waiting_on/no_date contain work assigned to the caller, else created by them, for their human/agent audience.
+    no_date_scope:personal_only means undated work is not listed, never empty.
   ack-reminder — Acknowledge by reminder_id OR ref, never both; leaves next/ready.
     ref requires one fired, unacknowledged unmanaged reminder; multiple refuse, ack by id.
     Only this acknowledges; completing the item does not. Reminders may fire after work finishes.

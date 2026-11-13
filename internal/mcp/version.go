@@ -2332,7 +2332,11 @@ const CmdhelpVersion = "0.1"
 // v0.114 — TASK-4465: additive read-only pad_board show/changes tool,
 // remote HTTP with Apps only. Stdio tools are unchanged.
 // v0.115 — TASK-4536: fired occurrence acknowledgement and acknowledged agenda provenance.
-const ToolSurfaceVersion = "0.115"
+// v0.116 — TASK-4537: schedule-resolve refuses a done or skip that ends an open
+// item's schedule (item_still_open) unless end_schedule is true; new action
+// schedule-dismiss (not_ended on a live schedule). Agenda priority rows gain
+// reason schedule_ended with ended_at.
+const ToolSurfaceVersion = "0.116"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

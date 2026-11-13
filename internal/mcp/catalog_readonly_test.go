@@ -144,6 +144,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "schedule-forecast"}:    {"item", "remind", "forecast", "set"},
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
+		{"pad_item", "schedule-dismiss"}:     {"item", "remind", "dismiss"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
 		{"pad_item", "schedule-renegotiate"}: {"item", "remind", "renegotiate"},
 		{"pad_item", "schedule-link"}:        {"item", "remind", "link", "add"},
@@ -342,6 +343,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "schedule-forecast"}:    {"item", "remind", "forecast", "set"},
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
+		{"pad_item", "schedule-dismiss"}:     {"item", "remind", "dismiss"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
 		{"pad_item", "schedule-renegotiate"}: {"item", "remind", "renegotiate"},
 		{"pad_item", "schedule-link"}:        {"item", "remind", "link", "add"},
@@ -787,15 +789,16 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Args:    mkArgs("ref"),
 				Flags:   map[string]cmdhelp.Flag{"workspace": {Type: "string"}, "yes": {Type: "bool"}},
 			},
-			"item remind ack":  {Summary: "acknowledge", Args: mkArgs("ref"), Flags: mkFlags("workspace", "occurrence")},
-			"item remind done": {Summary: "resolve done", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "at")},
+			"item remind dismiss": {Summary: "dismiss an ended schedule", Args: mkArgs("ref"), Flags: mkFlags("workspace")},
+			"item remind ack":     {Summary: "acknowledge", Args: mkArgs("ref"), Flags: mkFlags("workspace", "occurrence")},
+			"item remind done":    {Summary: "resolve done", Args: mkArgs("ref"), Flags: withEndSchedule(mkFlags("workspace", "comment", "occurrence", "at"))},
 			"item remind renegotiate": {Summary: "change a deadline", Args: mkArgs("ref"), Flags: func() map[string]cmdhelp.Flag {
 				f := mkFlags("workspace", "reason", "scope", "deadline", "behavior", "revision")
 				f["deadline-offset-days"], f["deadline-offset-secs"] = cmdhelp.Flag{Type: "int"}, cmdhelp.Flag{Type: "int"}
 				f["remove-deadline"], f["apply"] = cmdhelp.Flag{Type: "bool"}, cmdhelp.Flag{Type: "bool"}
 				return f
 			}()},
-			"item remind skip":   {Summary: "resolve skip", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence")},
+			"item remind skip":   {Summary: "resolve skip", Args: mkArgs("ref"), Flags: withEndSchedule(mkFlags("workspace", "comment", "occurrence"))},
 			"item remind snooze": {Summary: "resolve snooze", Args: mkArgs("ref"), Flags: mkFlags("workspace", "comment", "occurrence", "until")},
 			"item remind move": {Summary: "resolve or cascade move", Args: mkArgs("ref"), Flags: func() map[string]cmdhelp.Flag {
 				f := mkFlags("workspace", "comment", "occurrence", "until", "role", "to", "revision", "reason")
@@ -1077,5 +1080,11 @@ func scheduleFlags(base map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
 
 func graphFixtureFlags(f map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
 	f["apply"], f["ack-violations"] = cmdhelp.Flag{Type: "bool"}, cmdhelp.Flag{Type: "bool"}
+	return f
+}
+
+// withEndSchedule adds the boolean --end-schedule of done and skip (TASK-4537).
+func withEndSchedule(f map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
+	f["end-schedule"] = cmdhelp.Flag{Type: "bool"}
 	return f
 }

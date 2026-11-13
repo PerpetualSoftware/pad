@@ -148,6 +148,9 @@ func mapScheduleResolve(state string) RouteMapper {
 		if a, _ := input["actual_done_at"].(string); a != "" && state == "done" {
 			body.ActualDoneAt = a
 		}
+		if e, _ := input["end_schedule"].(bool); e && (state == "done" || state == "skip") {
+			body.EndSchedule = true
+		}
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return "", "", nil, err

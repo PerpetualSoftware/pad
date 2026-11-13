@@ -118,7 +118,7 @@ func copyInput(in map[string]any) map[string]any {
 func TestTASK4105_ScheduleReadOnlyClassification(t *testing.T) {
 	for action, want := range map[string]bool{
 		"schedule": true, "agenda": true,
-		"schedule-edit": false, "schedule-delete": false, "schedule-resolve": false, "schedule-renegotiate": false, "remind": false,
+		"schedule-edit": false, "schedule-delete": false, "schedule-dismiss": false, "schedule-resolve": false, "schedule-renegotiate": false, "remind": false,
 	} {
 		if got := isReadOnlyAction("pad_item", action); got != want {
 			t.Errorf("pad_item.%s read-only = %v, want %v", action, got, want)
