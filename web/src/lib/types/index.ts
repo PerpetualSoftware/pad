@@ -3869,7 +3869,10 @@ export interface AgendaDayCount {
 
 export type AgendaWorkEntry = Omit<AgendaEntry, 'type' | 'at' | 'day'> & {
  type: 'item' | 'schedule'; at?: string; day?: string;
+ /** outstanding | target_passed | deadline_still_owed | schedule_ended (priority); unplaced (no date); waiting | blocked_needs_decision. */
  rank?: 'high' | 'normal' | 'low' | 'unranked'; reason: string;
+ /** On a schedule_ended row (TASK-4537): when the open item's schedule ended. */
+ ended_at?: string;
 };
 
 export interface AgendaResponse {
@@ -3916,6 +3919,20 @@ export interface CommitmentResolveRequest {
 	state: ScheduleResolveState;
 	comment?: string;
 	until?: string;
+	/** done/skip: end the schedule on its last occurrence while the item stays open (TASK-4537). */
+	end_schedule?: boolean;
+}
+
+/** details of a 409 item_still_open: the done or skip would end an open item's schedule (TASK-4537). */
+export interface ItemStillOpenDetails {
+	state: 'done' | 'skip';
+	occurrence_at: string;
+	done_field: string;
+	item_status: string;
+	/** The done field's delivering closes, in the field's option order. */
+	close_options: string[];
+	/** The occurrence has fired and is not acknowledged: ack is an alternative. */
+	ack_available: boolean;
 }
 
 export interface CommitmentRoles {
@@ -4002,6 +4019,8 @@ export interface ItemCommitmentView {
  missed_truncated?: boolean;
  stale?: boolean;
  ended_at?: string;
+ /** When an editor dismissed the ended schedule from Outstanding (TASK-4537). */
+ ended_dismissed_at?: string;
  error_code?: string;
  reminder_id?: string;
  created_at: string;
@@ -4026,7 +4045,7 @@ export interface CommitmentChange {
 
 export interface CommitmentResolveResult {
 	commitment: ItemCommitmentView;
-	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline' };
+	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline'; item_still_open?: boolean };
 }
 
 export interface ItemCopySchedule {
