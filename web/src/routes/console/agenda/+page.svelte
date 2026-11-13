@@ -380,7 +380,7 @@
 		const seen = new Set(shown.entries.map(entryKey));
 		return {
 			...shown, entries: [...shown.entries, ...rest.entries.filter(entry => !seen.has(entryKey(entry)))],
-			window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from,
+			window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from, events_truncated: shown.events_truncated || rest.events_truncated,
 			unavailable: [...(shown.unavailable ?? []), ...(rest.unavailable ?? [])], unexpanded: [...(shown.unexpanded ?? []), ...(rest.unexpanded ?? [])]
 		};
 	}
@@ -626,6 +626,11 @@
 			{:else}
 				<span>Some schedules could not be shown.</span>
 			{/if}
+		</div>
+	{/if}
+	{#if showCompleted && data?.events_truncated}
+		<div class="notice info">
+			<span>Not every completed item fits. Showing the earliest 500 in this {mode}.</span>
 		</div>
 	{/if}
 	{#if hiddenCompleted}
