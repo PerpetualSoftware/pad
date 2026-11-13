@@ -9,7 +9,6 @@ import (
 	mcpgo "github.com/mark3labs/mcp-go/mcp"
 	"net/http"
 	"net/url"
-	"slices"
 	"sort"
 	"strings"
 
@@ -108,18 +107,18 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 			return dispatcherErrorResult(key, "decode index", err), nil
 		}
 		columns := make([]boardColumn, 0, len(status.Options))
+		// Terminal and abandoned come from the shared resolvers, so a status
+		// field that declares no terminal_options gets the default terminal
+		// list and the usual case-insensitive matching, as elsewhere in Pad.
+		_, abandonedValues := models.AbandonedValuesForDoneField(schema, models.CollectionSettings{})
 		for _, option := range status.Options {
-			terminal := slices.Contains(status.TerminalOptions, option)
+			terminal := models.IsTerminalStatus(option, schema)
 			abandoned := false
 			if terminal {
-				if len(status.AbandonedOptions) > 0 {
-					for _, v := range status.AbandonedOptions {
-						if strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(option)) {
-							abandoned = true
-						}
+				for _, v := range abandonedValues {
+					if strings.EqualFold(strings.TrimSpace(v), strings.TrimSpace(option)) {
+						abandoned = true
 					}
-				} else {
-					abandoned = models.IsNegativeTerminal(option)
 				}
 			}
 			columns = append(columns, boardColumn{Status: option, Terminal: terminal, Abandoned: abandoned, Items: []boardItem{}})

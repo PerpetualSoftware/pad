@@ -453,3 +453,21 @@ func TestMCPApps_BoardInstructionsCount(t *testing.T) {
 		}
 	}
 }
+
+// A status field with no terminal_options takes the default terminal list,
+// matched case-insensitively, like the rest of Pad.
+func TestPadBoard_ShowDefaultTerminals(t *testing.T) {
+	f := newBoardFixture(t)
+	if _, err := f.st.CreateCollection(f.ws.ID, models.CollectionCreate{Name: "Legacy", Slug: "legacy", Prefix: "LEG", Schema: `{"fields":[{"key":"status","type":"select","options":["open","Done","cancelled"]}]}`}); err != nil {
+		t.Fatal(err)
+	}
+	got := map[string][2]bool{}
+	for _, c := range boardCols(t, f.call(t, context.Background(), "show", map[string]any{"collection": "legacy"})) {
+		col := c.(map[string]any)
+		got[col["status"].(string)] = [2]bool{col["terminal"].(bool), col["abandoned"].(bool)}
+	}
+	want := map[string][2]bool{"open": {false, false}, "Done": {true, false}, "cancelled": {true, true}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("columns terminal/abandoned = %v, want %v", got, want)
+	}
+}

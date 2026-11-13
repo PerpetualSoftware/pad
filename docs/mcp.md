@@ -126,8 +126,9 @@ Hidden and missing collections return the same `not_found` response.
 `show` returns `{workspace, collection, columns, truncated, unplaced, cursor,
 access_epoch}`. Columns follow schema status order and contain `{status,
 terminal, abandoned, total, items}`. Terminal and abandoned flags follow the
-schema, with the usual negative-terminal fallback for undeclared abandoned
-options. Items contain exactly `{id, ref, title, status, priority, assignee,
+schema the same way as elsewhere in Pad: a status field with no
+`terminal_options` uses the default terminal list, undeclared abandoned
+options use the negative-terminal list, and matching ignores case. Items contain exactly `{id, ref, title, status, priority, assignee,
 parent_ref, seq, updated_at}`. At most 300 non-terminal items overall and 20
 per terminal column are included, newest updated first; totals are uncapped,
 `truncated` marks a cut, and `unplaced` counts items with unknown statuses.
