@@ -16,3 +16,10 @@ var PadSkill []byte
 //
 //go:embed web/build-materializer/materializer.js
 var MaterializerJS []byte
+
+// MCPAppItemCardHTML is the MCP Apps item card view (TASK-4465), built by
+// web/scripts/build-mcp-app.mjs (part of `npm run build`). Generated and
+// gitignored, like web/build.
+//
+//go:embed web/build-mcp-app/item-card.html
+var MCPAppItemCardHTML []byte

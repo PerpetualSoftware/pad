@@ -309,7 +309,8 @@ lint:
 # Mirrors the "Run govulncheck" step in CI's Go job — keep the two in sync.
 #
 # The build needs web/build (and web/build-materializer/materializer.js,
-# TASK-2198) to exist for the //go:embed directives. Locally
+# TASK-2198, and web/build-mcp-app/item-card.html, TASK-4465) to exist for
+# the //go:embed directives. Locally
 # `make web` / `make install` provides the real assets; the guard below
 # drops a placeholder when it's absent (e.g. a fresh clone) so a standalone
 # `make vuln` never fails on the embed. `go install foo@vX.Y.Z` is idempotent
@@ -324,6 +325,7 @@ vuln:
 	go install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
 	@[ -n "$$(ls -A web/build 2>/dev/null)" ] || { mkdir -p web/build && echo placeholder > web/build/.gitkeep; }
 	@[ -f web/build-materializer/materializer.js ] || { mkdir -p web/build-materializer && echo '// placeholder' > web/build-materializer/materializer.js; }
+	@[ -f web/build-mcp-app/item-card.html ] || { mkdir -p web/build-mcp-app && echo '// placeholder' > web/build-mcp-app/item-card.html; }
 	go build -o pad-vulnscan ./cmd/pad
 	$(GOVULNCHECK) -mode binary pad-vulnscan; status=$$?; rm -f pad-vulnscan; exit $$status
 

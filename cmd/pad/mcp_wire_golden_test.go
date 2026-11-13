@@ -80,6 +80,7 @@ func TestMCPWireGolden_Stdio(t *testing.T) {
 }
 
 func TestMCPWireGolden_Remote(t *testing.T) {
+	t.Setenv("PAD_MCP_APPS", "")
 	root := newRootCmd()
 	doc := cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", Version: fullVersion(), Homepage: padHomepage, MaxDepth: -1})
 	mcpSrv := mcpserver.NewServer(mcpserver.Options{Version: fullVersion()})
@@ -100,7 +101,7 @@ func TestMCPWireGolden_Remote(t *testing.T) {
 		if session != "" {
 			req.Header.Set("Mcp-Session-Id", session)
 		}
-		resp, err := http.DefaultClient.Do(req)
+		resp, err := ts.Client().Do(req)
 		if err != nil {
 			t.Fatal(err)
 		}

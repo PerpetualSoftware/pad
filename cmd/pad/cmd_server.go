@@ -1461,6 +1461,17 @@ func newObservedRoomManager(s *store.Store, bus collab.OpBus, m *metrics.Metrics
 	return rm
 }
 
+// mcpAppsEnabled reads PAD_MCP_APPS with the PAD_MCP_ENABLED vocabulary:
+// false, 0, no or off (any case, surrounding space ignored) turn MCP Apps
+// off; anything else, including unset, leaves them on.
+func mcpAppsEnabled(v string) bool {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case "false", "0", "no", "off":
+		return false
+	}
+	return true
+}
+
 // registerRemoteMCP registers everything the remote /mcp transport serves on
 // mcpSrv: the catalog, prompts, meta and resources. Extracted from the
 // cloud branch of serverStartCmd (TASK-2306) so the wire-golden test can
@@ -1472,7 +1483,9 @@ func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispa
 	// through the same per-user auth/consent perimeter as the resource.
 	resourceFetcher := mcpserver.NewHTTPResourceFetcher(dispatcher)
 	if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
-		Doc: mcpDoc,
+		Doc:   mcpDoc,
+		Apps:  mcpAppsEnabled(os.Getenv("PAD_MCP_APPS")),
+		AppUI: mcpserver.AppUI{ItemCardHTML: pad.MCPAppItemCardHTML},
 		// Shared multi-user state: this one stateless process
 		// dispatches for every OAuth user, so the session
 		// workspace must NEVER be trusted as a per-call

@@ -130,9 +130,9 @@ jobs:
       # is built for real rather than stubbed: internal/materialize's tests run
       # it (TestCorpusParity replays the corpus through it in goja), so a
       # placeholder would fail them. Only the bundle, not the whole web build.
-      - name: Build the materializer bundle for embed
+      - name: Build the materializer and MCP App bundles for embed
         working-directory: web
-        run: npm ci && node scripts/build-materializer.mjs
+        run: npm ci && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs
 
       - name: Run go vet
         run: go vet ./...
@@ -399,9 +399,9 @@ jobs:
       # spawn real workers that load it, and internal/materialize.New refuses
       # a placeholder by name. Only the bundle, not the whole web build (the
       # go job's shape): web/build stays the placeholder above.
-      - name: Build the materializer bundle for embed
+      - name: Build the materializer and MCP App bundles for embed
         working-directory: web
-        run: npm ci && node scripts/build-materializer.mjs
+        run: npm ci && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs
 
       - name: Build binary
         run: go build -o "${{ matrix.binary }}" ./cmd/pad
@@ -584,9 +584,9 @@ jobs:
       # is built for real rather than stubbed: internal/materialize's tests run
       # it (TestCorpusParity replays the corpus through it in goja), so a
       # placeholder would fail them. Only the bundle, not the whole web build.
-      - name: Build the materializer bundle for embed
+      - name: Build the materializer and MCP App bundles for embed
         working-directory: web
-        run: npm ci && node scripts/build-materializer.mjs
+        run: npm ci && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs
 
       # pad's backup and restore shell out to pg_dump and psql, and pg_dump
       # refuses to dump a server newer than itself. ubuntu-latest ships the
@@ -742,9 +742,10 @@ jobs:
       # are enough here: -list runs no tests.
       - name: Create embed placeholders
         run: |
-          mkdir -p web/build web/build-materializer
+          mkdir -p web/build web/build-materializer web/build-mcp-app
           echo "placeholder" > web/build/.gitkeep
           echo "placeholder" > web/build-materializer/materializer.js
+          echo "placeholder" > web/build-mcp-app/item-card.html
 
       - name: Check the shards cover internal/server exactly once
         run: scripts/test-shard.sh check ./internal/server/ 3 $GO_RACE_FLAGS
@@ -982,9 +983,9 @@ jobs:
           node-version: "26"
           cache: npm
           cache-dependency-path: web/package-lock.json
-      - name: Build web and the real materializer bundle
+      - name: Build web, materializer and MCP App bundles
         working-directory: web
-        run: npm ci && npx vite build && node scripts/build-materializer.mjs
+        run: npm ci && npx vite build && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs
       - name: Run SQLite web parity tests from the census manifest
         run: |
           set -euo pipefail

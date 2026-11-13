@@ -18,9 +18,10 @@ let
   # SvelteKit static build (web/build) that gets embedded into the Go
   # binary via `//go:embed all:web/build` in embed.go, plus the headless
   # materializer bundle (web/build-materializer, TASK-2198) embedded the same
-  # way; `npm run build` produces both. Built separately so the Go derivation
-  # only needs a file copy, not a Node toolchain. $out holds the two as
-  # $out/build and $out/build-materializer.
+  # way, and the MCP App (web/build-mcp-app, TASK-4465). `npm run build`
+  # produces all three. Built separately so the Go derivation
+  # only needs a file copy, not a Node toolchain. $out holds them as
+  # $out/build, $out/build-materializer and $out/build-mcp-app.
   # Uses importNpmLock (per-package fetchurl against web/package-lock.json's
   # own integrity hashes) rather than buildNpmPackage's npmDepsHash, so npm
   # dependency updates never require discovering/updating a separate hash.
@@ -54,6 +55,7 @@ let
       mkdir -p $out
       cp -r build $out/build
       cp -r build-materializer $out/build-materializer
+      cp -r build-mcp-app $out/build-mcp-app
       runHook postInstall
     '';
   };
@@ -105,15 +107,16 @@ buildGoModule {
     runHook postCheck
   '';
 
-  # Populate web/build and web/build-materializer with the real outputs
+  # Populate web/build, web/build-materializer and web/build-mcp-app with real outputs
   # before `go build` runs, so the //go:embed directives in embed.go have
   # real files to embed (and internal/materialize's tests, run by the
   # checkPhase, have the real bundle). postPatch runs after patchPhase,
   # before configure/build.
   postPatch = ''
-    rm -rf web/build web/build-materializer
+    rm -rf web/build web/build-materializer web/build-mcp-app
     cp -r ${webUI}/build web/build
     cp -r ${webUI}/build-materializer web/build-materializer
+    cp -r ${webUI}/build-mcp-app web/build-mcp-app
   '';
 
   env.CGO_ENABLED = 0;

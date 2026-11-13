@@ -6,7 +6,7 @@
 	"type": "module",
 	"scripts": {
 		"dev": "vite dev",
-		"build": "vite build && node scripts/build-materializer.mjs",
+		"build": "vite build && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs",
 		"preview": "vite preview",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
@@ -21,6 +21,9 @@
 	},
 	"devDependencies": {
 		"@axe-core/playwright": "4.14.0",
+		"@modelcontextprotocol/client": "2.4.0",
+		"@modelcontextprotocol/core": "2.4.0",
+		"@modelcontextprotocol/ext-apps": "2.0.4",
 		"@playwright/test": "^1.64.1",
 		"@sveltejs/adapter-static": "^4.0.0",
 		"@sveltejs/kit": "^3.1.0",
@@ -38,7 +41,8 @@
 		"svelte-check": "^4.7.7",
 		"typescript": "^6.0.3",
 		"vite": "^8.3.5",
-		"vitest": "5.0.5"
+		"vitest": "5.0.5",
+		"zod": "4.6.7"
 	},
 	"overrides": {
 		"cookie": "^2.0.1",
@@ -47,7 +51,8 @@
 		"markdown-it": "^14.3.3",
 		"layercake": {
 			"typescript": "$typescript"
-		}
+		},
+		"jose": "6.2.15"
 	},
 	"dependencies": {
 		"@dagrejs/dagre": "3.1.3",
