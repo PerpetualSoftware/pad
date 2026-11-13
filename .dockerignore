@@ -6,6 +6,7 @@ dist/
 # Web build (rebuilt in Docker)
 web/build/
 web/build-materializer/
+web/build-mcp-app/
 web/node_modules/
 web/.svelte-kit/
 

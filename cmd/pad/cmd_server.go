@@ -1472,7 +1472,9 @@ func registerRemoteMCP(mcpSrv *mcpserver.Server, mcpDoc *cmdhelp.Document, dispa
 	// through the same per-user auth/consent perimeter as the resource.
 	resourceFetcher := mcpserver.NewHTTPResourceFetcher(dispatcher)
 	if _, regErr := mcpserver.Register(mcpSrv.MCP(), mcpserver.RegistryOptions{
-		Doc: mcpDoc,
+		Doc:   mcpDoc,
+		Apps:  !strings.EqualFold(os.Getenv("PAD_MCP_APPS"), "off"),
+		AppUI: mcpserver.AppUI{ItemCardHTML: pad.MCPAppItemCardHTML},
 		// Shared multi-user state: this one stateless process
 		// dispatches for every OAuth user, so the session
 		// workspace must NEVER be trusted as a per-call

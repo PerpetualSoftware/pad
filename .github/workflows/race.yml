@@ -58,9 +58,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       # Built for real, as in the `go` job: internal/server's tests run it.
-      - name: Build the materializer bundle for embed
+      - name: Build the materializer and MCP App bundles for embed
         working-directory: web
-        run: npm ci && node scripts/build-materializer.mjs
+        run: npm ci && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs
 
       - name: Run internal/server shard with race detector
         env:
@@ -129,9 +129,9 @@ jobs:
           cache-dependency-path: web/package-lock.json
 
       # Built for real, as in the `go` job: internal/server's tests run it.
-      - name: Build the materializer bundle for embed
+      - name: Build the materializer and MCP App bundles for embed
         working-directory: web
-        run: npm ci && node scripts/build-materializer.mjs
+        run: npm ci && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs
 
       # internal/server's tests need no PostgreSQL client tools (no pg_dump
       # or psql), so the PGDG install the go-postgres job does is not here.

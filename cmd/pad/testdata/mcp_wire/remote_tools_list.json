@@ -238,6 +238,12 @@
       "name": "pad_collection"
     },
     {
+      "_meta": {
+        "ui": {
+          "resourceUri": "ui://pad/item-card"
+        },
+        "ui/resourceUri": "ui://pad/item-card"
+      },
       "annotations": {
         "readOnlyHint": false,
         "destructiveHint": true,

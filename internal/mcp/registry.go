@@ -17,6 +17,11 @@ import (
 // command schemas consumed by BuildCLIArgs at dispatch time), but no
 // longer drives tool naming or count.
 type RegistryOptions struct {
+	// Apps enables MCP Apps for remote HTTP only; stdio leaves it false.
+	Apps bool
+	// AppUI holds the remote HTTP app assets.
+	AppUI AppUI
+
 	// Doc is the cmdhelp Document describing the command tree.
 	// Required — used by env.Dispatch to look up cmdInfo for
 	// BuildCLIArgs. The tool surface itself is hand-curated in
@@ -95,9 +100,13 @@ func Register(srv *server.MCPServer, opts RegistryOptions) (int, error) {
 		PadVersion:     opts.PadVersion,
 		StructuredOnly: opts.StructuredOnly,
 		TextOnly:       opts.TextOnly,
+		Apps:           opts.Apps,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("register catalog: %w", err)
+	}
+	if opts.Apps {
+		RegisterAppResources(srv, opts.AppUI)
 	}
 	return count + catalogCount, nil
 }

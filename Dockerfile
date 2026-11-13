@@ -16,6 +16,7 @@ RUN go mod download
 COPY . .
 COPY --from=web-builder /app/web/build ./web/build
 COPY --from=web-builder /app/web/build-materializer ./web/build-materializer
+COPY --from=web-builder /app/web/build-mcp-app ./web/build-mcp-app
 
 # Build metadata. All three are caller-passed via --build-arg (see
 # pad-cloud/scripts/build-pad.sh for the production wrapper that

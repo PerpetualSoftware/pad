@@ -90,6 +90,24 @@ Each `initialize` logs one line, `mcp client initialized`, with `client_name`, `
 **Leases.** A lease is held under a WORKER ID plus the account (TASK-3613); the holder label is display only. A remote call's default worker id (a `claim` / `release` with no `worker_id`, and the identity `next` / `ready` compare leases against) is derived from the account and its `Mcp-Session-Id`, so two connections of one client on one account hold leases separately. The label is the client name, or `mcp-client` when none was declared; it replaced BUG-2772's `claude-code#3f9a12c4` suffix, which only ever carried uniqueness. A `claim` answers with its `worker_id`. Passing that back as `worker_id` on `claim`, `release`, `next` or `ready` (on `pad_item` / `pad_project`) RESUMES the lease from another connection, which closes BUG-2772's reconnect residual for a client that keeps it. A malformed one is refused `validation_failed`. A modern (stateless) request has no session id, so unless it passes `worker_id` it claims name-only: its lease is matched on label plus account, as before, and two such clients under one name still share one. Over local stdio the CLI sends this session's own worker id (from `pad session register`), and `worker_id` maps to `--worker-id`. A claim refused because another holder has the lease answers `lease_held` on both transports, with `details.holder`, `details.worker` (the SHORT id, `wk_3f2a`; the full id is never shown) and `details.expires_at` (BUG-3496). A name-only caller refused by a worker-bound lease under its own name is told how to get a worker id.
 
 
+## MCP Apps (remote only)
+
+The remote HTTP `/mcp` server advertises an item card on `pad_item` through
+`_meta.ui.resourceUri` and the legacy `_meta["ui/resourceUri"]`, both pointing to
+`ui://pad/item-card`. Hosts that support MCP Apps can render that HTML resource
+(`text/html;profile=mcp-app`) as an item card. Other hosts can ignore the extra
+`_meta` key. Tool names, parameters, annotations and results are unchanged.
+The stdio server (`pad mcp serve`) is unchanged and advertises no app metadata
+or app resource.
+
+Apps are on by default for remote MCP. Set `PAD_MCP_APPS=off` (case-insensitive)
+to disable both the metadata and the resource.
+
+The view bridge restricts its allowed calls to `pad_item:get`, `pad_item:update`,
+`pad_collection:list`, `pad_board:show` and `pad_board:changes`. This allowlist is
+in the view and is **not a server-side control**: the server cannot tell a card
+write from a model write. Normal server authorization still applies to all calls.
+
 ## Tool description detail (moved for the prompt budget)
 
 These examples and reasons accompany the rules kept in the agent-facing tool descriptions and initialize instructions.

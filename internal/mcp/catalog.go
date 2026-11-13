@@ -209,6 +209,8 @@ func appendToCatalog(def ToolDef) {
 // CatalogOptions configures RegisterCatalog. Mirrors RegistryOptions
 // for the cmdhelp-walk path but adds PadVersion (needed by pad_meta).
 type CatalogOptions struct {
+	// Apps enables remote HTTP item card metadata; stdio leaves it false.
+	Apps           bool
 	Doc            *cmdhelp.Document
 	Workspace      *WorkspaceState
 	Dispatcher     Dispatcher
@@ -242,6 +244,9 @@ func RegisterCatalog(srv *server.MCPServer, opts CatalogOptions) (int, error) {
 	count := 0
 	for _, def := range Catalog {
 		tool := buildToolFromDef(def)
+		if opts.Apps && def.Name == "pad_item" {
+			tool.Meta = &mcp.Meta{AdditionalFields: itemToolUIMeta()}
+		}
 		handler := makeFanOutHandler(def, env)
 		srv.AddTool(tool, handler)
 		count++
