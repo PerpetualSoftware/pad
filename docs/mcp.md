@@ -108,6 +108,15 @@ The view bridge restricts its allowed calls to `pad_item:get`, `pad_item:update`
 in the view and is **not a server-side control**: the server cannot tell a card
 write from a model write. Normal server authorization still applies to all calls.
 
+The card renders for the single-item actions (`get`, `create`, `update`, `move`,
+`restore`, `claim`, `release`) and renders nothing for any other action. It shows
+the ref, title, collection, select fields, assignee, updated time and a plain-text
+preview of the first 400 characters of the content. The title and each
+non-computed select field are editable; an edit is one `pad_item update` carrying
+`expected_seq`, and on `update_conflict` the card reloads the item instead of
+retrying. The card never sends `content`, and it follows the host's theme and
+style variables.
+
 ## Tool description detail (moved for the prompt budget)
 
 These examples and reasons accompany the rules kept in the agent-facing tool descriptions and initialize instructions.

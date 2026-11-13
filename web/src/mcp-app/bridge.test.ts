@@ -3,13 +3,21 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 
-const sdk = vi.hoisted(() => ({ callServerTool: vi.fn(), connect: vi.fn(), instances: [] as Array<Record<string, any>> }));
+const sdk = vi.hoisted(() => ({
+	callServerTool: vi.fn(), connect: vi.fn(), getHostContext: vi.fn(),
+	applyDocumentTheme: vi.fn(), applyHostStyleVariables: vi.fn(), applyHostFonts: vi.fn(),
+	instances: [] as Array<Record<string, any>>
+}));
 // Split the specifier so the production-import source guard also scans this file.
-vi.mock('@modelcontextprotocol/' + 'ext-apps', () => ({ App: class {
-	callServerTool = sdk.callServerTool;
-	connect = sdk.connect;
-	constructor() { sdk.instances.push(this); }
-} }));
+vi.mock('@modelcontextprotocol/' + 'ext-apps', () => ({
+	applyDocumentTheme: sdk.applyDocumentTheme, applyHostStyleVariables: sdk.applyHostStyleVariables, applyHostFonts: sdk.applyHostFonts,
+	App: class {
+		callServerTool = sdk.callServerTool;
+		connect = sdk.connect;
+		getHostContext = sdk.getHostContext;
+		constructor() { sdk.instances.push(this); }
+	}
+}));
 import { connectApp, ALLOWED_CALLS } from './bridge';
 
 beforeEach(() => { sdk.instances.length = 0; vi.clearAllMocks(); });
@@ -28,6 +36,23 @@ it('installs handlers before connecting and forwards host notifications', async 
 	expect(handlers.onToolResult).toHaveBeenCalledWith({ structuredContent: { id: '1' } });
 	expect(handlers.onHostContext).toHaveBeenCalledWith({ theme: 'dark' });
 	expect(sdk.connect).toHaveBeenCalledOnce();
+});
+it('applies the host theme, style variables and fonts, initially and on change', async () => {
+	const onHostContext = vi.fn();
+	const variables = { '--color-text-primary': '#111' };
+	sdk.getHostContext.mockReturnValueOnce({ theme: 'light', styles: { variables, css: { fonts: '@font-face{}' } } });
+	await connectApp({ onToolInput() {}, onToolResult() {}, onHostContext });
+	expect(sdk.applyDocumentTheme).toHaveBeenCalledWith('light');
+	expect(sdk.applyHostStyleVariables).toHaveBeenCalledWith(variables);
+	expect(sdk.applyHostFonts).toHaveBeenCalledWith('@font-face{}');
+	expect(onHostContext).toHaveBeenCalledWith(expect.objectContaining({ theme: 'light' }));
+
+	// A partial change applies only what it carries.
+	vi.clearAllMocks();
+	sdk.instances[0].onhostcontextchanged({ theme: 'dark' });
+	expect(sdk.applyDocumentTheme).toHaveBeenCalledWith('dark');
+	expect(sdk.applyHostStyleVariables).not.toHaveBeenCalled();
+	expect(sdk.applyHostFonts).not.toHaveBeenCalled();
 });
 it('refuses all calls outside the frozen allowlist before reaching the SDK', async () => {
 	const bridge = await connectApp({ onToolInput() {}, onToolResult() {} });
