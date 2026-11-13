@@ -1,3 +1,4 @@
+- On this surface `pad_board` is an additional read-only resource × action tool: twelve resource × action tools plus `pad_set_workspace`, thirteen tools total.
 - `pad_item` results render as editable cards.
 - `pad_board` show opens a live board of a collection; changes keeps it current. Both actions are read-only.
 - The views write only title and select fields.

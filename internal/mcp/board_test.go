@@ -424,3 +424,18 @@ func TestPadBoard_ChangesExactCollection(t *testing.T) {
 		_ = other
 	}
 }
+
+// With Apps on, the instructions count pad_board among the tools; without
+// Apps the sentence is absent.
+func TestMCPApps_BoardInstructionsCount(t *testing.T) {
+	for _, enabled := range []bool{true, false} {
+		init := appsWireResult(t, appsTestServer(t, enabled), "initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "1"}})
+		text, _ := init["instructions"].(string)
+		if enabled && !strings.Contains(text, "Twelve tools total") {
+			t.Fatal("base instructions missing")
+		}
+		if got := strings.Contains(text, "`pad_board` is an additional read-only resource × action tool") && strings.Contains(text, "thirteen tools total"); got != enabled {
+			t.Fatalf("apps=%v: thirteen-tools sentence present=%v", enabled, got)
+		}
+	}
+}
