@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -17,6 +18,9 @@ func ackHTTPFixture(t *testing.T) *schedHTTP {
 	t.Helper()
 	f := newSchedHTTP(t)
 	f.create(map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC"})
+	if _, err := f.srv.store.DB().Exec(`UPDATE items SET assigned_user_id=? WHERE id=?`, f.owner.ID, f.item.ID); err != nil {
+		t.Fatal(err)
+	}
 	_, err := f.srv.store.DB().Exec(`UPDATE item_reminders SET fired_at=? WHERE item_id=?`, "2099-01-01T09:00:00Z", f.item.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +76,12 @@ func TestCommitmentAckVisibilityOracle(t *testing.T) {
 	t.Parallel()
 	f := ackHTTPFixture(t)
 	guest := mustUser(t, f.srv, "ack-guest@example.com", "ackguest", "")
+	if err := f.srv.store.AddWorkspaceMember(f.ws.ID, guest.ID, "editor"); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.srv.store.SetMemberCollectionAccess(f.ws.ID, guest.ID, "specific", []string{}); err != nil {
+		t.Fatal(err)
+	}
 	tok := f.token(guest, "")
 	missing := f.as(tok, "POST", strings.Replace(f.resolvePath(f.item), f.item.Slug, "NOPE-99999", 1), httpAckBody())
 	for _, phase := range []string{"fired", "acked", "ended", "absent"} {
@@ -90,8 +100,8 @@ func TestCommitmentAckVisibilityOracle(t *testing.T) {
 			t.Fatalf("oracle %s hidden=%s missing=%s", phase, hidden.Body.String(), missing.Body.String())
 		}
 	}
-	for _, scope := range []string{"", `["read"]`} {
-		viewer := f.member("ack-viewer"+scope+"@example.com", "viewer")
+	for i, scope := range []string{"", `["read"]`} {
+		viewer := f.member(fmt.Sprintf("ack-viewer%d@example.com", i), "viewer")
 		if rr := f.as(f.token(viewer, scope), "POST", f.resolvePath(f.item), httpAckBody()); rr.Code != 403 {
 			t.Fatalf("viewer=%d %s", rr.Code, rr.Body.String())
 		}
@@ -213,7 +223,7 @@ func TestAcknowledgedCalendarFeedKeepsUIDAndDates(t *testing.T) {
 		}
 		return strings.Join(out, "\n")
 	}
-	if before.Code != 200 || after.Code != 200 || lines(before.Body.String()) != lines(after.Body.String()) || strings.Contains(after.Body.String(), "VALARM") || strings.Contains(after.Body.String(), "STATUS:COMPLETED") {
+	if before.Code != 200 || after.Code != 200 || lines(before.Body.String()) == "" || lines(before.Body.String()) != lines(after.Body.String()) || strings.Contains(after.Body.String(), "VALARM") || strings.Contains(after.Body.String(), "STATUS:COMPLETED") {
 		t.Fatal("ack changed calendar identity/dates")
 	}
 }
@@ -245,4 +255,47 @@ func TestAcknowledgedPushHeldPruningRebuildsSummary(t *testing.T) {
 			t.Fatalf("cancelled row survived push pruning: %+v", msgs)
 		}
 	})
+}
+
+func TestCommitmentAckAgentIdentity(t *testing.T) {
+	t.Parallel()
+	f := ackHTTPFixture(t)
+	rr := doRequestWithHeaders(f.srv, "POST", f.resolvePath(f.item), httpAckBody(), map[string]string{"Authorization": "Bearer " + f.token(f.owner, ""), "X-Pad-Agent": "  rook  "})
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	next := schedMap(t, rr)["commitment"].(map[string]any)["next_occurrence"].(map[string]any)
+	by := next["acknowledged_by"].(map[string]any)
+	if by["actor"] != "agent" || by["agent_name"] != "rook" || by["user_id"] != f.owner.ID {
+		t.Fatalf("identity=%v", by)
+	}
+	var raw, actor string
+	if err := f.srv.store.DB().QueryRow(`SELECT after_json,actor FROM schedule_changes WHERE item_id=? AND change_type='ack'`, f.item.ID).Scan(&raw, &actor); err != nil {
+		t.Fatal(err)
+	}
+	var evidence map[string]any
+	_ = json.Unmarshal([]byte(raw), &evidence)
+	if actor != "agent" || evidence["actor_user_id"] != f.owner.ID || evidence["agent_name"] != "rook" || evidence["reminder_id"] == nil || evidence["acked_at"] != next["acknowledged_at"] || evidence["occurrence_at"] != resolveX {
+		t.Fatalf("evidence=%s actor=%s", raw, actor)
+	}
+	if _, err := f.srv.store.DB().Exec(`UPDATE users SET name='Renamed' WHERE id=?`, f.owner.ID); err != nil {
+		t.Fatal(err)
+	}
+	rr = f.do("GET", nil)
+	by = schedMap(t, rr)["next_occurrence"].(map[string]any)["acknowledged_by"].(map[string]any)
+	if by["name"] != "Renamed" {
+		t.Fatalf("name not read-time=%v", by)
+	}
+}
+
+func TestCommitmentAckNullCombinations(t *testing.T) {
+	t.Parallel()
+	for _, field := range []string{"until", "actual_done_at", "comment"} {
+		t.Run(field, func(t *testing.T) {
+			f := ackHTTPFixture(t)
+			body := httpAckBody()
+			body[field] = nil
+			f.expectErr(f.resolve(body), 400, "validation_error", "combination")
+		})
+	}
 }

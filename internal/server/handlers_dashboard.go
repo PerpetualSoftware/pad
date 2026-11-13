@@ -197,19 +197,23 @@ type DashboardSuggestion struct {
 	// retire it, which was a real gap: the docs told
 	// agents to ack what they saw here, and the payload did not carry the
 	// handle.
-	ReminderID string `json:"reminder_id,omitempty"`
+	ReminderID   string  `json:"reminder_id,omitempty"`
+	ScheduleID   *string `json:"schedule_id,omitempty"`
+	OccurrenceAt *string `json:"occurrence_at,omitempty"`
 }
 
 // DashboardReminder is one fired-and-unacknowledged reminder, rendered with
 // the item it is about.
 type DashboardReminder struct {
-	ID         string `json:"id"`
-	ItemSlug   string `json:"item_slug"`
-	ItemRef    string `json:"item_ref"`
-	ItemTitle  string `json:"item_title"`
-	Collection string `json:"collection"`
-	RemindAt   string `json:"remind_at"`
-	FiredAt    string `json:"fired_at"`
+	ID           string  `json:"id"`
+	ScheduleID   *string `json:"schedule_id,omitempty"`
+	OccurrenceAt *string `json:"occurrence_at,omitempty"`
+	ItemSlug     string  `json:"item_slug"`
+	ItemRef      string  `json:"item_ref"`
+	ItemTitle    string  `json:"item_title"`
+	Collection   string  `json:"collection"`
+	RemindAt     string  `json:"remind_at"`
+	FiredAt      string  `json:"fired_at"`
 }
 
 // Blocked-item resolution (both the attention-blocked section and the
@@ -787,7 +791,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				firedAt = *pr.FiredAt
 			}
 			resp.PendingReminders = append(resp.PendingReminders, DashboardReminder{
-				ID:         pr.ID,
+				ID: pr.ID, ScheduleID: pr.ScheduleID, OccurrenceAt: pr.OccurrenceAt,
 				ItemSlug:   pr.ItemSlug,
 				ItemRef:    pr.ItemRef,
 				ItemTitle:  pr.ItemTitle,
@@ -1255,6 +1259,20 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		})
 	}
 
+	// Acknowledgement quiets this occurrence, including ordinary ranked fallback.
+	if acked, err := s.store.AcknowledgedScheduleItemIDs(workspaceID); err != nil {
+		markDegraded("suggested_next.acknowledgements", err)
+		candidates = nil
+	} else {
+		kept := candidates[:0]
+		for _, c := range candidates {
+			if !acked[c.item.ID] {
+				kept = append(kept, c)
+			}
+		}
+		candidates = kept
+	}
+
 	// Items another holder has leased are not suggested (TASK-1809). A lease
 	// is a live claim that someone is executing the item, so recommending it
 	// to a second agent only sets up a lease_held refusal at claim time. The
@@ -1427,7 +1445,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 				break
 			}
 			reminderSuggestions = append(reminderSuggestions, DashboardSuggestion{
-				ReminderID: pr.ID,
+				ReminderID: pr.ID, ScheduleID: pr.ScheduleID, OccurrenceAt: pr.OccurrenceAt,
 				ItemSlug:   pr.ItemSlug,
 				ItemRef:    pr.ItemRef,
 				ItemTitle:  pr.ItemTitle,

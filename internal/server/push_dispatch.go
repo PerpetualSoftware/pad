@@ -734,7 +734,25 @@ func (s *Server) sendChunk(ctx context.Context, sender pushSender, token string,
 		if len(ids) == 0 {
 			continue
 		}
+		pruned := len(ids) != len(u.rowIDs)
 		u.rowIDs = ids
+		// A cancelled row cannot supply the kind or click target of a held group.
+		if pruned && len(meta) > 0 {
+			wasSummary := u.kind == notify.KindSummary
+			var newest store.Notification
+			groups := map[string]bool{}
+			for _, id := range ids {
+				n := meta[id]
+				groups[n.ItemID] = true
+				if newest.ID == "" || rowNewer(n, newest) {
+					newest = n
+				}
+			}
+			u.nid, u.kind = newest.ID, newest.Kind
+			if wasSummary && len(groups) > 1 {
+				u.kind = notify.KindSummary
+			}
+		}
 		count := 1
 		if u.kind == notify.KindSummary {
 			count = len(ids)

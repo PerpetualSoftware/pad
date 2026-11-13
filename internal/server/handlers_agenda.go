@@ -29,33 +29,35 @@ const (
 )
 
 type agendaEntry struct {
-	Forecast      *models.ForecastSummary `json:"forecast,omitempty"`
-	Type          string                  `json:"type"` // schedule | date | created | completed
-	At            string                  `json:"at,omitempty"`
-	Day           string                  `json:"day,omitempty"`
-	Wall          string                  `json:"wall,omitempty"`
-	AllDay        bool                    `json:"all_day,omitempty"`
-	Floating      *bool                   `json:"floating,omitempty"`
-	State         string                  `json:"state,omitempty"`
-	ItemRef       string                  `json:"item_ref"`
-	ItemTitle     string                  `json:"item_title"`
-	Collection    string                  `json:"collection"`
-	Roles         *models.CommitmentRoles `json:"roles,omitempty"`
-	OccurrenceKey string                  `json:"occurrence_key,omitempty"`
-	Rank          string                  `json:"rank,omitempty"`
-	Reason        string                  `json:"reason,omitempty"`
-	RolesOrigin   string                  `json:"roles_origin,omitempty"`
-	Audience      string                  `json:"audience,omitempty"`
-	ScheduleID    string                  `json:"schedule_id,omitempty"`
-	Field         string                  `json:"field,omitempty"`
-	Date          string                  `json:"date,omitempty"`
-	Fired         bool                    `json:"fired,omitempty"`
-	Overdue       bool                    `json:"overdue,omitempty"`
-	ResolvedAt    string                  `json:"resolved_at,omitempty"`
-	Actor         string                  `json:"actor,omitempty"`
-	CommentID     string                  `json:"comment_id,omitempty"`
-	MissedCount   int                     `json:"missed_count,omitempty"`
-	Stale         bool                    `json:"stale,omitempty"`
+	Forecast       *models.ForecastSummary `json:"forecast,omitempty"`
+	Type           string                  `json:"type"` // schedule | date | created | completed
+	At             string                  `json:"at,omitempty"`
+	Day            string                  `json:"day,omitempty"`
+	Wall           string                  `json:"wall,omitempty"`
+	AllDay         bool                    `json:"all_day,omitempty"`
+	Floating       *bool                   `json:"floating,omitempty"`
+	State          string                  `json:"state,omitempty"`
+	AcknowledgedAt *string                 `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy *models.AcknowledgedBy  `json:"acknowledged_by,omitempty"`
+	ItemRef        string                  `json:"item_ref"`
+	ItemTitle      string                  `json:"item_title"`
+	Collection     string                  `json:"collection"`
+	Roles          *models.CommitmentRoles `json:"roles,omitempty"`
+	OccurrenceKey  string                  `json:"occurrence_key,omitempty"`
+	Rank           string                  `json:"rank,omitempty"`
+	Reason         string                  `json:"reason,omitempty"`
+	RolesOrigin    string                  `json:"roles_origin,omitempty"`
+	Audience       string                  `json:"audience,omitempty"`
+	ScheduleID     string                  `json:"schedule_id,omitempty"`
+	Field          string                  `json:"field,omitempty"`
+	Date           string                  `json:"date,omitempty"`
+	Fired          bool                    `json:"fired,omitempty"`
+	Overdue        bool                    `json:"overdue,omitempty"`
+	ResolvedAt     string                  `json:"resolved_at,omitempty"`
+	Actor          string                  `json:"actor,omitempty"`
+	CommentID      string                  `json:"comment_id,omitempty"`
+	MissedCount    int                     `json:"missed_count,omitempty"`
+	Stale          bool                    `json:"stale,omitempty"`
 
 	Workspace     string `json:"workspace,omitempty"`
 	WorkspaceName string `json:"workspace_name,omitempty"`
@@ -485,7 +487,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 		for _, e := range es {
 			out := agendaEntry{
 				Type: "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
-				Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Floating: &sc.Floating, State: e.State,
+				Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Floating: &sc.Floating, State: e.State, AcknowledgedAt: e.AcknowledgedAt, AcknowledgedBy: e.AcknowledgedBy,
 				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Audience: sc.Audience,
 				Roles: &e.Roles, OccurrenceKey: e.OccurrenceKey, RolesOrigin: as.RolesOrigin, ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
 				CommentID: e.CommentID, MissedCount: e.MissedCount, Stale: e.Stale, instant: e.At, subKey: sc.ID,
@@ -499,7 +501,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 	}
 	ids := make([]string, 0, len(res.Entries))
 	for _, e := range res.Entries {
-		if e.State == "outstanding" {
+		if models.IsOpenOccurrenceState(e.State) {
 			ids = append(ids, e.ScheduleID)
 		}
 	}
@@ -508,7 +510,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 		return res, err
 	}
 	for i := range res.Entries {
-		if res.Entries[i].State == "outstanding" {
+		if models.IsOpenOccurrenceState(res.Entries[i].State) {
 			res.Entries[i].Forecast = forecasts[res.Entries[i].ScheduleID]
 		}
 	}

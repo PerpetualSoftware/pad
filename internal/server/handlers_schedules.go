@@ -25,8 +25,11 @@ import (
 
 // scheduleOccurrenceView is next_occurrence.
 type scheduleOccurrenceView struct {
-	At   string `json:"at"`
-	Wall string `json:"wall"`
+	State          string                 `json:"state"`
+	AcknowledgedAt *string                `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy *models.AcknowledgedBy `json:"acknowledged_by,omitempty"`
+	At             string                 `json:"at"`
+	Wall           string                 `json:"wall"`
 }
 
 // scheduleView is the API shape of a schedule. It is NOT models.ItemSchedule,
@@ -83,7 +86,7 @@ func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *model
 		// reading of the wall.
 		view := viewerZone(r).Loc
 		if at, ok, err := store.OutstandingInstant(sc, view); err == nil && ok {
-			v.NextOccurrence = &scheduleOccurrenceView{At: at.Format(time.RFC3339), Wall: *sc.NextWall}
+			v.NextOccurrence = &scheduleOccurrenceView{At: at.Format(time.RFC3339), Wall: *sc.NextWall, State: sc.OccurrenceState(), AcknowledgedAt: sc.AcknowledgedAt, AcknowledgedBy: sc.AcknowledgedBy}
 		}
 		if n, truncated, err := store.ScheduleMissed(sc, view, time.Now()); err != nil {
 			// The view still answers without the count. A rule that compiles but
@@ -397,11 +400,14 @@ func writeResolveError(w http.ResponseWriter, r *http.Request, err error) bool {
 	var stale *store.ErrStaleOccurrence
 	var broken *store.ErrScheduleBroken
 	switch {
+	case errors.Is(err, store.ErrOccurrenceNotFired):
+		writeError(w, http.StatusConflict, "not_fired", store.ErrOccurrenceNotFired.Error())
+		return true
 	case errors.As(err, &stale):
 		details := map[string]interface{}{"ended": stale.Ended()}
 		if !stale.Ended() && stale.Schedule.NextWall != nil {
 			if at, ok, err := store.OutstandingInstant(stale.Schedule, viewerZone(r).Loc); err == nil && ok {
-				details["next_occurrence"] = scheduleOccurrenceView{At: at.Format(time.RFC3339), Wall: *stale.Schedule.NextWall}
+				details["next_occurrence"] = scheduleOccurrenceView{At: at.Format(time.RFC3339), Wall: *stale.Schedule.NextWall, State: stale.Schedule.OccurrenceState(), AcknowledgedAt: stale.Schedule.AcknowledgedAt, AcknowledgedBy: stale.Schedule.AcknowledgedBy}
 			}
 		}
 		writeError2(w, http.StatusConflict, "stale",
@@ -443,7 +449,12 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return
 	}
-	b, err := strictScheduleBody[commitmentResolveBody](r)
+	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
+	if err != nil {
+		writeScheduleBodyError(w)
+		return
+	}
+	b, err := scheduleBodyBytes[commitmentResolveBody](raw)
 	body, actualDoneAt := b.scheduleResolveBody, b.ActualDoneAt
 	if err != nil {
 		writeScheduleBodyError(w)
@@ -460,6 +471,20 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 	in := store.ResolveInput{State: *body.State, View: viewerZone(r).Loc}
 	if in.OccurrenceAt, ok = parseResolveInstant(w, "occurrence_at", body.OccurrenceAt); !ok {
 		return
+	}
+	if in.State == "ack" {
+		if in.OccurrenceAt.Nanosecond() != 0 || strings.ContainsAny(*body.OccurrenceAt, ".,") {
+			writeResolveField(w, "occurrence_at", "format", "occurrence_at must use whole seconds")
+			return
+		}
+		var members map[string]json.RawMessage
+		_ = json.Unmarshal(raw, &members)
+		for _, name := range []string{"until", "actual_done_at", "comment"} {
+			if _, present := members[name]; present {
+				writeResolveField(w, name, "combination", name+" cannot be set with ack")
+				return
+			}
+		}
 	}
 	if body.Until != nil {
 		u, ok := parseResolveInstant(w, "until", body.Until)
@@ -481,6 +506,7 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	in.Actor, _ = actorFromRequest(r)
 	in.ActorUserID = currentUserID(r)
+	in.AgentName = agentNameFromRequest(r)
 	var commentInput models.CommentCreate
 	if body.Comment != nil && strings.TrimSpace(*body.Comment) != "" {
 		commentInput.Body = *body.Comment
@@ -533,7 +559,13 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	s.recordScheduleWrite(r, workspaceID, item, "schedule_resolved", resolveActivityMeta(res.Schedule.Kind, in.State))
+	if in.State == "ack" {
+		if res.AckChanged {
+			s.recordScheduleWrite(r, workspaceID, item, "schedule_acknowledged", resolveActivityMeta(res.Schedule.Kind, in.State))
+		}
+	} else {
+		s.recordScheduleWrite(r, workspaceID, item, "schedule_resolved", resolveActivityMeta(res.Schedule.Kind, in.State))
+	}
 	resolution := map[string]any{
 		"occurrence_at":   in.OccurrenceAt.UTC().Format(time.RFC3339),
 		"state":           in.State,

@@ -98,6 +98,8 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 					resp.WaitingOnComplete = false
 				} else if current != nil {
 					e.Roles, e.OccurrenceKey, e.ScheduleID = &current.Roles, current.OccurrenceKey, sc.ID
+					e.State, e.Fired = current.State, current.Fired
+					e.AcknowledgedAt, e.AcknowledgedBy = current.AcknowledgedAt, current.AcknowledgedBy
 				}
 			}
 			e.Reason = gateState
@@ -130,8 +132,10 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 			}
 			continue
 		}
-		e.Type, e.At, e.Day, e.State, e.ScheduleID = "schedule", current.At.In(run.loc).Format(time.RFC3339), current.At.In(run.loc).Format("2006-01-02"), "outstanding", sc.ID
+		e.Type, e.At, e.Day, e.State, e.ScheduleID = "schedule", current.At.In(run.loc).Format(time.RFC3339), current.At.In(run.loc).Format("2006-01-02"), current.State, sc.ID
 		e.Roles, e.OccurrenceKey, e.RolesOrigin = &current.Roles, current.OccurrenceKey, current.Roles.RolesOrigin
+		e.Fired = current.Fired
+		e.AcknowledgedAt, e.AcknowledgedBy = current.AcknowledgedAt, current.AcknowledgedBy
 		e.Wall, e.Overdue, e.Rank = current.Wall.String(), current.Overdue, agendaPriority(c)
 		e.Reason = "outstanding"
 		if e.Overdue {

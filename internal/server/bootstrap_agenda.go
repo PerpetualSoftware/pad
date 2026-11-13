@@ -33,8 +33,12 @@ const (
 
 // BootstrapAgendaRow is one outstanding occurrence. It carries no item body.
 type BootstrapAgendaRow struct {
-	Ref   string `json:"ref"`
-	Title string `json:"title"`
+	State          string                 `json:"state"`
+	Fired          bool                   `json:"fired,omitempty"`
+	AcknowledgedAt *string                `json:"acknowledged_at,omitempty"`
+	AcknowledgedBy *models.AcknowledgedBy `json:"acknowledged_by,omitempty"`
+	Ref            string                 `json:"ref"`
+	Title          string                 `json:"title"`
 	// At is the occurrence's time in the caller's zone, RFC 3339; an all-day
 	// occurrence's is local midnight of its date.
 	At            string                 `json:"at"`
@@ -151,7 +155,7 @@ func bootstrapAgendaRows(rows []store.BootstrapAgendaRow, loc *time.Location, no
 	for _, r := range rows {
 		r.ReadMissed(loc, now)
 		out = append(out, BootstrapAgendaRow{
-			Ref: r.ItemRef, Title: r.ItemTitle, At: r.Due.In(loc).Format(time.RFC3339), AllDay: r.AllDay,
+			Ref: r.ItemRef, Title: r.ItemTitle, State: r.Schedule.OccurrenceState(), Fired: r.Schedule.ReminderFired, AcknowledgedAt: r.Schedule.AcknowledgedAt, AcknowledgedBy: r.Schedule.AcknowledgedBy, At: r.Due.In(loc).Format(time.RFC3339), AllDay: r.AllDay,
 			Roles: r.Roles, OccurrenceKey: r.OccurrenceKey, MissedCount: r.MissedCount, Stale: r.MissedCount >= 2, Resolve: bootstrapAgendaResolve,
 		})
 	}
