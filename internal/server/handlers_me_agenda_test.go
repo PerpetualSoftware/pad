@@ -119,7 +119,7 @@ func TestMeAgendaTokenAllowlist(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			m := meAgendaOK(t, w, w.owner, agendaWindow, tc.mod)
+			m := meAgendaOK(t, w, w.owner, agendaWindow+"&include=created,completed", tc.mod)
 			if got := seen(m); got != "completed:Allowed,created:Allowed,date:Allowed,schedule:Allowed" {
 				t.Fatalf("entries = %s", got)
 			}
@@ -156,7 +156,7 @@ func TestMeAgendaGuestRestrictedCollection(t *testing.T) {
 	if _, err := w.srv.store.CreateItemGrant(w.ws.ID, granted.ID, guest.ID, "view", w.owner.ID); err != nil {
 		t.Fatal(err)
 	}
-	if got := seen(meAgendaOK(t, w, guest, agendaWindow)); got != "completed:Granted,created:Granted,date:Granted,schedule:Granted" {
+	if got := seen(meAgendaOK(t, w, guest, agendaWindow+"&include=created,completed")); got != "completed:Granted,created:Granted,date:Granted,schedule:Granted" {
 		t.Fatalf("guest entries = %s", got)
 	}
 }
@@ -188,13 +188,13 @@ func TestMeAgendaLostAccessDropsSilently(t *testing.T) {
 	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, u.ID, "viewer"); err != nil {
 		t.Fatal(err)
 	}
-	if got := len(entriesOf(meAgendaOK(t, w, u, agendaWindow))); got != 4 {
+	if got := len(entriesOf(meAgendaOK(t, w, u, agendaWindow+"&include=created,completed"))); got != 4 {
 		t.Fatalf("before = %d", got)
 	}
 	if err := w.srv.store.RemoveWorkspaceMember(w.ws.ID, u.ID); err != nil {
 		t.Fatal(err)
 	}
-	lost, absent := meAgendaGet(t, w, u, agendaWindow), meAgendaGet(t, w, never, agendaWindow)
+	lost, absent := meAgendaGet(t, w, u, agendaWindow+"&include=created,completed"), meAgendaGet(t, w, never, agendaWindow+"&include=created,completed")
 	if lost.Code != 200 || !bytes.Equal(lost.Body.Bytes(), absent.Body.Bytes()) || strings.Contains(lost.Body.String(), w.ws.Slug) || strings.Contains(lost.Body.String(), w.ws.Name) {
 		t.Fatalf("lost = %s; never = %s", lost.Body.String(), absent.Body.String())
 	}
@@ -210,11 +210,11 @@ func TestMeAgendaMergesWorkspacesDeterministically(t *testing.T) {
 		meAgendaExec(t, w, `UPDATE status_transitions SET created_at = ? WHERE item_id = ?`, "2031-03-10T09:00:00Z", it.ID)
 		meAgendaExec(t, w, `UPDATE items SET fields = ? WHERE id = ?`, `{"status":"open","due_date":"2031-03-10T09:00:00Z"}`, it.ID)
 	}
-	a, b := meAgendaGet(t, w, w.owner, agendaWindow), meAgendaGet(t, w, w.owner, agendaWindow)
+	a, b := meAgendaGet(t, w, w.owner, agendaWindow+"&include=created,completed"), meAgendaGet(t, w, w.owner, agendaWindow+"&include=created,completed")
 	if a.Code != 200 || !bytes.Equal(a.Body.Bytes(), b.Body.Bytes()) {
 		t.Fatalf("unstable: %s / %s", a.Body.String(), b.Body.String())
 	}
-	es := entriesOf(meAgendaOK(t, w, w.owner, agendaWindow))
+	es := entriesOf(meAgendaOK(t, w, w.owner, agendaWindow+"&include=created,completed"))
 	var order []string
 	for _, e := range es {
 		order = append(order, fmt.Sprintf("%s:%s", e["type"], e["workspace"]))
@@ -272,7 +272,17 @@ func TestMeAgendaBoundsAcrossTenWorkspaces(t *testing.T) {
 					}
 				}
 			}
-			m := meAgendaOK(t, w, w.owner, agendaWindow)
+			query := agendaWindow
+			if kind == "created" {
+				query += "&include=created"
+			}
+			m := meAgendaOK(t, w, w.owner, query)
+			if kind == "created" || kind == "completed" {
+				if len(entriesOf(m)) != 500 || m["events_truncated"] != true || m["truncated"] != nil || m["next_from"] != nil || m["window_complete"] != true {
+					t.Fatalf("event cap = entries:%d events_truncated:%v truncated:%v next:%v complete:%v", len(entriesOf(m)), m["events_truncated"], m["truncated"], m["next_from"], m["window_complete"])
+				}
+				return
+			}
 			if len(entriesOf(m)) != 500 || m["truncated"] != true {
 				t.Fatalf("entries=%d truncated=%v", len(entriesOf(m)), m["truncated"])
 			}
@@ -332,7 +342,7 @@ func TestMeAgendaCreatedCompleted(t *testing.T) {
 			meAgendaExec(t, w, `UPDATE items SET deleted_at = ? WHERE id = ?`, at, x.ID)
 		}
 	}
-	m := meAgendaOK(t, w, u, agendaWindow)
+	m := meAgendaOK(t, w, u, agendaWindow+"&include=created,completed")
 	if got := seen(m); got != "completed:Delivered,created:Delivered" {
 		t.Fatalf("entries = %s", got)
 	}

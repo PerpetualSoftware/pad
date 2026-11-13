@@ -34,6 +34,20 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	include := map[string]bool{"completed": true}
+	if r.URL.Query().Has("include") {
+		include = map[string]bool{}
+		if raw := r.URL.Query().Get("include"); raw != "" {
+			for _, value := range strings.Split(raw, ",") {
+				kind := strings.TrimSpace(value)
+				if kind != "created" && kind != "completed" {
+					writeAgendaParam(w, "include", "format", "`include` must be a comma-separated list of created and completed")
+					return
+				}
+				include[kind] = true
+			}
+		}
+	}
 	zone := usertz.Resolve(user.Timezone)
 	note := usertz.Note(zone)
 	if r.URL.Query().Has("tz") {
@@ -128,7 +142,7 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
-		if err := s.appendAgendaItemEvents(run, ws.ID, scope); err != nil {
+		if err := s.appendAgendaItemEvents(run, ws.ID, scope, include); err != nil {
 			writeInternalError(w, err)
 			return
 		}
@@ -170,7 +184,7 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	}
 	if countsCut {
 		// A partial series would read as a total: send none, and say why.
-		run.response.CountsTruncated, run.response.Truncated, run.setCut = true, true, true
+		run.response.CountsTruncated = true
 	} else {
 		run.response.Counts = counts
 	}
@@ -230,7 +244,7 @@ func (s *Server) agendaExpired(run *agendaRead) bool {
 	return false
 }
 
-func (s *Server) appendAgendaItemEvents(run *agendaRead, workspaceID string, scope store.PendingReminderScope) error {
+func (s *Server) appendAgendaItemEvents(run *agendaRead, workspaceID string, scope store.PendingReminderScope, include map[string]bool) error {
 	for _, source := range []struct {
 		kind string
 		read func(string, store.PendingReminderScope, time.Time, time.Time, int) ([]store.AgendaItemEvent, error)
@@ -238,6 +252,9 @@ func (s *Server) appendAgendaItemEvents(run *agendaRead, workspaceID string, sco
 		{"created", s.store.ListCreatedForAgenda},
 		{"completed", s.store.ListCompletedForAgenda},
 	} {
+		if !include[source.kind] {
+			continue
+		}
 		if s.agendaExpired(run) {
 			return nil
 		}
@@ -246,7 +263,7 @@ func (s *Server) appendAgendaItemEvents(run *agendaRead, workspaceID string, sco
 			return err
 		}
 		if len(events) > agendaMaxEntries {
-			run.response.Truncated, run.setCut = true, true
+			run.response.EventsTruncated = true
 		}
 		for _, event := range events {
 			run.response.Entries = append(run.response.Entries, agendaEntry{
