@@ -655,7 +655,7 @@ func bug4065WalkBase(cmd string) map[string]any {
 	switch cmd {
 	case "item remind agenda":
 		base["from"], base["to"] = "2026-11-09T00:00:00Z", "2026-11-16T00:00:00Z"
-	case "item remind done", "item remind skip", "item remind snooze", "item remind move":
+	case "item remind ack", "item remind done", "item remind skip", "item remind snooze", "item remind move":
 		base["occurrence"] = "2026-11-09T09:00:00Z"
 		base["until"] = "2099-01-01T09:00:00Z"
 	case "item remind":

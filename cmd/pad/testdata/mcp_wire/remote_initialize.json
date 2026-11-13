@@ -8,7 +8,7 @@
       },
       "padToolSurface": {
         "tool_surface_stable": true,
-        "version": "0.114"
+        "version": "0.115"
       }
     },
     "prompts": {},

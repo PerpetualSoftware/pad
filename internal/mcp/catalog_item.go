@@ -232,7 +232,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
 	{Name: "tz", Type: "string", Description: "IANA zone the wall is read in (default: your account zone); for agenda, the zone shown. Not with floating."},
 	{Name: "floating", Type: "bool", Description: "Read the wall in the zone of whoever it fires for. Not with tz."},
-	{Name: "state", Type: "string", Description: "done | skip | snooze | move. Required: schedule-resolve."},
+	{Name: "state", Type: "string", Description: "done | skip | snooze | move | ack (fired only; still owed, no comment). Required: schedule-resolve."},
 	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required: snooze, move."},
 	{Name: "occurrence_at", Type: "string", Description: "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required: schedule-resolve."},
 	{Name: "actual_done_at", Type: "string", Description: "RFC3339 instant the work really finished. For: schedule-resolve, done only."},

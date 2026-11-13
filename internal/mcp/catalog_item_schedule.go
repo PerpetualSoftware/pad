@@ -134,7 +134,7 @@ func actionItemScheduleDelete(ctx context.Context, input map[string]any, env Act
 }
 
 // scheduleResolveStates are the resolutions of an occurrence.
-var scheduleResolveStates = []string{"done", "skip", "snooze", "move"}
+var scheduleResolveStates = []string{"done", "skip", "snooze", "move", "ack"}
 
 // actionItemScheduleResolve handles pad_item.action=schedule-resolve. The
 // state picks the CLI subcommand (`item remind done|skip|snooze|move`) and the
@@ -147,6 +147,28 @@ var scheduleResolveStates = []string{"done", "skip", "snooze", "move"}
 func actionItemScheduleResolve(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	const name = "pad_item.schedule-resolve"
 	state, _ := input["state"].(string)
+	if state == "ack" {
+		fieldError := func(field, code, message string) (*CallToolResult, error) {
+			details, _ := json.Marshal(map[string]string{"field": field, "code": code})
+			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: message, Details: details}), nil
+		}
+		for _, k := range []string{"until", "actual_done_at", "comment"} {
+			if _, present := input[k]; present {
+				return fieldError(k, "combination", k+" cannot be set with ack")
+			}
+		}
+		raw, ok := input["occurrence_at"].(string)
+		if _, present := input["occurrence_at"]; present && !ok {
+			return NewErrorResult(ErrorPayload{Code: ErrInvalidBody, Message: "occurrence_at must be a string"}), nil
+		}
+		if strings.TrimSpace(raw) == "" {
+			return fieldError("occurrence_at", "required", "occurrence_at is required")
+		}
+		if at, err := time.Parse(time.RFC3339, raw); err != nil || at.Nanosecond() != 0 || strings.ContainsAny(raw, ".,") {
+			return fieldError("occurrence_at", "format", "occurrence_at must be a whole-second RFC3339 instant")
+		}
+	}
+
 	valid := false
 	for _, s := range scheduleResolveStates {
 		valid = valid || s == state
