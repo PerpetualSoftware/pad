@@ -1756,6 +1756,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 2px;
+		flex: 1 1 auto;
 		min-width: 0;
 	}
 
@@ -1763,6 +1764,20 @@
 		font-weight: 500;
 		font-size: 0.85rem;
 		color: var(--text-primary);
+		overflow-wrap: anywhere;
+	}
+
+	/* Below 640px the three row buttons leave the info column too narrow,
+	   so they move to their own line under it and may wrap. */
+	@media (max-width: 640px) {
+		.token-row {
+			flex-direction: column;
+			align-items: stretch;
+		}
+		.token-row-actions {
+			flex-wrap: wrap;
+			justify-content: flex-start;
+		}
 	}
 
 	.token-meta {
@@ -1820,6 +1835,7 @@
 
 	.token-access-note {
 		color: var(--text-muted);
+		overflow-wrap: anywhere;
 	}
 
 	.token-access-badge.none .token-access-note {
