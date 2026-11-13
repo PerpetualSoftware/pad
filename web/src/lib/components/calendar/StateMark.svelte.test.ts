@@ -13,7 +13,7 @@ describe('StateMark', () => {
 		expect(mark()).toHaveAttribute('data-mark', OCCURRENCE_STATES[state].mark);
 	});
 	it.each([
-		['outstanding', 'ring', 'amber'], ['scheduled', 'ring-thin', 'gray'], ['unrecorded', 'ring-dashed', 'gray'],
+		['outstanding', 'ring', 'amber'], ['acknowledged', 'ring', 'amber'], ['scheduled', 'ring-thin', 'gray'], ['unrecorded', 'ring-dashed', 'gray'],
 		['done', 'check', 'green'], ['skipped', 'dash', 'gray'], ['moved', 'arrow', 'gray'],
 		['lapsed', 'cross', 'red'], ['missed', 'cross', 'red']
 	] as [OccurrenceState, string, string][])('draws %s as a %s in %s', (state, shape, tone) => {
@@ -29,10 +29,18 @@ describe('StateMark', () => {
 	it.each(states)('is red for %s only where the design says so', state => {
 		for (const overdue of [false, true]) {
 			const { unmount } = render(StateMark, { state, overdue });
-			const red = state === 'lapsed' || state === 'missed' || (state === 'outstanding' && overdue);
+			const red = state === 'lapsed' || state === 'missed' || ((state === 'outstanding' || state === 'acknowledged') && overdue);
 			expect(mark().getAttribute('data-tone') === 'red').toBe(red);
 			unmount();
 		}
+	});
+	it('names an acknowledged mark apart from an outstanding one, so the two never read alike', () => {
+		render(StateMark, { state: 'acknowledged', overdue: true });
+		expect(screen.getByRole('img', { name: 'Acknowledged' })).toHaveAttribute('data-tone', 'red');
+	});
+	it('draws an unknown state as a neutral square rather than failing', () => {
+		render(StateMark, { state: 'future_state' as OccurrenceState });
+		expect(screen.getByRole('img', { name: 'Date' })).toHaveAttribute('data-mark', 'square');
 	});
 	it('draws a dated field as a square named by its label, red only when overdue', () => {
 		const { unmount } = render(StateMark, { label: 'Due' });

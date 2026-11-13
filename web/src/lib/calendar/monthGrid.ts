@@ -1,5 +1,5 @@
-import { roleDay, isDateOnly } from './presentation';
-import { getAbandonedOptions, doneFieldKey, doneFieldTerminalOptions, formatItemRef, itemUrlId, parseFields, parseSchema, type CommitmentForecastSummary, type CalendarResponse, type Collection, type Item } from '$lib/types';
+import { roleDay, isDateOnly, isOpenState } from './presentation';
+import { getAbandonedOptions, doneFieldKey, doneFieldTerminalOptions, formatItemRef, itemUrlId, parseFields, parseSchema, type AcknowledgedBy, type CommitmentForecastSummary, type CalendarResponse, type Collection, type Item } from '$lib/types';
 
 export type { CalendarConfig } from '$lib/collections/viewPersistence';
 import type { CalendarConfig } from '$lib/collections/viewPersistence';
@@ -92,6 +92,8 @@ export interface CalendarRow {
  key: string; day: string; ref: string; target: string; title: string; allDay: boolean;
  item?: Item; at?: string; label?: string; terminal?: string; abandoned?: boolean; state?: string; overdue?: boolean;
  start?: string; end?: string; continues?: boolean; missedCount?: number; stale?: boolean;
+ /** Who acknowledged an acknowledged occurrence, and when. */
+ acknowledgedAt?: string; acknowledgedBy?: AcknowledgedBy;
  /** Sorted first and drawn in red: a missed hard deadline must never sit behind "+N more". */
  attention?: boolean;
 }
@@ -166,11 +168,12 @@ export function calendarRows(data: CalendarResponse, collection: Collection, fie
   if (days && !days.includes(entry.day)) continue;
   rows.push({key:`schedule:${entry.schedule_id ?? index}:${entry.at}:${index}`,day:entry.day,ref:entry.item_ref,target:entry.item_ref,title:entry.item_title,
    forecast:entry.forecast,allDay:!!entry.all_day,at:entry.at,state:entry.state,overdue:entry.overdue,missedCount:entry.missed_count,stale:entry.stale,
+   ...(entry.state === 'acknowledged' ? {acknowledgedAt:entry.acknowledged_at,acknowledgedBy:entry.acknowledged_by} : {}),
    attention:!!entry.overdue || entry.state === 'lapsed' || entry.state === 'missed'});
  }
  for (const row of data.forecasts ?? []) {
   const key = JSON.stringify([row.workspace,row.owner_username,row.schedule_id]);
-  if (forecastKeys.has(key) || data.entries.some(entry => entry.state === 'outstanding' && entry.day === row.day && JSON.stringify([entry.workspace,entry.owner_username,entry.schedule_id]) === key)) continue;
+  if (forecastKeys.has(key) || data.entries.some(entry => isOpenState(entry.state) && entry.day === row.day && JSON.stringify([entry.workspace,entry.owner_username,entry.schedule_id]) === key)) continue;
   const day = row.day;
   if ((days && !days.includes(day)) || (data.next_from && day >= data.next_from)) continue;
   forecastKeys.add(key);

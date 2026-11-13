@@ -5,7 +5,7 @@
 	import RolePill from './RolePill.svelte';
 	import RowMenu from './RowMenu.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
-	import { canMove, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { ACKNOWLEDGE_HELP, acknowledgedText, canAcknowledge, canMove, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry } from '$lib/types';
 
 	interface Props {
@@ -84,12 +84,14 @@
 						{#if row.missed_count && row.missed_count > 0}<Chip size="sm" color="var(--accent-amber)">{row.missed_count} missed</Chip>{/if}
 						{#if row.reason === 'blocked_needs_decision'}<Chip size="sm">Needs a decision</Chip>{/if}
 					</div>
+					{#if row.state === 'acknowledged'}<div class="ack">{acknowledgedText(row.acknowledged_at, row.acknowledged_by, zone, now)}</div>{/if}
 				</div>
 				{#if entry && pending[key]}
 					<span class="busy"><span class="spinner" aria-hidden="true"></span><span class="sr-only">Saving…</span></span>
 				{:else if entry}
 					<RowMenu label={`Actions for ${row.item_ref}`} title={row.item_title} disabled={busy}>
 						{#snippet children(pick)}
+							{#if canAcknowledge(entry)}<MenuItem title={ACKNOWLEDGE_HELP} disabled={busy} onclick={() => pick(() => onaction(entry, 'ack'))}>Acknowledge</MenuItem>{/if}
 							<MenuItem disabled={busy} onclick={() => pick(() => onaction(entry, 'forecast'))}>Forecast…</MenuItem>
 							{#if canMove(entry)}
 								<MenuItem disabled={busy} onclick={() => pick(() => onaction(entry, 'move'))}>Move target…</MenuItem>
@@ -147,6 +149,8 @@
 	.t a:hover { text-decoration: underline; }
 	.t a:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; border-radius: var(--radius-sm); }
 	.m { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 1px; font-size: 11.5px; color: var(--text-muted); }
+	/* Wraps rather than truncates: who and when are both the point of the line. */
+	.ack { margin-top: 1px; font-size: 11.5px; color: var(--text-secondary); }
 	.when { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 	.when.passed { color: var(--accent-red); font-weight: 600; }
 	.busy { display: grid; place-items: center; width: 32px; height: 32px; }

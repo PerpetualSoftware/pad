@@ -129,3 +129,12 @@ it('does not name an ordinary preview line a forecast', () => {
  expect(a.getAttribute('aria-label')).not.toMatch(/Forecast/);
  expect(a.getAttribute('data-role')).toBeNull();
 });
+it('names who acknowledged an acknowledged occurrence, open and not closed, in the entry and in the preview tip', () => {
+ const acknowledged = { state: 'acknowledged', acknowledgedAt: '2026-03-10T09:15:00Z', acknowledgedBy: { user_id: 'u1', name: 'Alex', actor: 'user' as const } };
+ show(acknowledged);
+ expect(mark()).toHaveAccessibleName('Acknowledged'); expect(link()).not.toHaveClass('closed');
+ expect(screen.getByText(/^Acknowledged by Alex · /)).toBeInTheDocument();
+ cleanup();
+ render(CalendarEntry, { row: { ...base, ...acknowledged }, zone: 'UTC', preview: true });
+ expect(link().getAttribute('title')).toMatch(/Acknowledged by Alex · /);
+});
