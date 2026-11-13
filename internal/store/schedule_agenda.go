@@ -105,6 +105,13 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 	if err := s.fillAgendaRolesOrigin(out); err != nil {
 		return nil, false, err
 	}
+	var ackBatch []*models.ItemSchedule
+	for _, row := range out {
+		ackBatch = append(ackBatch, row.Schedule)
+	}
+	if err := s.fillScheduleAcknowledgements(s.db, ackBatch); err != nil {
+		return nil, false, err
+	}
 	if err := s.fillAgendaItemFacts(out, doneSQL, doneArgs); err != nil {
 		return nil, false, err
 	}
@@ -200,7 +207,9 @@ type AgendaEntry struct {
 	DeadlinePassed bool
 	At             time.Time
 	Wall           schedule.Wall
-	State          string // outstanding | scheduled | done | skipped | moved | missed | lapsed | unrecorded
+	AcknowledgedAt *string
+	AcknowledgedBy *models.AcknowledgedBy
+	State          string // acknowledged | outstanding | scheduled | done | skipped | moved | missed | lapsed | unrecorded
 	Fired          bool
 	Overdue        bool
 	EffectiveAt    *time.Time

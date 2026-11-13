@@ -655,7 +655,7 @@
             "type": "string"
           },
           "state": {
-            "description": "done | skip | snooze | move. Required: schedule-resolve.",
+            "description": "done | skip | snooze | move | ack (fired only; still owed, no comment). Required: schedule-resolve.",
             "type": "string"
           },
           "status": {

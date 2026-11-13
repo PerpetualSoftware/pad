@@ -40,7 +40,7 @@ type carriedSchedule struct {
 
 	// FiredAt is the managed row's fired mark ("" = armed). RemindAt is read only
 	// when FiredAt is set: a fired row's instant is history, not a schedule.
-	FiredAt, RemindAt string
+	FiredAt, RemindAt, AckedAt string
 
 	CreatedAt, UpdatedAt string // "" = now
 	Occurrences          []carriedOccurrence
@@ -120,16 +120,16 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 // preparedCarry is a carried schedule that passed every check, with everything
 // the write needs derived.
 type preparedCarry struct {
-	overrides                  []models.ScheduleOverrideExport
-	drops                      []string
-	spec                       schedule.Spec
-	dtend                      schedule.Wall
-	hasEnd                     bool
-	anchorWall                 string
-	endedAt, firedAt, override string
-	createdAt, updatedAt       string
-	nextAt, nextWall, remindAt any
-	occs                       []carriedOccurrence
+	overrides                           []models.ScheduleOverrideExport
+	drops                               []string
+	spec                                schedule.Spec
+	dtend                               schedule.Wall
+	hasEnd                              bool
+	anchorWall                          string
+	endedAt, firedAt, ackedAt, override string
+	createdAt, updatedAt                string
+	nextAt, nextWall, remindAt          any
+	occs                                []carriedOccurrence
 }
 
 // prepareCarriedSchedule is the validation half of insertCarriedScheduleTx: pure
@@ -184,6 +184,13 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 	firedAt, err := carryInstant("fired_at", in.FiredAt)
 	if err != nil {
 		return preparedCarry{}, err
+	}
+	ackedAt, err := carryInstant("acked_at", in.AckedAt)
+	if err != nil {
+		return preparedCarry{}, err
+	}
+	if ackedAt != "" && (firedAt == "" || endedAt != "" || in.NextWall == "") {
+		return preparedCarry{}, dropf("acked_at", "combination")
 	}
 	override, err := carryInstant("next_override_at", in.NextOverrideAt)
 	if err != nil {
@@ -250,7 +257,7 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 
 	return preparedCarry{
 		overrides: overrides, drops: drops,
-		spec: spec, dtend: end, hasEnd: hasEnd, anchorWall: anchorWall, endedAt: endedAt, firedAt: firedAt, override: override,
+		spec: spec, dtend: end, hasEnd: hasEnd, anchorWall: anchorWall, endedAt: endedAt, firedAt: firedAt, ackedAt: ackedAt, override: override,
 		createdAt: createdAt, updatedAt: updatedAt, nextAt: nextAt, nextWall: nextWall, remindAt: remindAt, occs: occs,
 	}, nil
 }
@@ -301,8 +308,8 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 	if endedAt == "" {
 		if _, err := tx.Exec(s.q(`
 			INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, schedule_id, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, NULL, ?, ?, ?)`),
-			newID(), workspaceID, itemID, remindAt, nilIfEmpty(firedAt), id, createdAt, updatedAt); err != nil {
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			newID(), workspaceID, itemID, remindAt, nilIfEmpty(firedAt), nilIfEmpty(p.ackedAt), id, createdAt, updatedAt); err != nil {
 			return "", fmt.Errorf("insert carried managed reminder: %w", err)
 		}
 	}
@@ -440,6 +447,7 @@ func carriedFromExport(x models.ScheduleExport, commentIDs map[string]string) (c
 	}
 	if x.Reminder != nil {
 		in.FiredAt, in.RemindAt = x.Reminder.FiredAt, x.Reminder.RemindAt
+		in.AckedAt = x.Reminder.AckedAt
 	}
 	for _, o := range x.Occurrences {
 		in.Occurrences = append(in.Occurrences, carriedOccurrence{
@@ -478,9 +486,9 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 		return nil, nil
 	}
 
-	type managed struct{ remindAt, firedAt string }
+	type managed struct{ remindAt, firedAt, ackedAt string }
 	rem := map[string]managed{}
-	rr, err := q.Query(s.q(`SELECT schedule_id, remind_at, COALESCE(fired_at, '') FROM item_reminders
+	rr, err := q.Query(s.q(`SELECT schedule_id, remind_at, COALESCE(fired_at, ''), COALESCE(acked_at, '') FROM item_reminders
 		WHERE workspace_id = ? AND schedule_id IS NOT NULL`), workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("export schedule reminders: %w", err)
@@ -488,7 +496,7 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 	for rr.Next() {
 		var id string
 		var m managed
-		if err := rr.Scan(&id, &m.remindAt, &m.firedAt); err != nil {
+		if err := rr.Scan(&id, &m.remindAt, &m.firedAt, &m.ackedAt); err != nil {
 			rr.Close()
 			return nil, fmt.Errorf("scan schedule reminder: %w", err)
 		}
@@ -547,7 +555,7 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 			x.ExDates = append(x.ExDates, w)
 		}
 		if m, ok := rem[sc.ID]; ok {
-			x.Reminder = &models.ScheduleReminderExport{RemindAt: m.remindAt, FiredAt: m.firedAt}
+			x.Reminder = &models.ScheduleReminderExport{RemindAt: m.remindAt, FiredAt: m.firedAt, AckedAt: m.ackedAt}
 		}
 		if err := s.exportMilestoneInto(q, workspaceID, &x); err != nil {
 			return nil, err

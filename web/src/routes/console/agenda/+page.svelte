@@ -4,7 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { agendaRows, attentionEntries, roleDay, roleMarkers, canMove, canResolve, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { agendaRows, attentionEntries, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -29,6 +29,7 @@
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
 	const genericCopy = 'Could not update this occurrence. Try again.';
+	const notFiredCopy = 'This occurrence has not fired yet, so there is nothing to acknowledge.';
 	const preferencePrefix = 'pad-agenda-completed:';
 	const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
 	let selectedDay = $state('');
@@ -116,7 +117,7 @@
 		return attentionEntries(entries, data.priority_list).flatMap(item => {
 			const row = item.entry as AgendaWorkEntry;
 			const entry = item.inWindow ? item.entry as AgendaEntry
-				: workOccurrence(row, zone) ?? (row.at && row.day ? { ...row, type: 'schedule' as const, state: 'outstanding' as const, at: row.at, day: row.day } : null);
+				: workOccurrence(row, zone) ?? (row.at && row.day ? { ...row, type: 'schedule' as const, state: workState(row), at: row.at, day: row.day } : null);
 			return entry ? [{ key: item.key, entry, inWindow: item.inWindow }] : [];
 		});
 	});
@@ -162,7 +163,7 @@
 	const monthRows = $derived(new Map([...monthDays].map(([date, rows]) => [date, attentionFirst(agendaRows(rows).map(row => ({ ...row, attention: monthAttention.has(row.key) })), row => row.attention)])));
 	function monthCount(date: string) {
 		const rows = monthDays.get(date) ?? [];
-		const owed = rows.filter(entry => entry.type === 'schedule' && entry.state === 'outstanding').length;
+		const owed = rows.filter(entry => entry.type === 'schedule' && isOpenState(entry.state)).length;
 		return rows.length ? `${rows.length}${owed ? ` · ${owed} owed` : ''}` : '';
 	}
 	function dayIncomplete(date: string) {
@@ -420,6 +421,7 @@
 		if (state === 'forecast') { forecastEntry = entry; return; }
 		if (state === 'today') { if (canMove(entry)) void moveTarget(entry, targetOnDay(entry, todayIn(zone), zone)); return; }
 		if (state === 'move' && !canMove(entry)) return;
+		if (state === 'ack' && !canAcknowledge(entry)) return;
 		if (state === 'move' || state === 'snooze') { dialogMode = state; dialogEntry = entry; }
 		else void resolve(entry, state);
 	}
@@ -437,7 +439,11 @@
 			if (!history) {
 				const view = await api.getCommitment(entry.workspace!, entry.item_ref);
 				if (!sameIdentity()) return;
-				if (view.ended_at || !view.next_occurrence || !entry.wall || view.next_occurrence.wall !== entry.wall) {
+				// A pinned occurrence's key carries the instant it is read at, so two
+				// occurrences sharing a wall time (a DST fall-back hour) stay distinct.
+				const keyAt = entry.occurrence_key?.includes('|') ? entry.occurrence_key.split('|')[0] : '';
+				const sameInstant = !keyAt || (!!view.next_occurrence && Date.parse(keyAt) === Date.parse(view.next_occurrence.at));
+				if (view.ended_at || !view.next_occurrence || !entry.wall || view.next_occurrence.wall !== entry.wall || !sameInstant) {
 					actionError = staleCopy;
 					await load(day, zone, true);
 					return;
@@ -459,18 +465,20 @@
 				savedRefreshError = true;
 				loadError = false;
 			} else {
-				succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.' }[state]);
+				succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
 			}
 		} catch (error) {
 			if (!sameIdentity()) return;
 			const code = (error as { code?: string })?.code;
 			const stale = code === 'stale' || (viewing && code === 'not_found');
+			// The alert this ack named was re-armed (snoozed or moved) before it landed: show the agenda as it is now.
+			const notFired = state === 'ack' && code === 'not_fired';
 			const forbidden = code === 'forbidden' || code === 'permission_denied';
 			const message = (error as { message?: unknown })?.message;
 			// The server's own sentence says who may skip before a hard deadline; the entry is unchanged, so no reload.
 			const ownerRequired = code === 'deadline_owner_required' && typeof message === 'string' && message !== '';
-			actionError = ownerRequired ? message : stale ? staleCopy : forbidden ? permissionCopy : genericCopy;
-			if (stale || forbidden) await load(day, zone, true);
+			actionError = ownerRequired ? message : stale ? staleCopy : notFired ? notFiredCopy : forbidden ? permissionCopy : genericCopy;
+			if (stale || notFired || forbidden) await load(day, zone, true);
 		} finally {
 			if (sameIdentity()) pending = { ...pending, [key]: false };
 		}

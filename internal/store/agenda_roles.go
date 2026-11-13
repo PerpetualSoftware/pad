@@ -27,6 +27,11 @@ func (s *Store) agendaRoleValues(sc *models.ItemSchedule, seed AgendaEntry, loc 
 
 func resolveAgendaRoles(sc *models.ItemSchedule, seed AgendaEntry, loc *time.Location, roles scheduleRoles, overrides map[string]string) (AgendaEntry, error) {
 	seed.OccurrenceKey = OccurrenceKey(sc, NormalizeInstant(seed.At), seed.Wall.String())
+	if seed.State == "outstanding" {
+		seed.State = sc.OccurrenceState()
+		seed.AcknowledgedAt, seed.AcknowledgedBy = sc.AcknowledgedAt, sc.AcknowledgedBy
+	}
+
 	seed.Roles = models.CommitmentRoles{DeadlineBehavior: roles.DeadlineBehavior, Outcome: roles.Outcome, RolesOrigin: roles.Origin}
 	for _, r := range []struct {
 		name       string
@@ -55,7 +60,7 @@ func resolveAgendaRoles(sc *models.ItemSchedule, seed AgendaEntry, loc *time.Loc
 			return seed, err
 		}
 		seed.At = at
-		seed.Overdue = seed.State == "outstanding" && seed.Overdue
+		seed.Overdue = models.IsOpenOccurrenceState(seed.State) && seed.Overdue
 	}
 	return seed, nil
 }
@@ -286,7 +291,7 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 		if err != nil {
 			return AgendaExpansion{Unavailable: "internal"}, nil
 		}
-		if !terminal && e.State == "outstanding" {
+		if !terminal && models.IsOpenOccurrenceState(e.State) {
 			e.Overdue = !e.At.After(now)
 		}
 		if agendaRoleInWindow(e, loc, from, to) {

@@ -13,7 +13,7 @@ import (
 )
 
 var commitmentRoles = []string{"target", "earliest", "deadline", "occupied_until"}
-var scheduleChangeTypes = []string{"create", "update", "delete", "move", "snooze", "done", "skip", "missed_recorded", "end", "import", "carry"}
+var scheduleChangeTypes = []string{"create", "update", "delete", "move", "snooze", "done", "skip", "missed_recorded", "end", "import", "carry", "ack"}
 
 func validateCarriedRoles(r *models.ScheduleRolesExport) error {
 	if r == nil {
@@ -294,6 +294,22 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 		var parent any
 		if c.ParentChangeID != nil && changeMap[*c.ParentChangeID] != "" {
 			parent = changeMap[*c.ParentChangeID]
+		}
+		if c.ChangeType == "ack" {
+			// Both sides are canonicalized: the commitment journal returns them as-is.
+			before, err := importedAckEvidence(c.BeforeJSON)
+			if err != nil {
+				return nil, err
+			}
+			after, err := importedAckEvidence(c.AfterJSON)
+			if err != nil {
+				return nil, err
+			}
+			c.BeforeJSON, c.AfterJSON = before, after
+			// The agenda reads this column as the acknowledgement's actor kind.
+			if c.Actor != "user" && c.Actor != "agent" {
+				c.Actor = "user"
+			}
 		}
 		_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,parent_change_id,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), changeMap[c.ID], workspaceID, items[c.ItemID], schedules[c.ScheduleID], c.OccurrenceKey, c.ChangeType, c.Role, c.BeforeJSON, c.AfterJSON, c.Actor, c.Reason, c.ReasonSource, root, parent, c.RecordedAt)
 		if err != nil {

@@ -124,7 +124,7 @@ func marshalScheduleRequest(method, template string, input, body map[string]any)
 	return method, path, raw, nil
 }
 
-// mapScheduleResolve is `item remind done|skip|snooze|move`: the state is the
+// mapScheduleResolve is `item remind done|skip|snooze|move|ack`: the state is the
 // command's, the rest is the input actionItemScheduleResolve left. The
 // occurrence is required here too, so a caller that reaches the route without
 // the action still never resolves "whichever is current".

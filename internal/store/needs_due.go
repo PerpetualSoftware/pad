@@ -24,7 +24,8 @@ func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, user
 		return out, nil
 	}
 	set, err := s.BootstrapAgenda(BootstrapAgendaParams{
-		WorkspaceID: workspaceID, UserID: userID, Now: now, Loc: usertz.Resolve(user.Timezone).Loc,
+		ExcludeAcknowledged: true,
+		WorkspaceID:         workspaceID, UserID: userID, Now: now, Loc: usertz.Resolve(user.Timezone).Loc,
 		Scope: PendingReminderScope{CollectionIDs: scope.CollectionIDs, ItemIDs: scope.ItemIDs},
 	})
 	if err != nil {
@@ -35,7 +36,7 @@ func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, user
 	}
 	for _, rows := range [][]BootstrapAgendaRow{set.DueToday, set.Carried, set.Stale} {
 		for _, row := range rows {
-			if row.Due.After(now) {
+			if row.Schedule.ReminderAckedAt != nil || row.Due.After(now) {
 				continue
 			}
 			id := row.Schedule.ItemID

@@ -225,7 +225,7 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 		assignee := c.ChangeType == "update" && c.Role == nil && c.BeforeJSON == nil &&
 			c.ReasonSource == "system" && strings.HasPrefix(c.Reason, "Assignee changed from ") && strings.Contains(c.Reason, " to ")
 		dateMove := c.ChangeType == "move" && c.Role != nil && linkRole(*c.Role) != "" && (c.BeforeJSON != nil || c.AfterJSON != nil)
-		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !renegotiation && !assignee && !dateMove {
+		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !renegotiation && !assignee && !dateMove && c.ChangeType != "ack" {
 			continue
 		}
 		if canRead != nil {

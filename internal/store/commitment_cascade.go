@@ -679,7 +679,7 @@ func dateJSON(role string, at time.Time) string {
 // A target that lands in the past arms nothing and fires nothing: the
 // occurrence stays outstanding and reads at its new target as passed, its
 // deadline is untouched, and an armed reminder for the old target is cancelled.
-// A reminder that already fired is left alone.
+// A reminder that already fired is left alone, acknowledged or not.
 func (s *Store) writeLinkedDateTx(tx *sql.Tx, n *linkNode, ch schedule.Change, nowT time.Time, ts, actor string) error {
 	name := linkRoleName(ch.Role)
 	sc, to := n.sc, ch.To.UTC().Truncate(time.Second)
@@ -697,6 +697,9 @@ func (s *Store) writeLinkedDateTx(tx *sql.Tx, n *linkNode, ch schedule.Change, n
 		return err
 	}
 	if !to.After(nowT) {
+		// An acknowledged row has fired, so it stays too, with its
+		// acknowledgement: nothing re-fires for a past target, and the moved
+		// occurrence stays quiet, owed and still resolvable.
 		return s.cancelArmedReminderTx(tx, sc.ID)
 	}
 	fire, err := reminderFireAt(sc, n.rec, n.x, *sc.NextWall, to, true, to, nowT)

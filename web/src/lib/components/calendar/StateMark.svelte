@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { OCCURRENCE_STATES, type OccurrenceState } from '$lib/calendar/presentation';
+	import { occurrenceState, type OccurrenceState } from '$lib/calendar/presentation';
 
 	interface Props {
 		/** The occurrence state. Leave unset for a dated field (due, ends), which draws as a square. */
@@ -12,11 +12,12 @@
 
 	let { state, overdue = false, label }: Props = $props();
 
-	const row = $derived(state ? OCCURRENCE_STATES[state] : undefined);
+	// A state this bundle does not know draws as the neutral square, never a failure.
+	const row = $derived(occurrenceState(state));
 	const shape = $derived(row?.mark ?? 'square');
 	const name = $derived(label ?? row?.label ?? 'Date');
 	// Colour follows the shape. Red is kept for a lapsed or missed occurrence,
-	// an outstanding one past its target or deadline, and an overdue dated field.
+	// an open (outstanding or acknowledged) one past its target or deadline, and an overdue dated field.
 	const tone = $derived(
 		shape === 'cross' || ((shape === 'ring' || shape === 'square') && overdue) ? 'red'
 			: shape === 'ring' ? 'amber'

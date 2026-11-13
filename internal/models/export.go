@@ -223,6 +223,7 @@ type ScheduleChangeExport struct {
 type ScheduleReminderExport struct {
 	RemindAt string `json:"remind_at"`
 	FiredAt  string `json:"fired_at,omitempty"`
+	AckedAt  string `json:"acked_at,omitempty"`
 }
 
 // ScheduleOccurrenceExport is one resolved occurrence. CommentID names a

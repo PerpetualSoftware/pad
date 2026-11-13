@@ -260,6 +260,57 @@ describe('resolve identity and dialogs', () => {
   h.agenda.mockRejectedValueOnce(new Error('offline')); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await screen.findByText('Saved. Could not refresh the view.');
   const writes = h.resolve.mock.calls.length; h.agenda.mockResolvedValue(response()); await fireEvent.click(screen.getByRole('button', { name: 'Try again' })); await settle(); expect(h.resolve).toHaveBeenCalledTimes(writes);
  });
+ it('ack keeps the row outstanding and refreshes', async () => {
+  const acknowledged = row({ fired: true, state: 'acknowledged', acknowledged_at: '2026-11-05T14:05:00Z', acknowledged_by: { user_id: 'user-a', name: 'Alice', actor: 'user' } });
+  h.agenda.mockResolvedValueOnce(response([row({ fired: true })])).mockResolvedValue(response([acknowledged]));
+  h.resolve.mockResolvedValue({ commitment: {}, resolution: { occurrence_at: frozenAt, state: 'ack', missed_recorded: 0 } });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Acknowledge EX-30' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'ack' }));
+  expect(h.resolve).toHaveBeenCalledTimes(1); expect(h.view).toHaveBeenCalledWith('work', 'EX-30');
+  await said('Acknowledged. The work stays outstanding.', 'success');
+  expect(h.toast.mock.calls.map(call => call[0])).not.toContain('Occurrence marked done.');
+  expect(h.agenda).toHaveBeenCalledTimes(2);
+  await screen.findByText('Acknowledged by Alice · Thu 5, 09:05');
+  const item = screen.getByRole('link', { name: 'First item' }).closest('li')!;
+  expect(item.classList.contains('closed')).toBe(false); expect(item.classList.contains('done')).toBe(false);
+  expect(screen.queryByRole('button', { name: 'Acknowledge EX-30' })).toBeNull();
+  expect(screen.getByRole('button', { name: 'Done EX-30' })).toBeEnabled();
+  expect(screen.queryByText(/Undo/)).toBeNull();
+ });
+ it('offers no Acknowledge on an occurrence that has not fired', async () => {
+  await mount(); expect(screen.queryByRole('button', { name: 'Acknowledge EX-30' })).toBeNull();
+ });
+ it('an acknowledged occurrence can still be marked done', async () => {
+  h.agenda.mockResolvedValue(response([row({ fired: true, state: 'acknowledged', acknowledged_at: '2026-11-05T14:05:00Z' })]));
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done' }));
+  await said('Occurrence marked done.', 'success');
+ });
+ it.each([
+  ['not_fired', 'This occurrence has not fired yet, so there is nothing to acknowledge.'],
+  ['stale', staleCopy]
+ ])('an ack refused as %s refreshes and explains, without retrying', async (code, message) => {
+  h.agenda.mockResolvedValue(response([row({ fired: true })]));
+  h.resolve.mockRejectedValue({ code }); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Acknowledge EX-30' }));
+  await said(message); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(h.resolve).toHaveBeenCalledTimes(1);
+ });
+ it('treats a pinned occurrence sharing the wall time but not the instant as stale', async () => {
+  // A DST fall-back hour: the row names an earlier instant at the same wall time
+  // as the schedule's current occurrence.
+  const earlier = new Date(Date.parse(frozenAt) - 3600_000).toISOString();
+  h.agenda.mockResolvedValue(response([row({ fired: true, occurrence_key: `${earlier}|${row().wall}` })]));
+  h.view.mockResolvedValue({ next_occurrence: { at: frozenAt, wall: row().wall } });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Acknowledge EX-30' }));
+  await said(staleCopy); expect(h.resolve).not.toHaveBeenCalled();
+ });
+ it('resolves a pinned occurrence whose key names the current instant', async () => {
+  h.agenda.mockResolvedValue(response([row({ fired: true, occurrence_key: `${frozenAt}|${row().wall}` })]));
+  h.view.mockResolvedValue({ next_occurrence: { at: frozenAt, wall: row().wall } });
+  h.resolve.mockResolvedValue({ commitment: {}, resolution: { occurrence_at: frozenAt, state: 'ack', missed_recorded: 0 } });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Acknowledge EX-30' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'ack' }));
+ });
  it('does not resolve after identity changes during the schedule read', async () => {
   const view = deferred<unknown>(); h.view.mockReturnValueOnce(view.promise); await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
   h.epoch++; view.resolve({ next_occurrence: { at: frozenAt, wall: row().wall } }); await settle(); expect(h.resolve).not.toHaveBeenCalled();

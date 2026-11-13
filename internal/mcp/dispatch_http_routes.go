@@ -476,6 +476,7 @@ func init() {
 			method:       http.MethodDelete,
 			pathTemplate: itemSchedulePathTemplate,
 		}.toRouteMapper(),
+		"item remind ack":         mapScheduleResolve("ack"),
 		"item remind done":        mapScheduleResolve("done"),
 		"item remind skip":        mapScheduleResolve("skip"),
 		"item remind snooze":      mapScheduleResolve("snooze"),
