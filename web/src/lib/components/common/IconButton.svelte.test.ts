@@ -39,4 +39,10 @@ describe('IconButton', () => {
 		flushSync();
 		expect(got).toBe(container.querySelector('.icon-btn'));
 	});
+
+	// TASK-4515: a lookup by the control's text (textContent === name) finds it, as it found the old text buttons.
+	it('has exactly its name as its text', () => {
+		const { container } = render(IconButton, { props: { label: 'Reply', children: glyph } });
+		expect(container.querySelector('.icon-btn')!.textContent).toBe('Reply');
+	});
 });

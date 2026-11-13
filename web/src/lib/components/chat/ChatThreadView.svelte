@@ -8,6 +8,8 @@
 	import PendingBubble from '$lib/components/chat/PendingBubble.svelte';
 	import PresenceDot from '$lib/components/chat/PresenceDot.svelte';
 	import UnreadDivider from '$lib/components/chat/UnreadDivider.svelte';
+	import DaySeparator from '$lib/components/chat/DaySeparator.svelte';
+	import { layoutRows } from '$lib/chat/grouping';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import { ChatThread } from '$lib/stores/chatThread.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -208,7 +210,20 @@
 
 	let conversation = $derived(thread.conversation);
 	let dividerAt = $derived(thread.dividerIndex);
+	// Which rows head a group and where each local day opens (TASK-4515). Pure: rows keep
+	// their keys and ids, so scroll anchoring, #msg-N and #unread-divider are unaffected.
+	let layout = $derived(layoutRows(thread.items, { dividerIndex: dividerAt, now: new Date() }));
+	let detachedLayout = $derived(
+		layoutRows(thread.detached.map((message) => ({ kind: 'message' as const, message })), { now: new Date() })
+	);
 </script>
+
+{#snippet jump()}
+	{#if dividerAt >= 0 && !dividerInView && thread.status === 'ready'}
+		<!-- In the header, so it never covers a row's text; shown only while the divider is out of view. -->
+		<Button size="sm" touch class="jump-pill" onclick={jumpToUnread}>Jump to unread</Button>
+	{/if}
+{/snippet}
 
 {#snippet presence()}
 	{#if conversation}
@@ -233,6 +248,7 @@
 			: 'Chat'}
 	onClose={variant === 'host' ? () => chatSurface.close() : undefined}
 	sub={conversation && thread.status !== 'notFound' && thread.status !== 'failed' ? presence : undefined}
+	actions={jump}
 />
 
 {#if thread.status === 'notFound'}
@@ -268,22 +284,18 @@
 				{/if}
 			</div>
 		{/if}
-		{#if dividerAt >= 0 && !dividerInView}
-			<!-- A zero-height sticky strip: the pill floats over the rows and takes no line. It
-			     sits below Load earlier so it never covers that button, and shows only while
-			     the divider is out of view, so it never covers the divider's label. -->
-			<div class="jump">
-				<Button size="sm" touch class="jump-pill" onclick={jumpToUnread}>Jump to unread</Button>
-			</div>
-		{/if}
 		<div class="messages">
 			{#each thread.items as item, i (item.kind === 'message' ? `m${item.message.seq}` : `p${item.pending.op_key}`)}
+				{#if layout[i]?.day}
+					<DaySeparator label={layout[i].day!} />
+				{/if}
 				{#if item.kind === 'message'}
 					{#if i === dividerAt}
 						<UnreadDivider count={thread.unreadCount} more={thread.hasNewer} {@attach watchDivider(scroller)} />
 					{/if}
 					<MessageBubble
 						message={item.message}
+						head={layout[i]?.head ?? true}
 						canDelete={canDeleteMessage({ message: item.message, conversation, emailVerified: authStore.emailVerified })}
 						refs={thread.refs}
 						onJumpToQuote={jumpToQuote}
@@ -293,6 +305,7 @@
 				{:else}
 					<PendingBubble
 						pending={item.pending}
+						head={layout[i]?.head ?? true}
 						onRetry={(k) => {
 							const body = item.pending.body;
 							// A refused Retry discards its bubble: the text comes back with its notice, as for a refused send.
@@ -337,9 +350,13 @@
 		{/if}
 		<!-- Detached confirmed sends use the same full-width rows. -->
 		<div class="detached">
-			{#each thread.detached as m (m.seq)}
+			{#each thread.detached as m, i (m.seq)}
+				{#if detachedLayout[i]?.day}
+					<DaySeparator label={detachedLayout[i].day!} />
+				{/if}
 				<MessageBubble
 					message={m}
+					head={detachedLayout[i]?.head ?? true}
 					canDelete={canDeleteMessage({ message: m, conversation, emailVerified: authStore.emailVerified })}
 					refs={thread.refs}
 					onJumpToQuote={jumpToQuote}
@@ -388,11 +405,16 @@
 	.scroller.empty .messages {
 		flex: 1;
 	}
+	/* Rows space themselves: 12px above a group head, 2px inside a group (TASK-4515). */
 	.messages,
 	.detached {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-2);
+	}
+	.messages :global(.day + .bubble.head),
+	.messages :global(.divider + .bubble.head),
+	.detached :global(.day + .bubble.head) {
+		margin-top: 0;
 	}
 	.edge {
 		display: flex;
@@ -420,19 +442,10 @@
 	.notice span {
 		flex: 1;
 	}
-	.jump {
-		position: sticky;
-		top: 0;
-		z-index: 2;
-		display: flex;
-		justify-content: center;
-		height: 0;
-	}
-	.jump :global(.jump-pill) {
-		height: 28px;
+	:global(.chat-header .jump-pill) {
 		border-radius: 999px;
 		background: var(--bg-raised);
-		box-shadow: var(--shadow-md);
+		box-shadow: var(--shadow-sm);
 	}
 	.sentinel {
 		height: 1px;

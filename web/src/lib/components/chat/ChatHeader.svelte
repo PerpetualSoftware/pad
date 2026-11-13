@@ -10,7 +10,9 @@
 		title = '',
 		back = false,
 		onClose,
-		sub
+		sub,
+		lead,
+		actions
 	}: {
 		title?: string;
 		/** A back chevron to the inbox, through Chat's own navigation. */
@@ -18,11 +20,17 @@
 		/** Present in the host (dock, drawer, sheet) only. */
 		onClose?: () => void;
 		sub?: Snippet;
+		/** In place of the back chevron (the /messages route inbox puts its Back link here). */
+		lead?: Snippet;
+		/** Controls before Close (the thread's Jump to unread). */
+		actions?: Snippet;
 	} = $props();
 </script>
 
 <header class="chat-header">
-	{#if back}
+	{#if lead}
+		<div class="lead">{@render lead()}</div>
+	{:else if back}
 		<!-- A plain anchor, not IconButton's href, so the chat link census sees its interception. -->
 		<a
 			class="back"
@@ -42,6 +50,9 @@
 		{#if title}<h1 {title}>{title}</h1>{/if}
 		{#if sub}<div class="sub">{@render sub()}</div>{/if}
 	</div>
+	{#if actions}
+		<div class="actions">{@render actions()}</div>
+	{/if}
 	{#if onClose}
 		<IconButton label="Close Chat" class="close-chat" onclick={() => onClose()}>
 			<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
@@ -99,6 +110,17 @@
 			width: 20px;
 			height: 20px;
 		}
+	}
+	.lead {
+		flex-shrink: 0;
+		padding-left: var(--space-2);
+		font-size: 13px;
+	}
+	.actions {
+		display: flex;
+		align-items: center;
+		flex-shrink: 0;
+		gap: var(--space-1);
 	}
 	.titles {
 		flex: 1;

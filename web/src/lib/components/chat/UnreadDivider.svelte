@@ -10,12 +10,14 @@
 </div>
 
 <style>
+	/* The day separator's shape, in the accent (TASK-4515). */
 	.divider {
 		display: flex;
 		align-items: center;
 		gap: var(--space-3);
-		color: var(--accent-blue, var(--text-secondary));
-		font-size: 0.75rem;
+		margin: var(--space-3) 0 var(--space-1);
+		color: var(--accent-primary);
+		font-size: 12px;
 		font-weight: 600;
 	}
 	.divider::before,
@@ -23,6 +25,6 @@
 		content: '';
 		flex: 1;
 		border-top: 1px solid currentColor;
-		opacity: 0.5;
+		opacity: 0.45;
 	}
 </style>
