@@ -477,10 +477,20 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 			writeResolveField(w, "occurrence_at", "format", "occurrence_at must use whole seconds")
 			return
 		}
+		// A member is present if any key matches it without regard to case, as
+		// the decoder matches them, or if the decoder filled it; an explicit null
+		// counts as present too.
 		var members map[string]json.RawMessage
 		_ = json.Unmarshal(raw, &members)
+		decoded := map[string]bool{"until": body.Until != nil, "actual_done_at": actualDoneAt != nil, "comment": body.Comment != nil}
 		for _, name := range []string{"until", "actual_done_at", "comment"} {
-			if _, present := members[name]; present {
+			present := decoded[name]
+			for key := range members {
+				if strings.EqualFold(key, name) {
+					present = true
+				}
+			}
+			if present {
 				writeResolveField(w, name, "combination", name+" cannot be set with ack")
 				return
 			}

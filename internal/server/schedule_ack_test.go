@@ -299,3 +299,27 @@ func TestCommitmentAckNullCombinations(t *testing.T) {
 		})
 	}
 }
+
+// The decoder matches member names without regard to case, so a case variant
+// of an ack-only refusal must be refused like the canonical name.
+func TestCommitmentAckCaseVariantCombinations(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		key, field string
+		val        any
+	}{
+		{"Comment", "comment", ""},
+		{"COMMENT", "comment", nil},
+		{"Until", "until", "2030-01-01T00:00:00Z"},
+		{"Actual_Done_At", "actual_done_at", "2030-01-01T00:00:00Z"},
+	} {
+		t.Run(tc.key, func(t *testing.T) {
+			f := ackHTTPFixture(t)
+			body := httpAckBody()
+			body[tc.key] = tc.val
+			if d := f.expectErr(f.resolve(body), 400, "validation_error", "combination"); d["field"] != tc.field {
+				t.Fatalf("details=%v, want field %q", d, tc.field)
+			}
+		})
+	}
+}
