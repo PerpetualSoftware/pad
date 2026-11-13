@@ -64,3 +64,59 @@ export function nextDelay(prev: number, rateLimited: boolean): number {
 export function shouldPoll({ displayMode, visible }: { displayMode?: string; visible: boolean }): boolean {
 	return displayMode === 'fullscreen' && visible;
 }
+
+const isObject = (x: unknown): x is Record<string, unknown> => x !== null && typeof x === 'object' && !Array.isArray(x);
+const str = (x: unknown): string => typeof x === 'string' ? x : '';
+
+// Tool results are untrusted input to the view: these keep only well-formed
+// rows and return null for anything that is not the expected shape.
+function parseItem(x: unknown): BoardItem | null {
+	if (!isObject(x) || typeof x.id !== 'string' || x.id === '' || typeof x.seq !== 'number') return null;
+	return {
+		id: x.id, ref: str(x.ref), title: str(x.title), status: str(x.status), priority: str(x.priority),
+		assignee: str(x.assignee), parent_ref: str(x.parent_ref), seq: x.seq, updated_at: str(x.updated_at)
+	};
+}
+const parseItems = (x: unknown): BoardItem[] =>
+	Array.isArray(x) ? x.map(parseItem).filter((item): item is BoardItem => item !== null) : [];
+
+export function parseBoard(x: unknown): Board | null {
+	if (!isObject(x) || !Array.isArray(x.columns) || typeof x.cursor !== 'string' || typeof x.access_epoch !== 'string') return null;
+	if (typeof x.workspace !== 'string' || typeof x.collection !== 'string') return null;
+	const columns: BoardColumn[] = [];
+	for (const column of x.columns) {
+		if (!isObject(column) || typeof column.status !== 'string') return null;
+		const items = parseItems(column.items);
+		const total = typeof column.total === 'number' ? column.total : items.length;
+		columns.push({ status: column.status, terminal: column.terminal === true, abandoned: column.abandoned === true, total: Math.max(total, items.length), items });
+	}
+	return {
+		workspace: x.workspace, collection: x.collection, columns, truncated: x.truncated === true,
+		unplaced: typeof x.unplaced === 'number' ? x.unplaced : 0, cursor: x.cursor, access_epoch: x.access_epoch
+	};
+}
+
+export function parseChanges(x: unknown): BoardChanges | null {
+	if (!isObject(x) || typeof x.cursor !== 'string' || typeof x.access_epoch !== 'string') return null;
+	return {
+		upserts: parseItems(x.upserts), removed_ids: Array.isArray(x.removed_ids) ? x.removed_ids.filter(id => typeof id === 'string') : [],
+		cursor: x.cursor, access_epoch: x.access_epoch, resync: x.resync === true
+	};
+}
+
+/**
+ * A pad_item result as the board row it replaces. Wire names: internal/models/item.go
+ * (Item JSON tags), projected the way projectBoardItem does (internal/mcp/dispatch_http_board.go).
+ * Fields the result omits keep the row's value.
+ */
+export function boardItemFrom(item: { id: string; title: string; seq: number; fields?: Record<string, unknown> }, row: BoardItem): BoardItem {
+	const extra = item as Record<string, unknown>;
+	const pick = (value: unknown, fallback: string) => typeof value === 'string' ? value : fallback;
+	return {
+		id: item.id, ref: pick(extra.ref, row.ref), title: item.title, seq: item.seq,
+		status: str(item.fields?.status), priority: str(item.fields?.priority),
+		// Both are omitempty on the wire, so absent means empty.
+		assignee: str(extra.assigned_user_name), parent_ref: str(extra.parent_ref),
+		updated_at: pick(extra.updated_at, row.updated_at)
+	};
+}
