@@ -23,6 +23,17 @@ try {
 		write: false,
 		define: { 'process.env.NODE_ENV': '"production"' },
 		plugins: [{
+			// The SDK and its MCP dependencies import zod as a namespace, which keeps
+			// `z.locales` and so every error-message translation (about 260 kB, half
+			// the size cap) alive. Nothing here reads them: zod configures English from
+			// locales/en.js directly, and that is the only one this index keeps.
+			name: 'zod-english-only',
+			setup(bundler) {
+				bundler.onLoad({ filter: /[\\/]zod[\\/]v4[\\/]locales[\\/]index\.js$/ }, ({ path: filename }) => ({
+					contents: 'export { default as en } from "./en.js";', loader: 'js', resolveDir: path.dirname(filename)
+				}));
+			}
+		}, {
 			name: 'svelte',
 			setup(bundler) {
 				bundler.onLoad({ filter: /\.svelte(?:\.[jt]s)?$/ }, async ({ path: filename }) => {
