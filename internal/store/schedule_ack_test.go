@@ -385,39 +385,24 @@ func TestScheduleAckBundleValidationAndFreshCopy(t *testing.T) {
 	}
 }
 
-// An imported acknowledgement keeps actor_user_id only for a member of the
-// destination workspace, so a bundle cannot name an arbitrary account.
-func TestImportedAckActorMustBeMember(t *testing.T) {
+// Import never takes an account from a bundle: every imported acknowledgement
+// loses its actor_user_id, whatever the key's case and whether or not the user
+// is a member, and keeps its actor kind and normalized agent name.
+func TestImportedAckEvidenceDropsTheUser(t *testing.T) {
 	t.Parallel()
-	f := newSchedFixture(t)
-	member := f.user(t, "ack-member@example.com", "UTC")
-	outsider := f.user(t, "ack-outsider@example.com", "UTC")
-	f.exec(t, `DELETE FROM workspace_members WHERE workspace_id=? AND user_id=?`, f.ws.ID, outsider.ID)
 	head := `{"acked_at":"` + ackNow + `","agent_name":"rook",`
-	for _, tc := range []struct {
-		name, in, want string
-	}{
-		{"member", head + `"actor_user_id":"` + member.ID + `"}`, member.ID},
-		{"outsider", head + `"actor_user_id":"` + outsider.ID + `"}`, ""},
-		{"unknown user", head + `"actor_user_id":"no-such-user"}`, ""},
-		// encoding/json matches struct fields without regard to case, so a
-		// differently cased key must be checked like the canonical one.
-		{"outsider, upper-case key", head + `"ACTOR_USER_ID":"` + outsider.ID + `"}`, ""},
-		{"member, upper-case key", head + `"Actor_User_ID":"` + member.ID + `"}`, member.ID},
-		// With two matching keys the decoder keeps the last; that is the value checked.
-		{"member then outsider", head + `"actor_user_id":"` + member.ID + `","ACTOR_USER_ID":"` + outsider.ID + `"}`, ""},
+	for _, tc := range []struct{ name, in string }{
+		{"canonical key", head + `"actor_user_id":"user-a"}`},
+		// encoding/json matches struct fields without regard to case.
+		{"upper-case key", head + `"ACTOR_USER_ID":"user-a"}`},
+		{"mixed-case key", head + `"Actor_User_ID":"user-a"}`},
+		{"two keys", head + `"actor_user_id":"user-a","ACTOR_USER_ID":"user-b"}`},
 	} {
 		in := tc.in
-		tx, err := f.s.db.Begin()
-		if err != nil {
-			t.Fatal(err)
-		}
-		out, err := f.s.importedAckEvidenceTx(tx, f.ws.ID, &in)
-		_ = tx.Rollback()
+		out, err := importedAckEvidence(&in)
 		if err != nil || out == nil {
 			t.Fatalf("%s: out=%v err=%v", tc.name, out, err)
 		}
-		// The stored text is canonical: what the reader decodes is what was checked.
 		var raw map[string]any
 		if err := json.Unmarshal([]byte(*out), &raw); err != nil {
 			t.Fatal(err)
@@ -431,27 +416,22 @@ func TestImportedAckActorMustBeMember(t *testing.T) {
 		if err := json.Unmarshal([]byte(*out), &v); err != nil {
 			t.Fatal(err)
 		}
-		if v.ActorUserID != tc.want || v.AgentName != "rook" || v.AckedAt == nil || *v.AckedAt != ackNow {
-			t.Fatalf("%s: evidence=%+v, want actor %q", tc.name, v, tc.want)
+		if v.ActorUserID != "" || v.AgentName != "rook" || v.AckedAt == nil || *v.AckedAt != ackNow {
+			t.Fatalf("%s: evidence=%+v", tc.name, v)
 		}
 	}
-	tx, err := f.s.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = tx.Rollback() }()
 	ctrl := `{"acked_at":"` + ackNow + `","agent_name":"ro\u0007ok\nx"}`
-	if out, err := f.s.importedAckEvidenceTx(tx, f.ws.ID, &ctrl); err != nil || out == nil || strings.ContainsAny(*out, "\u0007") || strings.Contains(*out, `\n`) || strings.Contains(*out, `\u0007`) {
+	if out, err := importedAckEvidence(&ctrl); err != nil || out == nil || strings.Contains(*out, `\n`) || strings.Contains(*out, `\u0007`) {
 		t.Fatalf("agent name not normalized: out=%v err=%v", out, err)
 	}
 	junk := `not json`
-	if out, err := f.s.importedAckEvidenceTx(tx, f.ws.ID, &junk); err != nil || out != nil {
+	if out, err := importedAckEvidence(&junk); err != nil || out != nil {
 		t.Fatalf("junk evidence kept: out=%v err=%v", out, err)
 	}
 }
 
-// End to end through workspace import: a bundle whose ack row names a
-// non-member under a differently cased key reads back with no user.
+// End to end through workspace import: a bundle whose ack row names a user
+// (here a non-member, under a differently cased key) reads back with no user.
 func TestImportedAckBundleCannotNameOutsider(t *testing.T) {
 	t.Parallel()
 	f, _ := ackFixture(t, "FREQ=DAILY", "calendar")

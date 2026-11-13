@@ -297,11 +297,11 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 		}
 		if c.ChangeType == "ack" {
 			// Both sides are canonicalized: the commitment journal returns them as-is.
-			before, err := s.importedAckEvidenceTx(tx, workspaceID, c.BeforeJSON)
+			before, err := importedAckEvidence(c.BeforeJSON)
 			if err != nil {
 				return nil, err
 			}
-			after, err := s.importedAckEvidenceTx(tx, workspaceID, c.AfterJSON)
+			after, err := importedAckEvidence(c.AfterJSON)
 			if err != nil {
 				return nil, err
 			}
