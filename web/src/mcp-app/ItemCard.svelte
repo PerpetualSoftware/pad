@@ -4,6 +4,7 @@
 	// item text is only ever rendered as escaped text.
 	import { onMount, tick } from 'svelte';
 	import type { Bridge, HostContext, connectApp } from './bridge';
+	import { uniqueBy } from '../lib/utils/unique';
 	import {
 		CARD_ACTIONS, buildUpdateArgs, contentPreview, editableFields, isItemResult, parseToolError, shouldRenderCard,
 		type ItemLike, type SchemaField, type ToolResultLike
@@ -146,7 +147,8 @@
 				.filter(field => field.value !== '');
 		}
 		const editable = new Set(editableFields({ fields: defs }, current).map(field => field.key));
-		return defs.filter(def => def.type === 'select')
+		// A stored schema can repeat a key (the server refuses that only on write).
+		return uniqueBy(defs.filter(def => def.type === 'select'), def => def.key)
 			.map(def => ({
 				key: def.key, label: def.label || titleCase(def.key), options: def.options ?? [],
 				value: text(current.fields?.[def.key]), editable: ref !== '' && editable.has(def.key)

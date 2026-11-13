@@ -30,10 +30,10 @@ const collections = {
 
 const conflict = { isError: true, structuredContent: { error: { code: 'update_conflict', message: 'stale' } } };
 
-function setup(respond: Responder = () => ({ structuredContent: item() })) {
+function setup(respond: Responder = () => ({ structuredContent: item() }), schemas: ToolResultLike = collections) {
 	let handlers!: Handlers;
 	const call = vi.fn(async (tool: string, args: Record<string, unknown>) =>
-		tool === 'pad_collection' ? collections : respond(tool, args));
+		tool === 'pad_collection' ? schemas : respond(tool, args));
 	const connect = async (h: Handlers): Promise<Bridge> => { handlers = h; return { call }; };
 	const view = render(ItemCard, { props: { connect } });
 	const callsTo = (tool: string, action: string) =>
@@ -92,6 +92,20 @@ describe('ItemCard', () => {
 		expect(screen.queryByLabelText('Health')).toBeNull();
 		expect(screen.queryByText('Notes')).toBeNull();
 		expect(ctx.callsTo('pad_collection', 'list')).toEqual([{ action: 'list' }]);
+	});
+
+	it('still renders when a stored schema repeats a field key', async () => {
+		// The server refuses a repeated key only on schema writes, so an older or
+		// imported schema can still carry one.
+		const ctx = setup(undefined, { structuredContent: { items: [{ slug: 'tasks', schema: JSON.stringify({ fields: [
+			{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'] },
+			{ key: 'status', label: 'Status again', type: 'select', options: ['open', 'done'] },
+			{ key: 'priority', label: 'Priority', type: 'select', options: ['low', 'high'] }
+		] }) }] } });
+		await show(ctx, { action: 'get', ref: 'TASK-5' }, { structuredContent: item() });
+		expect(await screen.findByLabelText('Priority')).toBeInstanceOf(HTMLSelectElement);
+		expect(screen.getAllByLabelText(/^Status/)).toHaveLength(1);
+		expect(screen.getByRole('heading', { name: 'Fix the login redirect' })).toBeInTheDocument();
 	});
 
 	it('fetches the item when the result has no usable structured content', async () => {

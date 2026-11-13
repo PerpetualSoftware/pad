@@ -54,4 +54,11 @@ describe('item model', () => {
 		expect(contentPreview('x'.repeat(401))).toBe('x'.repeat(400) + '…');
 		expect(contentPreview('abcdef', 3)).toBe('abc…');
 	});
+
+	it('contentPreview never splits a surrogate pair', () => {
+		const text = 'a'.repeat(399) + '\u{1F600}' + 'tail';
+		const preview = contentPreview(text, 400);
+		expect(preview).toBe('a'.repeat(399) + '\u{1F600}…');
+		expect(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/.test(preview)).toBe(false);
+	});
 });

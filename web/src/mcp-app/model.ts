@@ -84,6 +84,7 @@ export function parseToolError(result: ToolResultLike): { code: string; message:
 
 // Return text for normal escaped text rendering by the view.
 export function contentPreview(content: string | undefined, max = 400): string {
-	const text = content ?? '';
-	return text.length > max ? text.slice(0, max) + '…' : text;
+	// Count code points, not UTF-16 units, so a cut never splits a surrogate pair.
+	const chars = Array.from(content ?? '');
+	return chars.length > max ? chars.slice(0, max).join('') + '…' : chars.join('');
 }

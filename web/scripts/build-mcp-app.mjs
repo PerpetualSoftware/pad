@@ -52,6 +52,10 @@ try {
 		logLevel: 'warning'
 	});
 	const bundle = result.outputFiles[0].text.replace(/<\/script/gi, match => '<\\/' + match.slice(2));
+	// Inside an inline script, '<!--' followed later by '<script' puts the HTML
+	// parser in the double-escaped state, where '</script>' no longer ends the
+	// script. Escaping either is unsafe in regex literals, so refuse instead.
+	if (/<script/i.test(bundle)) throw new Error('bundle contains "<script", which can break the inline script tag');
 	const template = fs.readFileSync(path.join(web, 'src/mcp-app/template.html'), 'utf8');
 	if (!template.includes('<!--BUNDLE-->')) throw new Error('template is missing <!--BUNDLE-->');
 	const html = template.replace('<!--BUNDLE-->', () => `<script>${bundle}</script>`);
