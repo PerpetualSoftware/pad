@@ -86,7 +86,7 @@
 				<input id="step-up-password" type="password" autocomplete="current-password" bind:this={passwordEl} bind:value={password} disabled={busy} required aria-invalid={error ? 'true' : undefined} aria-describedby={error ? errorId : undefined} />
 			{:else}
 				{#if factor === 'email'}
-					<p>A single-use code will be emailed to you. It expires in 10 minutes.</p>
+					<p class="email-note">A single-use code will be emailed to you. It expires in 10 minutes.</p>
 					<div class="send-row">
 						<Button variant="secondary" bind:element={sendEl} onclick={sendCode} disabled={busy}>{sent ? 'Send another code' : 'Send code'}</Button>
 						{#if sent}<p role="status" class="status">Code sent. Check your email.</p>{/if}
@@ -113,7 +113,8 @@
 	label { display: block; margin: 1rem 0 .4rem; font-weight: 500; }
 	input { width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); }
 	p { line-height: 1.5; }
-	.send-row { display: flex; flex-direction: column; align-items: flex-start; gap: .5rem; }
+	.email-note { margin: .5rem 0 0; }
+	.send-row { display: flex; flex-direction: column; align-items: flex-start; gap: .5rem; margin-top: .75rem; }
 	.send-row .status { margin: 0; }
 	.toggle-row { margin-top: .5rem; }
 	.error { margin: .5rem 0 0; color: var(--accent-red); }
