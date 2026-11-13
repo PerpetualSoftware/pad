@@ -138,10 +138,10 @@ describe('agenda Day page', () => {
  });
  it('says when completed items were cut, only while completed work is shown (BUG-4527)', async () => {
   h.agenda.mockResolvedValue(response([row({ type: 'completed' })], { events_truncated: true })); render(Agenda);
-  expect(await screen.findByText(/Not every completed item fits/)).toBeTruthy();
+  expect(await screen.findByText(/Some completed items in this \w+ aren't shown/)).toBeTruthy();
   expect(screen.queryByText(/Too much to load/)).toBeNull();
   await toggleCompleted();
-  expect(screen.queryByText(/Not every completed item fits/)).toBeNull();
+  expect(screen.queryByText(/Some completed items in this \w+ aren't shown/)).toBeNull();
  });
  it('offers to show hidden completed work when it is everything loaded', async () => {
   h.agenda.mockResolvedValue(response([row({ type: 'completed' })])); render(Agenda); await screen.findByRole('button', { name: '1 completed' }); await toggleCompleted();

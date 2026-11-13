@@ -630,7 +630,7 @@
 	{/if}
 	{#if showCompleted && data?.events_truncated}
 		<div class="notice info">
-			<span>Not every completed item fits. Showing the earliest 500 in this {mode}.</span>
+			<span>Some completed items in this {mode} aren't shown.</span>
 		</div>
 	{/if}
 	{#if hiddenCompleted}
