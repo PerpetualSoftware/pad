@@ -485,3 +485,24 @@ func TestAcknowledgedAtWithoutJournalRow(t *testing.T) {
 		t.Fatalf("at=%v by=%+v", sc.AcknowledgedAt, sc.AcknowledgedBy)
 	}
 }
+
+// An ack journal row with no evidence (NULL after_json, as an import stores for
+// text that does not decode) reads as acknowledged with no attribution; it must
+// not fail the schedule read or the agenda.
+func TestAckJournalRowWithoutEvidenceStillReads(t *testing.T) {
+	t.Parallel()
+	f, _ := ackFixture(t, "FREQ=DAILY", "calendar")
+	f.mustResolve(t, f.item, ackInput(), ackNow)
+	f.exec(t, `UPDATE schedule_changes SET after_json=NULL WHERE change_type='ack'`)
+	sc, err := f.s.GetSchedule(f.ws.ID, f.item.ID)
+	if err != nil || sc == nil {
+		t.Fatalf("schedule=%v err=%v", sc, err)
+	}
+	if sc.AcknowledgedAt == nil || *sc.AcknowledgedAt != ackNow || sc.AcknowledgedBy != nil {
+		t.Fatalf("at=%v by=%+v", sc.AcknowledgedAt, sc.AcknowledgedBy)
+	}
+	e, err := f.s.AgendaOutstanding(sc, time.UTC, rt("2026-11-03T12:00:00Z"))
+	if err != nil || e == nil || e.State != "acknowledged" {
+		t.Fatalf("outstanding=%+v err=%v", e, err)
+	}
+}

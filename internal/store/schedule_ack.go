@@ -73,7 +73,9 @@ func (s *Store) fillScheduleAcknowledgements(q Queryer, schedules []*models.Item
 	if len(ids) == 0 {
 		return nil
 	}
-	rows, err := q.Query(s.q(`SELECT c.schedule_id,c.occurrence_key,c.after_json,c.actor
+	// after_json is nullable (an imported row may carry none), and a NULL must
+	// read as "no attribution", not fail every agenda read in the workspace.
+	rows, err := q.Query(s.q(`SELECT c.schedule_id,c.occurrence_key,COALESCE(c.after_json,''),COALESCE(c.actor,'')
  FROM schedule_changes c JOIN item_schedules sc ON sc.id=c.schedule_id
  WHERE c.change_type='ack' AND c.schedule_id IN (`+placeholders(len(ids))+`)
  AND (c.occurrence_key=sc.next_wall OR c.occurrence_key=sc.next_at||'|'||sc.next_wall)
