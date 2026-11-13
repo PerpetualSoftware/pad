@@ -99,7 +99,7 @@
 					{#if entry.workspace_name}<WorkspaceTile name={entry.workspace_name} />{/if}
 					<span class="ref">{entry.item_ref}</span>
 					{#if entry.audience === 'agent'}<span>· for agents</span>{/if}
-					{#if acknowledged}<span class="ack"><span aria-hidden="true">·</span><span>{acknowledged}</span></span>{/if}
+					{#if acknowledged}<span class="ack">{#if !compact}<span aria-hidden="true">·</span>{/if}<span>{acknowledged}</span></span>{/if}
 					{#if compact}{@render pills()}{/if}
 				</div>
 			{/if}
@@ -157,5 +157,7 @@
 	.compact .title a, .compact .untitled { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 	.compact .inline-meta { white-space: normal; }
 	.compact .trail { gap: 2px; }
+	/* On a phone the attribution is a line of its own, with no separator to strand. */
+	.compact .ack { flex-basis: 100%; }
 	.ptime { color: var(--text-secondary); font-variant-numeric: tabular-nums; font-weight: 600; }
 </style>

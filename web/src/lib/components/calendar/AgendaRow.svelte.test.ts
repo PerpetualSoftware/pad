@@ -139,8 +139,11 @@ describe('AgendaRow', () => {
 		])('names who acknowledged it, on desktop and phone: %j', (acknowledged_by, text) => {
 			mount({ state: 'acknowledged', acknowledged_at: '2031-03-09T08:30:00Z', acknowledged_by });
 			expect(screen.getByText(text)).toBeTruthy();
+			expect(document.querySelector('.ack')?.textContent?.trim().startsWith('·')).toBe(true);
 			cleanup(); mount({ state: 'acknowledged', acknowledged_at: '2031-03-09T08:30:00Z', acknowledged_by }, { compact: true });
 			expect(screen.getByText(text)).toBeTruthy();
+			// On a phone it is a line of its own, so a leading separator would have nothing before it.
+			expect(document.querySelector('.ack')?.textContent?.trim()).toBe(text);
 		});
 	});
 });
