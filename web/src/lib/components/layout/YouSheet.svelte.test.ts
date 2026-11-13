@@ -3,8 +3,16 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 
-const h = vi.hoisted(() => ({ chatOn: true }));
+const h = vi.hoisted(() => ({ chatOn: true, path: '/console' }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
+vi.mock('$app/state', () => ({
+	page: {
+		get url() {
+			return new URL(`http://localhost${h.path}`);
+		},
+		state: {}
+	}
+}));
 vi.mock('$lib/api/client', () => ({ api: { auth: { logout: vi.fn() } } }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { current: null } }));
 // The real store (other modules register identity listeners on it), with the
@@ -40,6 +48,7 @@ import { chatStore } from '$lib/stores/chat.svelte';
 beforeEach(() => {
 	cleanup();
 	h.chatOn = true;
+	h.path = '/console';
 	chatStore.unreadTotal = 4;
 });
 afterEach(() => {
@@ -91,5 +100,33 @@ describe('YouSheet chat row (TASK-4044)', () => {
 		a.addEventListener('click', (e) => e.preventDefault());
 		a.click();
 		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+});
+
+describe('YouSheet agenda row (TASK-4526)', () => {
+	it('links the Agenda and closes the sheet on tap', async () => {
+		const onclose = vi.fn();
+		render(YouSheet, { props: { open: true, onclose } });
+		await tick();
+		flushSync();
+		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/console/agenda"]');
+		expect(a).not.toBeNull();
+		expect(a?.classList.contains('row')).toBe(true);
+		expect(a?.textContent).toContain('Agenda');
+		expect(a?.classList.contains('active')).toBe(false);
+		expect(a?.hasAttribute('aria-current')).toBe(false);
+		a!.addEventListener('click', (e) => e.preventDefault());
+		a!.click();
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('shows as the current page on the agenda route', async () => {
+		h.path = '/console/agenda';
+		render(YouSheet, { props: { open: true, onclose: vi.fn() } });
+		await tick();
+		flushSync();
+		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/console/agenda"]')!;
+		expect(a.classList.contains('active')).toBe(true);
+		expect(a.getAttribute('aria-current')).toBe('page');
 	});
 });
