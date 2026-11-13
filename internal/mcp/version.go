@@ -2331,6 +2331,7 @@ const CmdhelpVersion = "0.1"
 // fired reminder is unacknowledged; reminder_id remains supported, both refuse.
 // v0.114 — TASK-4465: additive read-only pad_board show/changes tool,
 // remote HTTP with Apps only. Stdio tools are unchanged.
+// v0.115 — TASK-4536: fired occurrence acknowledgement and acknowledged agenda provenance.
 const ToolSurfaceVersion = "0.115"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

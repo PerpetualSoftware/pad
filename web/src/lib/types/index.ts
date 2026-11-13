@@ -3813,6 +3813,14 @@ export interface AgendaForecast {
  owner_username?: string;
 }
 
+/** Read-time account identity of the current occurrence acknowledgement. */
+export interface AcknowledgedBy {
+ user_id: string;
+ name: string;
+ actor: 'user' | 'agent';
+ agent_name?: string;
+}
+
 export interface AgendaEntry {
  forecast?: CommitmentForecastSummary;
 	type: 'schedule' | 'date' | 'created' | 'completed';
@@ -3827,7 +3835,9 @@ export interface AgendaEntry {
 	wall?: string;
 	all_day?: boolean;
 	floating?: boolean;
-	state?: 'outstanding' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'lapsed' | 'unrecorded';
+	state?: 'outstanding' | 'acknowledged' | 'scheduled' | 'done' | 'skipped' | 'moved' | 'missed' | 'lapsed' | 'unrecorded';
+ acknowledged_at?: string;
+ acknowledged_by?: AcknowledgedBy;
 	roles?: CommitmentRoles;
  occurrence_key?: string;
 	roles_origin?: 'native' | 'legacy_backfill';
@@ -3896,7 +3906,7 @@ export interface AgendaResponse {
 	}[];
 }
 
-export type ScheduleResolveState = 'done' | 'skip' | 'snooze' | 'move';
+export type ScheduleResolveState = 'done' | 'skip' | 'snooze' | 'move' | 'ack';
 
 export interface CommitmentResolveRequest {
  actual_done_at?: string;
@@ -3984,7 +3994,7 @@ export interface ItemCommitmentView {
  anchor: 'calendar' | 'completion';
  audience: 'human' | 'agent' | 'both';
  lead_minutes: number;
- next_occurrence?: { at: string; wall: string };
+ next_occurrence?: { at: string; wall: string; state: 'outstanding' | 'acknowledged'; acknowledged_at?: string; acknowledged_by?: AcknowledgedBy };
  next_override_at?: string;
  missed_count?: number;
  missed_truncated?: boolean;

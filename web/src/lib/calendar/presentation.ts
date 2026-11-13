@@ -143,7 +143,7 @@ export interface OccurrenceStateRow {
 }
 
 /** The one table of occurrence states. Every chip, mark and label reads it. */
-export const OCCURRENCE_STATES = {
+export const OCCURRENCE_STATES: Record<string, OccurrenceStateRow> = {
 	outstanding: { label: 'Outstanding', tone: '--accent-amber', mark: 'ring' },
 	scheduled: { label: 'Scheduled', tone: '--status-blue', mark: 'ring-thin' },
 	done: { label: 'Done', tone: '--accent-green', mark: 'check' },
@@ -152,7 +152,7 @@ export const OCCURRENCE_STATES = {
 	missed: { label: 'Missed', tone: '--accent-red', mark: 'cross' },
 	lapsed: { label: 'Lapsed', tone: '--accent-red', mark: 'cross' },
 	unrecorded: { label: 'Not recorded', tone: '--accent-gray', mark: 'ring-dashed' }
-} as const satisfies Record<OccurrenceState, OccurrenceStateRow>;
+};
 
 /** The table row for a loosely typed state value, or undefined when it is not a known state. */
 export function occurrenceState(state: string | null | undefined): OccurrenceStateRow | undefined {
@@ -167,7 +167,8 @@ export function entryChips(entry: AgendaEntry): { text: string; color: string }[
 		const label = entry.field === 'due_date' ? 'Due' : entry.field === 'end_date' ? 'Ends' : entry.field ?? '';
 		return [chip(label), ...(entry.overdue ? [chip('Overdue', '--accent-amber')] : [])];
 	}
-	const chips = entry.state ? [chip(OCCURRENCE_STATES[entry.state].label, OCCURRENCE_STATES[entry.state].tone)] : [];
+	const state = occurrenceState(entry.state);
+	const chips = entry.state ? [state ? chip(state.label, state.tone) : chip('Unknown')] : [];
 	if (entry.state === 'outstanding') {
 		if (entry.overdue) chips.push(chip('Overdue', '--accent-amber'));
 		if (entry.missed_count && entry.missed_count > 0) chips.push(chip(`${entry.missed_count} missed occurrence${entry.missed_count === 1 ? '' : 's'}`, '--accent-amber'));

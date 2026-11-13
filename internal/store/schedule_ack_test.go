@@ -109,7 +109,7 @@ func TestResolveOccurrenceAckFloatingIdentity(t *testing.T) {
 			f := newSchedFixture(t)
 			u := f.user(t, "ack-zone@example.com", "America/New_York")
 			f.assign(t, f.item.ID, u.ID)
-			sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: wall, Floating: true})
+			f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: wall, Floating: true})
 			if _, err := f.s.ResolveOccurrence(f.ws.ID, f.item.ID, ResolveInput{State: "ack", OccurrenceAt: rt("2026-11-01T05:30:00Z"), Actor: "user"}); err == nil {
 				t.Fatal("early ack accepted")
 			}
@@ -117,7 +117,7 @@ func TestResolveOccurrenceAckFloatingIdentity(t *testing.T) {
 			if len(fired) != 1 {
 				t.Fatalf("fired=%v", fired)
 			}
-			sc, _ = f.s.GetSchedule(f.ws.ID, f.item.ID)
+			sc, _ := f.s.GetSchedule(f.ws.ID, f.item.ID)
 			at := *sc.NextAt
 			f.exec(t, `UPDATE users SET timezone='Asia/Tokyo' WHERE id=?`, u.ID)
 			in := ResolveInput{State: "ack", OccurrenceAt: rt(at), View: time.FixedZone("other", -7*3600), Actor: "user"}
@@ -173,9 +173,9 @@ func TestResolveOccurrenceAckConcurrentWriters(t *testing.T) {
 }
 func TestAcknowledgedAgendaRemainsOwed(t *testing.T) {
 	t.Parallel()
-	f, sc := ackFixture(t, "FREQ=DAILY", "calendar")
+	f, _ := ackFixture(t, "FREQ=DAILY", "calendar")
 	f.mustResolve(t, f.item, ackInput(), ackNow)
-	sc, _ = f.s.GetSchedule(f.ws.ID, f.item.ID)
+	sc, _ := f.s.GetSchedule(f.ws.ID, f.item.ID)
 	e, err := f.s.AgendaOutstanding(sc, time.UTC, rt("2026-11-03T12:00:00Z"))
 	if err != nil || e == nil || e.State != "acknowledged" || !e.Overdue {
 		t.Fatalf("outstanding=%+v err=%v", e, err)
