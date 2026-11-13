@@ -141,6 +141,12 @@ it('clears every per-user agenda Show completed preference on identity change', 
 	expect(localStorage.getItem('pad-theme')).toBe('dark');
 });
 
+it('clears the earlier combined agenda preference that browsers still hold', () => {
+	localStorage.setItem('pad-agenda-show-events:user-a', '0');
+	clearPersistentIdentityState();
+	expect(localStorage.getItem('pad-agenda-show-events:user-a')).toBeNull();
+});
+
 it('clears chat drafts and pending attempts in every conversation', () => {
 	for (const n of [1, 99]) {
 		sessionStorage.setItem(`pad:chat-draft:u1:${n}`, JSON.stringify({ userId: 'u1', n, text: 'private', replySeq: null }));
