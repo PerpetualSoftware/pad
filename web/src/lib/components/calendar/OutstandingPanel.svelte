@@ -149,7 +149,8 @@
 	.t a:hover { text-decoration: underline; }
 	.t a:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: -2px; border-radius: var(--radius-sm); }
 	.m { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 1px; font-size: 11.5px; color: var(--text-muted); }
-	.ack { margin-top: 1px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; color: var(--text-secondary); }
+	/* Wraps rather than truncates: who and when are both the point of the line. */
+	.ack { margin-top: 1px; font-size: 11.5px; color: var(--text-secondary); }
 	.when { color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 	.when.passed { color: var(--accent-red); font-weight: 600; }
 	.busy { display: grid; place-items: center; width: 32px; height: 32px; }
@@ -163,7 +164,6 @@
 	.foot button:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
 
 	.compact li { padding: 10px 12px; min-height: 56px; }
-	.compact .ack { white-space: normal; }
 	.compact .busy, .compact :global(.btn.agenda-row-menu) { width: 44px; height: 44px; }
 	.compact .foot button { padding: var(--space-2) 0; }
 	@media (pointer: coarse) { .busy { width: 44px; height: 44px; } }
