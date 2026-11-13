@@ -50,7 +50,7 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 				return res, nil
 			}
 			var page boardDoorPage
-			if err := decodeBoardResult(res, &page); err != nil {
+			if err := decodeBoardText(res, func(raw []byte) error { return json.Unmarshal(raw, &page) }); err != nil {
 				return dispatcherErrorResult(key, "decode changes", err), nil
 			}
 			upserts := []boardItem{}
@@ -85,7 +85,9 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 			return failure, nil
 		}
 		var schema models.CollectionSchema
-		if err := json.Unmarshal([]byte(col.Schema), &schema); err != nil {
+		// The columns are the status field's options: an item-field use, so the
+		// schema goes through the reserved-field stripping decoder.
+		if err := models.UnmarshalItemFieldSchema([]byte(col.Schema), &schema); err != nil {
 			return dispatcherErrorResult(key, "decode schema", err), nil
 		}
 		var status *models.FieldDef
@@ -104,7 +106,7 @@ func (d *HTTPHandlerDispatcher) dispatchBoard(action string) specialDispatchFn {
 			return res, nil
 		}
 		var page boardDoorPage
-		if err := decodeBoardResult(res, &page); err != nil {
+		if err := decodeBoardText(res, func(raw []byte) error { return json.Unmarshal(raw, &page) }); err != nil {
 			return dispatcherErrorResult(key, "decode index", err), nil
 		}
 		columns := make([]boardColumn, 0, len(status.Options))
@@ -199,13 +201,15 @@ func projectBoardItem(it models.Item) boardItem {
 	priority, _ := fields["priority"].(string)
 	return boardItem{ID: it.ID, Ref: it.Ref, Title: it.Title, Status: status, Priority: priority, Assignee: it.AssignedUserName, ParentRef: it.ParentRef, Seq: it.Seq, UpdatedAt: it.UpdatedAt.Format(time.RFC3339Nano)}
 }
-func decodeBoardResult(res *CallToolResult, out any) error {
+func decodeBoardText(res *CallToolResult, decode func([]byte) error) error {
 	// executeRequest keeps the original REST JSON in the text channel. Its
 	// structured channel wraps arrays and parses string-encoded fields/tags;
 	// decode the original so the existing models retain their REST shape.
+	// Each caller decodes into its own concrete type, so no destination here
+	// is an interface (the reserved-field decode guard resolves each one).
 	for _, content := range res.Content {
 		if text, ok := content.(mcpgo.TextContent); ok {
-			return json.Unmarshal([]byte(text.Text), out)
+			return decode([]byte(text.Text))
 		}
 	}
 	return fmt.Errorf("response has no JSON text")
@@ -220,7 +224,7 @@ func boardCollection(res *CallToolResult, slug, key string) (*models.Collection,
 		return nil, res
 	}
 	var cols []models.Collection
-	if err := decodeBoardResult(res, &cols); err != nil {
+	if err := decodeBoardText(res, func(raw []byte) error { return json.Unmarshal(raw, &cols) }); err != nil {
 		return nil, dispatcherErrorResult(key, "decode collections", err)
 	}
 	for _, name := range boardSlugCandidates(slug) {
