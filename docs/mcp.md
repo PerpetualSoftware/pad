@@ -100,8 +100,8 @@ The remote HTTP `/mcp` server advertises an item card on `pad_item` through
 The stdio server (`pad mcp serve`) is unchanged and advertises no app metadata
 or app resource.
 
-Apps are on by default for remote MCP. Set `PAD_MCP_APPS=off` (case-insensitive)
-to disable both the metadata and the resource.
+Apps are on by default for remote MCP. Set `PAD_MCP_APPS` to `off`, `false`,
+`no` or `0` (case-insensitive) to disable both the metadata and the resource.
 
 The view bridge restricts its allowed calls to `pad_item:get`, `pad_item:update`,
 `pad_collection:list`, `pad_board:show` and `pad_board:changes`. This allowlist is

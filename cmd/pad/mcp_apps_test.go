@@ -14,7 +14,14 @@ import (
 )
 
 func TestMCPApps_KillSwitch(t *testing.T) {
-	for _, value := range []string{"<unset>", "off", "OFF", "oFf", "on", "anything", ""} {
+	// Same vocabulary as PAD_MCP_ENABLED: false/0/no/off (any case, trimmed)
+	// turn apps off; anything else leaves them on.
+	cases := map[string]bool{
+		"<unset>": true, "": true, "on": true, "true": true, "1": true, "anything": true,
+		"off": false, "OFF": false, "oFf": false, " off ": false,
+		"false": false, "FALSE": false, "0": false, "no": false, "No": false,
+	}
+	for value, enabled := range cases {
 		t.Run(value, func(t *testing.T) {
 			t.Setenv("PAD_MCP_APPS", value)
 			if value == "<unset>" {
@@ -22,7 +29,6 @@ func TestMCPApps_KillSwitch(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			enabled := !strings.EqualFold(value, "off")
 			root := newRootCmd()
 			doc := cmdhelp.Build(root, root, cmdhelp.Options{Binary: "pad", Version: fullVersion(), Homepage: padHomepage, MaxDepth: -1})
 			srv := mcpserver.NewServer(mcpserver.Options{Version: fullVersion()})
