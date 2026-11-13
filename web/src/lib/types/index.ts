@@ -3865,6 +3865,7 @@ export interface AgendaResponse {
 	/** /me/agenda only. Absent when counts_truncated: a partial series is never sent. */
 	counts?: AgendaDayCount[];
 	counts_truncated?: boolean;
+	events_truncated?: boolean;
 	unavailable?: { item_ref: string; code: string; workspace?: string; owner_username?: string }[];
 	unexpanded?: {
 		schedule_id: string;

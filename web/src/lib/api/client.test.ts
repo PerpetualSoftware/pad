@@ -605,3 +605,23 @@ describe('api client database_busy 503 (TASK-4278)', () => {
 		expect(databaseBusyMessage(undefined, true)).toBe(BUSY_WRITE);
 	});
 });
+
+describe('getMyAgenda include query', () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it.each([
+		{ include: undefined, expected: null },
+		{ include: ['completed'], expected: 'completed' },
+		{ include: ['created', 'completed'], expected: 'created,completed' },
+		{ include: [], expected: '' },
+	])('serializes include=$expected', async ({ include, expected }) => {
+		mockFetchOnce(200, {});
+		await api.getMyAgenda('2031-03-10T00:00:00Z', '2031-03-11T00:00:00Z', 'UTC', 'mine', include);
+		const query = new URL(vi.mocked(fetch).mock.calls[0][0] as string, 'https://example.test').searchParams;
+		expect(query.get('from')).toBe('2031-03-10T00:00:00Z');
+		expect(query.get('to')).toBe('2031-03-11T00:00:00Z');
+		expect(query.get('tz')).toBe('UTC');
+		expect(query.get('group')).toBe('mine');
+		expect(query.get('include')).toBe(expected);
+	});
+});

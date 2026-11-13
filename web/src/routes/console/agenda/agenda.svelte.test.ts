@@ -99,7 +99,7 @@ describe('agenda Day page', () => {
   await mount(); await toggleCompleted();
   h.user = { id: 'user-a', timezone: 'Asia/Tokyo' }; h.signal?.set('auth', 1);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', 'all']);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', 'all', ['completed']]);
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 2);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
   expect(await completedShown()).toBe(true);
@@ -283,7 +283,7 @@ describe('agenda Week and priority', () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-30T16:00:00Z'));
   h.agenda.mockResolvedValue(response([])); render(Agenda);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
-  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', 'all']);
+  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
   expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
   expect(stripDays().map(day => day.dataset.stripDay)).toEqual(['2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']);
   expect(stripDays().filter(day => day.getAttribute('aria-current') === 'date')).toEqual([stripDay('2026-10-30')]);
@@ -291,7 +291,7 @@ describe('agenda Week and priority', () => {
   expect(screen.getByText('Nothing scheduled for 30 October – 5 November 2026')).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', 'all']);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
   expect(screen.getByRole('heading', { name: '6–12 November 2026' })).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Previous week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
@@ -709,7 +709,7 @@ describe('week strip, attention band and states', () => {
   expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy(); expect(within(daySection('2026-11-09')).queryByText('Nothing scheduled.')).toBeNull();
   await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' }));
   await screen.findByText('Later item');
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all']);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
   expect(screen.getAllByText('First item')).toHaveLength(2); expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
   expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(within(screen.getByRole('region', { name: 'Outstanding' })).getByText('First item')).toBeTruthy();
@@ -775,7 +775,7 @@ describe('week strip, attention band and states', () => {
   // Nothing is published between the two pages, so the second page never flickers out.
   await settle(); expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
   second.resolve(response([later])); await said('Occurrence marked done.', 'success');
-  expect(h.agenda.mock.calls[3]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all']);
+  expect(h.agenda.mock.calls[3]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
   expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.getAllByText('First item').length).toBeGreaterThan(0);
   expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
@@ -969,7 +969,7 @@ describe('workspace groups and daily counts', () => {
  it('loads the original agenda without a group when the groups list fails', async () => {
   h.groups.mockRejectedValue(new Error('Unavailable')); await mount();
   expect(screen.queryByRole('button', { name: /^Workspaces: / })).toBeNull();
-  expect(h.agenda.mock.calls[0]).toHaveLength(3); expect(screen.queryByRole('alert')).toBeNull(); expect(h.toast).not.toHaveBeenCalled();
+  expect(h.agenda.mock.calls[0].slice(3)).toEqual([undefined, ['completed']]); expect(screen.queryByRole('alert')).toBeNull(); expect(h.toast).not.toHaveBeenCalled();
  });
  it.each([{ ids: [] }, { ids: ['gone'] }])('renders an empty named group with no accessible workspaces: %j', async ({ ids }) => {
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ids }] });
@@ -1161,7 +1161,7 @@ describe('agenda Month page', () => {
   localStorage.setItem('pad-agenda-mode:user-a', 'week'); await mount();
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'false');
   await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all'));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']));
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
   expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('month');
  });
@@ -1169,7 +1169,7 @@ describe('agenda Month page', () => {
   h.agenda.mockResolvedValue(response(Array.from({ length: 4 }, (_, i) => row({ item_ref: `EX-${30+i}`, schedule_id: `s${i}`, item_title: `Month item ${i}` }))));
   render(Agenda); const grid = await screen.findByRole('grid', { name: 'November 2026' });
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
-  expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all');
+  expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']);
   const cell = cellOf('2026-11-05');
   expect(within(grid).getByRole('link', { name: /Month item 0/ })).toHaveAttribute('href', '/alice/work/tasks/EX-30');
   expect(cell.querySelector('.count')).toHaveTextContent('4 · 4 owed');
@@ -1252,13 +1252,13 @@ describe('agenda Month page', () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-03-31T12:00:00Z'));
   h.agenda.mockResolvedValue(response([row({ day: '2026-03-31' })]));
   await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Previous month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all'));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']));
   expect(dateButton('2026-02-28')).toHaveAttribute('tabindex', '0');
   await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-28T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all'));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-28T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']));
   await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Next month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', 'all'));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', 'all', ['completed']));
   expect(dateButton('2026-03-28')).toHaveAttribute('tabindex', '0');
   await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
   expect(dateButton('2026-03-31')).toHaveAttribute('tabindex', '0');

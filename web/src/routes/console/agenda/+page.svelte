@@ -332,7 +332,7 @@
 		else if (announcement === lastAnnouncedMonth) announcement = '';
 		try {
 			const { from, to } = windowOf(viewMode, date, timeZone);
-			const read = (start: string) => workspaceGroups ? api.getMyAgenda(start, to, timeZone, requestedGroup) : api.getMyAgenda(start, to, timeZone);
+			const read = (start: string) => workspaceGroups ? api.getMyAgenda(start, to, timeZone, requestedGroup, ['completed']) : api.getMyAgenda(start, to, timeZone, undefined, ['completed']);
 			let response = await read(from);
 			if (!current()) return;
 			// The rest was on screen before this reload: page on before publishing, so its rows never drop out.
@@ -394,7 +394,7 @@
 		const { to } = windowOf(mode, day, zone);
 		loadingRest = true; actionError = '';
 		try {
-			const rest = await (workspaceGroups ? api.getMyAgenda(from, to, zone, selectedGroup) : api.getMyAgenda(from, to, zone));
+			const rest = await (workspaceGroups ? api.getMyAgenda(from, to, zone, selectedGroup, ['completed']) : api.getMyAgenda(from, to, zone, undefined, ['completed']));
 			if (!current() || !data) return;
 			data = joinRest(data, rest);
 		} catch {
