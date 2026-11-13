@@ -147,7 +147,7 @@ func TestMeAgendaGroupParameter(t *testing.T) {
 	if got := completedOn(t, meAgendaOK(t, w, w.owner, agendaWindow+"&group=mine"), "2031-03-10"); got != 2 {
 		t.Fatalf("mine = %d", got)
 	}
-	named := meAgendaOK(t, w, w.owner, agendaWindow+"&group="+home.ID)
+	named := meAgendaOK(t, w, w.owner, agendaWindow+"&include=created,completed&group="+home.ID)
 	if completedOn(t, named, "2031-03-10") != 1 || seen(named) != "completed:Home,created:Home,date:Home,schedule:Home" {
 		t.Fatalf("named group: %s / %s", seen(named), countsOf(named))
 	}
@@ -192,7 +192,7 @@ func TestMeAgendaGroupPinnedToken(t *testing.T) {
 			t.Fatalf("group=%s body differs:\n%s\n%s", group, rr.Body.String(), first)
 		}
 	}
-	m := meAgendaOK(t, w, w.owner, agendaWindow, pin)
+	m := meAgendaOK(t, w, w.owner, agendaWindow+"&include=created,completed", pin)
 	if seen(m) != "completed:Pinned,created:Pinned,date:Pinned,schedule:Pinned" || completedOn(t, m, "2031-03-10") != 1 {
 		t.Fatalf("pinned default widened: %s / %s", seen(m), countsOf(m))
 	}
@@ -205,7 +205,7 @@ func TestMeAgendaCountsCap(t *testing.T) {
 	meAgendaFacts(t, w, "tasks", "Two")
 	w.srv.agendaCountsLimit = 1
 	m := meAgendaOK(t, w, w.owner, agendaWindow)
-	if m["counts_truncated"] != true || m["truncated"] != true {
+	if m["counts_truncated"] != true || m["truncated"] != nil || m["window_complete"] != true {
 		t.Fatalf("cap not reported: %v", m)
 	}
 	if _, has := m["counts"]; has {

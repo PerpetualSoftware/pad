@@ -18,6 +18,7 @@ import (
 const (
 	agendaMaxWindow  = 92 * 24 * time.Hour // schedule.CapWindow's own bound
 	agendaMaxEntries = 500
+	agendaMaxEvents  = 500
 	agendaMaxScan    = 1000 // schedules read per request
 	// agendaMaxCountRows bounds the item creations and status changes read for
 	// the counts series in one request.
@@ -104,6 +105,7 @@ type agendaResponse struct {
 	TimezoneNote         string              `json:"timezone_note,omitempty"`
 	Entries              []agendaEntry       `json:"entries"`
 	Truncated            bool                `json:"truncated,omitempty"`
+	EventsTruncated      bool                `json:"events_truncated,omitempty"`
 	NextFrom             string              `json:"next_from,omitempty"`
 	Unexpanded           []agendaUnexpanded  `json:"unexpanded,omitempty"`
 	Unavailable          []agendaUnavailable `json:"unavailable,omitempty"`
@@ -360,7 +362,7 @@ func (run *agendaRead) finish() {
 	resp := &run.response
 	from, to := run.from, run.to
 
-	sort.SliceStable(resp.Entries, func(i, j int) bool {
+	less := func(i, j int) bool {
 		a, b := resp.Entries[i], resp.Entries[j]
 		switch {
 		case !a.instant.Equal(b.instant):
@@ -373,10 +375,23 @@ func (run *agendaRead) finish() {
 			return a.ItemRef < b.ItemRef
 		}
 		return a.subKey < b.subKey
-	})
+	}
+	sort.SliceStable(resp.Entries, less)
+	// Item events have their own cap and cannot cut the dated window or its
+	// resume point. Partition the sorted entries so each cap keeps the earliest.
+	dated := make([]agendaEntry, 0, len(resp.Entries))
+	var events []agendaEntry
+	for _, entry := range resp.Entries {
+		if entry.Type == "created" || entry.Type == "completed" {
+			events = append(events, entry)
+		} else {
+			dated = append(dated, entry)
+		}
+	}
+	resp.Entries = dated
 	if len(resp.Entries) > agendaMaxEntries {
 		// Entries are in time order, so the first one not shown is where a client
-		// resumes, when it is a schedule or item event. A dated entry is selected
+		// resumes, when it is a schedule. A dated entry is selected
 		// by calendar day, not instant, so a cut on one promises nothing.
 		if cut := resp.Entries[agendaMaxEntries]; cut.Type == "date" {
 			run.setCut = true
@@ -385,6 +400,11 @@ func (run *agendaRead) finish() {
 		}
 		resp.Entries, resp.Truncated = resp.Entries[:agendaMaxEntries], true
 	}
+	if len(events) > agendaMaxEvents {
+		events, resp.EventsTruncated = events[:agendaMaxEvents], true
+	}
+	resp.Entries = append(resp.Entries, events...)
+	sort.SliceStable(resp.Entries, less)
 	// next_from promises every instant before it was examined, so it is never
 	// emitted when a cut that no instant describes also fired. A schedule that
 	// could not be expanded at all resumes at the window's end.

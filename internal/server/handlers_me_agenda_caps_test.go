@@ -43,8 +43,8 @@ func TestMeAgendaCreatedCompletedSQLCaps(t *testing.T) {
 					meAgendaTransition(t, w, it, at, "done")
 				}
 			}
-			m := meAgendaOK(t, w, w.owner, agendaWindow)
-			if len(entriesOf(m)) != 500 || m["truncated"] != true || m["next_from"] != nil {
+			m := meAgendaOK(t, w, w.owner, agendaWindow+"&include="+kind)
+			if len(entriesOf(m)) != 500 || m["events_truncated"] != true || m["truncated"] != nil || m["next_from"] != nil || m["window_complete"] != true {
 				t.Fatalf("%s SQL cap = entries:%d truncated:%v next:%v", kind, len(entriesOf(m)), m["truncated"], m["next_from"])
 			}
 		})

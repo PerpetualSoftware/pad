@@ -120,7 +120,7 @@ func TestMeAgendaWindowsPrecedeGroups(t *testing.T) {
 		meAgendaExec(t, world, `UPDATE items SET assigned_user_id=?,created_at='2031-03-10T01:00:00Z' WHERE id=?`, w.owner.ID, it.ID)
 	}
 	// Both passes stamp workspace identity before groups run out of time.
-	full := meAgendaOK(t, w.agendaWorld, w.owner, agendaWindow)
+	full := meAgendaOK(t, w.agendaWorld, w.owner, agendaWindow+"&include=created,completed")
 	groups := full["no_date"].([]any)
 	if len(groups) != 2 {
 		t.Fatalf("workspace groups lost: %v", full)
@@ -141,7 +141,7 @@ func TestMeAgendaWindowsPrecedeGroups(t *testing.T) {
 		}
 		return meAgendaNow
 	}
-	a := meAgendaOK(t, w.agendaWorld, w.owner, agendaWindow)
+	a := meAgendaOK(t, w.agendaWorld, w.owner, agendaWindow+"&include=created,completed")
 	if a["window_complete"] != true || a["counts_truncated"] == true || len(entriesOf(a)) != 4 || a["priority_list_complete"] != false || a["waiting_on_complete"] != false || a["no_date_complete"] != false {
 		t.Fatalf("groups spent later window's budget: %v", a)
 	}

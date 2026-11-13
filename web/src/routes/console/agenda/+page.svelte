@@ -332,7 +332,7 @@
 		else if (announcement === lastAnnouncedMonth) announcement = '';
 		try {
 			const { from, to } = windowOf(viewMode, date, timeZone);
-			const read = (start: string) => workspaceGroups ? api.getMyAgenda(start, to, timeZone, requestedGroup) : api.getMyAgenda(start, to, timeZone);
+			const read = (start: string) => workspaceGroups ? api.getMyAgenda(start, to, timeZone, requestedGroup, ['completed']) : api.getMyAgenda(start, to, timeZone, undefined, ['completed']);
 			let response = await read(from);
 			if (!current()) return;
 			// The rest was on screen before this reload: page on before publishing, so its rows never drop out.
@@ -380,7 +380,7 @@
 		const seen = new Set(shown.entries.map(entryKey));
 		return {
 			...shown, entries: [...shown.entries, ...rest.entries.filter(entry => !seen.has(entryKey(entry)))],
-			window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from,
+			window_complete: rest.window_complete, truncated: rest.truncated, next_from: rest.next_from, events_truncated: shown.events_truncated || rest.events_truncated,
 			unavailable: [...(shown.unavailable ?? []), ...(rest.unavailable ?? [])], unexpanded: [...(shown.unexpanded ?? []), ...(rest.unexpanded ?? [])]
 		};
 	}
@@ -394,7 +394,7 @@
 		const { to } = windowOf(mode, day, zone);
 		loadingRest = true; actionError = '';
 		try {
-			const rest = await (workspaceGroups ? api.getMyAgenda(from, to, zone, selectedGroup) : api.getMyAgenda(from, to, zone));
+			const rest = await (workspaceGroups ? api.getMyAgenda(from, to, zone, selectedGroup, ['completed']) : api.getMyAgenda(from, to, zone, undefined, ['completed']));
 			if (!current() || !data) return;
 			data = joinRest(data, rest);
 		} catch {
@@ -626,6 +626,11 @@
 			{:else}
 				<span>Some schedules could not be shown.</span>
 			{/if}
+		</div>
+	{/if}
+	{#if showCompleted && data?.events_truncated}
+		<div class="notice info">
+			<span>Some completed items in this {mode} aren't shown.</span>
 		</div>
 	{/if}
 	{#if hiddenCompleted}

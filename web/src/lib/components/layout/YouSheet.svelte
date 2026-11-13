@@ -13,6 +13,7 @@
 	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
 	import { onMount } from 'svelte';
 	import { goto, afterNavigate } from '$app/navigation';
+	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api/client';
@@ -29,6 +30,7 @@
 	let userEmail = $derived(authStore.user?.email ?? '');
 
 	let connectOpen = $state(false);
+	let onAgenda = $derived(page.url.pathname.startsWith('/console/agenda'));
 
 	// Theme toggle — mirrors the app's mechanism (key 'pad-theme', data-theme).
 	let currentTheme = $state<'dark' | 'light'>('dark');
@@ -97,6 +99,17 @@
 					</span>
 				</button>
 
+				<a
+					class="row"
+					class:active={onAgenda}
+					href="/console/agenda"
+					aria-current={onAgenda ? 'page' : undefined}
+					onclick={onclose}
+				>
+					<span class="row-icon" aria-hidden="true">📅</span>
+					<span class="row-label">Agenda</span>
+					<span class="row-chev" aria-hidden="true">›</span>
+				</a>
 				<a class="row" href="/console/settings" onclick={onclose}>
 					<span class="row-icon" aria-hidden="true">⚙️</span>
 					<span class="row-label">Account settings</span>
@@ -235,6 +248,10 @@
 	.rows :global(.row:hover) {
 		background: var(--bg-hover);
 		color: var(--text-primary);
+	}
+	.row.active {
+		color: var(--text-primary);
+		background: var(--bg-tertiary);
 	}
 	.row-icon {
 		font-size: 1.05em;
