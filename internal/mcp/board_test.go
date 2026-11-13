@@ -448,8 +448,13 @@ func TestMCPApps_BoardInstructionsCount(t *testing.T) {
 		if enabled && !strings.Contains(text, "Twelve tools total") {
 			t.Fatal("base instructions missing")
 		}
-		if got := strings.Contains(text, "`pad_board` is an additional read-only resource × action tool") && strings.Contains(text, "thirteen tools total"); got != enabled {
-			t.Fatalf("apps=%v: thirteen-tools sentence present=%v", enabled, got)
+		// The apps text has its own heading, corrects the base count and says
+		// pad_board takes action like the others.
+		got := strings.Contains(text, "\n## MCP Apps (this connection only)\n") &&
+			strings.Contains(text, "thirteen tools total") &&
+			strings.Contains(text, "Pass `action` to `pad_board`")
+		if got != enabled {
+			t.Fatalf("apps=%v: apps section present=%v", enabled, got)
 		}
 	}
 }
