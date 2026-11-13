@@ -543,7 +543,7 @@ func TestAgendaListsAnEarlyResolvedScheduleAsDone(t *testing.T) {
 	t.Parallel()
 	w := newAgendaWorld(t, "tasks")
 	it := w.item(t, "tasks", "AG early", `{"status":"open"}`, oneShot())
-	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, store.ResolveInput{OccurrenceAt: time.Date(2031, 3, 10, 9, 0, 0, 0, time.UTC), State: "done", Actor: "user"}); err != nil {
+	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, store.ResolveInput{OccurrenceAt: time.Date(2031, 3, 10, 9, 0, 0, 0, time.UTC), State: "done", Actor: "user", EndSchedule: true}); err != nil {
 		t.Fatalf("resolve early: %v", err)
 	}
 	m := w.ok(t, w.owner, agendaWindow)

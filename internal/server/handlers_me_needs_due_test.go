@@ -55,7 +55,7 @@ func TestMeNeedsDueHumanOccurrence(t *testing.T) {
 			case "future":
 				meAgendaExec(t, w.agendaWorld, `UPDATE item_schedules SET next_at = ?, next_wall = ? WHERE item_id = ?`, until.Format(time.RFC3339), until.Format("2006-01-02T15:04:05"), it.ID)
 			case "done", "skip":
-				in := store.ResolveInput{OccurrenceAt: due, State: tc.action, Actor: "user"}
+				in := store.ResolveInput{OccurrenceAt: due, State: tc.action, Actor: "user", EndSchedule: true}
 				if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, in); err != nil {
 					t.Fatal(err)
 				}

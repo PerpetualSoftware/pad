@@ -283,7 +283,7 @@ func TestTASK4423_R11SkipAuthority(t *testing.T) {
 				}
 			}
 			before := f.count(`SELECT COUNT(*) FROM item_reminders WHERE item_id=? AND fired_at IS NULL`, f.items[1].ID)
-			rr := f.as(tok, "POST", f.path(f.item)+"/resolve", map[string]any{"state": "skip", "occurrence_at": f.dates[0]})
+			rr := f.as(tok, "POST", f.path(f.item)+"/resolve", map[string]any{"state": "skip", "occurrence_at": f.dates[0], "end_schedule": true})
 			if rr.Code != 200 {
 				t.Fatalf("skip: %d %s", rr.Code, rr.Body.String())
 			}
@@ -310,7 +310,7 @@ func TestTASK4423_R11SkipAuthority(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
-				without := f.as(tok, "POST", f.path(f.item)+"/resolve", map[string]any{"state": "skip", "occurrence_at": f.dates[0]})
+				without := f.as(tok, "POST", f.path(f.item)+"/resolve", map[string]any{"state": "skip", "occurrence_at": f.dates[0], "end_schedule": true})
 				if without.Code != rr.Code || without.Body.String() != rr.Body.String() {
 					t.Fatalf("hidden child changed response bytes:\n%s\n%s", rr.Body.String(), without.Body.String())
 				}

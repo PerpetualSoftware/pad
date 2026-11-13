@@ -753,7 +753,7 @@ func TestSkipBeforeAHardDeadlineNeedsAuthority(t *testing.T) {
 	if _, err := f.srv.store.UpdateItem(f.item.ID, models.ItemUpdate{AssignedUserID: &editor.ID}); err != nil {
 		t.Fatal(err)
 	}
-	body := map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip"}
+	body := map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip", "end_schedule": true}
 	p := commitmentPath(f) + "/resolve"
 	before := f.count(`SELECT COUNT(*) FROM schedule_changes`)
 	rr := f.as(f.token(other, ""), "POST", p, body)
@@ -798,7 +798,7 @@ func skipJournalled(f *schedHTTP) int {
 // skip is journalled; on an unassigned item any editor may.
 func TestSkipBeforeAHardDeadlineOwnerAndUnassigned(t *testing.T) {
 	t.Parallel()
-	body := map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip"}
+	body := map[string]any{"occurrence_at": "2099-01-01T09:00:00Z", "state": "skip", "end_schedule": true}
 	t.Run("owner, item assigned to someone else", func(t *testing.T) {
 		f := newSchedHTTP(t)
 		readCommitment(t, commitmentCall(f, "POST", commitmentBody()), 201)

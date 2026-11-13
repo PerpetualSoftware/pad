@@ -55,11 +55,14 @@ type scheduleView struct {
 	MissedTruncated bool    `json:"missed_truncated,omitempty"`
 	Stale           bool    `json:"stale,omitempty"`
 	EndedAt         *string `json:"ended_at,omitempty"`
-	ErrorCode       *string `json:"error_code,omitempty"`
-	ReminderID      *string `json:"reminder_id,omitempty"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
-	TimezoneNote    string  `json:"timezone_note,omitempty"`
+	// EndedDismissedAt is when an editor dismissed the ended schedule from
+	// Outstanding while the item stayed open (TASK-4537).
+	EndedDismissedAt *string `json:"ended_dismissed_at,omitempty"`
+	ErrorCode        *string `json:"error_code,omitempty"`
+	ReminderID       *string `json:"reminder_id,omitempty"`
+	CreatedAt        string  `json:"created_at"`
+	UpdatedAt        string  `json:"updated_at"`
+	TimezoneNote     string  `json:"timezone_note,omitempty"`
 }
 
 // buildScheduleView renders a stored schedule. A pinned schedule's next_at is
@@ -77,7 +80,7 @@ func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *model
 		Tz: sc.Tz, Floating: sc.Floating, Rrule: sc.Rrule,
 		RDates: nonNilStrings(sc.RDates), ExDates: nonNilStrings(sc.ExDates),
 		Anchor: sc.Anchor, Audience: sc.Audience, LeadMinutes: sc.LeadMinutes,
-		NextOverrideAt: sc.NextOverrideAt, EndedAt: sc.EndedAt, ErrorCode: sc.ErrorCode,
+		NextOverrideAt: sc.NextOverrideAt, EndedAt: sc.EndedAt, EndedDismissedAt: sc.EndedDismissedAt, ErrorCode: sc.ErrorCode,
 		ReminderID: sc.ReminderID, CreatedAt: sc.CreatedAt, UpdatedAt: sc.UpdatedAt,
 	}
 	if sc.EndedAt == nil && sc.NextWall != nil {
@@ -385,6 +388,9 @@ type scheduleResolveBody struct {
 	State        *string `json:"state"`
 	Comment      *string `json:"comment"`
 	Until        *string `json:"until"`
+	// EndSchedule consents to a done or skip that ends the schedule while the
+	// item stays open (TASK-4537).
+	EndSchedule *bool `json:"end_schedule"`
 }
 
 func writeResolveField(w http.ResponseWriter, field, code, msg string) {
@@ -482,8 +488,8 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		// counts as present too.
 		var members map[string]json.RawMessage
 		_ = json.Unmarshal(raw, &members)
-		decoded := map[string]bool{"until": body.Until != nil, "actual_done_at": actualDoneAt != nil, "comment": body.Comment != nil}
-		for _, name := range []string{"until", "actual_done_at", "comment"} {
+		decoded := map[string]bool{"until": body.Until != nil, "actual_done_at": actualDoneAt != nil, "comment": body.Comment != nil, "end_schedule": body.EndSchedule != nil}
+		for _, name := range []string{"until", "actual_done_at", "comment", "end_schedule"} {
 			present := decoded[name]
 			for key := range members {
 				if strings.EqualFold(key, name) {
@@ -495,6 +501,13 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+	if body.EndSchedule != nil {
+		if in.State == "snooze" || in.State == "move" {
+			writeResolveField(w, "end_schedule", "combination", "end_schedule is for done and skip")
+			return
+		}
+		in.EndSchedule = *body.EndSchedule
 	}
 	if body.Until != nil {
 		u, ok := parseResolveInstant(w, "until", body.Until)
@@ -565,6 +578,11 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		writeSkipCommitmentChanged(w)
 		return
 	}
+	var wouldEnd *store.ErrScheduleWouldEnd
+	if errors.As(err, &wouldEnd) {
+		s.writeItemStillOpen(w, r, item, in, wouldEnd)
+		return
+	}
 	if s.writeScheduleItemGone(w, r, workspaceID, err) || s.writeResolveError(w, r, err) {
 		return
 	}
@@ -598,6 +616,9 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.TargetAfterDeadline {
 		resolution["warning"] = "target_after_deadline"
+	}
+	if res.EndedItemOpen {
+		resolution["item_still_open"] = true
 	}
 	v, err := s.buildCommitmentView(r, workspaceID, item, res.Schedule, "")
 	if err != nil {

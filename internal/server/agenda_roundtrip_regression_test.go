@@ -20,7 +20,9 @@ func TestAgendaEndedScheduleRemainsUnplaced(t *testing.T) {
 			w := newBootAgendaWorld(t, "2031-03-10T12:00:00Z")
 			ended := w.sched(t, w.owner, "Unplaced", "2031-03-10T09:00", "both")
 			live := w.sched(t, w.owner, "Live", "2031-03-10T10:00", "both")
-			assignment := map[string]string{"ended": "ended_at='2031-03-10T11:00:00Z',next_at=NULL,next_wall=NULL", "no_wall": "next_wall=NULL", "no_instant": "next_at=NULL"}[absent]
+			// An ended schedule is unplaced once its ending is dismissed; an
+			// undismissed one is a schedule_ended Outstanding entry (TASK-4537).
+			assignment := map[string]string{"ended": "ended_at='2031-03-10T11:00:00Z',ended_dismissed_at='2031-03-10T11:30:00Z',next_at=NULL,next_wall=NULL", "no_wall": "next_wall=NULL", "no_instant": "next_at=NULL"}[absent]
 			meAgendaExec(t, w.agendaWorld, `UPDATE item_schedules SET `+assignment+` WHERE item_id=?`, ended.ID)
 			for _, personal := range []bool{false, true} {
 				run := w.srv.newAgendaRead(meAgendaNow, meAgendaNow.Add(time.Hour), usertz.Resolve(nil), "")
@@ -34,7 +36,9 @@ func TestAgendaEndedScheduleRemainsUnplaced(t *testing.T) {
 					if len(a.NoDate) != 1 || a.NoDate[0].ItemRef != ended.Ref || a.NoDate[0].Reason != "unplaced" || a.NoDate[0].ScheduleID != w.scheduleID(t, ended.ID) || !a.NoDateComplete {
 						t.Errorf("unplaced schedule lost: %+v", a)
 					}
-				} else if a.PriorityListComplete {
+				} else if absent == "ended" && !a.PriorityListComplete {
+					t.Error("a dismissed ending is ordinary undated work, not an incomplete list")
+				} else if absent != "ended" && a.PriorityListComplete {
 					t.Error("unlisted unplaced schedule claimed complete")
 				}
 			}
