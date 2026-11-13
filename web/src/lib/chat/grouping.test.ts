@@ -86,6 +86,17 @@ describe('layoutRows', () => {
 		expect(heads(withCtx)).toEqual([true, false, false]);
 	});
 
+	it('a source change across a tombstone still splits', () => {
+		const t = at(2026, 11, 13, 9, 0);
+		const a = { context_workspace: { slug: 'a', name: 'A' } };
+		const b = { context_workspace: { slug: 'b', name: 'B' } };
+		const gone = { deleted: true, body: '' };
+		expect(heads(layoutRows([msg(t, a), msg(t, gone), msg(t, b)], { now: NOW }))).toEqual([true, false, true]);
+		expect(heads(layoutRows([msg(t, a), msg(t, gone), msg(t)], { now: NOW }))).toEqual([true, false, true]);
+		// A group opened by a tombstone takes its source from its first row that has one.
+		expect(heads(layoutRows([msg(t, gone), msg(t, a), msg(t, b)], { now: NOW }))).toEqual([true, false, true]);
+	});
+
 	it('a pending row continues a preceding own group, and otherwise heads its own', () => {
 		const recent = new Date(NOW.getTime() - 60_000);
 		expect(heads(layoutRows([mine(recent), pending('a'), pending('b')], { now: NOW }))).toEqual([true, false, false]);

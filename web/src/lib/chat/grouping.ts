@@ -86,6 +86,9 @@ export function layoutRows(
 	const out: RowLayout[] = [];
 	let prev: Facts | null = null;
 	let prevItem: WindowItem | null = null;
+	// The group's source: the first non-null source since its head. A row with no source of its
+	// own (pending, tombstone) neither sets nor clears it, so a source change across one still splits.
+	let groupSource: string | null = null;
 	// The last row with a readable time: an unreadable one neither opens nor repeats a day.
 	let lastDay: Date | null = null;
 	for (let i = 0; i < items.length; i++) {
@@ -95,10 +98,12 @@ export function layoutRows(
 		let head = true;
 		if (prev?.at && prevItem && f.at && i !== divider && !newDay && f.sender === prev.sender) {
 			const gap = Math.abs(f.at.getTime() - prev.at.getTime());
-			const sameSource = f.source === null || prev.source === null || f.source === prev.source;
+			const sameSource = f.source === null || groupSource === null || f.source === groupSource;
 			head = !(gap <= GROUP_WINDOW_MS && sameSource);
 			if (item.kind === 'pending' && prevItem.kind === 'pending') head = false;
 		}
+		if (head) groupSource = f.source;
+		else if (groupSource === null) groupSource = f.source;
 		out.push({ day: newDay ? dayLabel(f.at!.toISOString(), now) : null, head });
 		if (f.at) lastDay = f.at;
 		prev = f;
