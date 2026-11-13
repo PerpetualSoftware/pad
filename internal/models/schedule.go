@@ -56,7 +56,11 @@ type ItemSchedule struct {
 	ReminderID *string `json:"reminder_id,omitempty"`
 	// ReminderFired is whether that row is fired (read, never stored on the
 	// schedule). It decides how the outstanding instant is read.
-	ReminderFired bool `json:"-"`
+	ReminderFired   bool    `json:"-"`
+	ReminderAckedAt *string `json:"-"`
+	// Acknowledgement provenance is loaded from the current occurrence journal.
+	AcknowledgedAt *string         `json:"-"`
+	AcknowledgedBy *AcknowledgedBy `json:"-"`
 
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
@@ -96,4 +100,25 @@ type ScheduleUpdate struct {
 	Anchor      *string   `json:"anchor,omitempty"`
 	Audience    *string   `json:"audience,omitempty"`
 	LeadMinutes *int      `json:"lead_minutes,omitempty"`
+}
+
+// AcknowledgedBy identifies the account and optional self-declared agent name.
+// Name is resolved at read time and is empty when the account no longer exists.
+type AcknowledgedBy struct {
+	UserID    string `json:"user_id"`
+	Name      string `json:"name"`
+	Actor     string `json:"actor"`
+	AgentName string `json:"agent_name,omitempty"`
+}
+
+// OccurrenceState is the current open occurrence state, separate from history.
+func (sc *ItemSchedule) OccurrenceState() string {
+	if sc.ReminderAckedAt != nil {
+		return "acknowledged"
+	}
+	return "outstanding"
+}
+
+func IsOpenOccurrenceState(state string) bool {
+	return state == "outstanding" || state == "acknowledged"
 }

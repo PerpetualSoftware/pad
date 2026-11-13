@@ -2,7 +2,6 @@ package store
 
 import (
 	"encoding/json"
-	"errors"
 	"reflect"
 	"strings"
 	"sync"
@@ -161,8 +160,7 @@ func TestResolveOccurrenceAckConcurrentWriters(t *testing.T) {
 			close(start)
 			wg.Wait()
 			for _, err := range errs {
-				var fe *ScheduleFieldError
-				if err != nil && isStale(err) == nil && !strings.Contains(err.Error(), "has not fired") && !errors.As(err, &fe) {
+				if err != nil && isStale(err) == nil && !strings.Contains(err.Error(), "has not fired") {
 					t.Fatal(err)
 				}
 			}
@@ -182,7 +180,7 @@ func TestAcknowledgedAgendaRemainsOwed(t *testing.T) {
 	if err != nil || e == nil || e.State != "acknowledged" || !e.Overdue {
 		t.Fatalf("outstanding=%+v err=%v", e, err)
 	}
-	entries, _, _, err := f.s.ExpandAgenda(sc, time.UTC, rt("2026-11-03T00:00:00Z"), rt("2026-11-04T00:00:00Z"), rt("2026-11-03T12:00:00Z"))
+	entries, _, _, err := f.s.ExpandAgenda(sc, time.UTC, rt("2026-10-30T00:00:00Z"), rt("2026-11-04T00:00:00Z"), rt("2026-11-03T12:00:00Z"))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -211,12 +209,9 @@ func TestAcknowledgedByProjectsActor(t *testing.T) {
 		in.Actor = actor
 		in.ActorUserID = u.ID
 		// The agent name travels beside the journal actor kind, rather than replacing it.
-		raw, _ := json.Marshal(in)
-		var m map[string]any
-		_ = json.Unmarshal(raw, &m)
-		m["AgentName"] = "rook"
-		b, _ := json.Marshal(m)
-		_ = json.Unmarshal(b, &in)
+		if actor == "agent" {
+			in.AgentName = "rook"
+		}
 		f.mustResolve(t, it, in, ackNow)
 		ids = append(ids, it.ID)
 	}
@@ -248,7 +243,9 @@ func TestAcknowledgedByProjectsActor(t *testing.T) {
 		}
 	}
 	check(u.Name)
-	f.exec(t, `DELETE FROM users WHERE id=?`, u.ID)
+	if err := f.s.DeleteAccountAtomic(u.ID); err != nil {
+		t.Fatal(err)
+	}
 	check("")
 }
 func TestAcknowledgedDeadlineStillAccountsAndLapses(t *testing.T) {
@@ -309,10 +306,73 @@ func TestScheduleAckBundleRoundTrip(t *testing.T) {
 	if err != nil || imported == nil {
 		t.Fatalf("schedule=%v %v", imported, err)
 	}
-	if r := f.managed(t, imported); r.AckedAt == nil || *r.AckedAt != ackNow {
+	r, err := f.s.GetReminder(ws.ID, *imported.ReminderID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.AckedAt == nil || *r.AckedAt != ackNow {
 		t.Fatalf("import=%+v", r)
 	}
 	if ackJournal(t, f, sc) != 1 || ackJournal(t, f, imported) != 1 {
 		t.Fatal("ack history lost")
+	}
+}
+
+func TestScheduleAckBundleValidationAndFreshCopy(t *testing.T) {
+	t.Parallel()
+	f, sc := ackFixture(t, "FREQ=DAILY", "calendar")
+	f.mustResolve(t, f.item, ackInput(), ackNow)
+	bundle := f.exportBundle(t)
+	for _, tc := range []struct {
+		name, mark     string
+		unfired, ended bool
+	}{{name: "malformed", mark: "yesterday"}, {name: "unfired", mark: ackNow, unfired: true}, {name: "ended", mark: ackNow, ended: true}} {
+		b := jsonRoundTrip(t, bundle)
+		for i := range b.Schedules {
+			b.Schedules[i].Reminder.AckedAt = tc.mark
+			if tc.unfired {
+				b.Schedules[i].Reminder.FiredAt = ""
+			}
+			if tc.ended {
+				b.Schedules[i].EndedAt = ackNow
+				b.Schedules[i].NextAt = ""
+				b.Schedules[i].NextWall = ""
+			}
+		}
+		_, rep := f.importBundle(t, b, "Invalid ack "+tc.name)
+		if len(rep.DroppedSchedules) == 0 || !strings.HasPrefix(rep.DroppedSchedules[0].Reason, "acked_at:") {
+			t.Fatalf("%s report=%+v", tc.name, rep)
+		}
+	}
+	old := jsonRoundTrip(t, bundle)
+	for i := range old.Schedules {
+		old.Schedules[i].Reminder.AckedAt = ""
+	}
+	ws, rep := f.importBundle(t, old, "Old ack bundle")
+	if len(rep.DroppedSchedules) != 0 {
+		t.Fatal(rep)
+	}
+	it := f.itemByTitle(t, ws.ID, f.item.Title)
+	got, err := f.s.GetSchedule(ws.ID, it.ID)
+	if err != nil || got.ReminderAckedAt != nil {
+		t.Fatalf("old mark=%+v err=%v", got, err)
+	}
+	if ackJournal(t, f, sc) != 1 {
+		t.Fatal("source changed")
+	}
+	c := newSchedCopy(t)
+	source := c.schedule(t, daily())
+	c.forcePast(t, source)
+	c.exec(t, `UPDATE item_reminders SET fired_at=? WHERE schedule_id=?`, "2026-10-28T09:00:00Z", source.ID)
+	if _, err := c.s.resolveOccurrenceAt(c.wsA.ID, c.src.ID, ResolveInput{State: "ack", OccurrenceAt: rt("2026-10-28T09:00:00Z"), Actor: "user"}, rt("2026-10-28T10:00:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	copied := c.do(t, false)
+	fresh := c.sched(t, c.wsB.ID, copied.Item.ID)
+	if copied.Schedule.ChangesDropped < 2 {
+		t.Fatalf("copy did not report dropped ack history: %+v", copied.Schedule)
+	}
+	if fresh == nil || fresh.ReminderAckedAt != nil || fresh.ReminderFired {
+		t.Fatalf("copy inherited ack=%+v", fresh)
 	}
 }

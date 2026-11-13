@@ -15,11 +15,7 @@ import (
 // store paths (create, the fire pass, resolveOccurrenceAt, each with an injected
 // clock), exports, imports into a fresh workspace and compares.
 //
-// Not driven through a path: "acked". A managed reminder row cannot be
-// acknowledged (AckReminder refuses it, schedule_id IS NOT NULL); resolving the
-// occurrence done is the real acknowledgement and re-arms the row, so
-// acked_at is asserted equal (always absent) and the fired-acked row is
-// fire-then-resolve-done.
+// Acknowledged preservation and fresh-copy behavior are covered by the ack bundle tests.
 
 type matrixRow struct {
 	name     string

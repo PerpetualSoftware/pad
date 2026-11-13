@@ -39,6 +39,13 @@ func (s *Store) agendaWorkDetailsQ(q Queryer, workspaceID string, itemIDs []stri
 	if err != nil {
 		return nil, nil, err
 	}
+	var batch []*models.ItemSchedule
+	for _, sc := range schedules {
+		batch = append(batch, sc)
+	}
+	if err := s.fillScheduleAcknowledgements(q, batch); err != nil {
+		return nil, nil, err
+	}
 	gated, err := s.agendaGatedItemIDsQ(q, workspaceID, itemIDs)
 	return schedules, gated, err
 }

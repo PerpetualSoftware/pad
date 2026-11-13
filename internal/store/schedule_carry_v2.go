@@ -13,7 +13,7 @@ import (
 )
 
 var commitmentRoles = []string{"target", "earliest", "deadline", "occupied_until"}
-var scheduleChangeTypes = []string{"create", "update", "delete", "move", "snooze", "done", "skip", "missed_recorded", "end", "import", "carry"}
+var scheduleChangeTypes = []string{"create", "update", "delete", "move", "snooze", "done", "skip", "missed_recorded", "end", "import", "carry", "ack"}
 
 func validateCarriedRoles(r *models.ScheduleRolesExport) error {
 	if r == nil {

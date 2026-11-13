@@ -697,6 +697,9 @@ func (s *Store) writeLinkedDateTx(tx *sql.Tx, n *linkNode, ch schedule.Change, n
 		return err
 	}
 	if !to.After(nowT) {
+		if sc.ReminderAckedAt != nil {
+			return s.deleteManagedReminderTx(tx, sc.ID)
+		}
 		return s.cancelArmedReminderTx(tx, sc.ID)
 	}
 	fire, err := reminderFireAt(sc, n.rec, n.x, *sc.NextWall, to, true, to, nowT)

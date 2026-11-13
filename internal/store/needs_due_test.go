@@ -127,6 +127,13 @@ func TestNeedsDueOccurrencesScopeBeforeCap(t *testing.T) {
 		t.Fatalf("cap count=%d err=%v log=%s", len(got), err, log.String())
 	}
 	log.Reset()
+	f.exec(t, `UPDATE item_reminders SET fired_at=?,acked_at=? WHERE workspace_id=? AND item_id<>?`, due.Format(time.RFC3339), due.Format(time.RFC3339), f.ws.ID, last.ID)
+	got, err = f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{}, f.me.ID, due)
+	if err != nil || len(got) != 1 || !got[last.ID].Equal(due) || log.Len() != 0 {
+		t.Fatalf("ack exclusion before cap: due=%v err=%v log=%s", got, err, log.String())
+	}
+	f.exec(t, `UPDATE item_reminders SET acked_at=NULL WHERE workspace_id=?`, f.ws.ID)
+	log.Reset()
 	f.exec(t, `UPDATE items SET fields = ? WHERE workspace_id = ? AND id <> ?`, `{"status":"done"}`, f.ws.ID, last.ID)
 	got, err = f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{}, f.me.ID, due)
 	if err != nil || len(got) != 1 || !got[last.ID].Equal(due) || log.Len() != 0 {

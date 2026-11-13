@@ -76,12 +76,13 @@ type ResolveComment struct {
 type ResolveInput struct {
 	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
 	// ActorUserID identifies the human separately from the journal actor kind.
-	// It is used only to exclude their own ordinary move notice.
+	// It excludes their own move notice and records acknowledgement provenance.
 	ActorUserID  string
+	AgentName    string
 	LinkAccess   models.CommitmentAccess
 	ActualDoneAt *time.Time
 	OccurrenceAt time.Time
-	State        string     // done | skip | snooze | move
+	State        string     // done | skip | snooze | move | ack
 	Until        *time.Time // snooze: the re-fire instant. move: the new due instant
 	// View is the caller's own zone: the caller must pass ITS zone, not the
 	// recipient's (the HTTP handler passes viewerZone(r).Loc). A floating occurrence that has not fired is
@@ -103,6 +104,7 @@ type ResolveInput struct {
 type ResolveResult struct {
 	Schedule       *models.ItemSchedule
 	Comment        *models.Comment
+	AckChanged     bool
 	MissedRecorded int
 	// TargetAfterDeadline is set by a move that put the target after the row's
 	// own deadline. The move is saved; the deadline and its miss are unchanged.
@@ -139,8 +141,16 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		}
 		actual, actualSource = reported, "reported"
 	}
+	if in.State == "ack" {
+		if in.Comment != nil {
+			return nil, fieldErr("comment", "combination", "comment cannot be set with ack")
+		}
+		if in.OccurrenceAt.Nanosecond() != 0 {
+			return nil, fieldErr("occurrence_at", "format", "occurrence_at must use whole seconds")
+		}
+	}
 	switch in.State {
-	case "done", "skip":
+	case "done", "skip", "ack":
 		if in.Until != nil {
 			return nil, fieldErr("until", "combination", "until is for snooze and move")
 		}
@@ -155,7 +165,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, fieldErr("until", "range", "until must be within 366 days")
 		}
 	default:
-		return nil, fieldErr("state", "enum", "state must be one of done, skip, snooze, move")
+		return nil, fieldErr("state", "enum", "state must be one of done, skip, snooze, move, ack")
 	}
 
 	// The terminal filter reads through the pool, which can be one connection, so
@@ -267,6 +277,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 	if sc.ErrorCode != nil {
 		return nil, &ErrScheduleBroken{Code: *sc.ErrorCode}
+	}
+	if in.State == "ack" {
+		return s.ackOccurrenceTx(tx, sc, in, x, nowT)
 	}
 	if moveRoles != nil && moveRoles.DeadlineDays != nil {
 		// Move policy speaks only for an occurrence the caller really named.

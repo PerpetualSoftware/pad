@@ -360,15 +360,16 @@ func nextOccurrence(c *schedule.Compiled, view *time.Location, nowT time.Time) (
 const scheduleColumns = `id, workspace_id, item_id, kind, dtstart, dtend, tz, floating, rrule, rdates, exdates,
 	anchor, audience, lead_minutes, next_at, next_wall, next_override_at, anchor_wall, ended_at, error_code,
 	(SELECT r.id FROM item_reminders r WHERE r.schedule_id = item_schedules.id),
-	(SELECT r.fired_at FROM item_reminders r WHERE r.schedule_id = item_schedules.id), created_at, updated_at`
+	(SELECT r.fired_at FROM item_reminders r WHERE r.schedule_id = item_schedules.id),
+ (SELECT r.acked_at FROM item_reminders r WHERE r.schedule_id = item_schedules.id), created_at, updated_at`
 
 func scanSchedule(row interface{ Scan(...any) error }) (*models.ItemSchedule, error) {
 	var sc models.ItemSchedule
-	var dtend, tz, rrule, nextAt, nextWall, override, anchorWall, endedAt, errCode, reminderID, reminderFired sql.NullString
+	var dtend, tz, rrule, nextAt, nextWall, override, anchorWall, endedAt, errCode, reminderID, reminderFired, reminderAcked sql.NullString
 	var rdates, exdates string
 	if err := row.Scan(&sc.ID, &sc.WorkspaceID, &sc.ItemID, &sc.Kind, &sc.Dtstart, &dtend, &tz, &sc.Floating,
 		&rrule, &rdates, &exdates, &sc.Anchor, &sc.Audience, &sc.LeadMinutes, &nextAt, &nextWall, &override,
-		&anchorWall, &endedAt, &errCode, &reminderID, &reminderFired, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
+		&anchorWall, &endedAt, &errCode, &reminderID, &reminderFired, &reminderAcked, &sc.CreatedAt, &sc.UpdatedAt); err != nil {
 		return nil, err
 	}
 	for _, f := range []struct {
@@ -376,7 +377,7 @@ func scanSchedule(row interface{ Scan(...any) error }) (*models.ItemSchedule, er
 		src sql.NullString
 	}{{&sc.Dtend, dtend}, {&sc.Tz, tz}, {&sc.Rrule, rrule}, {&sc.NextAt, nextAt}, {&sc.NextWall, nextWall},
 		{&sc.NextOverrideAt, override}, {&sc.AnchorWall, anchorWall}, {&sc.EndedAt, endedAt},
-		{&sc.ErrorCode, errCode}, {&sc.ReminderID, reminderID}} {
+		{&sc.ErrorCode, errCode}, {&sc.ReminderID, reminderID}, {&sc.ReminderAckedAt, reminderAcked}} {
 		if f.src.Valid {
 			v := f.src.String
 			*f.dst = &v
@@ -427,6 +428,9 @@ func (s *Store) getScheduleQ(q Queryer, workspaceID, itemID string, lock bool) (
 	}
 	if err != nil {
 		return nil, fmt.Errorf("get schedule: %w", err)
+	}
+	if err := s.fillScheduleAcknowledgements(q, []*models.ItemSchedule{sc}); err != nil {
+		return nil, err
 	}
 	return sc, nil
 }

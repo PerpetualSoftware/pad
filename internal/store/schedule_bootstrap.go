@@ -31,10 +31,12 @@ type BootstrapAgendaRow struct {
 type BootstrapAgendaParams struct {
 	WorkspaceID string
 	UserID      string
-	Agent       bool // the caller is an agent principal
-	Scope       PendingReminderScope
-	Loc         *time.Location // the caller's zone
-	Now         time.Time
+	// Needs due-claim reads exclude quiet occurrences before the shared scan cap.
+	ExcludeAcknowledged bool
+	Agent               bool // the caller is an agent principal
+	Scope               PendingReminderScope
+	Loc                 *time.Location // the caller's zone
+	Now                 time.Time
 }
 
 // BootstrapAgendaSet is the caller's open occurrences, each list oldest first.
@@ -107,8 +109,12 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	args := append([]any{p.WorkspaceID}, nearArgs...)
 	args = append(args, audiences[0], audiences[1], p.WorkspaceID, p.UserID)
 	args = append(append(args, scopeArgs...), openArgs...)
+	ackFilter := ""
+	if p.ExcludeAcknowledged {
+		ackFilter = ` AND NOT EXISTS (SELECT 1 FROM item_reminders ar WHERE ar.schedule_id=item_schedules.id AND ar.acked_at IS NOT NULL)`
+	}
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND ended_at IS NULL AND next_at IS NOT NULL AND `+nearSQL+` AND audience IN (?, ?)
+		WHERE workspace_id = ? AND ended_at IS NULL AND next_at IS NOT NULL`+ackFilter+` AND `+nearSQL+` AND audience IN (?, ?)
 			AND item_id IN (
 			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
@@ -135,6 +141,13 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	}
 	if len(found) == 0 {
 		return set, nil
+	}
+	var ackBatch []*models.ItemSchedule
+	for _, row := range found {
+		ackBatch = append(ackBatch, row.Schedule)
+	}
+	if err := s.fillScheduleAcknowledgements(s.db, ackBatch); err != nil {
+		return nil, err
 	}
 	if err := s.fillAgendaItemFacts(found, "", nil); err != nil {
 		return nil, err
