@@ -30,7 +30,7 @@
 	let userEmail = $derived(authStore.user?.email ?? '');
 
 	let connectOpen = $state(false);
-	let onAgenda = $derived(page.url.pathname.startsWith('/agenda'));
+	let onAgenda = $derived(page.url.pathname === '/agenda' || page.url.pathname.startsWith('/agenda/'));
 
 	// Theme toggle — mirrors the app's mechanism (key 'pad-theme', data-theme).
 	let currentTheme = $state<'dark' | 'light'>('dark');

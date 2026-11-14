@@ -120,13 +120,17 @@ describe('YouSheet agenda row (TASK-4526)', () => {
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
-	it('shows as the current page on the agenda route', async () => {
-		h.path = '/agenda';
+	it.each([
+		['/agenda', true],
+		['/agenda/day', true],
+		['/agendas/ws', false]
+	])('marks Agenda active on %s: %s', async (path, active) => {
+		h.path = path;
 		render(YouSheet, { props: { open: true, onclose: vi.fn() } });
 		await tick();
 		flushSync();
 		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/agenda"]')!;
-		expect(a.classList.contains('active')).toBe(true);
-		expect(a.getAttribute('aria-current')).toBe('page');
+		expect(a.classList.contains('active')).toBe(active);
+		expect(a.getAttribute('aria-current')).toBe(active ? 'page' : null);
 	});
 });
