@@ -174,7 +174,7 @@
 		.agenda-row:not(.compact) .ref { white-space: nowrap; }
 		.agenda-row:not(.compact) .inline-meta { white-space: normal; }
 	}
-	@container agenda-list (max-width: 600px) {
+	@container agenda-list (max-width: 480px) {
 		.agenda-row:not(.compact) .body { grid-column: 3 / -1; }
 		.agenda-row:not(.compact) .trail { grid-column: 3 / -1; grid-row: 3; flex-wrap: wrap; }
 	}

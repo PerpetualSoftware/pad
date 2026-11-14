@@ -59,6 +59,9 @@ for (const theme of ['light', 'dark'] as const) {
 				expect.soft(intersects, `deadline chip does not overlap ${label}`).toBe(false);
 			}
 			expect.soft(chip.y, 'deadline is below the meta line').toBeGreaterThanOrEqual(meta.y + meta.height);
+			// At Home width the actions stay beside the title; only a narrower list wraps them.
+			const homeDone = await box(homeRow.getByRole('button', { name: `Done ${ref}`, exact: true }));
+			expect.soft(homeDone.y + homeDone.height, 'Home keeps Done beside the title').toBeLessThanOrEqual(chip.y);
 			const reference = homeRow.locator('.ref');
 			const refBox = await box(reference);
 			const lineHeight = await reference.evaluate(el => parseFloat(getComputedStyle(el).lineHeight));
