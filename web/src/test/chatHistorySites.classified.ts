@@ -5,6 +5,7 @@
 import type { Site } from './chatHistoryScan';
 
 export const CLASSIFIED: Site[] = [
+	{ file: "lib/components/home/DesktopHome.svelte", text: "void goto('/agenda');", n: 1, kind: "not-applicable", why: "The Home overview opens the full agenda with a push navigation to another route, so closing Chat with the navigation is intended." },
 	{ file: "routes/console/[...rest]/+page.svelte", text: "void goto(legacyConsoleTarget(pathname, search, hash), { replaceState: true });", n: 1, kind: "not-applicable", why: "The redirect replaces the legacy entry once at mount before Chat can be opened." },
 	{ file: "routes/(console)/settings/+page.svelte", text: "void goto('/settings/account' + page.url.search + page.url.hash, { replaceState: true });", n: 1, kind: "not-applicable", why: "The settings index redirects once at mount before Chat can open over the Account page." },
 	{ file: "lib/collections/paneHostController.ts", text: "history.go(delta - chatEntries);", n: 1, kind: "fixed", why: "Fixed: paneHistoryGo subtracts the entries Chat pushed (chatEntries = page.shallow ? page.state.chatDepth : 0), so every pane traversal lands on the intended pane entry instead of inside Chat's." },
@@ -96,7 +97,6 @@ export const CLASSIFIED: Site[] = [
 	{ file: "lib/components/collections/ItemCard.svelte", text: "goto(tagUrl(tag));", n: 1, kind: "not-applicable", why: "openTag: clicking a tag chip pushes the tag-filtered collection route, a push navigation to another route, so Chat closing with it is intended." },
 	{ file: "lib/components/billing/PlanLimitPrompt.svelte", text: "goto(BILLING_PATH);", n: 1, kind: "not-applicable", why: "upgrade() dismisses the prompt and pushes BILLING_PATH: a push navigation to another route, so Chat closing with it is intended (the resume path is read through currentPathSearch)." },
 	{ file: "lib/components/search/CommandPalette.svelte", text: "goto(`/${wsUsername}/${ws}/${collSlug}/${itemUrlId(r.item)}`);", n: 1, kind: "not-applicable", why: "choosing a search result opens that item's page: a push navigation to another route, so Chat closing with it is intended." },
-	{ file: "lib/components/layout/WorkspaceDiscovery.svelte", text: "goto(workspaceRestoreTarget(ws));", n: 1, kind: "not-applicable", why: "opening a discovered workspace goes to its restore target: a push navigation to another route, so Chat closing with it is intended." },
 	{ file: "lib/components/layout/Sidebar.svelte", text: "goto(url);", n: 1, kind: "not-applicable", why: "Real navigation to another route by push, no replace: closing Chat is the intended outcome: quick-add opens the new item." },
 	{ file: "lib/components/editor/EditorLinkPopover.svelte", text: "goto(plan.href);", n: 1, kind: "not-applicable", why: "Real navigation to another route by push, no replace: closing Chat is the intended outcome: internal link with no pane handler." },
 	{ file: "lib/components/layout/YouSheet.svelte", text: "goto(href);", n: 1, kind: "not-applicable", why: "go(href) closes the sheet then pushes the chosen route: a push navigation to another route, so Chat closing with it is intended." },

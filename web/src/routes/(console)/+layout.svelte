@@ -5,6 +5,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api/client';
 	import { onMount } from 'svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import { clickOutside } from '$lib/utils/clickOutside';
 	import ChatLink from '$lib/components/chat/ChatLink.svelte';
@@ -14,6 +15,7 @@
 	let mobileMenuOpen = $state(false);
 
 	onMount(async () => {
+		if (!viewport.isMobile) { ready = true; return; }
 		try {
 			const session = await authStore.load();
 			if (!session?.authenticated) {
@@ -84,7 +86,8 @@
 <svelte:window onkeydown={handleWindowKeydown} />
 
 {#if ready}
-	<div class="console-layout">
+	<div class="console-layout" class:desktop={!viewport.isMobile}>
+	{#if viewport.isMobile}
 		<!-- `clickOutside` dismisses only on a press that STARTS outside (BUG-3231): a drag begun inside and released outside is not an outside click. -->
 		<nav class="console-nav" use:clickOutside={{ enabled: mobileMenuOpen, onOutside: () => (mobileMenuOpen = false) }}>
 			<div class="nav-left">
@@ -143,13 +146,16 @@
 				<button class="logout-btn" onclick={logout}>Sign out</button>
 			</div>
 		</nav>
-		<main class="console-main" class:wide={isActive('/agenda')}>
+	{/if}
+		<svelte:element this={viewport.isMobile ? 'main' : 'div'} class="console-main" class:wide={isActive('/agenda') || currentPath === '/'}>
 			{@render children()}
-		</main>
+		</svelte:element>
 	</div>
 {/if}
 
 <style>
+	.console-layout.desktop { min-height: 0; }
+	.desktop .console-main { padding: var(--space-8) var(--space-6); }
 	.console-layout {
 		min-height: 100vh;
 		background: var(--bg-primary);

@@ -3,6 +3,8 @@
 	import { modKeyLabel } from '$lib/utils/platform';
 	import { dndzone, SHADOW_ITEM_MARKER_PROPERTY_NAME } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
+	import { isAccountShellPath } from '$lib/utils/isAccountShellPath';
+	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -15,13 +17,11 @@
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 	import UserMenuResources from '$lib/components/layout/UserMenuResources.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
-	import WorkspaceDiscovery from '$lib/components/layout/WorkspaceDiscovery.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { tabLanding } from '$lib/utils/tabLanding';
 	import ChatLink from '$lib/components/chat/ChatLink.svelte';
-	import ChatButton from '$lib/components/chat/ChatButton.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 
 	let { mobile = false }: { mobile?: boolean } = $props();
@@ -30,21 +30,6 @@
 	let userTriggerEl: HTMLButtonElement | undefined = $state(undefined);
 	let currentTheme = $state<'dark' | 'light'>('dark');
 	let connectOpen = $state(false);
-	// The "+" discovery surface (PLAN-3002 U4): find a workspace that is not
-	// open as a tab, create one, or restore a deleted one.
-	let discoveryOpen = $state(false);
-	let addEl: HTMLButtonElement | undefined = $state(undefined);
-
-	// Pending invitations badge on "+" (BUG-2136 U2). Refetched on mount,
-	// window focus and every navigation, so an invitee sees a new invitation
-	// on their next page view; the store throttles the focus and navigation
-	// refetches, so a burst of either costs one request.
-	const invitationCount = $derived(pendingInvitations.count);
-	const addLabel = $derived(
-		invitationCount > 0
-			? `Find or create a workspace (${invitationCount} pending ${invitationCount === 1 ? 'invitation' : 'invitations'})`
-			: 'Find or create a workspace'
-	);
 	onMount(() => {
 		// A mount is a page load: it skips the throttle, so a remount within the
 		// window still fetches.
@@ -58,7 +43,7 @@
 		void pendingInvitations.refresh();
 	});
 
-	let currentSlug = $derived(workspaceStore.current?.slug ?? '');
+	let currentSlug = $derived(!isAccountShellPath(page.url.pathname) && !page.url.pathname.startsWith('/messages') ? workspaceStore.current?.slug ?? '' : '');
 
 	// ── Workspace tabs (PLAN-3002 U3 / TASK-3274) ────────────────────────
 	// The bar is the caller's OPEN SET from `tabsStore` (server-side, the
@@ -550,6 +535,7 @@
 						<span class="user-dropdown-email">{authStore.user?.email}</span>
 					</div>
 					<div class="dropdown-divider"></div>
+					{#if mobile}
 					<a href="/" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 						Workspaces
 					</a>
@@ -569,6 +555,9 @@
 						<a href="/settings/admin" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 							Admin
 						</a>
+					{/if}
+					{:else}
+						<a href="/settings/account" class="menu-link" role="menuitem" onclick={closeUserMenu}>Settings</a>
 					{/if}
 					<!--
 						Theme toggle deliberately does NOT close the menu — matches
@@ -596,7 +585,7 @@
 						and GitHub on Cloud and a trimmed Docs/GitHub list on
 						self-hosted. Closes the product → marketing handoff seam.
 					-->
-					<UserMenuResources cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
+					<UserMenuResources desktop={!mobile} cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
 
 					<!--
 						"Connect a project…" sits after the Resources block and just
@@ -605,11 +594,12 @@
 						actions, but visually we want it adjacent to the divider so
 						it reads as a discrete action rather than another link.
 					-->
-					{#if workspaceStore.current?.slug}
+					{#if !mobile || workspaceStore.current?.slug}
 						<MenuItem
 							onclick={() => {
 								closeUserMenu();
-								connectOpen = true;
+								if (workspaceStore.current?.slug) connectOpen = true;
+	else uiStore.openCreateWorkspace();
 							}}
 						>
 							Connect a project…
@@ -735,27 +725,10 @@
 				{/each}
 			</div>
 
-			<div class="workspace-add-anchor">
-				<button
-					class="workspace-add"
-					bind:this={addEl}
-					onclick={() => (discoveryOpen = !discoveryOpen)}
-					title={addLabel}
-					aria-label={addLabel}
-					aria-haspopup="listbox"
-					aria-expanded={discoveryOpen}
-				>
-					<span class="add-icon">+</span>
-					{#if invitationCount > 0}
-						<span class="add-badge" data-testid="invitation-badge" aria-hidden="true">{invitationCount}</span>
-					{/if}
-				</button>
-				<WorkspaceDiscovery open={discoveryOpen} onclose={() => (discoveryOpen = false)} trigger={addEl} />
-			</div>
+
 		</div>
 
 		<div class="topbar-right">
-			<ChatButton />
 			<button
 				class="collapse-btn"
 				onclick={() => uiStore.closeTopbar()}
@@ -864,6 +837,7 @@
 {/if}
 
 <style>
+	.topbar:not(.topbar-mobile) .user-menu-container :global(.menu-panel) { width: 244px; max-height: min(440px, calc(100dvh - 64px)); }
 	.topbar {
 		position: relative;
 		display: flex;
@@ -1213,50 +1187,7 @@
 		text-overflow: ellipsis;
 	}
 
-	.workspace-add-anchor {
-		position: relative;
-		align-self: center;
-		flex-shrink: 0;
-	}
-	.workspace-add {
-		position: relative;
-		display: flex;
-		align-items: center;
-		justify-content: center;
-		width: 24px;
-		height: 24px;
-		border-radius: 50%;
-		flex-shrink: 0;
-		color: var(--text-muted);
-		border: 2px dashed var(--border);
-		transition: border-color 0.15s, color 0.15s;
-	}
 	/* Pending invitations on "+" (BUG-2136 U2): visible without opening it. */
-	.add-badge {
-		position: absolute;
-		top: -6px;
-		right: -8px;
-		min-width: 16px;
-		height: 16px;
-		padding: 0 4px;
-		border-radius: 8px;
-		background: var(--accent-blue);
-		color: var(--bg-primary);
-		font-size: 10px;
-		font-weight: 600;
-		line-height: 16px;
-		text-align: center;
-		pointer-events: none;
-	}
-	.workspace-add:hover {
-		border-color: var(--text-secondary);
-		color: var(--text-secondary);
-	}
-	.add-icon {
-		font-size: 0.85em;
-		font-weight: 600;
-		line-height: 1;
-	}
 
 	/* Mobile TopBar — slot that hosts the <WorkspaceSwitcher /> chip.
 	   Flex-grows so the switcher trigger stretches to fill the gap between

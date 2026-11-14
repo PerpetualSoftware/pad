@@ -2,6 +2,10 @@
 	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
 	import { modKeyLabel } from '$lib/utils/platform';
 	import { onMount } from 'svelte';
+	import YouNav from './YouNav.svelte';
+	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
+	import QuickCaptureSheet from './QuickCaptureSheet.svelte';
+	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
 	import { page } from '$app/state';
 	import { dndzone } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -49,13 +53,17 @@
 	let pillRef = $state<HTMLButtonElement>();
 	let pickerRef = $state<HTMLDivElement>();
 
-	let wsSlug = $derived(workspaceStore.current?.slug);
-	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
+	let shellWorkspace = $derived(!uiStore.isMobile && !page.params.workspace
+		? workspaceStore.workspaces?.find(w => w.slug === lastWorkspace.current?.slug && w.owner_username === lastWorkspace.current?.owner_username) ?? workspaceStore.workspaces?.[0] ?? workspaceStore.current
+		: workspaceStore.current);
+	let captureOpen = $state(false);
+	let wsSlug = $derived(shellWorkspace?.slug);
+	let wsUsername = $derived(shellWorkspace?.owner_username ?? '');
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
-	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
+	let isGuest = $derived(shellWorkspace?.is_guest ?? false);
 	// Active-state derives from the shared nav source so the Sidebar and the
 	// mobile BottomNav/More sheet can't drift (PLAN-1694 DR-1).
-	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
+	let activeKey = $derived(wsPrefix && page.url.pathname.startsWith(wsPrefix) ? getActiveKey(page.url.pathname, wsPrefix) : null);
 	let isDashboardPage = $derived(activeKey === 'dashboard');
 	let isInsightsPage = $derived(activeKey === 'insights');
 	let isGraphPage = $derived(activeKey === 'graph');
@@ -176,6 +184,7 @@
 		if (uiStore.quickAddRequested) {
 			const targetSlug = uiStore.quickAddTargetSlug;
 			uiStore.clearQuickAddRequest();
+	if (!uiStore.isMobile && !page.params.workspace) { captureOpen = true; return; }
 			// Only a collection the caller may create in (BUG-3258); with none,
 			// Cmd-N does nothing.
 			const creatable = (c: Collection | null | undefined) =>
@@ -564,6 +573,7 @@
 	ontouchend={handleTouchEnd}
 >
 	<div class="sidebar-inner">
+	{#if !uiStore.isMobile}<YouNav /><WorkspaceSwitcher current={shellWorkspace} />{/if}
 		{#if wsSlug}
 			<!--
 				`data-membership` says whether the caller's membership has settled
@@ -647,7 +657,7 @@
 					sits OUTSIDE the `!isGuest` block: a guest member of this workspace
 					still has their own chat. href is global, not wsPrefix.
 				-->
-				{#if authStore.authenticated && chatSetting.enabled}
+				{#if uiStore.isMobile && authStore.authenticated && chatSetting.enabled}
 					<a
 						href="/messages"
 						class="nav-item"
@@ -789,7 +799,7 @@
 			<div class="footer-row">
 				{#if wsSlug && !isGuest}
 					<a href="{wsPrefix}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
-						⚙ Settings
+						⚙ {uiStore.isMobile ? 'Settings' : 'Workspace settings'}
 					</a>
 				{/if}
 				{#if !uiStore.isMobile}
@@ -988,7 +998,13 @@
 
 <NotificationPanel visible={notificationPanelOpen} onclose={() => { notificationPanelOpen = false; }} />
 
+<QuickCaptureSheet open={captureOpen} onclose={() => captureOpen = false} wsSlug={undefined} wsPrefix="" />
+
 <style>
+	.sidebar:not(.mobile) .footer-row { gap: 2px; }
+	.sidebar:not(.mobile) .settings-btn { white-space: nowrap; padding: var(--space-2) 2px; font-size: .8rem; }
+	.sidebar:not(.mobile) .footer-row button, .sidebar:not(.mobile) .github-btn { width: 24px; min-width: 24px; padding: 4px; }
+
 	.sidebar {
 		width: var(--sidebar-width);
 		min-width: var(--sidebar-width);

@@ -15,6 +15,11 @@
 	stacked on top of an open Search/Workspace/You surface (BUG-1765).
 -->
 <script lang="ts">
+	import { untrack } from 'svelte';
+	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { canEditCollection } from '$lib/utils/permissions';
+	import type { Collection, WorkspaceMembership } from '$lib/types';
 	import { goto } from '$app/navigation';
 	import { api, isPlanLimitError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
@@ -46,11 +51,31 @@
 	// Grouped by the bootstrap_include trait, not a slug list. TASK-2657.
 	// Only collections the caller may create in (BUG-3258); the server refuses
 	// the rest.
-	let collections = $derived(
-		collectionStore.collections.filter(
-			(c) => !isAgentCollection(c) && workspaceStore.canEditCollection(c.id)
-		)
-	);
+	let chosenWorkspace = $state('');
+	let targetCollections = $state<Collection[]>([]);
+	let targetMembership = $state<WorkspaceMembership | null>(null);
+	let loadingWorkspace = $state(false);
+	let workspaceError = $state('');
+	const selectedWorkspace = $derived(workspaceStore.workspaces?.find(w => w.slug === chosenWorkspace) ?? workspaceStore.workspaces?.find(w => w.slug === lastWorkspace.current?.slug && w.owner_username === lastWorkspace.current?.owner_username) ?? workspaceStore.workspaces?.[0]);
+	const targetSlug = $derived(wsSlug || selectedWorkspace?.slug);
+	const targetPrefix = $derived(wsSlug ? wsPrefix : selectedWorkspace ? `/${selectedWorkspace.owner_username}/${selectedWorkspace.slug}` : '');
+	const collections = $derived((wsSlug ? collectionStore.collections : targetCollections).filter(c => !isAgentCollection(c) && (wsSlug ? workspaceStore.canEditCollection(c.id) : canEditCollection(targetMembership, c.id))));
+	let request = 0;
+	async function loadTarget(slug: string) {
+		const ticket = ++request;
+		const sameIdentity = authStore.identityFence();
+		loadingWorkspace = true; workspaceError = ''; targetCollections = []; targetMembership = null;
+		try {
+			const [rows, membership] = await Promise.all([api.collections.list(slug), api.workspaces.me(slug)]);
+			if (ticket !== request || !sameIdentity()) return;
+			targetCollections = rows; targetMembership = membership;
+		} catch { if (ticket === request && sameIdentity()) workspaceError = 'Could not load this workspace. Try again.'; }
+		finally { if (ticket === request && sameIdentity()) loadingWorkspace = false; }
+	}
+	$effect(() => {
+		if (open && !wsSlug && targetSlug) { const slug = targetSlug; untrack(() => { void loadTarget(slug); }); }
+		return () => { request++; };
+	});
 
 	let selectedSlug = $state('');
 	let title = $state('');
@@ -67,7 +92,8 @@
 	// silently no-op on a stale slug (PLAN-1694).
 	$effect(() => {
 		if (!open || !collections.length) return;
-		if (!selectedSlug || !collections.some((c) => c.slug === selectedSlug)) {
+		const selected = untrack(() => selectedSlug);
+		if (!selected || !collections.some((c) => c.slug === selected)) {
 			selectedSlug = (collections.find((c) => c.slug === 'tasks') ?? collections[0]).slug;
 		}
 	});
@@ -78,7 +104,7 @@
 	}
 
 	async function submit(openAfter = false) {
-		if (!wsSlug || !selectedSlug || !title.trim() || submitting) return;
+		if (!targetSlug || !selectedSlug || !title.trim() || submitting) return;
 		const coll = collections.find((c) => c.slug === selectedSlug);
 		if (!coll) return;
 		// BUG-3115: refuse a too-long title before sending; the sheet keeps it.
@@ -92,8 +118,8 @@
 		const sentVersion = inputVersion;
 		// The workspace the item is created in, prefix and all: a switch while
 		// the create is in flight must not point the link elsewhere (TASK-3599).
-		const ws = wsSlug;
-		const prefix = wsPrefix;
+		const ws = targetSlug;
+		const prefix = targetPrefix;
 		try {
 			const settings = parseSettings(coll);
 			// BUG-3078: the status default goes through the declared type.
@@ -143,6 +169,13 @@
 <DockedSheet {open} onclose={close} label="Quick capture">
 	<div class="capture">
 		<h2 class="capture-heading">Quick capture</h2>
+		{#if !wsSlug}
+			<select class="capture-collection" aria-label="Workspace" value={targetSlug} onchange={event => chosenWorkspace = event.currentTarget.value}>
+				{#each workspaceStore.workspaces ?? [] as workspace}<option value={workspace.slug}>{workspace.name}</option>{/each}
+			</select>
+		{/if}
+		{#if loadingWorkspace}<p role="status">Loading collections…</p>{/if}
+		{#if workspaceError}<p role="alert">{workspaceError}</p><button onclick={() => targetSlug && loadTarget(targetSlug)}>Retry</button>{/if}
 		{#if collections.length === 0}
 			<p class="capture-empty">You can't add items in this workspace.</p>
 			<div class="capture-actions">

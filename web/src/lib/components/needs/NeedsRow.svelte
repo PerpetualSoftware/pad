@@ -6,6 +6,7 @@
 
 	interface Props {
 		row: NeedsRow;
+		showWorkspace?: boolean;
 		view: NeedsView;
 		busy?: boolean;
 		/** Whether this row's defer menu is open; the page keeps one open at a time. */
@@ -16,7 +17,7 @@
 		onrestore: (row: NeedsRow) => void;
 	}
 
-	let { row, view, busy = false, menuOpen = false, onmenu = () => {}, ondismiss, ondefer, onrestore }: Props = $props();
+	let { row, showWorkspace = false, view, busy = false, menuOpen = false, onmenu = () => {}, ondismiss, ondefer, onrestore }: Props = $props();
 
 	function ago(iso: string): string {
 		const ms = Date.now() - new Date(iso).getTime();
@@ -51,6 +52,7 @@
 			<span class="title">{row.item.title}</span>
 		{/if}
 		<div class="meta">
+			{#if showWorkspace}<span>{row.workspace.name}</span>{/if}
 			<span class="ref">{row.item.ref}</span>
 			<span>{row.item.collection}</span>
 			{#if row.item.status}<Chip size="sm">{row.item.status}</Chip>{/if}

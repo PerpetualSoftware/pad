@@ -233,13 +233,13 @@ describe('the inbox in the host', () => {
 		expect(document.body.style.getPropertyValue('--chat-dock-width')).toBe('');
 	});
 
-	it('the console has no sidebar to subtract', async () => {
+	it('Home reserves the persistent sidebar width', async () => {
 		page.url = new URL('http://localhost/');
 		openAt('/messages');
 		setWidth(1100);
 		const { container } = render(ChatHost);
 		await settle();
-		expect(container.querySelector('[role="complementary"]')).not.toBeNull();
+		expect(container.querySelector('[role="dialog"]')).not.toBeNull();
 	});
 
 	it('one presence owner and one inbox owner, across a dock to drawer swap', async () => {

@@ -1,3 +1,4 @@
+vi.mock('$lib/stores/breakpoint.svelte', () => ({ viewport: { isMobile: true } }));
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
 // TASK-4044 3c (U31): the / nav bar carries the Chat entry, after
@@ -52,6 +53,7 @@ afterEach(() => {
 
 describe('console nav Chat entry (TASK-4044 3c)', () => {
 	it('is a nav-link to /messages after Agenda and "Needs you", with the unread count', () => {
+		expect(document.querySelector('main.console-main')).not.toBeNull();
 		const links = [...document.querySelectorAll<HTMLAnchorElement>('.nav-links a')];
 		const needs = links.findIndex((a) => a.getAttribute('href') === '/needs');
 		const chat = links.findIndex((a) => a.getAttribute('href') === '/messages');

@@ -23,6 +23,12 @@ export const EACH_KEY_REASONS = {
 export type EachKeyReason = keyof typeof EACH_KEY_REASONS;
 
 export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: string }> = {
+	"lib/components/home/DesktopHome.svelte :: each homeOverview.needs?.rows.slice(0,4) ?? [] as row (needKey(row))": { reason: 'db-primary-key', note: 'One Needs response has one row per workspace and item reference; slicing preserves uniqueness.' },
+	"lib/components/home/DesktopHome.svelte :: each attention as entry (entryKey(entry))": { reason: 'deduped', note: 'attentionEntries builds a Map; additional overdue entries are appended only when entryKey is absent.' },
+	"lib/components/home/DesktopHome.svelte :: each todayRows as entry (entryKey(entry))": { reason: 'db-primary-key', note: 'One agenda response filtered by day and audience; entryKey includes workspace, item, schedule or field and instant.' },
+	"lib/components/home/DesktopHome.svelte :: each workspaceStore.workspaces as ws (ws.id)": { reason: 'db-primary-key', note: 'The workspace store holds one workspace per database primary key.' },
+	"lib/components/layout/WorkspaceSwitcher.svelte :: each section.rows as ws (ws.slug)": { reason: 'db-primary-key', note: 'Each section filters one workspace list or tab response, whose workspace slugs are unique.' },
+
  "routes/(console)/+layout.svelte :: each [{ label: 'Workspaces', href: '/' }, { label: 'Needs you', href: '/needs' }, { label: 'Agenda', href: '/agenda' }] as link (link.href)": { reason: 'static-literal', note: 'The three frame links have distinct route paths.' },
  "routes/(console)/settings/+layout.svelte :: each tabs as tab (tab.href)": { reason: 'static-literal', note: 'The five settings tabs have distinct paths; visibility only removes entries.' },
  "routes/(console)/settings/account/+page.svelte :: each sections as section (section.id)": { reason: 'static-literal', note: 'Rendered account cards have distinct static anchor IDs; conditional cards only remove entries.' },
@@ -170,7 +176,6 @@ export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: stri
 	"lib/components/layout/Sidebar.svelte :: each sidebarCollections as collection (collection.id)": { reason: 'db-primary-key', note: "collections list (GROUP BY c.id), replaced whole; a drag swaps an entry for its shadow" },
 	"lib/components/layout/TopBar.svelte :: each dndTabs as tab, i (tab.id)": { reason: 'db-primary-key', note: "`tabsStore.tabs` (server answers only) \u2190 `user_workspace_tabs` | PRIMARY KEY(user_id, workspace_id); the id is the slug, which is globally unique; the store never builds tabs local" },
 	"lib/components/layout/UserMenuResources.svelte :: each links as link (link.label)": { reason: 'static-literal', note: "static `cloudLinks` / `selfHostedLinks` | Distinct labels in each list." },
-	"lib/components/layout/WorkspaceDiscovery.svelte :: each options as option, i (option.kind === 'workspace' ? option.ws.slug : '__create')": { reason: 'db-primary-key', note: "workspace slugs are globally unique; the store create append checks the id first" },
 	"lib/components/layout/WorkspaceSheet.svelte :: each agentCollections as coll (coll.id)": { reason: 'db-primary-key', note: "collections list" },
 	"lib/components/layout/WorkspaceSheet.svelte :: each navDestinations as dest (dest.key)": { reason: 'static-literal', note: "`getPrimaryDestinations` (nav/destinations.ts:61) | static literal with distinct keys." },
 	"lib/components/layout/WorkspaceSheet.svelte :: each regularCollections as coll (coll.id)": { reason: 'db-primary-key', note: "collections list (GROUP BY c.id), filtered" },

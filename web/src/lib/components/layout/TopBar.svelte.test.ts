@@ -291,21 +291,6 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 	});
 });
 
-describe('TopBar: the Q2 highlight', () => {
-	it('opening the create flow from "+" clears it', async () => {
-		await mountWith([ALPHA]);
-		uiStore.highlightAddWorkspace();
-		document.querySelector<HTMLButtonElement>('.workspace-add')!.click();
-		await tick();
-		flushSync();
-		// "+" opens the discovery surface (U4); its last option is create.
-		document.querySelector<HTMLElement>('.discovery-option.create')!.click();
-		flushSync();
-		expect(uiStore.addWorkspaceHighlighted).toBe(false);
-		uiStore.closeCreateWorkspace();
-	});
-});
-
 describe('TopBar: no window key owner (successor to TASK-2430)', () => {
 	it('consumes neither Escape nor the arrow keys on window', async () => {
 		await mountWith([ALPHA, BETA]);
@@ -317,28 +302,9 @@ describe('TopBar: no window key owner (successor to TASK-2430)', () => {
 	});
 });
 
-describe('TopBar "+" invitation badge (BUG-2136 U2)', () => {
+describe('TopBar invitation refresh (BUG-2136 U2)', () => {
 	const addBtn = () => document.querySelector<HTMLButtonElement>('.workspace-add')!;
 	const badge = () => document.querySelector('[data-testid="invitation-badge"]');
-
-	it('shows no badge and the plain label with nothing pending', async () => {
-		await mountWith([BETA]);
-		expect(badge()).toBeNull();
-		expect(addBtn().getAttribute('aria-label')).toBe('Find or create a workspace');
-	});
-
-	it('shows the count and names it in the accessible label', async () => {
-		mocks.invitationCount = 2;
-		await mountWith([BETA]);
-		expect(badge()?.textContent?.trim()).toBe('2');
-		expect(addBtn().getAttribute('aria-label')).toBe('Find or create a workspace (2 pending invitations)');
-	});
-
-	it('uses the singular for one invitation', async () => {
-		mocks.invitationCount = 1;
-		await mountWith([BETA]);
-		expect(addBtn().getAttribute('aria-label')).toBe('Find or create a workspace (1 pending invitation)');
-	});
 
 	it('refreshes on mount, on window focus and after every navigation, and stops on unmount', async () => {
 		await mountWith([BETA]);

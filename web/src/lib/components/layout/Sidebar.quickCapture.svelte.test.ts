@@ -34,6 +34,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 }));
 vi.mock('$lib/stores/collections.svelte', async () => await import('./sidebarQuickAdd.fixture.svelte'));
 
+import { page } from '$app/state';
 import Sidebar from './Sidebar.svelte';
 import { goto } from '$app/navigation';
 import { api } from '$lib/api/client';
@@ -57,6 +58,8 @@ async function settle() {
 }
 
 beforeEach(() => {
+	page.params = { username: 'u', workspace: 'ws' };
+	page.url = new URL('http://localhost/u/ws/tasks');
 	cleanup();
 	created.n = 0;
 	vi.mocked(goto).mockClear();
