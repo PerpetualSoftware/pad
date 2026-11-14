@@ -24,6 +24,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
+	import AccountButton from './AccountButton.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
 
 	// Count in-app navigations so goBack() knows whether history.back() stays
@@ -119,6 +120,7 @@
 		<div class="cb-ws">
 			<WorkspaceSwitcher mobile={true} />
 		</div>
+		<AccountButton />
 	</header>
 {/if}
 

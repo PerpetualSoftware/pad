@@ -29,10 +29,11 @@
 		 * ≤768px — TASK-2028).
 		 */
 		mobile?: boolean;
+		card?: boolean;
 	current?: Workspace | null;
 	}
 
-	let { mobile, current = workspaceStore.current }: Props = $props();
+	let { mobile, card = false, current = workspaceStore.current }: Props = $props();
 	onMount(() => { if (!isMobile) void pendingInvitations.refresh(); });
 
 	let open = $state(false);
@@ -176,7 +177,11 @@
 	</button>
 {/snippet}
 
-<div class="switcher" class:desktop={!isMobile}>
+<div class="switcher" class:desktop={!isMobile} class:workspace-card={card}>
+ {#if card && current}
+  <span class="workspace-avatar" style:background={avatarColor(current.name)}>{(current.name || current.slug).charAt(0).toUpperCase()}</span>
+  <div class="workspace-meta"><strong>{current.name}</strong><small>{current.is_guest ? 'Guest' : workspaceStore.currentMembership?.role ?? ''}{#if workspaceStore.workspaces?.length} · {workspaceStore.workspaces.length} workspaces{/if}</small></div>
+ {/if}
 	<button
 		class="current"
 	bind:this={trigger}
@@ -185,7 +190,7 @@
 		aria-expanded={open}
 	>
 		{#if !isMobile && current}<span class="workspace-avatar" style:background={avatarColor(current.name)}>{(current.name || current.slug).charAt(0).toUpperCase()}</span>{/if}
-		<span class="name">{current?.name ?? 'Select workspace'}</span>
+		<span class="name">{card ? 'Switch' : current?.name ?? 'Select workspace'}</span>
 		<span class="chevron" aria-hidden="true">{open ? '▲' : '▼'}</span>
 	</button>
 
@@ -240,6 +245,13 @@
 </div>
 
 <style>
+ .workspace-card { display: flex; align-items: center; gap: var(--space-3); padding: var(--space-3); border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-tertiary); }
+ .workspace-card .workspace-avatar { width: 30px; height: 30px; }
+ .workspace-meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: var(--space-1); }
+ .workspace-meta strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .workspace-meta small { text-transform: capitalize; }
+ .workspace-card .current { width: auto; border: 1px solid var(--border); padding: var(--space-1) var(--space-3); }
+
 	.desktop .current { background: var(--bg-tertiary); border: 1px solid var(--border); padding: var(--space-2); gap: var(--space-2); font-size: .85rem; text-align: left; }
 	.desktop .name { text-align: left; }
 	.desktop-dropdown { position: fixed; width: 300px; z-index: 60; overflow-y: auto; padding: var(--space-2); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-lg); box-shadow: 0 8px 24px rgba(0,0,0,.3); }

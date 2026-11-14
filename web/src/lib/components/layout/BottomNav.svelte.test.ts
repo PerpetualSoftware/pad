@@ -6,6 +6,8 @@ import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 import { cs, parked, chatSurfaceMock } from './chatSurfaceMock.fixture.svelte';
 
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { authenticated: true, onIdentityChange: () => () => {} } }));
+vi.mock('$lib/stores/homeOverview.svelte', () => ({ homeOverview: { needs: { total: 7 }, load: vi.fn() } }));
 const h = vi.hoisted(() => ({ chatOn: true, path: '/u/ws' }));
 vi.mock('$app/state', () => ({
 	page: {
@@ -30,7 +32,6 @@ vi.mock('$lib/stores/ui.svelte', () => ({
 }));
 vi.mock('$lib/components/layout/QuickCaptureSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
 vi.mock('$lib/components/layout/WorkspaceSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
-vi.mock('$lib/components/layout/YouSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
 vi.mock('$lib/stores/chatSurface.svelte', async () => ({
 	chatSurface: (await import('./chatSurfaceMock.fixture.svelte')).chatSurfaceMock
 }));
@@ -48,7 +49,7 @@ import { chatStore } from '$lib/stores/chat.svelte';
 const slots = () => [...document.querySelectorAll<HTMLElement>('.bottom-nav .bn-item')];
 const slot = (text: string) => slots().find((b) => (b.getAttribute('aria-label') ?? b.textContent ?? '').includes(text))!;
 const chatSlot = () => document.querySelector<HTMLButtonElement>('.bottom-nav [data-chat-slot]')!;
-const youSlot = () => slot('You');
+const workspaceSlot = () => slot('Workspace');
 
 beforeEach(() => {
 	cleanup();
@@ -66,11 +67,11 @@ afterEach(() => {
 });
 
 describe('BottomNav slots', () => {
-	it('are Workspace, Search, Quick capture, Chat, You, in that order, with no Activity', async () => {
+	it('are Home, Workspace, Quick capture, Chat, Search, with no You or Activity', async () => {
 		render(BottomNav);
 		await tick();
 		const names = slots().map((b) => b.getAttribute('aria-label')?.replace(/,.*/, '') ?? b.querySelector('.bn-label')?.textContent);
-		expect(names).toEqual(['Workspace', 'Search', 'Quick capture', 'Chat', 'You']);
+		expect(names).toEqual(['Home', 'Workspace', 'Quick capture', 'Chat', 'Search']);
 		expect(document.querySelector('.bottom-nav a[href$="/activity"]')).toBeNull();
 		expect(document.querySelector('.bottom-nav')!.textContent).not.toContain('Activity');
 	});
@@ -95,12 +96,12 @@ describe('BottomNav Chat slot (TASK-4186, TASK-4315)', () => {
 		expect(chat.querySelector('.unread-badge')?.textContent).toBe('3');
 	});
 
-	it('the You slot no longer carries the badge or a chat label', async () => {
+	it('the Workspace slot carries no chat badge', async () => {
 		chatStore.unreadTotal = 3;
 		render(BottomNav);
 		await tick();
-		expect(youSlot().querySelector('.unread-badge')).toBeNull();
-		expect(youSlot().getAttribute('aria-label')).toBeNull();
+		expect(workspaceSlot().querySelector('.unread-badge')).toBeNull();
+		expect(workspaceSlot().getAttribute('aria-label')).toBeNull();
 		expect(document.querySelectorAll('.bottom-nav .unread-badge')).toHaveLength(1);
 	});
 
@@ -126,7 +127,7 @@ describe('BottomNav Chat slot (TASK-4186, TASK-4315)', () => {
 		render(BottomNav);
 		await tick();
 		expect(document.querySelectorAll('.bottom-nav .unread-badge')).toHaveLength(0);
-		expect(chatSlot().getAttribute('aria-label')).toBe('Chat');
+		expect(chatSlot()).toBeNull();
 	});
 
 	it('tapping it opens Chat through the surface', async () => {
@@ -139,12 +140,12 @@ describe('BottomNav Chat slot (TASK-4186, TASK-4315)', () => {
 	it('tapping it closes the other sheets', async () => {
 		render(BottomNav);
 		await tick();
-		youSlot().click();
+		workspaceSlot().click();
 		flushSync();
-		expect(youSlot().getAttribute('aria-expanded')).toBe('true');
+		expect(workspaceSlot().getAttribute('aria-expanded')).toBe('true');
 		chatSlot().click();
 		flushSync();
-		expect(youSlot().getAttribute('aria-expanded')).toBe('false');
+		expect(workspaceSlot().getAttribute('aria-expanded')).toBe('false');
 	});
 
 	it('is lit and expanded while the Chat sheet is open', async () => {
@@ -160,18 +161,18 @@ describe('BottomNav Chat slot (TASK-4186, TASK-4315)', () => {
 });
 
 describe('BottomNav while Chat is open', () => {
-	it('You waits for Chat to close, then opens', async () => {
+	it('Workspace waits for Chat to close, then opens', async () => {
 		cs.open = true;
 		render(BottomNav);
 		await tick();
-		youSlot().click();
+		workspaceSlot().click();
 		flushSync();
 		expect(chatSurfaceMock.closeThen).toHaveBeenCalledTimes(1);
-		expect(youSlot().getAttribute('aria-expanded')).toBe('false');
+		expect(workspaceSlot().getAttribute('aria-expanded')).toBe('false');
 		cs.open = false;
 		parked.shift()!();
 		flushSync();
-		expect(youSlot().getAttribute('aria-expanded')).toBe('true');
+		expect(workspaceSlot().getAttribute('aria-expanded')).toBe('true');
 	});
 
 	it('Workspace and Quick capture wait the same way', async () => {
@@ -189,9 +190,29 @@ describe('BottomNav while Chat is open', () => {
 	it('with Chat closed a slot opens straight away, without closeThen holding it', async () => {
 		render(BottomNav);
 		await tick();
-		youSlot().click();
+		workspaceSlot().click();
 		flushSync();
-		expect(youSlot().getAttribute('aria-expanded')).toBe('true');
+		expect(workspaceSlot().getAttribute('aria-expanded')).toBe('true');
 		expect(parked).toHaveLength(0);
 	});
+});
+
+describe('Home and Workspace active states', () => {
+ it.each(['/', '/needs', '/agenda'])('Home is active on %s and shows Needs you count', async path => {
+  h.path = path;
+  render(BottomNav); await tick();
+  expect(slot('Home').getAttribute('href')).toBe('/');
+  expect(slot('Home').classList.contains('active')).toBe(true);
+  expect(slot('Home').querySelector('.needs-count')?.textContent).toBe('7');
+  expect(slot('Workspace').classList.contains('active')).toBe(false);
+  expect(slot('You')).toBeUndefined();
+ });
+ it('Workspace yields its active state to Chat and Quick capture', async () => {
+  render(BottomNav); await tick();
+  cs.open = true; flushSync();
+  expect(slot('Workspace').classList.contains('active')).toBe(false);
+  cs.open = false; flushSync();
+  slot('Quick capture').click(); flushSync();
+  expect(slot('Workspace').classList.contains('active')).toBe(false);
+ });
 });

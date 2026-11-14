@@ -1147,8 +1147,8 @@ dialog.attachment-crop-modal::backdrop {
 	`body.has-bottom-nav` while mounted on mobile so the scroll container
 	(.main-content, defined in the root +layout.svelte) gets bottom padding and
 	content can't hide under the bar. Gated by the same ≤768px breakpoint
-	uiStore.isMobile uses, and by the body class so non-workspace shell pages
-	(which share .main-content but have no bottom nav) aren't padded. The
+	uiStore.isMobile uses, and by the body class so hiding the bar also
+	removes the reserve. You pages and the agenda share this scroller. The
 	safe-area inset keeps the last row clear of the iOS home indicator.
 */
 @media (max-width: 768px) {

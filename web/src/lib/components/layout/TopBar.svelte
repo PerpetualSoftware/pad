@@ -21,6 +21,7 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { tabLanding } from '$lib/utils/tabLanding';
+	import AccountButton from './AccountButton.svelte';
 	import ChatLink from '$lib/components/chat/ChatLink.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 
@@ -820,7 +821,7 @@
 				<path d="M10.5 10.5L13.5 13.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
 			</svg>
 		</button>
-		{@render userMenu()}
+		<AccountButton />
 
 		<!-- Same Connect modal pattern as the desktop branch — see notes above. -->
 		{#if workspaceStore.current?.slug}

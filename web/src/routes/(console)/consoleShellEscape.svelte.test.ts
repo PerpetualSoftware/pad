@@ -1,24 +1,8 @@
 vi.mock('$lib/stores/breakpoint.svelte', () => ({ viewport: { isMobile: true } }));
-// Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
-//
-// TASK-2430 — the console shell owns a global Escape that
-// closes its collapsible nav. (The nav's toggle is CSS-hidden above the mobile
-// breakpoint, but the gating is PURELY CSS — there is no JS media query in this
-// component — so the handler's behaviour under test is identical at any width,
-// and no media stub is needed. Nothing here claims to render at a mobile size.)
-//
-// No attachment viewer can exist on console routes (no
-// `ItemDetail`, so no viewer host), but the root layout DOES mount
-// `CreateWorkspaceModal` / `OpenChildrenDialog` here, so a native dialog can be
-// in front of this handler — and one press would then close the nav underneath
-// it as well. This is the same one-owner-per-Escape rule as the seven owners,
-// applied to a route the original owner list did not enumerate.
-//
-// HOW TO READ THE PAIRS: the BLOCKED test fails if the guard is deleted; the
-// EMPTY-STACK REGRESSION fails if it declines unconditionally.
+// The Account sheet retains the console menu's Escape arbitration coverage.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
-import { createRawSnippet, tick, flushSync } from 'svelte';
+import { tick, flushSync } from 'svelte';
 
 vi.mock('$lib/api/client', () => {
 	const never = () => new Promise(() => {});
@@ -39,13 +23,13 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 	},
 }));
 
-import ConsoleLayout from './+layout.svelte';
+import AccountButton from '$lib/components/layout/AccountButton.svelte';
+vi.mock('$lib/stores/ui.svelte', () => ({ uiStore: { isMobile: true, closeSearch: vi.fn() } }));
 import { acquire, __resetViewerBackdropForTests } from '$lib/a11y/viewerBackdrop';
 
-const childSnippet = createRawSnippet(() => ({ render: () => `<div>child</div>` }));
 
 /**
- * The nav has no exported state, so drive it through its real toggle and read
+ * The avatar exposes the sheet state, so drive it through its real toggle and read
  * the toggle's `aria-expanded` — the user-visible truth.
  */
 function toggle(): HTMLElement {
@@ -67,7 +51,7 @@ function mountViewer(): HTMLElement {
 }
 
 beforeEach(async () => {
-	render(ConsoleLayout, { props: { children: childSnippet } });
+	render(AccountButton);
 	// `{#if ready}` waits on the auth probe; poll until the shell renders.
 	for (let i = 0; i < 50 && !document.querySelector('[aria-expanded]'); i++) {
 		await new Promise((r) => setTimeout(r, 5));
@@ -85,12 +69,12 @@ afterEach(() => {
 	document.body.innerHTML = '';
 });
 
-describe('console shell Escape — defers to a frontmost surface (TASK-2430)', () => {
-	it('opens the nav through its real toggle (fixture sanity)', () => {
+describe('Account sheet Escape — defers to a frontmost surface (TASK-2430)', () => {
+	it('opens Account through its real toggle (fixture sanity)', () => {
 		expect(menuOpen()).toBe(true);
 	});
 
-	it('EMPTY-STACK REGRESSION: Escape still closes the nav', async () => {
+	it('EMPTY-STACK REGRESSION: Escape still closes Account', async () => {
 		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
 		await tick();
 		flushSync();
@@ -111,3 +95,19 @@ describe('console shell Escape — defers to a frontmost surface (TASK-2430)', (
 		expect(menuOpen()).toBe(false);
 	});
 });
+
+// jsdom does not provide the Web Animations API used by sheet transitions.
+if (!('animate' in Element.prototype)) {
+	(Element.prototype as unknown as { animate: unknown }).animate = function () {
+		const animation = {
+			onfinish: null as null | (() => void),
+			cancel() {},
+			finish() {},
+			currentTime: 0,
+			addEventListener() {},
+			finished: Promise.resolve()
+		};
+		queueMicrotask(() => animation.onfinish?.());
+		return animation;
+	};
+}

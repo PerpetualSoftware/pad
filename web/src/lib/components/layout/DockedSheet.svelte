@@ -6,7 +6,7 @@
 	lit. ~2/3 viewport height, grab handle, slide-up, swipe-down / tap-out /
 	Escape to dismiss.
 
-	Used by WorkspaceSheet and YouSheet — the two purpose-designed mobile nav
+	Used by WorkspaceSheet and AccountSheet — the two purpose-designed mobile nav
 	surfaces. Pure shell; callers provide the content via the `children` snippet.
 -->
 <script lang="ts">
@@ -77,7 +77,9 @@
 	 * dispatch, and nothing marks it.
 	 */
 	function blockedByFrontLayer(event?: Event): boolean {
-		return isBlockedByModal(panelEl, event);
+		// A nested workspace switcher owns keyboard and gesture handling until
+		// it closes. Both sheet primitives listen on window.
+		return !!panelEl?.querySelector('.bs-sheet') || isBlockedByModal(panelEl, event);
 	}
 
 	function cancelDrag() {
