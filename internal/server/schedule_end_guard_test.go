@@ -251,6 +251,8 @@ func TestAgendaScheduleEndedWithoutClosingValue(t *testing.T) {
 	}{
 		{"no done field", `{"fields":[]}`, false},
 		{"no terminal option", `{"fields":[{"key":"status","type":"select","options":["open","published"]}]}`, false},
+		{"number done field", `{"fields":[{"key":"status","type":"number"}]}`, false},
+		{"abandoning only", `{"fields":[{"key":"status","type":"select","options":["open","cancelled"]}]}`, true},
 		{"closable", endGuardSchema, true},
 	} {
 		for _, ending := range []string{"lapse", "timing edit"} {

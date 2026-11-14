@@ -5295,9 +5295,14 @@ func resolveCollectionDoneFilter(id, schemaJSON, settingsJSON string) collection
 		if field.Key != key {
 			continue
 		}
-		if field.Type != "select" || len(field.Options) == 0 {
+		switch field.Type {
+		case "text", "url":
 			filter.writableTerminals = values
-		} else {
+		case "select":
+			if len(field.Options) == 0 {
+				filter.writableTerminals = values
+				break
+			}
 			for _, option := range field.Options {
 				for _, value := range values {
 					if strings.EqualFold(option, value) {
@@ -5306,6 +5311,8 @@ func resolveCollectionDoneFilter(id, schemaJSON, settingsJSON string) collection
 					}
 				}
 			}
+		default:
+			// Other types cannot store a terminal string as compared by LOWER(fields.<key>).
 		}
 		break
 	}
