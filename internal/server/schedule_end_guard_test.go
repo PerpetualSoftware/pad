@@ -243,6 +243,68 @@ func TestAgendaScheduleEndedOutstanding(t *testing.T) {
 	check("dismissed", false)
 }
 
+func TestAgendaScheduleEndedWithoutClosingValue(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, schema string
+		closable     bool
+	}{
+		{"no done field", `{"fields":[]}`, false},
+		{"no terminal option", `{"fields":[{"key":"status","type":"select","options":["open","published"]}]}`, false},
+		{"closable", endGuardSchema, true},
+	} {
+		for _, ending := range []string{"lapse", "timing edit"} {
+			t.Run(tc.name+"/"+ending, func(t *testing.T) {
+				w := newBootAgendaWorld(t, "2031-03-13T12:00:00Z")
+				it := w.sched(t, w.owner, "ended", "2031-03-10T09:00", "both")
+				if _, err := w.srv.store.DB().Exec(`UPDATE collections SET schema=? WHERE id=?`, tc.schema, it.CollectionID); err != nil {
+					t.Fatal(err)
+				}
+				if ending == "lapse" {
+					if _, err := w.srv.store.DB().Exec(`UPDATE item_schedules SET roles_origin='native', deadline_days=0, deadline_secs=0, deadline_behavior='lapses' WHERE item_id=?`, it.ID); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := w.srv.store.EvaluateDeadlines("2031-03-13T12:00:00Z", 0); err != nil {
+						t.Fatal(err)
+					}
+				} else {
+					past := "2000-01-01T09:00"
+					if _, err := w.srv.store.UpdateSchedule(w.ws.ID, it.ID, models.ScheduleUpdate{Dtstart: &past}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				sc, err := w.srv.store.GetSchedule(w.ws.ID, it.ID)
+				if err != nil || sc == nil || sc.EndedAt == nil || sc.EndedDismissedAt != nil {
+					t.Fatalf("want an undismissed ending: %+v, %v", sc, err)
+				}
+				for name, m := range map[string]map[string]any{"workspace": w.ok(t, w.owner, agendaWindow), "me": meAgendaOK(t, w.agendaWorld, w.owner, agendaWindow)} {
+					rows := agendaRowsFor(m, "priority_list", it.Ref)
+					if tc.closable {
+						if len(rows) != 1 || rows[0]["reason"] != "schedule_ended" {
+							t.Errorf("%s: missing ended entry: %v", name, rows)
+						}
+					} else if len(rows) != 0 {
+						t.Errorf("%s: item cannot close but is Outstanding: %v", name, rows)
+					}
+					noDate := agendaRowsFor(m, "no_date", it.Ref)
+					if name == "me" && !tc.closable {
+						if len(noDate) != 1 || noDate[0]["reason"] != "unplaced" {
+							t.Errorf("%s: want undated work: %v", name, noDate)
+						}
+					} else if len(noDate) != 0 {
+						t.Errorf("%s: unexpected undated work: %v", name, noDate)
+					}
+					for _, flag := range []string{"priority_list_complete", "waiting_on_complete", "no_date_complete"} {
+						if m[flag] != true {
+							t.Errorf("%s: %s = %v", name, flag, m[flag])
+						}
+					}
+				}
+			})
+		}
+	}
+}
+
 func TestAgendaScheduleEndedOAuthAllowlist(t *testing.T) {
 	t.Parallel()
 	w := newBootAgendaWorld(t, "2031-03-13T12:00:00Z")
