@@ -5,9 +5,8 @@
 import type { Site } from './chatHistoryScan';
 
 export const CLASSIFIED: Site[] = [
-	{ file: "routes/console/[...rest]/+page.svelte", text: "const { pathname, search, hash } = window.location;", n: 1, kind: "not-applicable", why: "The redirect reads the address at mount before Chat can open over the destination." },
 	{ file: "routes/console/[...rest]/+page.svelte", text: "void goto(legacyConsoleTarget(pathname, search, hash), { replaceState: true });", n: 1, kind: "not-applicable", why: "The redirect replaces the legacy entry once at mount before Chat can be opened." },
-	{ file: "routes/(console)/settings/+page.svelte", text: "void goto('/settings/account' + window.location.search + window.location.hash, { replaceState: true });", n: 1, kind: "not-applicable", why: "The settings index redirects once at mount before Chat can open over the Account page." },
+	{ file: "routes/(console)/settings/+page.svelte", text: "void goto('/settings/account' + page.url.search + page.url.hash, { replaceState: true });", n: 1, kind: "not-applicable", why: "The settings index redirects once at mount before Chat can open over the Account page." },
 	{ file: "lib/collections/paneHostController.ts", text: "history.go(delta - chatEntries);", n: 1, kind: "fixed", why: "Fixed: paneHistoryGo subtracts the entries Chat pushed (chatEntries = page.shallow ? page.state.chatDepth : 0), so every pane traversal lands on the intended pane entry instead of inside Chat's." },
 	{ file: "lib/collections/paneHostController.ts", text: "goto(`${u.pathname}${u.search}`, {", n: 1, kind: "fixed", why: "Fixed: the detached-open reset latch goto(replaceState) fires only after paneHistoryGo has landed, which subtracts chatEntries, so Chat is already popped." },
 	{ file: "lib/collections/paneHostController.ts", text: "replaceState: true,", n: 1, kind: "fixed", why: "Fixed: the detached-open reset latch goto(replaceState) fires only after paneHistoryGo has landed, which subtracts chatEntries, so Chat is already popped." },
