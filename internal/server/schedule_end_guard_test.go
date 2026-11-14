@@ -263,3 +263,27 @@ func TestAgendaScheduleEndedOAuthAllowlist(t *testing.T) {
 		t.Fatalf("allowed workspace: %v", m["priority_list"])
 	}
 }
+
+func TestCommitmentResolveDoneFilterCloseOptions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, schema, settings string }{
+		{"text status", `{"fields":[{"key":"status","type":"text"}]}`, `{}`},
+		{"bad settings", `{"fields":[{"key":"status","type":"select","options":["open","done"]}]}`, `{"board_group_by":42}`},
+		{"bad schema", `{"fields":42}`, `{}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := endGuardHTTP(t)
+			if _, err := f.srv.store.DB().Exec(`UPDATE collections SET schema=?, settings=? WHERE id=?`, tc.schema, tc.settings, f.coll.ID); err != nil {
+				t.Fatal(err)
+			}
+			d := f.expectErr(f.resolve(map[string]any{"occurrence_at": resolveX, "state": "done"}), http.StatusConflict, "item_still_open", "")
+			opts, _ := d["close_options"].([]any)
+			if d["done_field"] != "status" || len(opts) == 0 || opts[0] != "done" {
+				t.Fatalf("details = %v", d)
+			}
+			if f.occurrences() != 0 {
+				t.Fatal("refusal wrote an occurrence")
+			}
+		})
+	}
+}

@@ -2,7 +2,6 @@ package store
 
 import (
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -104,10 +103,6 @@ type ResolveInput struct {
 	// ErrScheduleWouldEnd; it has no effect when a next occurrence exists or the
 	// item is closed.
 	EndSchedule bool
-
-	// The non-terminal filter, loaded before the transaction for the guard.
-	openFilter string
-	openArgs   []any
 }
 
 // ResolveResult is the committed resolution.
@@ -131,6 +126,8 @@ type ResolveResult struct {
 type ErrScheduleWouldEnd struct {
 	Fired        bool
 	Acknowledged bool
+	DoneField    string
+	CloseOptions []string
 }
 
 func (e *ErrScheduleWouldEnd) Error() string {
@@ -198,10 +195,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	// it is loaded before the transaction holds it (as renegotiation does).
 	var openFilter string
 	var openArgs []any
-	if in.State == "skip" || in.State == "move" || in.State == "done" {
+	if in.State == "skip" || in.State == "move" {
 		openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
 	}
-	in.openFilter, in.openArgs = openFilter, openArgs
 	moveChecksDeadline := false
 	if s.beforeCommitmentPin != nil && (in.State == "skip" || in.State == "done") {
 		s.beforeCommitmentPin() // test seam: the item changes between the handler's read and the lock
@@ -602,21 +598,22 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		// The last occurrence: ending the schedule of an open item drops it from
 		// every dated view, so it needs the caller's consent. The item is read
 		// under the pin, after any concurrent close or reopen committed.
-		hasDoneField, err := s.itemHasDoneFieldTx(tx, sc.ItemID)
+		filter, err := s.itemDoneFilterTx(tx, sc.ItemID)
 		if err != nil {
 			return nil, err
 		}
-		if !hasDoneField {
-			// There is no item state to close, so ending the schedule needs
+		if len(filter.writableTerminals) == 0 {
+			// The item cannot reach a terminal state, so ending the schedule needs
 			// neither consent nor an Outstanding entry.
 			dismissedAt = ts
 		} else {
-			open, err := s.itemOpenTx(tx, sc.ItemID, in.openFilter, in.openArgs)
+			doneExpr, args := s.buildChildrenDoneExpr([]collectionDoneFilter{filter}, "i")
+			open, err := s.itemOpenTx(tx, sc.ItemID, "NOT "+doneExpr, args)
 			if err != nil {
 				return nil, err
 			}
 			if open && !in.EndSchedule {
-				return nil, &ErrScheduleWouldEnd{Fired: sc.ReminderFired, Acknowledged: sc.ReminderAckedAt != nil}
+				return nil, &ErrScheduleWouldEnd{Fired: sc.ReminderFired, Acknowledged: sc.ReminderAckedAt != nil, DoneField: filter.doneKey, CloseOptions: filter.closeOptions()}
 			}
 			endedItemOpen = open
 		}
@@ -717,34 +714,17 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	return res, nil
 }
 
-// itemHasDoneFieldTx checks the collection of the pinned item. DoneFieldKey
-// falls back to status even when the schema declares no such field.
-func (s *Store) itemHasDoneFieldTx(tx *sql.Tx, itemID string) (bool, error) {
-	var schemaJSON, settingsJSON string
-	if err := tx.QueryRow(s.q(`SELECT c.schema, c.settings FROM collections c JOIN items i ON i.collection_id=c.id WHERE i.id=?`), itemID).Scan(&schemaJSON, &settingsJSON); err != nil {
-		return false, fmt.Errorf("item done field: %w", err)
+// itemDoneFilterTx resolves the collection of the pinned item using the same
+// rules as nonTerminalFilter, without reading through the connection pool.
+func (s *Store) itemDoneFilterTx(tx *sql.Tx, itemID string) (collectionDoneFilter, error) {
+	var id, schemaJSON, settingsJSON string
+	if err := tx.QueryRow(s.q(`SELECT c.id, c.schema, c.settings FROM collections c JOIN items i ON i.collection_id=c.id WHERE i.id=?`), itemID).Scan(&id, &schemaJSON, &settingsJSON); err != nil {
+		return collectionDoneFilter{}, fmt.Errorf("item done filter: %w", err)
 	}
-	var schema models.CollectionSchema
-	if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
-		return false, fmt.Errorf("item done field schema: %w", err)
-	}
-	var settings models.CollectionSettings
-	if settingsJSON != "" {
-		if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
-			return false, fmt.Errorf("item done field settings: %w", err)
-		}
-	}
-	key := models.DoneFieldKey(schema, settings)
-	for _, field := range schema.Fields {
-		if field.Key == key && field.Type == "select" {
-			return true, nil
-		}
-	}
-	return false, nil
+	return resolveCollectionDoneFilter(id, schemaJSON, settingsJSON), nil
 }
 
-// itemOpenTx reads whether the item is non-terminal through a filter loaded
-// before the transaction (nonTerminalFilter reads through the pool).
+// itemOpenTx reads whether the pinned item is non-terminal through the given filter.
 func (s *Store) itemOpenTx(tx *sql.Tx, itemID, openFilter string, openArgs []any) (bool, error) {
 	if openFilter == "" {
 		return false, fmt.Errorf("item open check: no terminal filter loaded")

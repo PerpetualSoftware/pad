@@ -1,7 +1,6 @@
 package server
 
 import (
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -21,53 +20,14 @@ const itemStillOpenMessage = "This is the schedule's last occurrence and the ite
 // schedule of an open item: 409 item_still_open with what the caller needs to
 // offer the choices. The caller passed the visibility and edit gates.
 func (s *Server) writeItemStillOpen(w http.ResponseWriter, r *http.Request, item *models.Item, in store.ResolveInput, end *store.ErrScheduleWouldEnd) {
-	coll, err := s.store.GetCollection(item.CollectionID)
-	if err != nil || coll == nil {
-		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to load collection")
-		return
-	}
-	var schema models.CollectionSchema
-	if err := models.UnmarshalItemFieldSchema([]byte(coll.Schema), &schema); err != nil {
-		// 500: stored collection schema does not parse (json), not a store error
-		writeError(w, http.StatusInternalServerError, "internal_error", "Failed to parse collection schema")
-		return
-	}
-	var settings models.CollectionSettings
-	if coll.Settings != "" {
-		_ = json.Unmarshal([]byte(coll.Settings), &settings)
-	}
-	doneField, positive := models.PositiveTerminalValuesForDoneField(schema, settings)
-	closeOptions := filterDeclaredOptions(schema, doneField, positive)
 	writeError2(w, http.StatusConflict, "item_still_open", itemStillOpenMessage, map[string]interface{}{
 		"state":         in.State,
 		"occurrence_at": in.OccurrenceAt.UTC().Format(time.RFC3339),
-		"done_field":    doneField,
-		"item_status":   extractFieldString(item.Fields, doneField),
-		"close_options": closeOptions,
+		"done_field":    end.DoneField,
+		"item_status":   extractFieldString(item.Fields, end.DoneField),
+		"close_options": end.CloseOptions,
 		"ack_available": end.Fired && !end.Acknowledged,
 	})
-}
-
-// filterDeclaredOptions keeps the values the done field declares as options,
-// in the field's order, when it declares any; otherwise the values as given.
-func filterDeclaredOptions(schema models.CollectionSchema, fieldKey string, values []string) []string {
-	out := []string{}
-	for _, f := range schema.Fields {
-		if f.Key != fieldKey || len(f.Options) == 0 {
-			continue
-		}
-		want := map[string]bool{}
-		for _, v := range values {
-			want[strings.ToLower(strings.TrimSpace(v))] = true
-		}
-		for _, o := range f.Options {
-			if want[strings.ToLower(strings.TrimSpace(o))] {
-				out = append(out, o)
-			}
-		}
-		return out
-	}
-	return append(out, values...)
 }
 
 // handleDismissEndedCommitment is POST .../commitment/dismiss-ended: an editor
