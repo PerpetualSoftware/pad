@@ -215,6 +215,7 @@ type bootstrapAgendaView struct {
 }
 
 type bootstrapAgendaWorkRow struct {
+	Type      string `json:"type"`
 	ItemRef   string `json:"item_ref"`
 	ItemTitle string `json:"item_title"`
 	Reason    string `json:"reason"`
@@ -279,6 +280,8 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 	if a.StaleCount > 0 {
 		fmt.Printf("stale: %d items — %s\n", a.StaleCount, a.StaleHint)
 	}
+	hasOccurrences := len(a.DueToday)+len(a.Carried) > 0
+	var endedRefs []string
 	for _, g := range []struct {
 		label string
 		rows  []bootstrapAgendaWorkRow
@@ -289,6 +292,11 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 		}
 		fmt.Printf("%s (%d):\n", g.label, len(g.rows))
 		for _, r := range g.rows {
+			if r.Reason == "schedule_ended" {
+				endedRefs = append(endedRefs, r.ItemRef)
+			} else if r.Type == "schedule" {
+				hasOccurrences = true
+			}
 			fmt.Printf("- [%s] %s (%s)\n", r.ItemRef, strings.Join(strings.Fields(r.ItemTitle), " "), r.Reason)
 		}
 		if g.more > 0 {
@@ -309,7 +317,12 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 	if a.Truncated {
 		fmt.Println("incomplete: the server read only the first 1000 schedules, so counts are a floor")
 	}
-	fmt.Println("Resolve with: pad item remind done|skip|move <ref> (move needs --until and a reason)")
+	if hasOccurrences {
+		fmt.Println("Resolve occurrences with: pad item remind done|skip|move <ref> (move needs --until and a reason)")
+	}
+	for _, ref := range endedRefs {
+		fmt.Printf("Dismiss ended schedule: pad remind dismiss %s (or close the item)\n", ref)
+	}
 	fmt.Println()
 }
 
