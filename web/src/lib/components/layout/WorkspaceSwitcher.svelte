@@ -214,6 +214,7 @@
 				{:else}
 					{@render workspaceList()}
 				{/if}
+				<PendingInvitations active={open} onaccepted={() => (open = false)} />
 				<RecentlyDeletedWorkspaces active={open} roomy />
 			</div>
 		</BottomSheet>

@@ -7,12 +7,17 @@ const mocks = vi.hoisted(() => ({
 	workspaces: [] as { id: string; slug: string; name: string; owner_username: string }[],
 	tabs: { list: vi.fn(), open: vi.fn(), close: vi.fn(), reorder: vi.fn(), update: vi.fn() },
 	listDeleted: vi.fn(async () => []),
+	listMyInvitations: vi.fn(),
+	acceptMyInvitation: vi.fn(),
 }));
 
 vi.mock('$app/navigation', () => ({ goto: mocks.goto }));
 vi.mock('$lib/api/client', () => ({
 	PadApiError: class extends Error {},
-	api: { workspaces: { tabs: mocks.tabs, listDeleted: mocks.listDeleted, restore: vi.fn() } },
+	api: {
+		workspaces: { tabs: mocks.tabs, listDeleted: mocks.listDeleted, restore: vi.fn() },
+		members: { listMyInvitations: mocks.listMyInvitations, acceptMyInvitation: mocks.acceptMyInvitation },
+	},
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
 	workspaceStore: {
@@ -24,6 +29,12 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 
 import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
 import { tabsStore } from '$lib/stores/tabs.svelte';
+import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
+
+const invitation = {
+	id: 'invite-1', role: 'editor', workspace_slug: 'invited', workspace_name: 'Invited Workspace',
+	workspace_owner_username: 'alice', invited_by_name: 'Alice', created_at: '2026-11-14T00:00:00Z',
+};
 
 const ws = (slug: string, name: string) => ({ id: slug, slug, name, owner_username: 'u' });
 const tab = (slug: string, name: string, ephemeral = false, last_route?: string) => ({
@@ -31,8 +42,10 @@ const tab = (slug: string, name: string, ephemeral = false, last_route?: string)
 	position: 0, created_at: '', updated_at: '', ...(last_route ? { last_route } : {}),
 });
 
+// The real tab store rejects responses older than its last committed revision.
+let revision = 0;
 async function mount(openTabs: ReturnType<typeof tab>[]) {
-	mocks.tabs.list.mockResolvedValueOnce({ revision: 1, tabs: openTabs });
+	mocks.tabs.list.mockResolvedValueOnce({ revision: ++revision, tabs: openTabs });
 	await tabsStore.load();
 	render(WorkspaceSwitcher, { props: { mobile: true } });
 	await fireEvent.click(document.querySelector<HTMLButtonElement>('.switcher .current')!);
@@ -42,6 +55,9 @@ async function mount(openTabs: ReturnType<typeof tab>[]) {
 const rows = () => Array.from(document.querySelectorAll<HTMLButtonElement>('.sheet-body .item[data-ws-slug]'));
 
 beforeEach(() => {
+	pendingInvitations.set([], pendingInvitations.reserve());
+	mocks.listMyInvitations.mockReset().mockResolvedValue({ invitations: [], email_verified: true });
+	mocks.acceptMyInvitation.mockReset().mockResolvedValue({ accepted: true });
 	mocks.goto.mockClear();
 	for (const fn of Object.values(mocks.tabs)) fn.mockReset();
 	mocks.workspaces = [ws('alpha', 'Alpha'), ws('beta', 'Beta'), ws('gamma', 'Gamma'), ws('delta', 'Delta')];
@@ -51,6 +67,27 @@ beforeEach(() => {
 afterEach(() => cleanup());
 
 describe('mobile WorkspaceSwitcher', () => {
+	it('shows invitation actions in the sheet and closes it when accepting into the workspace', async () => {
+		pendingInvitations.set([invitation], pendingInvitations.reserve());
+		mocks.listMyInvitations.mockResolvedValue({ invitations: [invitation], email_verified: true });
+		await mount([]);
+		const accept = screen.getByRole('button', { name: 'Accept the invitation to Invited Workspace' });
+		expect(screen.getByRole('button', { name: 'Decline the invitation to Invited Workspace' })).toBeInTheDocument();
+		expect(mocks.listMyInvitations).toHaveBeenCalledTimes(1);
+		mocks.tabs.open.mockResolvedValue({ revision: ++revision, tabs: [tab('invited', 'Invited Workspace', true)] });
+		await fireEvent.click(accept);
+		await vi.waitFor(() => expect(mocks.goto).toHaveBeenCalledWith('/alice/invited'));
+		expect(mocks.acceptMyInvitation).toHaveBeenCalledWith('invite-1');
+		expect(screen.queryByRole('dialog', { name: 'Switch workspace' })).not.toBeInTheDocument();
+	});
+
+	it('shows no Invitations section when the sheet refresh returns no invitations', async () => {
+		await mount([]);
+		expect(mocks.listMyInvitations).toHaveBeenCalledTimes(1);
+		expect(screen.queryByRole('region', { name: 'Invitations' })).not.toBeInTheDocument();
+		expect(screen.queryByText('Invitations')).not.toBeInTheDocument();
+	});
+
 	it('shows open tabs in bar order, then a divider and remaining workspaces in membership order without duplicates', async () => {
 		await mount([tab('gamma', 'Gamma'), tab('alpha', 'Alpha', true)]);
 		expect(rows().map((row) => row.dataset.wsSlug)).toEqual(['gamma', 'alpha', 'beta', 'delta']);
@@ -76,7 +113,7 @@ describe('mobile WorkspaceSwitcher', () => {
 
 	it('opens a workspace from the rest as a durable tab before restoring its route', async () => {
 		await mount([tab('alpha', 'Alpha')]);
-		mocks.tabs.open.mockResolvedValueOnce({ revision: 2, tabs: [tab('alpha', 'Alpha'), tab('beta', 'Beta', false, '/u/beta/docs')] });
+		mocks.tabs.open.mockResolvedValueOnce({ revision: ++revision, tabs: [tab('alpha', 'Alpha'), tab('beta', 'Beta', false, '/u/beta/docs')] });
 		await fireEvent.click(rows()[1]);
 		await tick();
 		expect(mocks.tabs.open).toHaveBeenCalledWith('beta', false);
