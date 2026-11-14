@@ -258,7 +258,7 @@ function createAccessStream() {
 		const after = tabsStore.tabs.filter((t) => t.slug !== active.slug);
 		const landing = tabLanding(before, active.slug, after);
 		if (!landing) {
-			await goto('/console');
+			await goto('/');
 			uiStore.highlightAddWorkspace();
 			return;
 		}

@@ -71,7 +71,7 @@ describe('parseChatPath: the /messages route\'s own rule', () => {
 		expect(parseChatPath(path)).toEqual(want);
 	});
 
-	it.each(['/messagesfoo', '/messages/1/x', '/console', '/', '/alice/ws/messages/3'])(
+	it.each(['/messagesfoo', '/messages/1/x', '/', '/', '/alice/ws/messages/3'])(
 		'%s is not Chat',
 		(path) => {
 			expect(parseChatPath(path)).toBeNull();
@@ -98,7 +98,7 @@ describe('target', () => {
 	});
 
 	it('a shallow URL that is not Chat is not an open Chat', () => {
-		(page as { shallow: unknown }).shallow = asShallow('/console');
+		(page as { shallow: unknown }).shallow = asShallow('/');
 		expect(chatSurface.target).toBeNull();
 	});
 
@@ -159,8 +159,8 @@ describe('open', () => {
 	});
 
 	it('a non-Chat href is a plain goto', async () => {
-		await chatSurface.open('/console/settings');
-		expect(gotoMock).toHaveBeenCalledWith('/console/settings');
+		await chatSurface.open('/settings/account');
+		expect(gotoMock).toHaveBeenCalledWith('/settings/account');
 	});
 });
 

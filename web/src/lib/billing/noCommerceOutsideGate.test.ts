@@ -30,16 +30,16 @@ const GATED = new Set([
 	'lib/billing/planLimitPrompt.ts',
 	'lib/components/layout/TopBar.svelte',
 	'lib/components/layout/YouSheet.svelte',
-	'routes/console/+layout.svelte',
-	'routes/console/settings/+page.svelte',
-	'routes/console/billing/+page.svelte',
+	'routes/(console)/settings/+layout.svelte',
+	'routes/(console)/settings/account/+page.svelte',
+	'routes/(console)/settings/billing/+page.svelte',
 	// TASK-3468: renders Pad Pro prices, and reads the gate itself.
 	'lib/components/billing/BillingIntervalPicker.svelte'
 ]);
 
 const PATTERNS: [string, RegExp][] = [
 	['upgrade copy', /Upgrade to Pro/],
-	['billing page link', /["'`]\/console\/billing["'`?#]/],
+	['billing page link', /["'`]\/settings\/billing["'`?#]/],
 	['billing portal link', /\/billing\/portal/],
 	['view plans copy', /View Plans/],
 	['manage billing copy', /Manage Billing/],
@@ -87,7 +87,8 @@ describe('no commerce outside the commerceAllowed gate', () => {
 	it('finds upgrade copy and billing links only in gated files', () => {
 		const hits: string[] = [];
 		for (const f of files) {
-			if (GATED.has(f.rel)) continue;
+			// Legacy URL translation renders no purchase link.
+			if (GATED.has(f.rel) || f.rel === 'lib/utils/legacyConsoleRedirect.ts') continue;
 			f.text.split('\n').forEach((line, i) => {
 				if (isComment(line)) return;
 				for (const [what, re] of PATTERNS) {
@@ -104,7 +105,7 @@ describe('no commerce outside the commerceAllowed gate', () => {
 	it('the account menus open their Billing link directly under commerceAllowed', () => {
 		for (const rel of ['lib/components/layout/TopBar.svelte', 'lib/components/layout/YouSheet.svelte']) {
 			const lines = files.find((f) => f.rel === rel)!.text.split('\n');
-			const at = lines.findIndex((l) => /href="\/console\/billing"/.test(l));
+			const at = lines.findIndex((l) => /href="\/settings\/billing"/.test(l));
 			expect(at, rel).toBeGreaterThan(0);
 			let i = at - 1;
 			while (i >= 0 && isComment(lines[i])) i--;

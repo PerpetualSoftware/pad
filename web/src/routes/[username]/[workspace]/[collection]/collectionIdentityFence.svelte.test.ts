@@ -471,7 +471,7 @@ describe('unavailable workspace recovery (BUG-4334)', () => {
 
 		expect(await screen.findByRole('heading', { name: "This workspace isn't available" })).toBeInTheDocument();
 		expect(screen.getByText("It isn't available to you, or it no longer exists.")).toBeInTheDocument();
-		expect(screen.getByRole('link', { name: 'Back to your workspaces' })).toHaveAttribute('href', '/console');
+		expect(screen.getByRole('link', { name: 'Back to your workspaces' })).toHaveAttribute('href', '/');
 	});
 });
 

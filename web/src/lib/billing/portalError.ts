@@ -1,6 +1,6 @@
 // The billing portal's error codes (BUG-3898). pad-cloud's GET /billing/portal
 // is reached by a full-page navigation, so on failure it sends the browser
-// back to /console/billing?portal_error=<code> instead of answering JSON. The
+// back to /settings/billing?portal_error=<code> instead of answering JSON. The
 // names are pinned in pad-cloud's stripe.go (portalErr*) and must match.
 export const PORTAL_ERROR_MESSAGES: Record<string, string> = {
 	not_configured: 'Billing management is not available right now. Please try again later.',

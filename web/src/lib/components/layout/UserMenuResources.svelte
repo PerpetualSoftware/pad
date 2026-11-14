@@ -49,7 +49,7 @@
 		label: string;
 		href: string;
 		// In-app (same tab, no external icon). Only Cloud's Tutorials entry
-		// (TASK-3452): Cloud shows the tutorials at /console/tutorials, while a
+		// (TASK-3452): Cloud shows the tutorials at /tutorials, while a
 		// self-hosted instance links out to getpad.dev/learn like Docs.
 		internal?: boolean;
 		// Most links open in a new tab. The Support entry on Cloud uses a
@@ -70,7 +70,7 @@
 		{ label: 'GitHub', href: GITHUB_REPO_URL },
 		{ label: 'Community', href: COMMUNITY_URL },
 		{ label: 'Docs', href: DOCS_URL },
-		{ label: 'Tutorials', href: '/console/tutorials', internal: true },
+		{ label: 'Tutorials', href: '/tutorials', internal: true },
 		{ label: 'Changelog', href: CHANGELOG_URL },
 		{ label: 'Status', href: STATUS_URL },
 		{ label: 'Support', href: SUPPORT_MAILTO }

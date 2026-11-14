@@ -270,7 +270,7 @@ export const authStore = {
 				// in-flight create or import then returns without a toast, a
 				// navigation or a close — so a user who is still legitimately
 				// signed in lost a successful operation, silently, because one
-				// session poll failed. `/console/billing` polls `load()`, so
+				// session poll failed. `/settings/billing` polls `load()`, so
 				// this is reachable in ordinary use rather than exotic.
 				//
 				// `session = null` still happens, because that is the state the

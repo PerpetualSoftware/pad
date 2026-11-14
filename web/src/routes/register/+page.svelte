@@ -74,7 +74,7 @@
 	// register-during-OAuth flow: agent clients send unauth users to
 	// /register?redirect=/oauth/authorize?... and we hand the param off
 	// to /auth/<provider> so pad-cloud's callback (TASK-998) can return
-	// the user to /oauth/authorize after SSO. Falls back to /console for
+	// the user to /oauth/authorize after SSO. Falls back to / for
 	// missing or invalid values.
 	const redirectTarget = $derived(validateRedirect(page.url.searchParams.get('redirect')));
 	// Forward redirect= onto the "Sign in" cross-link so a user mid-OAuth flow

@@ -397,10 +397,10 @@ describe('/messages page (TASK-4044)', () => {
 		expect(getByRole('heading', { level: 2, name: 'Conversations' })).toBeTruthy();
 	});
 
-	it('Back goes to /console when no workspace is remembered', async () => {
+	it('Back goes to / when no workspace is remembered', async () => {
 		const { getByText } = render(MessagesPage);
 		await settle();
-		expect(getByText('Back').getAttribute('href')).toBe('/console');
+		expect(getByText('Back').getAttribute('href')).toBe('/');
 	});
 
 	it('Back returns to the remembered workspace', async () => {

@@ -37,7 +37,7 @@
 		{#snippet actions()}
 			<Button variant="primary" touch disabled={saving} onclick={() => void turnOn()}>Turn on Chat</Button>
 			<p class="status" role="status">{failed ? "Couldn't turn Chat on. Try again." : ''}</p>
-			<a class="settings" href="/console/settings">Account settings</a>
+			<a class="settings" href="/settings/account">Account settings</a>
 		{/snippet}
 	</ChatState>
 </div>

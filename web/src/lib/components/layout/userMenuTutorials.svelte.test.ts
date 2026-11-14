@@ -10,10 +10,10 @@ function labels(container: HTMLElement): string[] {
 }
 
 describe('UserMenuResources: Tutorials', () => {
-	it('on Cloud, opens /console/tutorials in the same tab, right after Docs', () => {
+	it('on Cloud, opens /tutorials in the same tab, right after Docs', () => {
 		const { container } = render(UserMenuResources, { cloudMode: true });
 		const link = screen.getByRole('menuitem', { name: 'Tutorials' });
-		expect(link.getAttribute('href')).toBe('/console/tutorials');
+		expect(link.getAttribute('href')).toBe('/tutorials');
 		expect(link.getAttribute('target')).toBeNull();
 		const order = labels(container);
 		expect(order.indexOf('Tutorials')).toBe(order.indexOf('Docs') + 1);

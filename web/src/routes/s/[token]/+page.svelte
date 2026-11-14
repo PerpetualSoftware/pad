@@ -580,7 +580,7 @@
 				<h1>Sign in to view</h1>
 				<p>This shared content requires authentication.</p>
 				<!-- The sign-in brings the reader back to THIS link (TASK-2249, audit
-				     C13): a bare /login landed them on /console with the share gone. -->
+				     C13): a bare /login landed them on / with the share gone. -->
 				<a href="/login?redirect={encodeURIComponent(`/s/${token}`)}" class="auth-link">Sign in</a>
 			</div>
 		{:else if requirePassword}

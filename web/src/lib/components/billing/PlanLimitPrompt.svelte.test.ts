@@ -63,7 +63,7 @@ describe('PlanLimitPrompt (TASK-3601)', () => {
 		await tick();
 		expect(screen.getByRole('alert').textContent).toContain(MSG);
 		await fireEvent.click(screen.getByRole('button', { name: 'Upgrade' }));
-		expect(mocks.goto).toHaveBeenCalledWith('/console/billing');
+		expect(mocks.goto).toHaveBeenCalledWith('/settings/billing');
 		expect(readUpgradeResume()).toMatchObject({ path: '/ada/ws/settings?tab=members', action: 'invite a member' });
 		expect(planLimitPrompt.current).toBeNull();
 	});

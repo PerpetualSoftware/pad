@@ -17,7 +17,7 @@ import familyFixture from './mime-families.json';
 import { ownValue } from '$lib/utils/ownValue';
 import { GENERIC_ICON_ID, isAttachmentIconId, type AttachmentIconId } from './icons/index';
 
-// Same algorithm as web/src/routes/console/billing/+page.svelte. Picks a
+// Same algorithm as web/src/routes/(console)/settings/billing/+page.svelte. Picks a
 // unit so the displayed value is < 1024; bump thresholds nudged down half
 // the previous unit so 1,048,575 bytes reads as "1.0 MB" rather than the
 // misleading "1024 KB" you'd get from a straight Math.round at the KB tier.

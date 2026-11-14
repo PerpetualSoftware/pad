@@ -11,7 +11,7 @@
 // Copy is plain and was reviewed before merge (TASK-3601).
 
 /** Where Upgrade goes: the plan picker, which starts checkout. */
-export const BILLING_PATH = '/console/billing';
+export const BILLING_PATH = '/settings/billing';
 
 export interface PlanLimitDetails {
 	feature?: string;

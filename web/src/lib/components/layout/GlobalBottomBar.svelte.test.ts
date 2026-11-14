@@ -7,7 +7,7 @@ import { cs, parked, chatSurfaceMock } from './chatSurfaceMock.fixture.svelte';
 import { kb } from '../../chat/uiKeyboard.fixture.svelte';
 
 const h = vi.hoisted(() => ({ chatOn: true, authed: true, goto: vi.fn() }));
-vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/console') } }));
+vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/') } }));
 vi.mock('$app/navigation', () => ({ goto: h.goto, afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/ui.svelte', () => ({
 	uiStore: {
@@ -68,11 +68,11 @@ afterEach(() => {
 });
 
 describe('GlobalBottomBar', () => {
-	it('has Workspaces (to /console), Chat and You', async () => {
+	it('has Workspaces (to /), Chat and You', async () => {
 		render(GlobalBottomBar);
 		await tick();
 		expect(items().map(label)).toEqual(['Workspaces', 'Chat', 'You']);
-		expect(document.querySelector<HTMLAnchorElement>('nav.bottom-nav a')!.getAttribute('href')).toBe('/console');
+		expect(document.querySelector<HTMLAnchorElement>('nav.bottom-nav a')!.getAttribute('href')).toBe('/');
 		expect(document.querySelector('nav.bottom-nav')!.getAttribute('aria-label')).toBe('Primary');
 	});
 
@@ -155,6 +155,6 @@ describe('GlobalBottomBar', () => {
 		document.querySelector<HTMLAnchorElement>('nav.bottom-nav a')!.click();
 		expect(h.goto).not.toHaveBeenCalled();
 		parked.shift()!();
-		expect(h.goto).toHaveBeenCalledWith('/console');
+		expect(h.goto).toHaveBeenCalledWith('/');
 	});
 });

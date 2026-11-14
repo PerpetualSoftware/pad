@@ -70,7 +70,7 @@ describe('ConnectWorkspaceModal auth paths', () => {
 		// Unnumbered inside the disclosure: it does not continue the OAuth steps.
 		expect(details?.textContent).not.toMatch(/Step \d/);
 		expect(patConfig()).toContain('Authorization: Bearer YOUR_PAD_TOKEN');
-		expect(document.querySelector('a[href="/console/connected-apps"]')).not.toBeNull();
+		expect(document.querySelector('a[href="/settings/connected-apps"]')).not.toBeNull();
 	});
 
 	it("['pat']: the token path is the only one; no claim tab, no sign-in copy, no Connected apps", () => {
@@ -83,8 +83,8 @@ describe('ConnectWorkspaceModal auth paths', () => {
 		expect(text()).toMatch(/Step 2 — Create a personal API token/);
 		expect(text()).toMatch(/Step 3 — Add Pad to your client/);
 		const link = document.querySelector<HTMLAnchorElement>('[data-testid="connect-pat-settings-link"]');
-		expect(link?.getAttribute('href')).toBe('/console/settings#api-tokens');
-		expect(document.querySelector('a[href="/console/connected-apps"]')).toBeNull();
+		expect(link?.getAttribute('href')).toBe('/settings/account#api-tokens');
+		expect(document.querySelector('a[href="/settings/connected-apps"]')).toBeNull();
 		// ChatGPT's connectors are OAuth-only, so it is not offered here.
 		expect([...document.querySelectorAll('button.tab-btn')].map((b) => b.textContent?.trim())).not.toContain(
 			'ChatGPT'
@@ -96,7 +96,7 @@ describe('ConnectWorkspaceModal auth paths', () => {
 		expect(tabLabels()).toEqual(['CLI']);
 		expect(document.querySelector('.primary-tab.active')?.textContent).toMatch(/CLI/);
 		expect(patConfig()).toBe('');
-		expect(document.querySelector('a[href="/console/connected-apps"]')).toBeNull();
+		expect(document.querySelector('a[href="/settings/connected-apps"]')).toBeNull();
 	});
 
 	it('a server that predates mcp_auth: the OAuth rendering it always had, no token path', () => {

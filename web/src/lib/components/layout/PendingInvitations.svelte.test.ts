@@ -152,12 +152,12 @@ describe('PendingInvitations', () => {
 		expect(mocks.goto).toHaveBeenCalledWith('/alice/a-ws');
 	});
 
-	it('lands on /console when the owner has no username', async () => {
+	it('lands on / when the owner has no username', async () => {
 		mocks.acceptMyInvitation.mockResolvedValue({ accepted: true, workspace_id: 'w', role: 'editor', workspace_slug: 'a-ws', owner_username: '' });
 		const { getByRole } = await mount([inv('a', 'Alpha', { workspace_owner_username: '' })]);
 		await fireEvent.click(getByRole('button', { name: 'Accept the invitation to Alpha' }));
 		await settle();
-		expect(mocks.goto).toHaveBeenCalledWith('/console');
+		expect(mocks.goto).toHaveBeenCalledWith('/');
 	});
 
 	it('a failed accept toasts, does not navigate, and refreshes the list', async () => {

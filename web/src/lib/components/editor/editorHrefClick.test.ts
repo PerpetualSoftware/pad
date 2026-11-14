@@ -132,9 +132,9 @@ describe('planHrefClick — PLAN-2154 Architecture B.3 / TASK-2160', () => {
 		});
 
 		it('a bare top-level app route falls back to goto', () => {
-			expect(planHrefClick(leftClick, '/console', ctx())).toEqual({
+			expect(planHrefClick(leftClick, '/', ctx())).toEqual({
 				kind: 'goto',
-				href: '/console',
+				href: '/',
 			});
 		});
 

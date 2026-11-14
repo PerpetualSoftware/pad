@@ -21,7 +21,7 @@
 {#if show}
 	<p class="move-to-cloud">
 		{on === 'cloud' ? 'Moving a workspace from a self-hosted Pad?' : 'Moving to Pad Cloud?'}
-		<a href="/console/move-to-cloud" onclick={() => onnavigate?.()}>Follow the guide</a>.
+		<a href="/settings/move-to-cloud" onclick={() => onnavigate?.()}>Follow the guide</a>.
 	</p>
 {/if}
 

@@ -108,7 +108,7 @@ describe('a workspace the caller cannot open (BUG-4472)', () => {
 		await mountAndFail(new PadApiError('not_found'));
 		expect(shown('Workspace not found')).toBe(true);
 		expect(shown("doesn't exist, or a@example.com doesn't have access to it")).toBe(true);
-		const link = document.querySelector<HTMLAnchorElement>('a[href="/console"]');
+		const link = document.querySelector<HTMLAnchorElement>('a[href="/"]');
 		expect(link, 'no way out to the workspace list').not.toBeNull();
 		expect(link!.textContent).toContain('Go to your workspaces');
 		expect(shown('No dashboard data available.')).toBe(false);
@@ -131,6 +131,6 @@ describe('a workspace the caller cannot open (BUG-4472)', () => {
 		await mountAndFail(new Error('boom'));
 		expect(document.querySelector('.dash-error')).not.toBeNull();
 		expect(shown('Workspace not found')).toBe(false);
-		expect(document.querySelector('a[href="/console"]')).toBeNull();
+		expect(document.querySelector('a[href="/"]')).toBeNull();
 	});
 });

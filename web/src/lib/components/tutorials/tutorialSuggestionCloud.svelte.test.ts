@@ -25,7 +25,7 @@ describe('TutorialSuggestion on Pad Cloud', () => {
 	it('shows the same-origin poster and links to the in-app player, then hides for good on dismiss', async () => {
 		const { container } = render(TutorialSuggestion, { dismissKey: 'tutorials.console', slug: 'new-project', fallbackTitle: 'fallback' });
 		const link = await screen.findByRole('link', { name: /Start a new project with Pad/ });
-		expect(link.getAttribute('href')).toBe('/console/tutorials/new-project');
+		expect(link.getAttribute('href')).toBe('/tutorials/new-project');
 		expect(link.getAttribute('target')).toBeNull();
 		const img = container.querySelector('img');
 		expect(img?.getAttribute('src')).toBe('/api/v1/tutorials/posters/new-project');

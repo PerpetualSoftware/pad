@@ -50,11 +50,11 @@
 			// Refresh the session so emailVerified flips (the server already
 			// flipped the DB row; load() re-reads /auth/me) and the
 			// VerifyEmailBanner clears. Swallow errors — a logged-out consumer
-			// has no session to refresh, and /console bounces them to /login
+			// has no session to refresh, and / bounces them to /login
 			// where they sign in already-verified.
 			await authStore.load().catch(() => {});
 			status = 'success';
-			await goto('/console', { replaceState: true });
+			await goto('/', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof PadApiError && err.code === 'verify_needs_session') {
 				pendingEmail = typeof err.details?.email === 'string' ? err.details.email : '';

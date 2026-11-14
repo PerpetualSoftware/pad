@@ -111,7 +111,7 @@ describe('authStore.onIdentityChange', () => {
 		// poll as a sign-out was destructive: listeners drop the workspace
 		// store, re-arm the layout's load latch and close the create-workspace
 		// modal, so a user who is still signed in lost an in-flight create or
-		// import with no toast, no navigation and no close. `/console/billing`
+		// import with no toast, no navigation and no close. `/settings/billing`
 		// polls `load()`, so a single flaky request reached it.
 		const { authStore } = await import('./auth.svelte');
 		const api = (await import('$lib/api/client')).api as unknown as {

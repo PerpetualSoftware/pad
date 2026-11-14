@@ -1,0 +1,900 @@
+<script lang="ts">
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { api, withRequestDeadline, BillingCheckoutError, type BillingInterval } from '$lib/api/client';
+	import BillingIntervalPicker from '$lib/components/billing/BillingIntervalPicker.svelte';
+	import { decideCheckout, unavailableMessage } from '$lib/billing/checkoutDecision';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import Button from '$lib/components/common/Button.svelte';
+	import { goto } from '$app/navigation';
+	import { page } from '$app/state';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { onMount, onDestroy } from 'svelte';
+	import { readUpgradeResume, clearUpgradeResume, type UpgradeResume } from '$lib/billing/upgradeResume';
+	import { portalErrorMessage } from '$lib/billing/portalError';
+
+	interface PlanLimits {
+		workspaces: number;
+		items_per_workspace: number;
+		members_per_workspace: number;
+		api_tokens: number;
+		storage_bytes: number;
+		webhooks: number;
+		automated_backups: number;
+	}
+
+	// Static metadata for the comparison table. Each row maps a label to
+	// the PlanLimits field + a display kind so the renderer picks the
+	// right formatter (count vs storage-bytes). Kept outside the
+	// template to keep the table JSX legible and to avoid rebuilding
+	// the array on every re-render.
+	type LimitKey = keyof PlanLimits;
+	const COMPARE_ROWS: { label: string; key: LimitKey; kind: 'count' | 'storage' }[] = [
+		{ label: 'Workspaces', key: 'workspaces', kind: 'count' },
+		{ label: 'Items per workspace', key: 'items_per_workspace', kind: 'count' },
+		{ label: 'Members per workspace', key: 'members_per_workspace', kind: 'count' },
+		{ label: 'API tokens', key: 'api_tokens', kind: 'count' },
+		{ label: 'Storage', key: 'storage_bytes', kind: 'storage' },
+		{ label: 'Webhooks', key: 'webhooks', kind: 'count' }
+		// No "Automated backups" row (TASK-3603): backups are a platform
+		// service for every Cloud account, not a plan feature.
+	];
+
+	let plan = $derived(authStore.user?.plan ?? 'free');
+	let isPro = $derived(plan === 'pro');
+	let limits = $state<{ free: PlanLimits; pro: PlanLimits } | null>(null);
+
+	// Gate for Stripe-backed upgrade affordances: true only while the pad-cloud
+	// sidecar serves an offer and PAD_BILLING=auto (TASK-3577; TASK-800).
+	let stripeAvailable = $derived(authStore.billingAvailable);
+	// In the mobile apps this page shows the plan and its limits only: no
+	// plans table, prices, checkout, portal or interest prompt (PLAN-3291
+	// DR-3; BUG-3290). The nav links here are hidden there too; this is the
+	// page's own guard for a deep link.
+	let commerceAllowed = $derived(authStore.commerceAllowed);
+
+	// Checkout-in-progress state. True while the POST /billing/checkout
+	// fetch is in flight so the button shows a spinner and prevents
+	// double-submission.
+	let checkoutInProgress = $state(false);
+
+	// The interval to buy (TASK-3468), shared by both pickers on the page, and
+	// the intervals the sidecar has said it cannot sell this visit (a 503, or
+	// an echo that refused). An unsellable interval gets a plain inline
+	// message and its option is disabled, rather than a button that fails.
+	// Only the intervals the sidecar's offer lists are sold (TASK-3577); the
+	// selection starts on the first of them.
+	let offered = $derived((authStore.billingOffer?.intervals ?? []).map((iv) => iv.interval));
+	let interval = $state<BillingInterval>(authStore.billingOffer?.intervals[0]?.interval ?? 'monthly');
+	let unavailable = $state<BillingInterval[]>([]);
+	let intervalNotice = $state<string | null>(null);
+
+	function markUnavailable(i: BillingInterval) {
+		if (!unavailable.includes(i)) unavailable = [...unavailable, i];
+		intervalNotice = unavailableMessage(i);
+		if (interval === i) {
+			const other: BillingInterval = i === 'annual' ? 'monthly' : 'annual';
+			if (offered.includes(other) && !unavailable.includes(other)) interval = other;
+		}
+	}
+
+	// Upgrade-confirmation state. After Stripe Checkout redirects back with
+	// ?checkout=success, pad-cloud's webhook handler needs a moment to land
+	// at pad's /admin/plan endpoint before the user's plan flips to "pro".
+	// Poll authStore.load() on a short interval until the plan updates or we
+	// hit the timeout — a proxy for "something is wrong, please refresh".
+	let upgradeStatus = $state<'idle' | 'checking' | 'confirmed' | 'timeout' | 'cancelled'>('idle');
+	let pollTimer: ReturnType<typeof setInterval> | null = null;
+	let pollStartedAt = 0;
+	// Guards every post-await state write: an authStore.load() or plan-limits
+	// fetch in flight when the user navigates away would otherwise continue
+	// on, mutate state, or even install a fresh interval after this component
+	// has been destroyed. Checked after every await.
+	let destroyed = false;
+	const POLL_INTERVAL_MS = 2000;
+	const POLL_TIMEOUT_MS = 30000;
+
+	function formatLimit(value: number | undefined): string {
+		if (value === undefined) return '...';
+		if (value === -1) return 'Unlimited';
+		return value.toLocaleString();
+	}
+
+	// formatBytes renders a byte count in its most natural unit. Picks the
+	// unit so the displayed value is < 1024 — bump thresholds are nudged
+	// down half the previous unit so a value like 1,048,575 bytes (0.999
+	// MB, 1023.999 KB) reads as "1.0 MB" rather than the misleading
+	// "1024 KB" you'd get from a straight Math.round at the KB tier.
+	function formatBytes(bytes: number): string {
+		if (bytes < 0) return `${bytes} B`;
+		const KB = 1024;
+		const MB = KB * 1024;
+		const GB = MB * 1024;
+		const bumpGB = GB - MB / 2;
+		const bumpMB = MB - KB / 2;
+		if (bytes >= bumpGB) return formatUnit(bytes / GB, 'GB');
+		if (bytes >= bumpMB) return formatUnit(bytes / MB, 'MB');
+		if (bytes >= KB) return formatUnit(bytes / KB, 'KB');
+		return `${bytes} B`;
+	}
+
+	function formatUnit(value: number, unit: string): string {
+		if (value >= 10) return `${Math.round(value)} ${unit}`;
+		return `${value.toFixed(1)} ${unit}`;
+	}
+
+	// formatCompareCell picks the right display for the comparison table:
+	//  * undefined → "…" while limits are loading
+	//  * any negative (the server treats anything < 0 as unlimited in
+	//    internal/store/limits.go — match that here so a stored -2 does
+	//    not render as "-2 B")
+	//  * storage → byte-formatted
+	//  * anything else → locale-formatted integer
+	//
+	// Zero is NOT specially rendered — admin-configured zero quotas
+	// (storage_bytes = 0, workspaces = 0) are legitimate values and
+	// should display literally as "0" rather than a "—" placeholder.
+	function formatCompareCell(value: number | undefined, kind: 'count' | 'storage'): string {
+		if (value === undefined) return '…';
+		if (value < 0) return 'Unlimited';
+		if (kind === 'storage') return formatBytes(value);
+		return value.toLocaleString();
+	}
+
+	// One cell of the plan tables. Pro storage is stated, not served: Pro is
+	// to include about 1 GB with metered overage (PLAN-3605, open), and the
+	// served value is a placeholder. Until that interim is decided the cell
+	// says what is meant (TASK-3603). Every other cell is the live limit.
+	function planCell(plan: 'free' | 'pro', row: { key: LimitKey; kind: 'count' | 'storage' }): string {
+		if (plan === 'pro' && row.key === 'storage_bytes') return '1 GB included';
+		return formatCompareCell(limits?.[plan]?.[row.key], row.kind);
+	}
+
+	function stopPolling() {
+		if (pollTimer !== null) {
+			clearInterval(pollTimer);
+			pollTimer = null;
+		}
+	}
+
+	// Remove ?checkout=success so a page reload after the banner is dismissed
+	// does not re-enter the polling branch. replaceState keeps the back button
+	// pointing at the pre-checkout page rather than an artifact URL.
+	function clearCheckoutQuery() {
+		clearQueryParam('checkout');
+	}
+
+	function clearQueryParam(name: string) {
+		if (typeof window === 'undefined') return;
+		// Under an open Chat the bar holds Chat's address, so the param would not be found: wait, then run
+		// against the real address (window.location, since a raw replace does not move page.url).
+		if (chatSurface.deferPageWrite(`${page.url.pathname}#qp-${name}`, () => clearQueryParam(name))) return;
+		const url = new URL(window.location.href);
+		if (url.searchParams.has(name)) {
+			url.searchParams.delete(name);
+			history.replaceState(history.state, '', url.toString());
+		}
+	}
+
+	// Whether a Pro account has a Stripe customer to manage (BUG-3898). Only
+	// GET /auth/me carries stripe_customer_id. A plan granted by an admin has
+	// none, and the portal can only refuse it, so the page says so instead.
+	// 'unknown' (not read yet, or the read failed) keeps the button: the
+	// portal answers any refusal with ?portal_error=, which this page shows.
+	// A customer with no live subscription still gets the portal, for its
+	// invoices (BUG-3898 R2).
+	let billingAccount = $state<'unknown' | 'yes' | 'none'>('unknown');
+
+	async function loadBillingAccount() {
+		try {
+			const me = await api.auth.me();
+			if (destroyed) return;
+			billingAccount = me.stripe_customer_id ? 'yes' : 'none';
+		} catch {
+			// Leave it unknown: the button stays, and a refusal comes back
+			// as a portal_error.
+		}
+	}
+
+	// Read once the account is Pro, whether it was at mount or became Pro
+	// during the visit (a checkout return confirmed by polling; BUG-3898).
+	// One read per visit: a paid plan stores its customer before its plan
+	// (pad-cloud's handleCheckoutCompleted), so a Pro account read without
+	// one is a granted plan.
+	let billingAccountRequested = false;
+	$effect(() => {
+		if (commerceAllowed && isPro && !billingAccountRequested) {
+			billingAccountRequested = true;
+			loadBillingAccount();
+		}
+	});
+
+	// A refused portal request comes back as ?portal_error=<code> (BUG-3898).
+	let portalErrorText = $state<string | null>(null);
+
+	async function pollForUpgrade() {
+		try {
+			await authStore.load();
+		} catch {
+			// Session fetch failed this tick; another poll will retry. No state change.
+		}
+		if (destroyed) {
+			stopPolling();
+			return;
+		}
+		if (authStore.user?.plan === 'pro') {
+			upgradeStatus = 'confirmed';
+			stopPolling();
+			clearCheckoutQuery();
+			return;
+		}
+		if (Date.now() - pollStartedAt >= POLL_TIMEOUT_MS) {
+			upgradeStatus = 'timeout';
+			stopPolling();
+		}
+	}
+
+	// Bridge the async window between Stripe redirect and pad-cloud webhook.
+	// Kicked off from onMount in parallel with plan-limits fetch so a slow
+	// /plan-limits request does not delay the user's confirmation banner.
+	async function startUpgradeConfirmation() {
+		try {
+			await authStore.load();
+		} catch {
+			/* polling branch below retries */
+		}
+		if (destroyed) return;
+		if (authStore.user?.plan === 'pro') {
+			upgradeStatus = 'confirmed';
+			clearCheckoutQuery();
+			return;
+		}
+		upgradeStatus = 'checking';
+		pollStartedAt = Date.now();
+		pollTimer = setInterval(pollForUpgrade, POLL_INTERVAL_MS);
+	}
+
+	async function loadPlanLimits() {
+		try {
+			// Under the API deadline (BUG-3216); a timeout falls to the catch below.
+			const body = await withRequestDeadline(
+				async (signal) => {
+					const resp = await fetch('/api/v1/plan-limits', { credentials: 'same-origin', signal });
+					return resp.ok ? await resp.json() : null;
+				},
+				{ idempotent: true }
+			);
+			if (destroyed) return;
+			if (body) limits = body;
+		} catch {
+			/* use fallback rendering */
+		}
+	}
+
+	// startCheckout POSTs to pad-cloud's /billing/checkout endpoint, parses
+	// the returned {url} and redirects the browser to the Stripe-hosted
+	// checkout page. Uses window.location.href so the Stripe session is
+	// opened in the same tab (matching Stripe's UX recommendation).
+	// Called from the "Upgrade to Pro" buttons. TASK-800.
+	async function startCheckout() {
+		if (checkoutInProgress) return;
+		checkoutInProgress = true;
+		intervalNotice = null;
+		const picked = interval;
+		try {
+			const result = await api.billing.createCheckoutSession(picked);
+			// Only to a session priced at the interval the user picked
+			// (decideCheckout): never an annual pick charged monthly.
+			const decision = decideCheckout(picked, result);
+			if (decision.kind === 'refuse') {
+				checkoutInProgress = false;
+				markUnavailable(decision.interval);
+				return;
+			}
+			// Redirect to Stripe Checkout — leaves the SPA.
+			window.location.href = decision.url;
+		} catch (err) {
+			checkoutInProgress = false;
+			if (err instanceof BillingCheckoutError && err.status === 503) {
+				markUnavailable(picked);
+				return;
+			}
+			const msg = err instanceof Error ? err.message : 'Failed to start checkout. Please try again.';
+			toastStore.show(msg, 'error');
+		}
+	}
+
+	onMount(() => {
+		if (!authStore.cloudMode) {
+			goto('/', { replaceState: true });
+			return;
+		}
+
+		// Kick off the three independent async tasks in parallel. None are
+		// awaited here — onMount returns immediately so Svelte can run the
+		// onDestroy cleanup path synchronously if the user navigates away
+		// before any task resolves (the `destroyed` guard handles that).
+		// A checkout return is a web-checkout state. In the app it is dropped
+		// unread: its banners talk about a payment and link support about one
+		// (PLAN-3291 DR-3, TASK-3293).
+		const checkoutParam = page.url.searchParams.get('checkout');
+		// A portal refusal is a web state too (BUG-3898): dropped unread in
+		// the app, like a checkout return.
+		const portalErrorParam = page.url.searchParams.get('portal_error');
+		if (portalErrorParam !== null) {
+			if (authStore.commerceAllowed) portalErrorText = portalErrorMessage(portalErrorParam);
+			clearQueryParam('portal_error');
+		}
+		if (!authStore.commerceAllowed) {
+			if (checkoutParam) clearCheckoutQuery();
+		} else if (checkoutParam === 'success') {
+			// Where the upgrade was asked for (TASK-3601): offered once it is
+			// confirmed, never followed on the user's behalf.
+			resume = readUpgradeResume();
+			startUpgradeConfirmation();
+		} else if (checkoutParam === 'cancelled') {
+			// User abandoned the Stripe Checkout page. Show a brief notice
+			// and clear the query param so a reload doesn't re-fire it.
+			upgradeStatus = 'cancelled';
+			clearCheckoutQuery();
+		}
+		loadPlanLimits();
+	});
+
+	// The blocked flow to return to after checkout (TASK-3601).
+	let resume = $state<UpgradeResume | null>(null);
+
+	onDestroy(() => {
+		destroyed = true;
+		stopPolling();
+	});
+</script>
+
+<svelte:head>
+	<title>Billing - Pad</title>
+</svelte:head>
+
+<div class="billing-page">
+	<h1 class="page-title">Billing</h1>
+
+	{#if !commerceAllowed}
+		<!-- no checkout-result banners in the apps -->
+	{:else if upgradeStatus === 'checking'}
+		<div class="upgrade-banner checking" role="status" aria-live="polite">
+			<span class="spinner" aria-hidden="true"></span>
+			<span>Confirming your upgrade…</span>
+		</div>
+	{:else if upgradeStatus === 'confirmed' && isPro}
+		<div class="upgrade-banner success" role="status" aria-live="polite">
+			<span class="check-icon" aria-hidden="true">✓</span>
+			<span>Upgrade confirmed — welcome to Pro!</span>
+			{#if resume}
+				<a
+					class="resume-link"
+					href={resume.path}
+					onclick={(e) => {
+						e.preventDefault();
+						const to = resume!.path;
+						clearUpgradeResume();
+						resume = null;
+						goto(to);
+					}}>Continue{resume.action ? `: ${resume.action}` : ''} &rarr;</a
+				>
+			{/if}
+		</div>
+	{:else if upgradeStatus === 'timeout'}
+		<div class="upgrade-banner warning" role="status" aria-live="polite">
+			<span>Your payment went through but we haven't confirmed your upgrade yet. Try refreshing in a moment; if your plan still shows Free, contact <a href="mailto:support@getpad.dev">support@getpad.dev</a>.</span>
+		</div>
+	{:else if upgradeStatus === 'cancelled'}
+		<div class="upgrade-banner cancelled" role="status" aria-live="polite">
+			<span>No charge — you returned to your workspace without completing checkout.</span>
+		</div>
+	{/if}
+
+	{#if portalErrorText}
+		<div class="upgrade-banner portal-error" role="alert">
+			<span>{portalErrorText}</span>
+		</div>
+	{/if}
+
+	<section class="card">
+		<h2 class="card-title">Current Plan</h2>
+		<div class="card-body">
+			<div class="plan-row">
+				<div class="plan-info">
+					<span class="plan-name">
+						{isPro ? 'Pro' : 'Free'}
+					</span>
+					<span class="plan-badge" class:pro={isPro} class:free={!isPro}>
+						{isPro ? 'Active' : 'Current'}
+					</span>
+				</div>
+				<!-- TASK-3603: what the plan covers, in the limits the server enforces
+				     (store/limits.go: workspace limits follow the OWNER's plan; the
+				     workspaces quota counts only workspaces you own). Numbers come
+				     from /api/v1/plan-limits, since they are configurable. "No caps"
+				     for Pro is what the code does, not a default: checkLimitOn and
+				     checkUserLimitOn return allowed/unlimited for plan "pro" before
+				     any configured limit is read. -->
+				<p class="plan-desc">
+					{#if isPro}
+						No caps on your workspaces, items or members.{#if commerceAllowed}
+							People you invite don't need a plan.{/if}
+					{:else if limits?.free}
+						Up to {limits.free.workspaces} workspaces with {limits.free.members_per_workspace} members each.{#if commerceAllowed}
+							Upgrade when a project outgrows it.{/if}
+					{:else}
+						The free plan has limits on workspaces, items and members.
+					{/if}
+				</p>
+			</div>
+
+			{#if !commerceAllowed}
+				<!-- no purchase path in the apps -->
+			{:else if isPro && billingAccount === 'none'}
+				<!-- BUG-3898: a granted plan has no Stripe customer, so nothing to manage. -->
+				<p class="granted-note">Your plan was granted to your account, so there is no billing to manage.</p>
+			{:else if isPro}
+				<!-- /billing/ is pad-cloud's, not the SPA's: a full navigation (BUG-3897). -->
+				<a href="/billing/portal" class="secondary-btn" data-sveltekit-reload>Manage Billing</a>
+			{:else if stripeAvailable}
+				<!-- TASK-3603: the outcome first, then who it covers. -->
+				<p class="pro-pitch">
+					Run every project in one place, with your team and your agents: no caps on workspaces, items or members.
+				</p>
+				<p class="pro-covers">
+					Pro covers the workspaces you own. People you invite to them don't need a plan of their own.
+				</p>
+				<div class="cta-line">
+					<BillingIntervalPicker name="interval-plan" bind:value={interval} {unavailable} disabled={checkoutInProgress} />
+					{#if intervalNotice}
+						<p class="interval-notice" role="status">{intervalNotice}</p>
+					{/if}
+					<Button
+						variant="primary"
+						onclick={startCheckout}
+						disabled={checkoutInProgress || unavailable.includes(interval)}
+					>
+						{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
+					</Button>
+				</div>
+			{/if}
+		</div>
+	</section>
+
+	{#if !commerceAllowed}
+		<section class="card" data-testid="plan-limits-card">
+			<h2 class="card-title">Plan limits</h2>
+			<div class="card-body compare">
+				<table class="compare-table">
+					<thead>
+						<tr>
+							<th scope="col" class="feature-col">Feature</th>
+							<th scope="col" class="plan-col current">
+								<div class="plan-col-inner">
+									<span class="plan-col-name">{isPro ? 'Pro' : 'Free'}</span>
+								</div>
+							</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each COMPARE_ROWS as row (row.key)}
+							<tr>
+								<th scope="row" class="feature-col">{row.label}</th>
+								<td class="plan-col current">{planCell(isPro ? 'pro' : 'free', row)}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	{:else}
+	<section class="card">
+		<h2 class="card-title">Compare plans</h2>
+		<div class="card-body compare">
+			<table class="compare-table">
+				<thead>
+					<tr>
+						<th scope="col" class="feature-col">Feature</th>
+						<th scope="col" class="plan-col" class:current={!isPro}>
+							<div class="plan-col-inner">
+								<span class="plan-col-name">Free</span>
+								{#if !isPro}<span class="current-tag">Current</span>{/if}
+							</div>
+						</th>
+						<th scope="col" class="plan-col" class:current={isPro}>
+							<div class="plan-col-inner">
+								<span class="plan-col-name">Pro</span>
+								{#if isPro}<span class="current-tag">Current</span>{/if}
+							</div>
+						</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each COMPARE_ROWS as row (row.key)}
+						<tr>
+							<th scope="row" class="feature-col">{row.label}</th>
+							<td class="plan-col" class:current={!isPro}>{planCell('free', row)}</td>
+							<td class="plan-col" class:current={isPro}>{planCell('pro', row)}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+			{#if !isPro}
+				{#if stripeAvailable}
+					<div class="compare-cta">
+						<BillingIntervalPicker name="interval-compare" bind:value={interval} {unavailable} disabled={checkoutInProgress} />
+						{#if intervalNotice}
+							<!-- Same words, no role: the live region by the first button
+							     announces it once (two status regions would say it twice). -->
+							<p class="interval-notice">{intervalNotice}</p>
+						{/if}
+						<Button
+							variant="primary"
+							onclick={startCheckout}
+							disabled={checkoutInProgress || unavailable.includes(interval)}
+						>
+							{checkoutInProgress ? 'Redirecting…' : 'Upgrade to Pro'}
+						</Button>
+					</div>
+				{:else}
+					<div class="compare-cta coming-soon">
+						<span class="coming-soon-label">Pro — coming soon</span>
+						<span class="coming-soon-note">
+							Interested? Email <a href="mailto:info@getpad.dev?subject=Pad%20Pro%20interest">info@getpad.dev</a> and we'll let you know when it's ready.
+						</span>
+					</div>
+				{/if}
+			{/if}
+		</div>
+	</section>
+	{/if}
+</div>
+
+<style>
+	.interval-notice {
+		margin: 0 0 var(--space-2);
+		font-size: 0.85em;
+		color: var(--text-secondary);
+	}
+
+	.billing-page {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-6);
+		max-width: 600px;
+	}
+
+	.page-title {
+		font-size: 1.4rem;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.card {
+		background: var(--bg-secondary);
+		border: 1px solid var(--border);
+		border-radius: var(--radius-lg);
+		overflow: hidden;
+	}
+
+	.card-title {
+		font-size: 0.95rem;
+		font-weight: 600;
+		color: var(--text-primary);
+		padding: var(--space-4) var(--space-5);
+		border-bottom: 1px solid var(--border);
+	}
+
+	.card-body {
+		padding: var(--space-5);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-4);
+	}
+
+	.plan-row {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.plan-info {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+	}
+
+	.plan-name {
+		font-size: 1.1rem;
+		font-weight: 700;
+		color: var(--text-primary);
+	}
+
+	.plan-badge {
+		padding: 2px var(--space-2);
+		border-radius: var(--radius-sm);
+		font-size: 0.75rem;
+		font-weight: 500;
+	}
+
+	.plan-badge.pro {
+		background: color-mix(in srgb, var(--accent-green) 15%, transparent);
+		color: var(--accent-green);
+	}
+
+	.plan-badge.free {
+		background: color-mix(in srgb, var(--accent-gray) 15%, transparent);
+		color: var(--accent-gray);
+	}
+
+	.plan-desc {
+		color: var(--text-secondary);
+		font-size: 0.85rem;
+		line-height: 1.4;
+	}
+
+	/* Layout-only wrapper: keeps the checkout CTA at natural width inside
+	   the card-body flex column (the old .primary-btn carried align-self). */
+	.cta-line {
+		align-self: flex-start;
+	}
+
+	.secondary-btn {
+		display: inline-block;
+		align-self: flex-start;
+		padding: var(--space-2) var(--space-5);
+		background: transparent;
+		border: 1px solid var(--border);
+		border-radius: var(--radius);
+		color: var(--text-secondary);
+		font-size: 0.9rem;
+		font-weight: 500;
+		text-decoration: none;
+		transition: color 0.15s, border-color 0.15s;
+	}
+
+	.secondary-btn:hover {
+		color: var(--text-primary);
+		border-color: var(--text-muted);
+		text-decoration: none;
+	}
+
+	.card-body.compare {
+		padding: 0;
+		gap: 0;
+	}
+
+	.compare-table {
+		width: 100%;
+		border-collapse: collapse;
+		font-size: 0.85rem;
+	}
+
+	.compare-table thead th {
+		padding: var(--space-3) var(--space-5);
+		border-bottom: 1px solid var(--border);
+		text-align: left;
+		color: var(--text-secondary);
+		font-weight: 500;
+		font-size: 0.8rem;
+		letter-spacing: 0.02em;
+		text-transform: uppercase;
+	}
+
+	.compare-table tbody th,
+	.compare-table tbody td {
+		padding: var(--space-3) var(--space-5);
+		border-bottom: 1px solid var(--border-subtle);
+		vertical-align: middle;
+	}
+
+	.compare-table tbody tr:last-child th,
+	.compare-table tbody tr:last-child td {
+		border-bottom: none;
+	}
+
+	.compare-table .feature-col {
+		color: var(--text-secondary);
+		font-weight: 400;
+		text-align: left;
+		width: 40%;
+	}
+
+	.compare-table tbody .feature-col {
+		color: var(--text-primary);
+	}
+
+	.compare-table .plan-col {
+		color: var(--text-primary);
+		font-weight: 500;
+		text-align: right;
+		width: 30%;
+	}
+
+	.compare-table .plan-col.current {
+		background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+	}
+
+	.plan-col-inner {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		justify-content: flex-end;
+		width: 100%;
+	}
+
+	.plan-col-name {
+		text-transform: none;
+		letter-spacing: 0;
+		font-weight: 600;
+		color: var(--text-primary);
+		font-size: 0.85rem;
+	}
+
+	.current-tag {
+		padding: 1px var(--space-2);
+		border-radius: var(--radius-sm);
+		background: var(--accent-blue);
+		color: #fff;
+		font-size: 0.7rem;
+		font-weight: 600;
+		text-transform: none;
+		letter-spacing: 0;
+	}
+
+	.compare-cta {
+		padding: var(--space-4) var(--space-5);
+		border-top: 1px solid var(--border);
+		display: flex;
+		justify-content: flex-end;
+	}
+
+	/* The interval picker and its notice stack above the button (TASK-3468). */
+	.compare-cta:not(.coming-soon) {
+		flex-direction: column;
+		align-items: flex-end;
+	}
+
+	.compare-cta.coming-soon {
+		flex-direction: column;
+		align-items: flex-start;
+		justify-content: flex-start;
+		gap: var(--space-1);
+	}
+
+	.coming-soon-label {
+		font-size: 0.85rem;
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+
+	.coming-soon-note {
+		font-size: 0.8rem;
+		color: var(--text-secondary);
+		line-height: 1.4;
+	}
+
+	.coming-soon-note a {
+		color: var(--accent-blue);
+		text-decoration: underline;
+	}
+
+	@media (max-width: 480px) {
+		.compare-table thead th,
+		.compare-table tbody th,
+		.compare-table tbody td {
+			padding: var(--space-3);
+		}
+		.compare-table .feature-col {
+			width: 50%;
+		}
+		.compare-table .plan-col {
+			width: 25%;
+		}
+	}
+
+	.upgrade-banner {
+		display: flex;
+		align-items: center;
+		gap: var(--space-3);
+		padding: var(--space-3) var(--space-4);
+		border-radius: var(--radius);
+		font-size: 0.9rem;
+		line-height: 1.4;
+		border: 1px solid transparent;
+	}
+
+	.upgrade-banner.checking {
+		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
+		border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
+		color: var(--text-primary);
+	}
+
+	.upgrade-banner.success {
+		background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+		border-color: color-mix(in srgb, var(--accent-green) 35%, transparent);
+		color: var(--text-primary);
+	}
+
+	.upgrade-banner.warning {
+		background: color-mix(in srgb, var(--accent-yellow, #eab308) 12%, transparent);
+		border-color: color-mix(in srgb, var(--accent-yellow, #eab308) 35%, transparent);
+		color: var(--text-primary);
+	}
+
+	.upgrade-banner.cancelled {
+		background: color-mix(in srgb, var(--text-muted, #6b7280) 10%, transparent);
+		border-color: color-mix(in srgb, var(--text-muted, #6b7280) 25%, transparent);
+		color: var(--text-secondary);
+	}
+
+	/* BUG-3898: a refused portal request, back from pad-cloud. */
+	.upgrade-banner.portal-error {
+		background: color-mix(in srgb, var(--accent-yellow, #eab308) 12%, transparent);
+		border-color: color-mix(in srgb, var(--accent-yellow, #eab308) 35%, transparent);
+		color: var(--text-primary);
+	}
+
+	.upgrade-banner a {
+		color: var(--accent-blue);
+		text-decoration: underline;
+	}
+
+	.spinner {
+		width: 14px;
+		height: 14px;
+		border: 2px solid color-mix(in srgb, var(--accent-blue) 30%, transparent);
+		border-top-color: var(--accent-blue);
+		border-radius: 50%;
+		animation: spin 0.8s linear infinite;
+		flex-shrink: 0;
+	}
+
+	.check-icon {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: 18px;
+		height: 18px;
+		border-radius: 50%;
+		background: var(--accent-green);
+		color: #fff;
+		font-size: 0.7rem;
+		font-weight: 700;
+		flex-shrink: 0;
+	}
+
+	@keyframes spin {
+		to { transform: rotate(360deg); }
+	}
+
+	@media (prefers-reduced-motion: reduce) {
+		.spinner {
+			animation: none;
+			border-top-color: transparent;
+		}
+	}
+	.resume-link {
+		margin-left: auto;
+		font-weight: 600;
+		color: inherit;
+	}
+	/* TASK-3603 */
+	.pro-pitch {
+		margin: var(--space-3) 0 var(--space-1);
+		font-weight: 600;
+		color: var(--text-primary);
+	}
+	.granted-note {
+		margin: 0;
+		font-size: 0.9rem;
+		color: var(--text-secondary);
+	}
+
+	.pro-covers {
+		margin: 0 0 var(--space-3);
+		color: var(--text-secondary);
+		font-size: 0.9em;
+	}
+</style>

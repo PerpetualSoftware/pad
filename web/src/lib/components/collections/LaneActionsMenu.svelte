@@ -142,7 +142,7 @@
 	// before the event bubbled there, closest() on the orphan returned null, and
 	// the menu slammed shut. BoardView now uses `clickOutside`, which decides on
 	// the press before any click re-renders (BUG-3231); the guard stays as
-	// belt-and-braces. Same Svelte 5 issue documented in console/+layout.svelte.
+	// belt-and-braces. Same Svelte 5 issue documented in (console)/+layout.svelte.
 	function run(e: MouseEvent, fn: () => void) {
 		e.stopPropagation();
 		fn();
