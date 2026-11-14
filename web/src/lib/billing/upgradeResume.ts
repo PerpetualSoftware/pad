@@ -1,6 +1,6 @@
 // "Back to what you were doing" after an upgrade (TASK-3601). Checkout leaves
 // and returns in the same tab and origin (the sidecar's success_url is
-// /console/billing?checkout=success), so the blocked flow is remembered in
+// /settings/billing?checkout=success), so the blocked flow is remembered in
 // sessionStorage before leaving and offered on return. Short-lived and
 // one-shot: an hour, cleared once used or dismissed. The action is offered,
 // never re-run on the user's behalf.

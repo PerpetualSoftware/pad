@@ -17,7 +17,7 @@ let isTouch = $state(browser ? 'ontouchstart' in window : false);
 // chrome so it doesn't sit stranded above the keyboard. PLAN-1694.
 let keyboardVisible = $state(false);
 let createWorkspaceOpen = $state(false);
-// Set when the last workspace tab is closed and the user lands on /console
+// Set when the last workspace tab is closed and the user lands on /
 // (PLAN-3002 Q2): the console page highlights its create button as the way
 // back in. Cleared when that page unmounts or the create flow opens.
 let addWorkspaceHighlighted = $state(false);

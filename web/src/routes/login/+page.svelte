@@ -50,7 +50,7 @@
 	let lastMethod = $state<AuthMethod | null>(null);
 
 	// Validation + query-string helpers live in $lib/auth/redirect so /register
-	// can share them. `redirectTarget` is the validated target (or '/console'
+	// can share them. `redirectTarget` is the validated target (or '/'
 	// default); `oauthRedirectAmpQuery` composes the same encoding behind a
 	// '&' separator so it can append onto banner URLs that already carry
 	// `?force=1`.

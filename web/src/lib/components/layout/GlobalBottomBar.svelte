@@ -33,7 +33,7 @@
 	}
 	function openWorkspaces(e: MouseEvent) {
 		youOpen = false;
-		if (chatSurface.closeThen(() => void goto('/console'))) e.preventDefault();
+		if (chatSurface.closeThen(() => void goto('/'))) e.preventDefault();
 	}
 
 	$effect(() => {
@@ -48,7 +48,7 @@
 {#if uiStore.isMobile && authStore.authenticated}
 	{#if !uiStore.keyboardVisible}
 		<nav class="bottom-nav" aria-label="Primary">
-			<a class="bn-item" href="/console" onclick={openWorkspaces}>
+			<a class="bn-item" href="/" onclick={openWorkspaces}>
 				<span class="bn-icon" aria-hidden="true">🗂️</span>
 				<span class="bn-label">Workspaces</span>
 			</a>

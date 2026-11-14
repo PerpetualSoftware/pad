@@ -259,7 +259,7 @@ describe('accessStream (TASK-3275)', () => {
 		expect(h.goto).toHaveBeenCalledWith('/dave/a');
 	});
 
-	it('lands on /console when the lost active workspace was the only tab', async () => {
+	it('lands on / when the lost active workspace was the only tab', async () => {
 		h.state.tabs = [tab('b')];
 		goneFor();
 		const s = await freshStream();
@@ -267,7 +267,7 @@ describe('accessStream (TASK-3275)', () => {
 		h.state.nextTabs = [];
 		sources[0].fire('notification', hint('deleted'));
 		await flush();
-		expect(h.goto).toHaveBeenCalledWith('/console');
+		expect(h.goto).toHaveBeenCalledWith('/');
 		expect(h.highlight).toHaveBeenCalled();
 	});
 

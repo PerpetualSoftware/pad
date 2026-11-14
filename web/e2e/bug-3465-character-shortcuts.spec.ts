@@ -34,7 +34,7 @@ test.describe('BUG-3465: `c` opens quick-add; the single-key switch turns it off
 		await page.keyboard.press('Escape');
 		await expect(dialog).toBeHidden();
 
-		await page.goto('/console/settings');
+		await page.goto('/settings/account');
 		const toggle = page.getByRole('checkbox', { name: 'Single-key shortcuts' });
 		await expect(toggle).toBeChecked();
 		await toggle.uncheck();
@@ -56,7 +56,7 @@ test.describe('BUG-3465: `c` opens quick-add; the single-key switch turns it off
 		await expect(dialog).toBeHidden();
 
 		// Back on, the same press opens it again.
-		await page.goto('/console/settings');
+		await page.goto('/settings/account');
 		await page.getByRole('checkbox', { name: 'Single-key shortcuts' }).check();
 		await page.goto(tasks);
 		await expect(async () => {

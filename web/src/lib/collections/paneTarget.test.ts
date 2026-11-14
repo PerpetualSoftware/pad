@@ -337,7 +337,7 @@ describe('isSameWorkspaceItemHref — editor content-link gate (TASK-2160)', () 
 	});
 
 	it('rejects wrong segment counts (too short / too long)', () => {
-		expect(isSameWorkspaceItemHref('/console', 'myws', colls)).toBe(false);
+		expect(isSameWorkspaceItemHref('/', 'myws', colls)).toBe(false);
 		expect(isSameWorkspaceItemHref('/alice/myws/settings', 'myws', colls)).toBe(false); // settings not a collection
 		expect(isSameWorkspaceItemHref('/a/alice/myws/tasks/TASK-5', 'myws', colls)).toBe(false);
 	});

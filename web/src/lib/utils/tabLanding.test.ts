@@ -16,7 +16,7 @@ describe('tabLanding (PLAN-3002 Q3)', () => {
 		expect(tabLanding(before, 'a', without(before, 'a'))?.slug).toBe('b');
 	});
 
-	it('answers null (/console) when the only tab goes', () => {
+	it('answers null (/) when the only tab goes', () => {
 		expect(tabLanding(tabs('a'), 'a', [])).toBeNull();
 	});
 

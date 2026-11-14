@@ -333,7 +333,7 @@ collections, items, comments and attachments, and marks any that differ
 (TASK-3612). The web import shows the same counts. Members, invitations, API
 tokens, stars and watches are not in a bundle: the importer becomes the only
 member. To move a self-hosted workspace to Pad Cloud this way, the web guide at
-`/console/move-to-cloud` walks through it.
+`/settings/move-to-cloud` walks through it.
 
 Item reference numbers are preserved when the imported items have positive,
 workspace-unique numbers, including gaps left by deleted items. This keeps

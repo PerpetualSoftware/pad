@@ -6,7 +6,7 @@ import { authJson, createWorkspace, deleteWorkspace } from './lib/attachment-vie
  * TASK-3923 (IDEA-3906 A6): the "Needs you" page end to end against the real
  * binary. An item assigned to the admin in an awaits_human collection is an
  * ASK (routing rule 1, internal/needs/needs.go Resolve), so it shows on
- * /console/needs. Dismissing it hides it for this person; the hide survives a
+ * /needs. Dismissing it hides it for this person; the hide survives a
  * reload because it lives on the server, shows under Hidden, and Restore
  * brings it back.
  */
@@ -38,7 +38,7 @@ test.describe('needs you: dismiss and restore (TASK-3923)', () => {
 			expect(made.ok(), await made.text()).toBeTruthy();
 
 			await browserLogin(page);
-			await page.goto('/console/needs');
+			await page.goto('/needs');
 			const rowFor = () => page.getByTestId('needs-row').filter({ hasText: title });
 			await expect(rowFor()).toHaveCount(1);
 			await expect(rowFor()).toContainText('An ask of you');

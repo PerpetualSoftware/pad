@@ -19,7 +19,7 @@ test.describe('TASK-2238: keyboard access', () => {
 	test('an admin opens a user from the keyboard', async ({ page, fixture }) => {
 		// The admin API wants the admin's own session, as task-2979's admin spec sends it.
 		await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${fixture.adminSessionToken}` });
-		await page.goto('/console/admin');
+		await page.goto('/settings/admin');
 		const name = page.locator('.user-row .user-name-btn').first();
 		await expect(name).toBeVisible();
 		await name.focus();
@@ -51,14 +51,17 @@ test.describe('TASK-2238: keyboard access', () => {
 	});
 
 	test('the console nav is links, and the current one is marked', async ({ page }) => {
-		await page.goto('/console/settings');
+		await page.goto('/settings/account');
 		const nav = page.locator('#console-nav-links');
 		await expect(nav).not.toHaveAttribute('role', 'menu');
 		await expect(nav.locator('[role="menuitem"]')).toHaveCount(0);
 		await expect(nav.locator('a[aria-current="page"]')).toHaveCount(1);
 		await expect(nav.locator('a[aria-current="page"]')).toHaveText(/Settings/);
-		await page.goto('/console/deleted-workspaces');
+		await page.goto('/settings/deleted-workspaces');
 		await expect(nav.locator('a[aria-current="page"]')).toHaveCount(1);
-		await expect(nav.locator('a[aria-current="page"]')).toHaveText(/Deleted workspaces/);
+		await expect(nav.locator('a[aria-current="page"]')).toHaveText(/Settings/);
+		const settings = page.getByRole('navigation', { name: 'Settings', exact: true });
+		await expect(settings.locator('a[aria-current="page"]')).toHaveCount(1);
+		await expect(settings.locator('a[aria-current="page"]')).toHaveText('Deleted workspaces');
 	});
 });

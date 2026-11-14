@@ -21,7 +21,7 @@ test('a Read only key made in settings is listed as Read only and cannot write',
 		// default PAT is refused session_required. A padsess_ bearer counts
 		// as interactive and, unlike a cookie, is not bound to a User-Agent.
 		await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${fixture.adminSessionToken}` });
-		await page.goto('/console/settings#api-tokens');
+		await page.goto('/settings/account#api-tokens');
 		const section = page.locator('#api-tokens');
 		await section.getByRole('textbox', { name: 'Token name' }).fill(name);
 		// Read and write is the default; Read only is a deliberate choice.

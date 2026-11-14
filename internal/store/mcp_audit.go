@@ -173,7 +173,7 @@ func (s *Store) ListMCPAuditByConnection(userID string, kind models.TokenKind, r
 }
 
 // ListAllMCPAudit is the admin-only full-table view used by the
-// /console/admin/mcp-audit page. limit + offset paginate; caller
+// /settings/admin/mcp-audit page. limit + offset paginate; caller
 // must restrict access at the route level (admin role).
 func (s *Store) ListAllMCPAudit(limit, offset int) ([]models.MCPAuditEntry, error) {
 	if limit <= 0 {

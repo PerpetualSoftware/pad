@@ -11,7 +11,7 @@ const MoveToCloudLink = (await import('./MoveToCloudLink.svelte')).default;
 
 function guideLinks(container: HTMLElement): Element[] {
 	return [...container.querySelectorAll('a')].filter(
-		(a) => a.getAttribute('href') === '/console/move-to-cloud'
+		(a) => a.getAttribute('href') === '/settings/move-to-cloud'
 	);
 }
 

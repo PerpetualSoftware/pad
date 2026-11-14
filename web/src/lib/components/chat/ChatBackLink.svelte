@@ -4,7 +4,7 @@
 	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 
 	let last = $derived(lastWorkspace.current);
-	let href = $derived(last ? workspaceRestoreTarget(last) : '/console');
+	let href = $derived(last ? workspaceRestoreTarget(last) : '/');
 	let name = $derived(
 		last ? (workspaceStore.workspaces.find((w) => w.slug === last.slug)?.name ?? last.slug) : ''
 	);

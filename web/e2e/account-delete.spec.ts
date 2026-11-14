@@ -9,7 +9,7 @@ import { suiteFixture } from './fixtures';
  * real delete would wipe the admin the rest of the suite depends on. Instead
  * each test spins up a CLEAN context (no Bearer) and a throwaway user.
  *
- * Two branches of web/src/routes/console/settings/+page.svelte::deleteAccount
+ * Two branches of web/src/routes/(console)/settings/account/+page.svelte::deleteAccount
  * are covered:
  *   (b) password branch — the only branch a self-hosted server ever renders
  *       (usePasswordBranch is true whenever cloud_mode is false). Driven
@@ -106,7 +106,7 @@ test.describe('Danger Zone: delete my account', () => {
 			const page = await context.newPage();
 			await loginViaForm(page, identity.email);
 
-			await page.goto('/console/settings');
+			await page.goto('/settings/account');
 
 			// Reveal the confirm block. Only the reveal button exists at this
 			// point (the "Permanently delete…" button appears after reveal), so
@@ -159,7 +159,7 @@ test.describe('Danger Zone: delete my account', () => {
 
 			// The delete is stubbed (below), so the real session stays valid —
 			// which would make the post-delete /login page see authenticated:true
-			// and bounce back to /console, racing the assertion. Flip the mocked
+			// and bounce back to /, racing the assertion. Flip the mocked
 			// session to authenticated:false once the delete fires so /login stays.
 			let deleted = false;
 			let deletePayload: Record<string, unknown> | null = null;
@@ -205,7 +205,7 @@ test.describe('Danger Zone: delete my account', () => {
 				});
 			});
 
-			await page.goto('/console/settings');
+			await page.goto('/settings/account');
 
 			await page.getByRole('button', { name: 'Delete my account', exact: true }).click();
 

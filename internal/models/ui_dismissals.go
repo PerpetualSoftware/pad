@@ -10,7 +10,7 @@ import (
 // (TASK-3452). The set is closed: the store and the handler refuse any other
 // key, so users.ui_dismissals stays a short list of known words.
 var UIDismissalKeys = []string{
-	// The first-time tutorial card on /console's empty state (Pad Cloud).
+	// The first-time tutorial card on /'s empty state (Pad Cloud).
 	"tutorials.console",
 	// The first-time tutorial card on a workspace's setup launchpad.
 	"tutorials.launchpad",

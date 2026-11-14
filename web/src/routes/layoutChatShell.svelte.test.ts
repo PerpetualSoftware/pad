@@ -135,7 +135,7 @@ afterEach(() => {
 describe('the Chat host in the root layout', () => {
 	it.each([
 		['a workspace route', '/alice/ws/tasks', { username: 'alice', workspace: 'ws' }],
-		['the console', '/console', {}],
+		['the console', '/', {}],
 	])('opening and closing Chat over %s does not remount the child', async (_n, path, params) => {
 		await mountAt(path, params);
 		expect(counts).toEqual({ mounted: 1, destroyed: 0 });
@@ -168,7 +168,7 @@ describe('the Chat host in the root layout', () => {
 	});
 
 	it('the console child sits in an inert wrapper while a drawer covers it, and the host does not', async () => {
-		await mountAt('/console');
+		await mountAt('/');
 		openChat();
 		setWidth(900); // the console has no sidebar to subtract
 		await settle();

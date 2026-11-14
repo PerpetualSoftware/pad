@@ -89,7 +89,7 @@ describe('TopBar chat menu row (TASK-4044)', () => {
 		await settle();
 		trigger().click();
 		await settle();
-		expect(document.querySelector('a.menu-link[href="/console/settings"]')).not.toBeNull();
+		expect(document.querySelector('a.menu-link[href="/settings/account"]')).not.toBeNull();
 		expect(row()).toBeNull();
 	});
 

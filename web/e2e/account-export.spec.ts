@@ -7,7 +7,7 @@ import { test, expect } from './fixtures';
  * context). The export endpoint is read-only, so exercising it as the suite
  * admin is safe and touches no other spec's state.
  *
- * The client (web/src/routes/console/settings/+page.svelte::exportData)
+ * The client (web/src/routes/(console)/settings/account/+page.svelte::exportData)
  * GETs /api/v1/auth/export, then triggers a Blob download named from the
  * server's Content-Disposition. We assert the download fires with the
  * contract filename and that the success line renders — proving the client
@@ -15,7 +15,7 @@ import { test, expect } from './fixtures';
  * server-side in internal/server/handlers_account_export_contract_test.go.
  */
 test('Danger Zone: Export my data downloads pad-account-export.json', async ({ page }) => {
-	await page.goto('/console/settings');
+	await page.goto('/settings/account');
 
 	const exportBtn = page.getByRole('button', { name: 'Export my data', exact: true });
 	await expect(exportBtn).toBeVisible();

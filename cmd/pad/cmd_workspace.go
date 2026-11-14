@@ -456,7 +456,7 @@ the agent can use it immediately without re-auth. When that grant has
 may_create_workspaces=false the create is REFUSED with a 403 and no
 workspace is made (IDEA-2756). Only the user can lift it, either by
 re-authorizing or by enabling the flag on the existing connection at
-/console/connected-apps.`,
+/settings/connected-apps.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

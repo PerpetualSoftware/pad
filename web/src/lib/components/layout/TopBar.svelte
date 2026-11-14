@@ -357,7 +357,7 @@
 	// Closing a tab (PLAN-3002 Q2, Q3). Only closing the ACTIVE tab moves you,
 	// to where tabLanding says (the one copy of the Q3 rule, shared with the
 	// lost-workspace path; TASK-3280), at that tab's last route. Closing the
-	// last tab lands on /console with "+" highlighted as the way back in.
+	// last tab lands on / with "+" highlighted as the way back in.
 	async function closeTab(e: MouseEvent, tab: WorkspaceTab) {
 		e.preventDefault();
 		e.stopPropagation();
@@ -385,10 +385,10 @@
 		if (!wasActive) return;
 		const landing = tabLanding(before, tab.slug, tabsStore.tabs);
 		if (!landing) {
-			// Set once the navigation has landed: /console has no TopBar, so
+			// Set once the navigation has landed: / has no TopBar, so
 			// the console page shows it on its own create button and clears it
 			// when it unmounts.
-			await goto('/console');
+			await goto('/');
 			uiStore.highlightAddWorkspace();
 			return;
 		}
@@ -550,23 +550,23 @@
 						<span class="user-dropdown-email">{authStore.user?.email}</span>
 					</div>
 					<div class="dropdown-divider"></div>
-					<a href="/console" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+					<a href="/" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 						Workspaces
 					</a>
 					<!-- TASK-2255 (C59): not the workspace's ⚙ Settings. -->
-					<a href="/console/settings" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+					<a href="/settings/account" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 						Account settings
 					</a>
 					<!-- TASK-4044: no unread dot on the avatar; the count shows here. -->
 					<ChatLink class="menu-link" role="menuitem" onclick={closeUserMenu} />
 					<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
 					{#if authStore.commerceAllowed}
-						<a href="/console/billing" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+						<a href="/settings/billing" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 							Billing
 						</a>
 					{/if}
 					{#if authStore.user?.role === 'admin'}
-						<a href="/console/admin" class="menu-link" role="menuitem" onclick={closeUserMenu}>
+						<a href="/settings/admin" class="menu-link" role="menuitem" onclick={closeUserMenu}>
 							Admin
 						</a>
 					{/if}

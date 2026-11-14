@@ -21,7 +21,7 @@ import (
 //     connections by passing user_id into the store query.
 //
 //   - GET /api/v1/admin/mcp-audit            — admin full-table view.
-//     Backs the /console/admin/mcp-audit page. Pagination via
+//     Backs the /settings/admin/mcp-audit page. Pagination via
 //     limit + offset query params.
 //
 // The handlers are intentionally minimal — pagination, no filtering

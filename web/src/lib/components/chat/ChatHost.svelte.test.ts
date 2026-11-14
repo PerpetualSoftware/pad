@@ -234,7 +234,7 @@ describe('the inbox in the host', () => {
 	});
 
 	it('the console has no sidebar to subtract', async () => {
-		page.url = new URL('http://localhost/console');
+		page.url = new URL('http://localhost/');
 		openAt('/messages');
 		setWidth(1100);
 		const { container } = render(ChatHost);

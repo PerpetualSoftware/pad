@@ -1832,7 +1832,7 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
     <input type="text" id="connection-name" name="connection_name" maxlength="120"
            value="{{.SuggestedName}}" autocomplete="off"
            placeholder="e.g. Cursor on MacBook">
-    <p class="field-helper">So you can tell your connections apart later. Editable any time from <a href="/console/connected-apps">Settings → Connected apps</a>.</p>
+    <p class="field-helper">So you can tell your connections apart later. Editable any time from <a href="/settings/connected-apps">Settings → Connected apps</a>.</p>
   </fieldset>
 
   <fieldset>
@@ -1920,7 +1920,7 @@ button.primary:hover:not(:disabled) { background: #1e54d4; }
 
   <div class="footer-disclosure">
     By authorizing, you allow <strong>{{.ClientName}}</strong> to act on your behalf in the scopes above.
-    You can revoke or change permissions any time at <a href="/console/connected-apps">Settings → Connected apps</a>.
+    You can revoke or change permissions any time at <a href="/settings/connected-apps">Settings → Connected apps</a>.
   </div>
 
   <p class="allow-helper" id="allow-helper">Pick at least one workspace, or switch to "All my workspaces."</p>

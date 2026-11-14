@@ -4668,7 +4668,7 @@
 				<div class="empty-icon">🔒</div>
 				<h2>This workspace isn't available</h2>
 				<p>It isn't available to you, or it no longer exists.</p>
-				<a class="empty-cta" href="/console">Back to your workspaces</a>
+				<a class="empty-cta" href="/">Back to your workspaces</a>
 			</div>
 		{:else if viewMode === 'calendar'}
    <CalendarView {collection} {wsSlug} basePath={`/${username}/${wsSlug}/${collSlug}`} config={calendarConfig} onConfigChange={changeCalendarConfig} onChooseFields={showCalendarFields}

@@ -129,7 +129,7 @@ describe('CLI sign-in approval page (TASK-2253)', () => {
 		await settle();
 		expect(screen.getByText('Authorized')).toBeTruthy();
 		const link = screen.getByRole('link', { name: 'Change your password' });
-		expect(link.getAttribute('href')).toBe('/console/settings');
+		expect(link.getAttribute('href')).toBe('/settings/account');
 	});
 
 	it('shows no context block when the server reported none (a session from before the migration)', async () => {

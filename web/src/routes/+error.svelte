@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isAccountShellPath } from '$lib/utils/isAccountShellPath';
 	// Root-level error page. Renders for any unhandled error or unmatched
 	// route (404) anywhere in the SvelteKit tree.
 	//
@@ -60,7 +61,7 @@
 			pathname.startsWith('/join/') ||
 			pathname.startsWith('/auth/cli/') ||
 			pathname.startsWith('/s/') ||
-			pathname.startsWith('/console')
+			isAccountShellPath(pathname)
 		);
 	});
 

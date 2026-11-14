@@ -26,7 +26,7 @@ const BROWSER_UA =
 const PASSWORD = 'Playwright-NoCommerce-2026!';
 
 const COMMERCE_LINKS =
-	'a[href*="/console/billing"], a[href*="/billing/portal"], a[href*="stripe.com"], a[href*="/pricing"], a[href^="mailto:info@"]';
+	'a[href*="/settings/billing"], a[href*="/billing/portal"], a[href*="stripe.com"], a[href*="/pricing"], a[href^="mailto:info@"]';
 const COMMERCE_COPY = /Upgrade to Pro|View Plans|Manage Billing|Compare plans|coming soon/i;
 
 async function register(baseURL: string, adminToken: string, tag: string): Promise<string> {
@@ -109,19 +109,23 @@ for (const leg of [
 			await openAsCloudUser(page, email);
 
 			// Settings: the Plan card renders in both; its buttons only in the browser.
-			await page.goto('/console/settings');
+			await page.goto('/settings/account');
 			await expect(page.getByRole('heading', { name: 'Plan', exact: true })).toBeVisible();
 			let seen = await commerceOn(page);
 			if (leg.shell) {
+				// Both the Settings Billing tab and the Plan card link are gated off.
 				expect(seen).toEqual({ links: 0, copy: false });
 			} else {
-				// the settings card's Upgrade button and the console nav's Billing link
-				expect(seen.links).toBeGreaterThanOrEqual(2);
+				// Exactly 2: the Settings Billing tab plus the free Plan card's
+				// Upgrade link (Manage Billing replaces it for Pro; it is not extra).
+				expect(seen.links).toBe(2);
+				await expect(page.locator('.settings-tabs a[href="/settings/billing"]')).toBeVisible();
+				await expect(page.locator('#plan a[href="/settings/billing"]')).toBeVisible();
 				expect(seen.copy).toBe(true);
 			}
 
 			// Billing, by deep link: plan and limits only in the app.
-			await page.goto('/console/billing');
+			await page.goto('/settings/billing');
 			await expect(page.getByRole('heading', { name: 'Current Plan' })).toBeVisible();
 			seen = await commerceOn(page);
 			if (leg.shell) {
@@ -139,7 +143,7 @@ for (const leg of [
 
 			// The checkout return deep links: web-checkout states, dropped in the app.
 			for (const q of ['success', 'cancelled']) {
-				await page.goto(`/console/billing?checkout=${q}`);
+				await page.goto(`/settings/billing?checkout=${q}`);
 				await expect(page.getByRole('heading', { name: 'Current Plan' })).toBeVisible();
 				const banner = page.locator('.upgrade-banner');
 				if (leg.shell) {
@@ -152,7 +156,7 @@ for (const leg of [
 
 			// A plan-limit refusal: the prompt states the limit; only the browser
 			// adds the upgrade. It is the create dialog's inline prompt (TASK-3601).
-			await page.goto('/console');
+			await page.goto('/');
 			await page.getByRole('button', { name: 'Create Workspace', exact: true }).click();
 			await page.getByPlaceholder('Workspace name').fill('Over the limit');
 			await Promise.all([

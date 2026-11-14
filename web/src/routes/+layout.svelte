@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isAccountShellPath } from '$lib/utils/isAccountShellPath';
 	import { purgeNotUser } from '$lib/chat/chatRecords';
 	import { modKeyLabel } from '$lib/utils/platform';
 	import '../app.css';
@@ -78,7 +79,7 @@
 		|| page.url.pathname.startsWith('/auth/cli/')
 	);
 	let isSharePage = $derived(page.url.pathname.startsWith('/s/'));
-	let isConsolePage = $derived(page.url.pathname.startsWith('/console'));
+	let isConsolePage = $derived(isAccountShellPath(page.url.pathname));
 	// Exactly /messages or below it: /messagesfoo is not the chat inbox.
 	let isMessagesPage = $derived(
 		page.url.pathname === '/messages' || page.url.pathname.startsWith('/messages/')
@@ -274,7 +275,7 @@
 	$effect(() => {
 		// Load workspaces once auth is resolved and we're on an app page.
 		// This runs after onMount AND on subsequent navigation (e.g., post-login
-		// when the user moves from /login → /console → /{user}/{workspace}),
+		// when the user moves from /login → / → /{user}/{workspace}),
 		// which a one-shot onMount would miss. Fixes BUG-584.
 		//
 		// We gate on (authenticated || authLoadFailed) rather than !isAuthPage
@@ -434,8 +435,8 @@
 		Console pages (and /messages on a phone, the chat inbox, which has no
 		workspace shell there) render their own chrome and bypass the app shell
 		below, but they still need the global CreateWorkspaceModal +
-		toast surface — the /console "Create Workspace" CTA and the
-		/console/new redirect (TASK-1529) both fire
+		toast surface — the / "Create Workspace" CTA and the
+		/?openCreate=1 redirect (TASK-1529) both fire
 		`uiStore.openCreateWorkspace()`, which is a no-op unless the
 		modal is actually mounted somewhere in the tree.
 

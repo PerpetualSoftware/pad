@@ -76,7 +76,7 @@ async function connectAndListTools(page: Page, fixture: SuiteFixture) {
 	await expect(dialog).not.toContainText('Sign in with your Pad');
 	await expect(dialog.getByTestId('connect-pat-settings-link')).toHaveAttribute(
 		'href',
-		'/console/settings#api-tokens'
+		'/settings/account#api-tokens'
 	);
 
 	const expectedURL = `${fixture.baseURL}/mcp`;

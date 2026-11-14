@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { DEFAULT_REDIRECT, validateRedirect } from './redirect';
+import { DEFAULT_REDIRECT, validateRedirect, redirectQueryFragment, postSignupTarget } from './redirect';
 
 // Regression pins for the open-redirect guard in validateRedirect (BUG-1929
 // follow-up). A bare `startsWith('/')` check is not enough — these
@@ -24,4 +24,16 @@ describe('validateRedirect — hostile input rejection', () => {
 	it('still accepts a legitimate same-origin path', () => {
 		expect(validateRedirect('/join/abc123')).toBe('/join/abc123');
 	});
+});
+
+// Default destinations must not be sent to the hosted signup service.
+it.each(['/', '/console', '/console/'])('omits the default %s and lands signup in its new workspace', (target) => {
+ expect(redirectQueryFragment(target)).toBe('');
+ expect(redirectQueryFragment(target, '&')).toBe('');
+ expect(postSignupTarget(target, { workspace_path: '/ada/work' })).toBe('/ada/work');
+ expect(postSignupTarget('/', { workspace_path: target })).toBe('/');
+});
+it('uses root as the default and forwards a real destination', () => {
+ expect(DEFAULT_REDIRECT).toBe('/');
+ expect(redirectQueryFragment('/settings/account')).toBe('?redirect=%2Fsettings%2Faccount');
 });

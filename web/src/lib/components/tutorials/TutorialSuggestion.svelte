@@ -42,14 +42,14 @@
 {#if visible}
 	<aside class="suggestion" aria-label="Suggested tutorial">
 		{#if inApp && entry?.poster}
-			<a class="thumb" href={`/console/tutorials/${encodeURIComponent(slug)}`} tabindex="-1" aria-hidden="true">
+			<a class="thumb" href={`/tutorials/${encodeURIComponent(slug)}`} tabindex="-1" aria-hidden="true">
 				<img src={entry.poster} alt="" width="160" height="90" loading="lazy" decoding="async" />
 			</a>
 		{/if}
 		<div class="body">
 			<p class="lead">{lead} Watch a short tutorial:</p>
 			{#if inApp && entry}
-				<a class="title" href={`/console/tutorials/${encodeURIComponent(slug)}`}>
+				<a class="title" href={`/tutorials/${encodeURIComponent(slug)}`}>
 					{entry.title}
 				</a>
 				<span class="meta">{formatDuration(entry.seconds ?? 0)}</span>

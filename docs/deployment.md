@@ -1218,7 +1218,7 @@ access tokens only, and every OAuth client failed with nothing in the log
 #### Turning it on
 
 An admin turns MCP on and off at runtime, with no restart: in the console
-under **Admin → Settings → MCP for agents** (check **Enable MCP**, then
+under **Admin → Instance → MCP for agents** (check **Enable MCP**, then
 **Save MCP Settings**), or through the API with an admin's personal API token:
 
 ```bash
@@ -1246,7 +1246,7 @@ The auth methods follow from the scheme of the issuer URL:
   API token works too.
 - **http:** personal API tokens only. Every OAuth route and discovery document
   answers `404`, and `/mcp`'s `401` names no authorization server. Mint a token
-  in **Console → Settings → API Tokens** and give the client
+  in **Settings → Account → API tokens** and give the client
   `Authorization: Bearer <token>`.
 
 The OAuth server is built at startup, and only when the issuer URL is https.

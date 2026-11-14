@@ -78,7 +78,7 @@
 		</Button>
 		<Menu open={open === 'view'} {trigger} mode="portal" width={260} sheetOnMobile sheetMenu sheetTitle="View options" ariaLabel="View options" onclose={() => open = null}>
 			<MenuItem checked={showCompleted} onclick={() => pick(() => onshowcompleted(!showCompleted))}>Show completed</MenuItem>
-			<MenuItem href="/console/settings" hint={zone}>Time zone</MenuItem>
+			<MenuItem href="/settings/account" hint={zone}>Time zone</MenuItem>
 		</Menu>
 	{/snippet}
 	<div class="toolbar">
@@ -90,7 +90,7 @@
 		</Button>
 		<Button onclick={ontoday}>Today</Button>
 		<h2 class="period" tabindex="-1" bind:this={heading}>{period}</h2>
-		{#if !mobile}<a class="zone" href="/console/settings">{zone}</a>{/if}
+		{#if !mobile}<a class="zone" href="/settings/account">{zone}</a>{/if}
 		<span class="spacer"></span>
 		{#if mobile}
 			<Button aria-label={`Range: ${rangeLabel}`} aria-haspopup="menu" aria-expanded={open === 'range'} onclick={event => toggle('range', event)}>

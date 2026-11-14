@@ -76,7 +76,7 @@
 					Apps are not available here right now.
 				{:else}
 					A server admin has to enable apps before a workspace can install them. Ask your admin to turn them on under
-					Console → Admin → Settings → Apps.
+					Settings → Admin → Instance → Apps.
 				{/if}
 			</p>
 		</div>

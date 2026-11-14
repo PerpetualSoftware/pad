@@ -30,7 +30,7 @@
 	let userEmail = $derived(authStore.user?.email ?? '');
 
 	let connectOpen = $state(false);
-	let onAgenda = $derived(page.url.pathname.startsWith('/console/agenda'));
+	let onAgenda = $derived(page.url.pathname === '/agenda' || page.url.pathname.startsWith('/agenda/'));
 
 	// Theme toggle — mirrors the app's mechanism (key 'pad-theme', data-theme).
 	let currentTheme = $state<'dark' | 'light'>('dark');
@@ -102,7 +102,7 @@
 				<a
 					class="row"
 					class:active={onAgenda}
-					href="/console/agenda"
+					href="/agenda"
 					aria-current={onAgenda ? 'page' : undefined}
 					onclick={onclose}
 				>
@@ -110,7 +110,7 @@
 					<span class="row-label">Agenda</span>
 					<span class="row-chev" aria-hidden="true">›</span>
 				</a>
-				<a class="row" href="/console/settings" onclick={onclose}>
+				<a class="row" href="/settings/account" onclick={onclose}>
 					<span class="row-icon" aria-hidden="true">⚙️</span>
 					<span class="row-label">Account settings</span>
 					<span class="row-chev" aria-hidden="true">›</span>
@@ -119,21 +119,21 @@
 					{#snippet lead()}<span class="row-icon" aria-hidden="true">💬</span>{/snippet}
 					{#snippet trail()}<span class="row-chev" aria-hidden="true">›</span>{/snippet}
 				</ChatLink>
-				<a class="row" href="/console" onclick={onclose}>
+				<a class="row" href="/" onclick={onclose}>
 					<span class="row-icon" aria-hidden="true">🗂️</span>
 					<span class="row-label">Workspaces</span>
 					<span class="row-chev" aria-hidden="true">›</span>
 				</a>
 				<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
 				{#if authStore.commerceAllowed}
-					<a class="row" href="/console/billing" onclick={onclose}>
+					<a class="row" href="/settings/billing" onclick={onclose}>
 						<span class="row-icon" aria-hidden="true">💳</span>
 						<span class="row-label">Billing</span>
 						<span class="row-chev" aria-hidden="true">›</span>
 					</a>
 				{/if}
 				{#if authStore.user?.role === 'admin'}
-					<a class="row" href="/console/admin" onclick={onclose}>
+					<a class="row" href="/settings/admin" onclick={onclose}>
 						<span class="row-icon" aria-hidden="true">🛡️</span>
 						<span class="row-label">Admin</span>
 						<span class="row-chev" aria-hidden="true">›</span>

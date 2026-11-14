@@ -933,7 +933,7 @@
 		// Capture identity before any redirect — the Undo toast fires after
 		// we've navigated away, so its callback must close over the deleted
 		// workspace's slug/name/owner rather than the reactive page params
-		// (which change once /console loads).
+		// (which change once / loads).
 		const deletedSlug = wsSlug;
 		const deletedName = wsName;
 		const owner = username;
@@ -951,7 +951,7 @@
 			if (!identityHeld(epochAtDelete)) return;
 			// Longer duration + inline Undo so the user has time to reverse a
 			// mistaken delete. The toast store is global, so this survives the
-			// post-delete redirect to /console. Undo restores the soft-deleted
+			// post-delete redirect to /. Undo restores the soft-deleted
 			// workspace (still inside its 30-day purge window).
 			toastStore.show(`Workspace "${deletedName}" deleted`, 'success', 12000, undefined, {
 				label: 'Undo',
@@ -967,7 +967,7 @@
 					undoDeleteWorkspace(deletedSlug, deletedName, owner, epochAtDelete);
 				}
 			});
-			goto('/console');
+			goto('/');
 		} catch {
 			if (!identityHeld(epochAtDelete)) return;
 			toastStore.show('Failed to delete workspace', 'error');
@@ -1044,7 +1044,7 @@
 			<h1>Workspace settings</h1>
 			<p class="section-note">
 				For this workspace and everyone in it. Your own profile, password and sign-in are in
-				<a href="/console/settings">Account settings</a>.
+				<a href="/settings/account">Account settings</a>.
 			</p>
 		</header>
 

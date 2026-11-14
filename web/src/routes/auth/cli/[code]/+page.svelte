@@ -238,10 +238,10 @@
 			<p class="subtitle">Authorized</p>
 			<p class="success-message">CLI session authorized. You can close this tab.</p>
 			<p class="not-you">
-				Not you? <a href="/console/settings">Change your password</a>. That signs out every other session,
+				Not you? <a href="/settings/account">Change your password</a>. That signs out every other session,
 				including this one.
 			</p>
-			<a href="/console" class="primary-link">Go to your workspaces</a>
+			<a href="/" class="primary-link">Go to your workspaces</a>
 		{:else if status === 'denied'}
 			<p class="subtitle">Request denied</p>
 			<p class="success-message">

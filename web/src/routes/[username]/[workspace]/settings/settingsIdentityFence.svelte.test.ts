@@ -317,7 +317,7 @@ describe('BUG-3006: settings commits are fenced on the signed-in identity', () =
 	 *
 	 * This is the callback BUG-3006 calls the worst case, and it is the only one
 	 * on the page that outlives its own page: `handleDeleteWorkspace` navigates
-	 * to /console two lines after showing the toast, and the toast store is
+	 * to / two lines after showing the toast, and the toast store is
 	 * global, so the callback is still clickable in whatever the next user is
 	 * looking at.
 	 */

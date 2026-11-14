@@ -1046,7 +1046,7 @@
 			<p>
 				This workspace doesn't exist, or {authStore.user?.email ?? 'your account'} doesn't have access to it.
 			</p>
-			<a class="dash-not-found-link" href="/console">Go to your workspaces</a>
+			<a class="dash-not-found-link" href="/">Go to your workspaces</a>
 		</div>
 	{:else if dashError}
 		<!-- Transient dashboard load failure (network / 5xx / 429) —

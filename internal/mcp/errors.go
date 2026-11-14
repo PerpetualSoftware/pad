@@ -1782,7 +1782,7 @@ func hint403For(code, bodyMsg, route string) string {
 // The upgrade_url is already in the Details blob; the hint surfaces it in
 // prose so agents that only read Hint (not Details) still get the destination.
 func planLimitHintFor(bodyMsg, route string) string {
-	parts := []string{"Upgrade to Pro at /console/billing to remove this limit."}
+	parts := []string{"Upgrade to Pro at /settings/billing to remove this limit."}
 	if route != "" {
 		parts = append(parts, fmt.Sprintf("Route: %s.", route))
 	}

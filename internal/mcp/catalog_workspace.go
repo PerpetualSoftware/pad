@@ -154,7 +154,7 @@ Actions:
                When that grant has may_create_workspaces=FALSE the call is
                REFUSED with a 403 and no workspace is created (IDEA-2756);
                retrying will not help. Only the USER can lift it: re-authorize, or enable the flag
-               on the existing connection at /console/connected-apps.
+               on the existing connection at /settings/connected-apps.
   claim      — Redeem a 6-digit claim code to add a workspace to the calling
                OAuth connection's allow-list.
                Required: workspace, code.

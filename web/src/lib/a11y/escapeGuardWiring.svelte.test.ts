@@ -413,7 +413,7 @@ describe('route-shaped driver — Escape reaches the stack, nav keys do not act'
  * otherwise cancel the dialog and mutate the layer underneath it.
  *
  * The console shell has a real behavioural suite
- * (`routes/console/consoleShellEscape.svelte.test.ts`). The workspace GRAPH
+ * (the account frame’s `consoleShellEscape.svelte.test.ts`). The workspace GRAPH
  * route does not: it is a 3d-force-graph host with a WebGL renderer, which
  * jsdom cannot mount, so this source contract — deletion-proof, comment-
  * stripped, scoped to the handler — is the coverage it gets here. Its
@@ -422,7 +422,7 @@ describe('route-shaped driver — Escape reaches the stack, nav keys do not act'
 describe('other global Escape owners carry the arbitration guard', () => {
 	const OTHERS = [
 		'../../routes/[username]/[workspace]/graph/+page.svelte',
-		'../../routes/console/+layout.svelte',
+		'../../routes/(console)/+layout.svelte',
 	] as const;
 
 	it.each(OTHERS)('%s guards its window keydown handler', (relative) => {

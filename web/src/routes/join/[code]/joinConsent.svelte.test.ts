@@ -201,7 +201,7 @@ describe('/join/[code] asks before joining (BUG-2136)', () => {
 		await settle();
 		expect(mocks.goto).not.toHaveBeenCalled();
 		expect(document.querySelector('[role="alert"]')?.textContent).toContain('This invitation is no longer valid');
-		const toPad = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).find((a) => a.getAttribute('href') === '/console');
+		const toPad = Array.from(document.querySelectorAll<HTMLAnchorElement>('a')).find((a) => a.getAttribute('href') === '/');
 		expect(toPad).toBeTruthy();
 	});
 

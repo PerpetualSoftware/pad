@@ -1,10 +1,10 @@
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
 // TASK-4044 / TASK-4315: /messages is a standalone page on a phone and a page
-// inside the Pad shell on a desktop. The root layout is the shell for every other
-// route, so this pins both halves: on a desktop /messages and /messages/3 get the
-// Sidebar, the TopBar and one <main>; on a phone they get none of them; /console
-// never does; a workspace route and /messagesfoo always do.
+// inside the Pad shell on a desktop. Account routes supply their own frame.
+// On a desktop /messages and /messages/3 get the Sidebar, the TopBar and one
+// <main>; on a phone they get none of them. Root uses the account frame;
+// a workspace route and /messagesfoo use the workspace shell.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { createRawSnippet, tick } from 'svelte';
@@ -107,8 +107,8 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 		});
 	});
 
-	it('control: /console renders its child and not the app shell', async () => {
-		await mountAt('/console');
+	it('control: / renders its child and not the app shell', async () => {
+		await mountAt('/');
 		expect({ child: hasChild(), sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({
 			child: true,
 			sidebar: false,
@@ -116,8 +116,8 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 		});
 	});
 
-	it('control: a non-workspace shell page (/) still renders the Sidebar and the TopBar', async () => {
-		await mountAt('/');
+	it('control: /messagesfoo still renders the Sidebar and the TopBar', async () => {
+		await mountAt('/messagesfoo');
 		expect({ sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({ sidebar: true, topbar: true });
 	});
 
@@ -155,7 +155,7 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 
 	it('has-mobile-topbar is on for a mobile shell page and off on /messages', async () => {
 		vp.mobile = true;
-		await mountAt('/');
+		await mountAt('/messagesfoo');
 		expect(document.body.classList.contains('has-mobile-topbar')).toBe(true);
 		cleanup();
 		document.body.classList.remove('has-mobile-topbar');
@@ -165,7 +165,7 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 	});
 });
 
-it.each(['/console', '/'])('TASK-4101: %s starts browser timezone sync', async (path) => {
+it.each(['/', '/settings/account'])('TASK-4101: %s starts browser timezone sync', async (path) => {
 	api.auth.session.mockResolvedValue({ authenticated: true, user: { id: `timezone-${path}`, name: 'Pat', email: 'pat@example.com', timezone: null } });
 	await mountAt(path);
 	expect(api.auth.setTimezoneIfUnset).toHaveBeenCalledOnce();

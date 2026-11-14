@@ -3,7 +3,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
 
 /**
  * TASK-4044 PR 3c (ruling 687eb810, Option C): the Chat entries on the
- * workspace sidebar and on the /console nav bar, against the REAL server.
+ * workspace sidebar and on the / nav bar, against the REAL server.
  *
  * Layout is the question (the sidebar footer row once overflowed on desktop,
  * comment 89264cdd), and jsdom does no layout, so this runs in a real engine at
@@ -98,29 +98,28 @@ test('E9: the sidebar Chat entry in the mobile drawer', async ({ page, request, 
 	await noHorizontalOverflow(page, 'aside.sidebar');
 });
 
-test('E9: the /console nav shows the Chat link with the same badge', async ({ page, request, fixture }, testInfo) => {
+test('E9: the / nav shows the Chat link with the same badge', async ({ page, request, fixture }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
 	await seedUnread(request, fixture);
 	await page.setViewportSize({ width: 1280, height: 900 });
-	await page.goto('/console');
+	await page.goto('/');
 	const entry = '.console-nav .nav-links a[href="/messages"]';
 	await expect(page.locator(entry)).toBeVisible();
 	await expect(page.locator(entry)).toHaveText(/Chat/);
 	await expectBadgeMatchesServer(page, request, fixture, entry);
 	await noHorizontalOverflow(page, '.console-nav');
 	await noHorizontalOverflow(page, '.console-nav .nav-links');
-	// Sits right after "Agenda", which follows "Needs you".
+	// Account navigation keeps this order, including Settings after Chat.
 	const hrefs = await page.locator('.console-nav .nav-links a').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
-	expect(hrefs.indexOf('/console/agenda')).toBe(hrefs.indexOf('/console/needs') + 1);
-	expect(hrefs.indexOf('/messages')).toBe(hrefs.indexOf('/console/agenda') + 1);
+	expect(hrefs).toEqual(['/', '/needs', '/agenda', '/messages', '/settings/account']);
 });
 
-test('E9: the /console Chat link works from the mobile menu', async ({ page, request, fixture }, testInfo) => {
+test('E9: the / Chat link works from the mobile menu', async ({ page, request, fixture }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project drives both widths');
 	await seedUnread(request, fixture);
 	// The console menu collapses at max-width 640px; the sidebar's drawer at 768px.
 	await page.setViewportSize({ width: 600, height: 900 });
-	await page.goto('/console');
+	await page.goto('/');
 	await page.locator('.mobile-hamburger').click();
 	const entry = '.console-nav .nav-links.open a[href="/messages"]';
 	await expect(page.locator(entry)).toBeVisible();

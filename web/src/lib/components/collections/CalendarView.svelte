@@ -127,7 +127,7 @@
  {:else if applied.filterProblem}
   <p role="alert">{applied.filterProblem}</p><Button onclick={onFilters}>Filters</Button><Button onclick={onList}>Use list</Button>
  {:else}
-  {#if error}<div role="alert"><p>{error}</p>{#if error.includes('time zone')}<a href="/console/settings">Time zone settings</a>{:else}<Button onclick={() => retry++}>Try again</Button>{/if}</div>{/if}
+  {#if error}<div role="alert"><p>{error}</p>{#if error.includes('time zone')}<a href="/settings/account">Time zone settings</a>{:else}<Button onclick={() => retry++}>Try again</Button>{/if}</div>{/if}
   {#if loading && !data}<ContentSkeleton />{/if}
   {#if data}
    <CalendarNotice {data} onfilters={onFilters} onlist={onList} onretry={() => retry++} />

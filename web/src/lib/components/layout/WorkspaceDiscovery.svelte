@@ -3,7 +3,7 @@
 	// workspaces that are NOT open as tabs, create one, and restore a
 	// recently deleted one. Since U3 the bar shows only the open set, so this
 	// is how a workspace outside it is reached without going through
-	// /console.
+	// /.
 	//
 	// A combobox over a listbox, not a Menu: focus stays in the search input
 	// and the arrow keys move the active option (aria-activedescendant), which

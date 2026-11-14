@@ -1606,12 +1606,12 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		trimmed := strings.ToLower(strings.TrimSpace(*input.Username))
 		input.Username = &trimmed
 
-		if err := ValidateUsername(trimmed); err != nil {
-			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
-			return
-		}
-		// Check uniqueness (skip if unchanged)
+		// Existing usernames remain valid even if they have since become reserved.
 		if trimmed != user.Username {
+			if err := ValidateUsername(trimmed); err != nil {
+				writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+				return
+			}
 			existing, err := s.store.GetUserByUsername(trimmed)
 			if err != nil {
 				writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check username")

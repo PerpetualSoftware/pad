@@ -88,7 +88,7 @@
 			await tabsStore.open(slug, true).catch(() => {});
 			if (!isSameIdentity()) return;
 			// A workspace whose owner has no username has no path to land on.
-			await goto(owner && slug ? `/${owner}/${slug}` : '/console');
+			await goto(owner && slug ? `/${owner}/${slug}` : '/');
 		} finally {
 			acceptingId = null;
 		}

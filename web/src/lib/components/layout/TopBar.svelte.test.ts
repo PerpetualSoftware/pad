@@ -257,7 +257,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		expect(mocks.goto).toHaveBeenCalledWith('/u/beta');
 	});
 
-	it('closing the last tab lands on /console with "+" highlighted', async () => {
+	it('closing the last tab lands on / with "+" highlighted', async () => {
 		await mountWith([BETA]);
 		mocks.tabs.close.mockResolvedValueOnce(answer([]));
 		mocks.goto.mockImplementationOnce(async (url: string) => {
@@ -265,7 +265,7 @@ describe('TopBar tab bar: closing (PLAN-3002 Q2, Q3)', () => {
 		});
 		closeBtn('beta').click();
 		await settleClose();
-		expect(mocks.goto).toHaveBeenCalledWith('/console');
+		expect(mocks.goto).toHaveBeenCalledWith('/');
 		expect(uiStore.addWorkspaceHighlighted).toBe(true);
 	});
 

@@ -34,8 +34,8 @@ identityGateSuite({
 			toggleAccessPanel: { reviewed: 'c4d44ff12fa0', why: `${ENTRY}; the finally clears the panel's loading flag. BUG-3698: both arms also require accessPanelHeld (the panel generation, member and workspace the read was made for), and the finally clears loading only for the current generation` },
 			saveCollectionAccess: { reviewed: 'da703725bdec', why: `${ENTRY}, the revert included; the finally clears its own busy flag. BUG-3698: the toast follows the identity check, and the form refresh and the revert also require accessPanelHeld, so they never land in another member's panel` },
 			handleDeleteWorkspace: {
-				reviewed: 'f9b3d9cf8e03',
-				why: 'identityHeld(epochAtDelete) after the delete on both arms; the Undo callback it hands the global toast compares the epoch at click time against the one captured at delete time',
+				reviewed: '9a3c67cefe81',
+				why: 'identityHeld(epochAtDelete) after the delete on both arms; the Undo callback it hands the global toast compares the epoch at click time against the one captured at delete time; navigation now lands at the root workspace list, with both identity checks unchanged',
 			},
 			undoDeleteWorkspace: { reviewed: 'd9f84d9f668c', why: "identityHeld(epochAtDelete), the caller's delete-time epoch, after the restore on both arms" },
 		},

@@ -42,7 +42,7 @@ test.describe('TASK-3515: text fields are named, not just placeholdered', () => 
 	});
 
 	test('account settings', async ({ page }) => {
-		await page.goto('/console/settings');
+		await page.goto('/settings/account');
 		await expect(page.getByRole('textbox', { name: 'Token name' })).toBeVisible();
 		expect(await labelViolations(page, 'main')).toEqual([]);
 	});

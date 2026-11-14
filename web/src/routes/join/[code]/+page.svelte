@@ -235,7 +235,7 @@
 	// accept or a signup with this invitation code (BUG-3284); the workspace
 	// layout opens it as an ephemeral tab. The list is reloaded first so the
 	// new workspace is in it when the layout resolves it. A server that
-	// predates the slug in the response lands on /console.
+	// predates the slug in the response lands on /.
 	//
 	// The session is re-read first, as /login does after signing in: a signup
 	// or sign-in from this page leaves the client's auth state saying "signed
@@ -255,7 +255,7 @@
 		const dest =
 			joined?.workspace_slug && joined.owner_username
 				? `/${encodeURIComponent(joined.owner_username)}/${encodeURIComponent(joined.workspace_slug)}`
-				: '/console';
+				: '/';
 		if (!current()) return;
 		await goto(dest, { replaceState: true });
 	}
@@ -505,7 +505,7 @@
 			<p class="subtitle">Declining invitation...</p>
 		{:else if status === 'declined'}
 			<p class="subtitle">Invitation declined. You were not added to the workspace.</p>
-			<a href="/console" class="link">Go to Pad</a>
+			<a href="/" class="link">Go to Pad</a>
 		{:else if status === 'setup'}
 			<SetupRequiredNotice
 				{setupMethod}
@@ -515,19 +515,19 @@
 			/>
 		{:else if status === 'not-joined'}
 			<p class="subtitle error-text" role="alert">{errorMsg}</p>
-			<a href="/console" class="link">Go to Pad</a>
+			<a href="/" class="link">Go to Pad</a>
 		{:else if status === 'invalid'}
 			<p class="subtitle error-text" role="alert" data-testid="join-invalid">
 				This invitation link is invalid or has expired.
 			</p>
 			<p class="hint">Ask the person who invited you to send a new one.</p>
-			<a href="/console" class="link">Go to Pad</a>
+			<a href="/" class="link">Go to Pad</a>
 		{:else if status === 'inviter-changed'}
 			<p class="subtitle error-text" role="alert" data-testid="join-inviter-changed">
 				The person who invited you can no longer grant access to this workspace.
 			</p>
 			<p class="hint">Ask a workspace owner to invite you again.</p>
-			<a href="/console" class="link">Go to Pad</a>
+			<a href="/" class="link">Go to Pad</a>
 		{:else if status === 'error'}
 			<p class="subtitle error-text" role="alert">{errorMsg}</p>
 			<!-- Back to this invitation after signing in (TASK-2251): the code

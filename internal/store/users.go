@@ -1861,17 +1861,19 @@ func GenerateUsername(name, email string) string {
 }
 
 // EnsureUniqueUsername takes a candidate username and returns a unique variant
-// by appending -2, -3, etc. if the candidate already exists in the database.
+// by appending -2, -3, etc. if the candidate is reserved or already exists.
 func (s *Store) EnsureUniqueUsername(base string) (string, error) {
 	username := base
 	suffix := 2
 	for {
-		existing, err := s.GetUserByUsername(username)
-		if err != nil {
-			return "", fmt.Errorf("check username uniqueness: %w", err)
-		}
-		if existing == nil {
-			return username, nil
+		if !IsReservedUsername(username) {
+			existing, err := s.GetUserByUsername(username)
+			if err != nil {
+				return "", fmt.Errorf("check username uniqueness: %w", err)
+			}
+			if existing == nil {
+				return username, nil
+			}
 		}
 		username = fmt.Sprintf("%s-%d", base, suffix)
 		suffix++
@@ -1928,7 +1930,7 @@ func (s *Store) backfillUsernames() error {
 
 		// Handle collisions: append -2, -3, etc.
 		suffix := 2
-		for existing[username] {
+		for existing[username] || IsReservedUsername(username) {
 			username = fmt.Sprintf("%s-%d", base, suffix)
 			suffix++
 		}

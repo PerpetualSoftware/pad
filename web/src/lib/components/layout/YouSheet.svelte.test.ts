@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 
-const h = vi.hoisted(() => ({ chatOn: true, path: '/console' }));
+const h = vi.hoisted(() => ({ chatOn: true, path: '/' }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$app/state', () => ({
 	page: {
@@ -48,7 +48,7 @@ import { chatStore } from '$lib/stores/chat.svelte';
 beforeEach(() => {
 	cleanup();
 	h.chatOn = true;
-	h.path = '/console';
+	h.path = '/';
 	chatStore.unreadTotal = 4;
 });
 afterEach(() => {
@@ -72,7 +72,7 @@ describe('YouSheet chat row (TASK-4044)', () => {
 		render(YouSheet, { props: { open: true, onclose: vi.fn() } });
 		await tick();
 		flushSync();
-		expect(document.querySelector('.rows a[href="/console/settings"]')).not.toBeNull();
+		expect(document.querySelector('.rows a[href="/settings/account"]')).not.toBeNull();
 		expect(document.querySelector('.rows a[href="/messages"]')).toBeNull();
 	});
 
@@ -109,7 +109,7 @@ describe('YouSheet agenda row (TASK-4526)', () => {
 		render(YouSheet, { props: { open: true, onclose } });
 		await tick();
 		flushSync();
-		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/console/agenda"]');
+		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/agenda"]');
 		expect(a).not.toBeNull();
 		expect(a?.classList.contains('row')).toBe(true);
 		expect(a?.textContent).toContain('Agenda');
@@ -120,13 +120,17 @@ describe('YouSheet agenda row (TASK-4526)', () => {
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
-	it('shows as the current page on the agenda route', async () => {
-		h.path = '/console/agenda';
+	it.each([
+		['/agenda', true],
+		['/agenda/day', true],
+		['/agendas/ws', false]
+	])('marks Agenda active on %s: %s', async (path, active) => {
+		h.path = path;
 		render(YouSheet, { props: { open: true, onclose: vi.fn() } });
 		await tick();
 		flushSync();
-		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/console/agenda"]')!;
-		expect(a.classList.contains('active')).toBe(true);
-		expect(a.getAttribute('aria-current')).toBe('page');
+		const a = document.querySelector<HTMLAnchorElement>('.rows a[href="/agenda"]')!;
+		expect(a.classList.contains('active')).toBe(active);
+		expect(a.getAttribute('aria-current')).toBe(active ? 'page' : null);
 	});
 });

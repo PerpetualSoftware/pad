@@ -246,7 +246,7 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 		}
 	});
 
-	test('closing the last tab lands on /console with its create action highlighted (Q2)', async ({ page, context, fixture }) => {
+	test('closing the last tab lands on / with its create action highlighted (Q2)', async ({ page, context, fixture }) => {
 		let world: World | undefined;
 		try {
 			world = await seed(fixture, ['Only']);
@@ -258,8 +258,8 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 			await page.goto(`/${account.username}/${only}`);
 			await expect(tabs(page)).toHaveCount(1);
 			await closeTab(page, only);
-			await expect(page).toHaveURL(/\/console$/);
-			// /console has no TopBar; its Create Workspace button is the "+".
+			await expect(page).toHaveURL((url) => url.pathname === '/');
+			// / has no TopBar; its Create Workspace button is the "+".
 			await expect(page.getByRole('button', { name: 'Create Workspace' }).first()).toHaveClass(/add-highlighted/);
 		} finally {
 			await teardown(world);
@@ -717,7 +717,7 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 
 			await page.goto(`/${account.username}/${home}`);
 			await expect(tabs(page)).toHaveCount(1);
-			await page.goto('/console/deleted-workspaces');
+			await page.goto('/settings/deleted-workspaces');
 			await page.getByRole('button', { name: /Restore/ }).first().click();
 			await expect.poll(() => serverTabs(account)).toContainEqual({ slug: gone, ephemeral: true });
 

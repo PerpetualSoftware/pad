@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { isAccountShellPath } from '$lib/utils/isAccountShellPath';
 	import { onMount, tick, untrack } from 'svelte';
 	import { onNavigate } from '$app/navigation';
 	import { page } from '$app/state';
@@ -58,7 +59,7 @@
 	const target = $derived(authStore.authenticated ? chatSurface.target : null);
 	// The console has no sidebar to subtract.
 	const sidebarShown = $derived(
-		!uiStore.isMobile && uiStore.sidebarOpen && !page.url.pathname.startsWith('/console')
+		!uiStore.isMobile && uiStore.sidebarOpen && !isAccountShellPath(page.url.pathname)
 	);
 	const phone = $derived(target !== null && uiStore.isMobile);
 	const docked = $derived(

@@ -193,7 +193,7 @@ describe('a deferred write that navigates returns its navigation', () => {
 	});
 
 	it('admin syncURL returns the goto', () => {
-		const t = read('routes/console/admin/+page.svelte');
+		const t = read('routes/(console)/settings/admin/+page.svelte');
 		const fn = t.slice(t.indexOf('function syncURL('));
 		expect(fn.slice(0, fn.indexOf('\n\t}\n'))).toMatch(/return goto\(/);
 	});

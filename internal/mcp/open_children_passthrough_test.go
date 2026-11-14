@@ -299,7 +299,7 @@ func TestClassifyHTTPStatus_PlanLimitPreservesCodeAndDetails(t *testing.T) {
 				"limit": 3,
 				"current": 3,
 				"plan": "free",
-				"upgrade_url": "/console/billing"
+				"upgrade_url": "/settings/billing"
 			}
 		}
 	}`)
@@ -334,8 +334,8 @@ func TestClassifyHTTPStatus_PlanLimitPreservesCodeAndDetails(t *testing.T) {
 	if got.Plan != "free" {
 		t.Errorf("plan: got %q, want free", got.Plan)
 	}
-	if got.UpgradeURL != "/console/billing" {
-		t.Errorf("upgrade_url: got %q, want /console/billing", got.UpgradeURL)
+	if got.UpgradeURL != "/settings/billing" {
+		t.Errorf("upgrade_url: got %q, want /settings/billing", got.UpgradeURL)
 	}
 }
 
@@ -367,7 +367,7 @@ func TestClassifyHTTPStatus_Generic403FallsToPermissionDenied(t *testing.T) {
 // ErrPlanLimitExceeded with the correct details — NOT a generic server_error.
 func TestClassifyExecError_PlanLimitMarkerLiftsStructuredPayload(t *testing.T) {
 	stderr := `Error: connecting to backend
-pad-structured-error/v1: {"error":{"code":"plan_limit_exceeded","message":"You've reached the 3-member limit on the free plan.","details":{"feature":"members_per_workspace","limit":3,"current":3,"plan":"free","upgrade_url":"/console/billing"}}}
+pad-structured-error/v1: {"error":{"code":"plan_limit_exceeded","message":"You've reached the 3-member limit on the free plan.","details":{"feature":"members_per_workspace","limit":3,"current":3,"plan":"free","upgrade_url":"/settings/billing"}}}
 item creation blocked: plan limit reached
 `
 	res := classifyExecError(context.Background(),
@@ -423,7 +423,7 @@ func TestClassifyExecError_PlanLimitWorkspaceCreate(t *testing.T) {
 	// Simulates stderr produced by WritePlanLimitError when workspace creation
 	// hits the workspaces cap for a free-tier user.
 	stderr := `Error: connecting to backend
-pad-structured-error/v1: {"error":{"code":"plan_limit_exceeded","message":"You've reached the 3-workspace limit on the free plan.","details":{"feature":"workspaces","limit":3,"current":3,"plan":"free","upgrade_url":"/console/billing"}}}
+pad-structured-error/v1: {"error":{"code":"plan_limit_exceeded","message":"You've reached the 3-workspace limit on the free plan.","details":{"feature":"workspaces","limit":3,"current":3,"plan":"free","upgrade_url":"/settings/billing"}}}
 workspace creation blocked: plan limit reached
 `
 	res := classifyExecError(context.Background(),
@@ -452,7 +452,7 @@ workspace creation blocked: plan limit reached
 	if got.Limit != 3 {
 		t.Errorf("limit: got %d, want 3", got.Limit)
 	}
-	if got.UpgradeURL != "/console/billing" {
-		t.Errorf("upgrade_url: got %q, want /console/billing", got.UpgradeURL)
+	if got.UpgradeURL != "/settings/billing" {
+		t.Errorf("upgrade_url: got %q, want /settings/billing", got.UpgradeURL)
 	}
 }

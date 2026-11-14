@@ -844,7 +844,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		//
 		// The cookie-borne web UI keeps the bypass because the UI
 		// shows the admin's chosen workspace explicitly and the
-		// /console/admin surface is the documented spot to act
+		// /settings/admin surface is the documented spot to act
 		// cross-workspace; the deliberate UI affordance + same-origin
 		// cookie binding make that a different threat model from the
 		// programmatic surfaces.

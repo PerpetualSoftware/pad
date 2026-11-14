@@ -125,7 +125,7 @@ const bar = () => document.querySelector('nav.bottom-nav[aria-label="Primary"]')
 
 describe('the compact bar outside a workspace', () => {
 	it.each([
-		['the console', '/console'],
+		['account settings', '/settings/account'],
 		['the workspace picker', '/'],
 		['a standalone /messages', '/messages'],
 		['a standalone thread', '/messages/3'],
@@ -147,13 +147,13 @@ describe('the compact bar outside a workspace', () => {
 	it('is not shown on a wide screen', async () => {
 		vp.mobile = false;
 		setWidth(1600);
-		await mountAt('/console');
+		await mountAt('/');
 		expect(bar()).toBeNull();
 	});
 
 	it('is not shown signed out', async () => {
 		api.auth.session.mockResolvedValue({ authenticated: false });
-		await mountAt('/console');
+		await mountAt('/');
 		expect(bar()).toBeNull();
 	});
 
@@ -163,7 +163,7 @@ describe('the compact bar outside a workspace', () => {
 	});
 
 	it.each([
-		['the console', '/console'],
+		['account settings', '/settings/account'],
 		['the workspace picker', '/'],
 	])('stays outside every inert region while the Chat sheet covers %s', async (_n, path) => {
 		await mountAt(path);
@@ -178,7 +178,7 @@ describe('the compact bar outside a workspace', () => {
 
 describe('<main> under the phone Chat sheet', () => {
 	it('is inert outside a workspace even though the sheet keeps a bottom nav live', async () => {
-		await mountAt('/');
+		await mountAt('/messagesfoo');
 		openChat();
 		await settle();
 		expect((document.querySelector('main.main-content') as HTMLElement).inert).toBe(true);

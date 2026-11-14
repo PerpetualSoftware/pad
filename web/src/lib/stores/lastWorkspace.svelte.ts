@@ -1,7 +1,7 @@
 // The workspace the user was last in, in memory only (TASK-4044). /messages is
 // outside any workspace, so its "Back" link needs to remember where the user
 // came from. A reload or a direct landing has nothing stored, and Back falls
-// back to /console. Never persisted: it is one account's navigation history.
+// back to /. Never persisted: it is one account's navigation history.
 import { authStore } from '$lib/stores/auth.svelte';
 
 export interface LastWorkspace {

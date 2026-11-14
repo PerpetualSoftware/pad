@@ -6,7 +6,7 @@
 	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 
 	// The entry to /messages (TASK-4044 PR 2a-ii, 3c). Three placements share it:
-	// the TopBar user menu, the You sheet and the /console nav bar; each passes
+	// the TopBar user menu, the You sheet and the / nav bar; each passes
 	// the class of its siblings. A parent's scoped styles do not reach into this
 	// element, so the parent styles it with :global(.<class>), and the lead/trail
 	// snippets carry the parent's own scope for its icon and chevron. Not the

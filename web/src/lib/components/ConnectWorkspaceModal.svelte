@@ -344,14 +344,14 @@
 		)
 	);
 
-	const CONNECTED_APPS_HREF = '/console/connected-apps';
+	const CONNECTED_APPS_HREF = '/settings/connected-apps';
 
 	// --- Personal API token path (PLAN-2310 DR-8) ----------------------------
 	//
 	// The token is minted in console settings, never here: minting needs an
 	// interactive session (BUG-2890) and the settings page is where tokens
 	// are listed and revoked. The configs carry a placeholder for it.
-	const TOKEN_SETTINGS_HREF = '/console/settings#api-tokens';
+	const TOKEN_SETTINGS_HREF = '/settings/account#api-tokens';
 	const TOKEN_PLACEHOLDER = 'YOUR_PAD_TOKEN';
 
 	type PatClient = 'claude-code' | 'cursor' | 'windsurf' | 'vscode' | 'claude-desktop';

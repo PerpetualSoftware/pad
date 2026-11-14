@@ -1,3 +1,5 @@
+import { isDefaultAccountTarget } from '$lib/utils/legacyConsoleRedirect';
+
 // Redirect-target validation + query-string helpers shared between
 // /login and /register. Both pages support a `?redirect=` query param
 // that lets the OAuth-server `/oauth/authorize` endpoint (or any
@@ -10,7 +12,7 @@
 // check but are treated by browsers (and most server-side redirect
 // handlers) as cross-origin destinations. Reject those explicitly.
 
-export const DEFAULT_REDIRECT = '/console';
+export const DEFAULT_REDIRECT = '/';
 
 /**
  * Path prefixes the Go server owns directly — these are NOT SvelteKit
@@ -104,9 +106,9 @@ export async function navigateToRedirectTarget(target: string): Promise<void> {
 /**
  * Validate the `redirect` query param and return a safe relative path.
  *
- * Returns DEFAULT_REDIRECT (`/console`) for missing, malformed, or
+ * Returns DEFAULT_REDIRECT (`/`) for missing, malformed, or
  * potentially-cross-origin values. Callers can compare the return
- * value against DEFAULT_REDIRECT to detect "no real redirect requested"
+ * value with isDefaultAccountTarget to detect "no real redirect requested"
  * without re-parsing.
  *
  * Beyond the literal `//` and `/\` prefixes, also reject any percent-encoded
@@ -146,7 +148,7 @@ export function redirectQueryFragment(
 	target: string,
 	separator: '?' | '&' = '?'
 ): string {
-	if (target === DEFAULT_REDIRECT) return '';
+	if (isDefaultAccountTarget(target)) return '';
 	return `${separator}redirect=${encodeURIComponent(target)}`;
 }
 
@@ -156,7 +158,7 @@ export function redirectQueryFragment(
  * any preserved deep link) or an invitation the signup accepted. Otherwise a
  * first signup lands in the workspace the server just created for it
  * (`workspace_path`), not on the console's workspace list. A path that fails
- * validation is ignored, as any redirect would be. An explicit `/console` is
+ * validation is ignored, as any redirect would be. An explicit `/` is
  * no destination either: this app never forwards the default (see
  * redirectQueryFragment), and the new workspace is where it would lead.
  */
@@ -164,7 +166,7 @@ export function postSignupTarget(
 	redirectTarget: string,
 	res: { workspace_path?: string; accepted_invitation?: unknown } | null | undefined,
 ): string {
-	if (redirectTarget !== DEFAULT_REDIRECT || !res || res.accepted_invitation) return redirectTarget;
+	if (!isDefaultAccountTarget(redirectTarget) || !res || res.accepted_invitation) return redirectTarget;
 	const landing = validateRedirect(res.workspace_path);
-	return landing === DEFAULT_REDIRECT ? redirectTarget : landing;
+	return isDefaultAccountTarget(landing) ? redirectTarget : landing;
 }

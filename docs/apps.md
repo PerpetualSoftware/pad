@@ -25,7 +25,7 @@ Neither token works on the normal `/api/v1` API, and no session or personal acce
 
 ## Prerequisites on the Pad server
 
-- **An admin must enable Apps.** On a self-hosted server it is off by default. An instance admin turns it on in **Console → Admin → Settings → Apps** (or `PUT /api/v1/admin/apps {"enabled": true}`). Until then the app API and the workspace's app routes answer `404`, except the workspace's apps list (`GET /api/v1/workspaces/{ws}/apps`), which answers `200` with `available: false`.
+- **An admin must enable Apps.** On a self-hosted server it is off by default. An instance admin turns it on in **Settings → Admin → Instance → Apps** (or `PUT /api/v1/admin/apps {"enabled": true}`). Until then the app API and the workspace's app routes answer `404`, except the workspace's apps list (`GET /api/v1/workspaces/{ws}/apps`), which answers `200` with `available: false`.
 - **The server needs an `https` public origin and an OAuth server.** Apps are available on a self-hosted server only when Apps is enabled and the server's OAuth issuer is `https`, because every app credential is an OAuth token. `GET /api/v1/admin/apps` reports `available` and `https_issuer`.
 - **Apps do not depend on the MCP setting.** `/oauth/authorize`, its consent step and `/oauth/token` are served for install clients even when MCP is off. Other OAuth endpoints (dynamic registration, revocation, introspection, the discovery document) still follow the MCP setting.
 - **Pad Cloud is operator-managed.** Apps are always available on Pad Cloud, and the admin settings cannot be changed there (`403 managed_by_operator`).

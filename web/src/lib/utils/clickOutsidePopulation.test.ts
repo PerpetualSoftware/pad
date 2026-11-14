@@ -16,7 +16,7 @@ const POPULATION = [
 	'lib/components/collections/BoardView.svelte',
 	'lib/components/common/EmojiPickerButton.svelte',
 	'lib/components/timeline/ReactionPicker.svelte',
-	'routes/console/+layout.svelte',
+	'routes/(console)/+layout.svelte',
 ];
 
 // A RETIRED member. TopBar's member was the workspace overflow menu, deleted

@@ -245,7 +245,7 @@ func TestRequireWorkspaceAccess_AdminCLISessionBearer_DeniedOnNonMember(t *testi
 // preserved web-UI affordance: when the admin authenticates with a
 // session cookie (no API token), the platform-admin global bypass still
 // fires and grants owner-role access to any workspace. This is the
-// expected behavior for the /console/admin pages and the workspace
+// expected behavior for the /settings/admin pages and the workspace
 // switcher, and the BUG-1616 fix must NOT regress it.
 func TestRequireWorkspaceAccess_AdminSession_StillBypassesNonMember(t *testing.T) {
 	t.Parallel()

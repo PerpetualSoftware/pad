@@ -7,7 +7,7 @@ import type { SuiteFixture } from './fixtures';
 /**
  * TASK-2249: a share link's two dead ends.
  *  - C13: "Sign in" on a sign-in-required share went to a bare /login, so the
- *    reader landed on /console with the shared item gone. It now carries the
+ *    reader landed on / with the shared item gone. It now carries the
  *    share path, and signing in comes back to the item.
  *  - C85: a revoked (or expired, or used-up) link and a dropped connection both
  *    read as "Unable to load / Not found". A gone link now says so in plain

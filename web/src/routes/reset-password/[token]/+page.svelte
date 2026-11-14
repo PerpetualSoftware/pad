@@ -46,7 +46,7 @@
 				await goto('/login?notice=password_reset', { replaceState: true });
 				return;
 			}
-			await goto('/console', { replaceState: true });
+			await goto('/', { replaceState: true });
 		} catch (err: unknown) {
 			if (err instanceof Error && isPasswordRuleError(err.message)) {
 				passwordError = err.message;

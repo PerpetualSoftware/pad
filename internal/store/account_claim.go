@@ -202,6 +202,9 @@ func usernameCandidate(base string, n int) string {
 func (s *Store) uniqueUsernameTx(tx *sql.Tx, base, userID string) (string, error) {
 	for n := 1; n <= 1000; n++ {
 		username := usernameCandidate(base, n)
+		if IsReservedUsername(username) {
+			continue
+		}
 		if s.usernameValidator != nil && s.usernameValidator(username) != nil {
 			continue
 		}

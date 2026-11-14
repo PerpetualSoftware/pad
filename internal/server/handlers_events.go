@@ -117,7 +117,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// borne admin (CLI / PAT / MCP) would otherwise sail through and
 	// subscribe to any workspace's event stream without ever appearing
 	// in workspace_members. The cookie-borne web UI keeps the bypass
-	// (admin can subscribe from /console/admin); bearer callers fall
+	// (admin can subscribe from /settings/admin); bearer callers fall
 	// through to a strict membership check, exactly matching the
 	// policy enforced by RequireWorkspaceAccess on /api/v1/* and by
 	// authorizeCollabAccess on the WS upgrade.

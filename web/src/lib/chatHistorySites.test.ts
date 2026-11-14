@@ -148,8 +148,8 @@ describe('every history or address-bar site is classified (TASK-4315)', () => {
 			'routes/[username]/[workspace]/library/+page.svelte',
 			'routes/[username]/[workspace]/activity/+page.svelte',
 			'routes/[username]/[workspace]/settings/+page.svelte',
-			'routes/console/admin/+page.svelte',
-			'routes/console/billing/+page.svelte',
+			'routes/(console)/settings/admin/+page.svelte',
+			'routes/(console)/settings/billing/+page.svelte',
 			'lib/components/admin/UserModal.svelte',
 			'lib/api/client.ts'
 		]) {
