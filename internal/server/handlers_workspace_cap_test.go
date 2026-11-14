@@ -322,7 +322,7 @@ func TestPlanLimitError_ResponseShape(t *testing.T) {
 	if resp.Error.Details.Plan != "free" {
 		t.Errorf("details.plan: got %q, want free", resp.Error.Details.Plan)
 	}
-	if resp.Error.Details.UpgradeURL != "/console/billing" {
-		t.Errorf("details.upgrade_url: got %q, want /console/billing", resp.Error.Details.UpgradeURL)
+	if resp.Error.Details.UpgradeURL != "/settings/billing" {
+		t.Errorf("details.upgrade_url: got %q, want /settings/billing", resp.Error.Details.UpgradeURL)
 	}
 }

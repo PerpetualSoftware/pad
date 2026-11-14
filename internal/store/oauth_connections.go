@@ -725,7 +725,7 @@ func (s *Store) IsConnectionWorkspaceAllowed(requestID, workspaceID string) (boo
 // Used by the claim-code generation endpoint (PLAN-1519 / TASK-1525)
 // to power the modal's "smart suppression" UI: if the workspace is
 // already covered, the modal replaces the code display with a hint
-// that points at /console/connected-apps instead of generating a
+// that points at /settings/connected-apps instead of generating a
 // code the user would have nothing to do with.
 //
 // Returns the matching connection's human-readable Name (may be empty

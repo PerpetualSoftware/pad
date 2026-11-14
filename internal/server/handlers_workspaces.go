@@ -433,7 +433,7 @@ func (s *Server) requireWorkspaceCreationConsent(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusForbidden, "forbidden",
 			"This connection is not permitted to create workspaces. "+
 				"Re-authorize it with \"Let this app create new workspaces\" enabled, "+
-				"or enable it for this connection under /console/connected-apps.")
+				"or enable it for this connection under /settings/connected-apps.")
 		return false
 	}
 	return true
@@ -567,7 +567,7 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 //
 //   - The flag is off. Since IDEA-2756 handleCreateWorkspace refuses a
 //     flag-off connection before it reaches here, so this case arises
-//     when the user revokes creation power from /console/connected-apps
+//     when the user revokes creation power from /settings/connected-apps
 //     (PATCH /connected-apps/{id}/flags) after that gate ran. The
 //     workspace then exists without joining a connection whose grant was
 //     withdrawn mid-flight.

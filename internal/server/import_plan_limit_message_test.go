@@ -54,7 +54,7 @@ func TestPlanLimitDetails_UntouchedDoorsAreByteIdentical(t *testing.T) {
 		"limit":       100,
 		"current":     100,
 		"plan":        "free",
-		"upgrade_url": "/console/billing",
+		"upgrade_url": "/settings/billing",
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("planLimitDetails with Requested=0 = %#v, want %#v — no `requested` key may appear", got, want)
@@ -92,7 +92,7 @@ func TestPlanLimitDetails_ImportCarriesRequested(t *testing.T) {
 		"limit":       100,
 		"current":     0,
 		"plan":        "free",
-		"upgrade_url": "/console/billing",
+		"upgrade_url": "/settings/billing",
 		"requested":   150,
 	}
 	if !reflect.DeepEqual(got, want) {

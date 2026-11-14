@@ -46,11 +46,11 @@ func TestChatGPTProjection_PlanLimitIsNeutral(t *testing.T) {
 	upsell := NewErrorResult(ErrorPayload{
 		Code:    ErrPlanLimitExceeded,
 		Message: "You've reached the items limit on the free plan.",
-		Hint:    "Upgrade to Pro at /console/billing to remove this limit.",
+		Hint:    "Upgrade to Pro at /settings/billing to remove this limit.",
 	})
 	got := projectChatGPTResult(ChatGPTTool{Name: "create_item"}, nil, upsell)
 	b, _ := json.Marshal(got)
-	for _, banned := range []string{"Upgrade", "Pro", "/console/billing", "free plan"} {
+	for _, banned := range []string{"Upgrade", "Pro", "/settings/billing", "free plan"} {
 		if strings.Contains(string(b), banned) {
 			t.Errorf("the ChatGPT plan-limit refusal still says %q: %s", banned, b)
 		}

@@ -2042,7 +2042,7 @@ func (s *Server) setupRouter() {
 				r.Get("/stats", s.handleAdminStats)
 
 				// MCP audit log — admin-only full-table view (TASK-960).
-				// Powers /console/admin/mcp-audit. Per-connection
+				// Powers /settings/admin/mcp-audit. Per-connection
 				// drilldown that users see for their own connections
 				// lives at /api/v1/connected-apps/{id}/audit (registered
 				// outside the admin group so non-admin users can read

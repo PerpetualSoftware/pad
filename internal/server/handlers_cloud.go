@@ -1813,7 +1813,7 @@ func planLimitDetails(r *http.Request, result *store.LimitResult) map[string]int
 		"plan":    result.Plan,
 	}
 	if !fromNativeShell(r) {
-		d["upgrade_url"] = "/console/billing"
+		d["upgrade_url"] = "/settings/billing"
 	}
 	// Who can lift this limit (TASK-3601): the client offers checkout only to
 	// the payer, and names the payer to anyone else ("Ask Dana to upgrade").

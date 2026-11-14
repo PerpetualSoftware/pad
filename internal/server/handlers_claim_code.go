@@ -97,7 +97,7 @@ func (s *Server) handleWorkspaceClaimCode(w http.ResponseWriter, r *http.Request
 	// Smart suppression: does the calling user already have an active
 	// OAuth connection that covers this workspace? If so, the modal
 	// has no claim code to offer — it points the user at
-	// /console/connected-apps instead. Failure here is non-fatal for
+	// /settings/connected-apps instead. Failure here is non-fatal for
 	// the page (we'd still want to render SOMETHING rather than 500
 	// over a non-critical hint) but we surface a 500 so the bug is
 	// visible — silent suppression failures would be worse than a

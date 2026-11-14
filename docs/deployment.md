@@ -1218,7 +1218,7 @@ access tokens only, and every OAuth client failed with nothing in the log
 #### Turning it on
 
 An admin turns MCP on and off at runtime, with no restart: in the console
-under **Admin → Settings → MCP for agents** (check **Enable MCP**, then
+under **Admin → Instance → MCP for agents** (check **Enable MCP**, then
 **Save MCP Settings**), or through the API with an admin's personal API token:
 
 ```bash

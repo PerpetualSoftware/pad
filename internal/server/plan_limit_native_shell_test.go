@@ -32,7 +32,7 @@ const shellUA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
 
 // upgradeWords are the commerce words a shell-addressed message must not
 // carry. The server message is a statement of fact today; this pins that.
-var upgradeWords = []string{"upgrade", " pro", "billing", "pricing", "plan →", "/console"}
+var upgradeWords = []string{"upgrade", " pro", "billing", "pricing", "plan →", "/"}
 
 func (e *planLimitEnv) doUA(method, path, contentType string, body []byte, ua string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
@@ -64,7 +64,7 @@ func assertShellRefusal(t *testing.T, msg string, details map[string]any, shell 
 		t.Errorf("shell request: details carry upgrade_url %v, want absent", details["upgrade_url"])
 	}
 	if !shell && !has {
-		t.Errorf("browser request: details lack upgrade_url, want /console/billing (details=%v)", details)
+		t.Errorf("browser request: details lack upgrade_url, want /settings/billing (details=%v)", details)
 	}
 	if details["feature"] == nil || details["limit"] == nil {
 		t.Errorf("details lost the refusal's facts: %v", details)

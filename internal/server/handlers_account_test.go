@@ -512,7 +512,7 @@ func validTOTPCode(t *testing.T, secret string) string {
 // consumes on a successful delete: {"ok": true} and nothing else. The
 // cascade/skip tests above assert only the 200 status; the web Danger Zone
 // keys its "account deleted → hard-redirect to /login" transition off this
-// body (web/src/routes/console/settings/+page.svelte::deleteAccount awaits
+// body (web/src/routes/(console)/settings/account/+page.svelte::deleteAccount awaits
 // api.auth.deleteAccount which types the response as {ok: boolean}). A
 // regression that renamed "ok", returned an empty 200, or leaked an extra
 // field would break that transition while still returning 200, so it needs

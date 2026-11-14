@@ -236,7 +236,7 @@ func wireMCP(cmd *cobra.Command, srv *server.Server, s *store.Store, ep config.M
 	// TASK-1522 / IDEA-1517 §2). Idempotent: the inserts are ON CONFLICT
 	// DO NOTHING / INSERT OR IGNORE, so re-running on every startup is
 	// cheap and safe. Running it BEFORE the HTTP server starts means
-	// /console/connected-apps never renders an empty page during the
+	// /settings/connected-apps never renders an empty page during the
 	// window between server-up and backfill-complete.
 	//
 	// Backfill failures don't abort startup — a partial run leaves the

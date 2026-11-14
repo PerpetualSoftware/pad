@@ -99,7 +99,7 @@ func (s *Store) BackfillOAuthConnections() (BackfillOAuthConnectionsResult, erro
 	// expired but refresh hasn't been used yet) so we walk both.
 	//
 	// We don't filter on active=true here: an inactive chain still
-	// renders on /console/connected-apps as long as a token row
+	// renders on /settings/connected-apps as long as a token row
 	// exists — the existing read path (and the rewritten one) hides
 	// inactive chains itself. Seeding inactive chains gives the
 	// rewrite a clean "every chain has a connection row" invariant.
