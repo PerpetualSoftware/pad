@@ -12,8 +12,8 @@ import (
 )
 
 // closeItemAuto is --close-item with no value: use the collection's only
-// delivering close.
-const closeItemAuto = "auto"
+// delivering close. It is shaped so no real option value collides with it.
+const closeItemAuto = "<only>"
 
 // itemStillOpenDetails is the details of a 409 item_still_open (TASK-4537).
 type itemStillOpenDetails struct {
@@ -82,8 +82,7 @@ func pickCloseValue(given, ref string, d itemStillOpenDetails) (string, error) {
 	if len(d.CloseOptions) == 0 {
 		return "", fmt.Errorf("%s has no delivering close value; end the schedule with --end-schedule, or close the item with pad item update. Nothing was written", ref)
 	}
-	// A real option wins over the bare-flag sentinel, so an option that is
-	// itself named "auto" can still be chosen.
+	// An explicit value is matched against the options first.
 	for _, o := range d.CloseOptions {
 		if strings.EqualFold(o, given) {
 			return o, nil

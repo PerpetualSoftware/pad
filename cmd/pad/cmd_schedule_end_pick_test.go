@@ -2,22 +2,20 @@ package main
 
 import "testing"
 
-// TestPickCloseValueOptionNamedAuto: a delivering close that is itself named
-// "auto" is chosen by --close-item=auto rather than read as the bare flag.
-func TestPickCloseValueOptionNamedAuto(t *testing.T) {
+// TestPickCloseValueSentinel: the bare flag never collides with a real option
+// value, and an explicit --close-item=auto chooses an option named Auto.
+func TestPickCloseValueSentinel(t *testing.T) {
 	d := itemStillOpenDetails{DoneField: "status", CloseOptions: []string{"done", "Auto"}}
-	got, err := pickCloseValue(closeItemAuto, "TASK-1", d)
-	if err != nil || got != "Auto" {
-		t.Fatalf("pickCloseValue(auto) = %q, %v; want %q, nil", got, err, "Auto")
+	if got, err := pickCloseValue("auto", "TASK-1", d); err != nil || got != "Auto" {
+		t.Fatalf("pickCloseValue(auto) = %q, %v; want Auto, nil", got, err)
 	}
-	// The bare flag with several options and none named auto still refuses.
-	d.CloseOptions = []string{"done", "fixed"}
+	// The bare flag with two options is ambiguous, even when one is named Auto.
 	if got, err := pickCloseValue(closeItemAuto, "TASK-1", d); err == nil {
-		t.Fatalf("pickCloseValue(auto) with two options = %q, nil; want a refusal", got)
+		t.Fatalf("bare --close-item with two options = %q, nil; want a refusal", got)
 	}
 	// The bare flag with one option uses it.
 	d.CloseOptions = []string{"done"}
 	if got, err := pickCloseValue(closeItemAuto, "TASK-1", d); err != nil || got != "done" {
-		t.Fatalf("pickCloseValue(auto) with one option = %q, %v; want done", got, err)
+		t.Fatalf("bare --close-item with one option = %q, %v; want done", got, err)
 	}
 }
