@@ -1930,7 +1930,7 @@ func (s *Store) backfillUsernames() error {
 
 		// Handle collisions: append -2, -3, etc.
 		suffix := 2
-		for existing[username] {
+		for existing[username] || IsReservedUsername(username) {
 			username = fmt.Sprintf("%s-%d", base, suffix)
 			suffix++
 		}
