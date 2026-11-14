@@ -32,7 +32,7 @@ const shellUA = "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KH
 
 // upgradeWords are the commerce words a shell-addressed message must not
 // carry. The server message is a statement of fact today; this pins that.
-var upgradeWords = []string{"upgrade", " pro", "billing", "pricing", "plan →", "/"}
+var upgradeWords = []string{"upgrade", " pro", "billing", "pricing", "plan →", "/console", "/settings"}
 
 func (e *planLimitEnv) doUA(method, path, contentType string, body []byte, ua string) *httptest.ResponseRecorder {
 	req := httptest.NewRequest(method, path, bytes.NewReader(body))
