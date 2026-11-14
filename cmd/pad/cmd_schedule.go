@@ -402,9 +402,6 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			} else if err != nil {
 				return linkedResolveHint(err, args[0], "target", req.Until)
 			}
-			if formatFlag == "json" {
-				return cli.PrintJSON(raw)
-			}
 			var resp struct {
 				Commitment scheduleView `json:"commitment"`
 				Resolution struct {
@@ -412,6 +409,12 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				} `json:"resolution"`
 			}
 			_ = json.Unmarshal(raw, &resp)
+			if wantClose && closedWith == "" && resp.Commitment.EndedAt == nil {
+				fmt.Fprintf(cmd.ErrOrStderr(), "%s was not closed because the schedule continues.\n", args[0])
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(raw)
+			}
 			line := resolveSentence(v.state, args[0], req, resp.Commitment)
 			switch {
 			case closedWith != "":

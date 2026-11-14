@@ -109,12 +109,17 @@ func TestRemindDoneCloseItemFlow(t *testing.T) {
 			t.Fatalf("calls=%+v", calls)
 		}
 	})
-	t.Run("not the last occurrence", func(t *testing.T) {
-		_, _, err, calls := runSched(t, okReply(resolved), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item")
-		if err != nil || len(calls) != 1 {
-			t.Fatalf("err=%v calls=%+v", err, calls)
-		}
-	})
+	for _, format := range []string{"table", "json"} {
+		t.Run("not the last occurrence/"+format, func(t *testing.T) {
+			_, stderr, err, calls := runSched(t, okReply(resolved), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item", "--format", format)
+			if err != nil || len(calls) != 1 {
+				t.Fatalf("err=%v calls=%+v", err, calls)
+			}
+			if stderr != "TASK-5 was not closed because the schedule continues.\n" {
+				t.Fatalf("stderr=%q", stderr)
+			}
+		})
+	}
 }
 
 func TestRemindEndScheduleFlags(t *testing.T) {
