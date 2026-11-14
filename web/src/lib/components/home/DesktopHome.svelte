@@ -7,6 +7,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
+	import PendingInvitations from '$lib/components/layout/PendingInvitations.svelte';
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -20,6 +21,7 @@
 
 	let audience = $state<AudienceView>('mine');
 	let workspaceError = $state(false);
+	let invitationsOpen = $state(false);
 	let actionError = $state('');
 	let menu = $state('');
 	let busy = $state<Record<string, boolean>>({});
@@ -117,9 +119,15 @@
 	</div>
 	<section class="workspaces" aria-label="Workspaces">
 		<header>
-			<h2>Workspaces</h2><span>{workspaceStore.workspaces.length} · {pendingInvitations.count} {pendingInvitations.count === 1 ? 'invitation' : 'invitations'}</span>
+			<h2>Workspaces</h2>
+			<span>{workspaceStore.workspaces.length} · {#if pendingInvitations.count > 0}<button type="button" class="invitations-toggle" aria-expanded={invitationsOpen} aria-controls="home-invitations" onclick={() => (invitationsOpen = !invitationsOpen)}>{pendingInvitations.count} {pendingInvitations.count === 1 ? 'invitation' : 'invitations'}</button>{:else}0 invitations{/if}</span>
 			<Button variant="primary" class={uiStore.addWorkspaceHighlighted ? 'add-highlighted' : ''} onclick={() => uiStore.openCreateWorkspace()}>Create Workspace</Button>
 		</header>
+		{#if invitationsOpen && pendingInvitations.count > 0}
+			<div id="home-invitations" class="home-invitations">
+				<PendingInvitations active={invitationsOpen} onaccepted={() => (invitationsOpen = false)} />
+			</div>
+		{/if}
 		{#if workspaceError}<p role="alert">Couldn’t load your workspaces. <button onclick={loadWorkspaces}>Retry</button></p>{/if}
 		<div class="workspace-cards">{#each workspaceStore.workspaces as ws (ws.id)}
 			<a class="workspace-card" href="/{ws.owner_username}/{ws.slug}"><strong><span class="avatar" style:background={avatarColor(ws.name)}>{ws.name.charAt(0).toUpperCase()}</span>{ws.name}</strong>
@@ -132,6 +140,8 @@
 	/* Closing the last tab highlights the way back in (PLAN-3002 Q2). */
 	.workspaces :global(.btn.add-highlighted) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 35%, transparent); }
 	.workspaces > header > span { flex: 1; }
+	.invitations-toggle { color: var(--accent-blue); background: none; border: none; font: inherit; cursor: pointer; padding: 0; }
+	.home-invitations { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-secondary); overflow: hidden; margin: 0 0 var(--space-3); }
 	.home :global(.strip) { margin-top: 0; }
 	.home { display: flex; flex-direction: column; gap: var(--space-5); }
 	h1 { margin: 0 0 var(--space-2); font-size: 1.4rem; letter-spacing: -.025em; }
