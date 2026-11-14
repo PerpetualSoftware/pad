@@ -30,26 +30,27 @@ type scheduleOccurrence struct {
 // scheduleView decodes the fields the table output reads. Anything else the
 // server adds stays in the raw body, which --format json prints untouched.
 type scheduleView struct {
-	Forecast        *models.CommitmentForecast `json:"forecast"`
-	Milestone       models.CommitmentMilestone `json:"milestone"`
-	ItemRef         string                     `json:"item_ref"`
-	Roles           models.CommitmentRoles     `json:"roles"`
-	Dtstart         string                     `json:"dtstart"`
-	Tz              *string                    `json:"tz"`
-	Floating        bool                       `json:"floating"`
-	Rrule           *string                    `json:"rrule"`
-	Anchor          string                     `json:"anchor"`
-	Audience        string                     `json:"audience"`
-	NextOccurrence  *scheduleOccurrence        `json:"next_occurrence"`
-	NextOverrideAt  *string                    `json:"next_override_at"`
-	MissedCount     int                        `json:"missed_count"`
-	MissedTruncated bool                       `json:"missed_truncated"`
-	Stale           bool                       `json:"stale"`
-	EndedAt         *string                    `json:"ended_at"`
-	ErrorCode       *string                    `json:"error_code"`
-	TimezoneNote    string                     `json:"timezone_note"`
-	Links           []displayCommitmentLink    `json:"links"`
-	Gates           models.ScheduleGateView    `json:"gates"`
+	Forecast         *models.CommitmentForecast `json:"forecast"`
+	Milestone        models.CommitmentMilestone `json:"milestone"`
+	ItemRef          string                     `json:"item_ref"`
+	Roles            models.CommitmentRoles     `json:"roles"`
+	Dtstart          string                     `json:"dtstart"`
+	Tz               *string                    `json:"tz"`
+	Floating         bool                       `json:"floating"`
+	Rrule            *string                    `json:"rrule"`
+	Anchor           string                     `json:"anchor"`
+	Audience         string                     `json:"audience"`
+	NextOccurrence   *scheduleOccurrence        `json:"next_occurrence"`
+	NextOverrideAt   *string                    `json:"next_override_at"`
+	MissedCount      int                        `json:"missed_count"`
+	MissedTruncated  bool                       `json:"missed_truncated"`
+	Stale            bool                       `json:"stale"`
+	EndedAt          *string                    `json:"ended_at"`
+	EndedDismissedAt *string                    `json:"ended_dismissed_at"`
+	ErrorCode        *string                    `json:"error_code"`
+	TimezoneNote     string                     `json:"timezone_note"`
+	Links            []displayCommitmentLink    `json:"links"`
+	Gates            models.ScheduleGateView    `json:"gates"`
 }
 
 const instantLayout = "2006-01-02 15:04 MST"
@@ -389,7 +390,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				}
 				value, perr := pickCloseValue(closeItem, args[0], d)
 				if perr != nil {
-					return perr
+					return &hintedError{msg: perr.Error(), err: err}
 				}
 				req.EndSchedule = true
 				if raw, err = client.ResolveItemCommitment(ws, args[0], req); err != nil {
@@ -409,8 +410,12 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				} `json:"resolution"`
 			}
 			_ = json.Unmarshal(raw, &resp)
-			if wantClose && closedWith == "" && resp.Commitment.EndedAt == nil {
-				fmt.Fprintf(cmd.ErrOrStderr(), "%s was not closed because the schedule continues.\n", args[0])
+			if wantClose && closedWith == "" {
+				if resp.Commitment.EndedAt == nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s was not closed because the schedule continues.\n", args[0])
+				} else if resp.Commitment.EndedDismissedAt != nil {
+					fmt.Fprintf(cmd.ErrOrStderr(), "%s was not closed because its collection has no closing value.\n", args[0])
+				}
 			}
 			if formatFlag == "json" {
 				if closedWith != "" {

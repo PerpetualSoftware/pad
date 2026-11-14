@@ -200,3 +200,50 @@ func TestRemindDoneCloseItemJSON(t *testing.T) {
 		t.Fatalf("JSON does not describe the completed close: %s", out)
 	}
 }
+
+func TestRemindDoneCloseItemWithoutClosingValue(t *testing.T) {
+	for _, format := range []string{"table", "json"} {
+		t.Run("dismissed ending/"+format, func(t *testing.T) {
+			body := strings.Replace(endedResolved(false), `"ended_at":`, `"ended_dismissed_at":"2026-11-09T15:00:00Z","ended_at":`, 1)
+			out, stderr, err, calls := runSched(t, okReply(body), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item", "--format", format)
+			if err != nil || len(calls) != 1 {
+				t.Fatalf("err=%v calls=%+v", err, calls)
+			}
+			if stderr != "TASK-5 was not closed because its collection has no closing value.\n" {
+				t.Errorf("stderr=%q", stderr)
+			}
+			if strings.Contains(out, "item_closed") || strings.Contains(out, "stays open in Outstanding") {
+				t.Errorf("misleading output: %s", out)
+			}
+		})
+	}
+	t.Run("no delivering option", func(t *testing.T) {
+		_, _, err, calls := runSched(t, endFlow(`[]`, 200), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item")
+		if err == nil || !strings.Contains(err.Error(), "no delivering close value") || !strings.Contains(err.Error(), "--end-schedule") || !strings.Contains(err.Error(), "close the item yourself") {
+			t.Errorf("hint=%v", err)
+		}
+		if len(calls) != 1 {
+			t.Fatalf("wrote after refusal: %+v", calls)
+		}
+		var marker strings.Builder
+		writeRootStructuredError(&marker, err)
+		if !strings.Contains(marker.String(), `"code":"item_still_open"`) {
+			t.Errorf("lost envelope: %s", marker.String())
+		}
+	})
+	t.Run("explicit value without delivering options", func(t *testing.T) {
+		out, _, err, calls := runSched(t, endFlow(`[]`, 200), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item=cancelled")
+		if err != nil || len(calls) != 3 {
+			t.Fatalf("err=%v calls=%+v", err, calls)
+		}
+		if resolveBody(t, calls[1])["end_schedule"] != true || calls[2].method != "PATCH" {
+			t.Fatalf("calls=%+v", calls)
+		}
+		if fp, _ := resolveBody(t, calls[2])["fields_patch"].(map[string]any); fp["status"] != "cancelled" {
+			t.Errorf("patch=%s", calls[2].body)
+		}
+		if !strings.Contains(out, "closed TASK-5 (cancelled)") {
+			t.Errorf("out=%q", out)
+		}
+	})
+}
