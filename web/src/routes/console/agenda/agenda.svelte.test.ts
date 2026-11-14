@@ -1512,7 +1512,7 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
  const ask = async (extra: Record<string, unknown> = {}) => {
   h.resolve.mockRejectedValueOnce(stillOpen(extra)); h.update.mockResolvedValue({});
   await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
-  return screen.findByRole('dialog', { name: 'Last occurrence: First item is still open' });
+  return screen.findByRole('dialog', { name: 'Last occurrence: the item is still open' });
  };
  it('Close item too ends the schedule first, then closes the item', async () => {
   const d = await ask();

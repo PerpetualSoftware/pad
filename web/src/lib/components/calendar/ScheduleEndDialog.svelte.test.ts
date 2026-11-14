@@ -10,7 +10,7 @@ afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 function mount(d: ItemStillOpenDetails, extra: Record<string, unknown> = {}) {
 	const onchoose = vi.fn(), onclose = vi.fn();
 	render(ScheduleEndDialog, { open: true, entry, details: d, mobile: false, onclose, onchoose, ...extra });
-	const dialog = screen.getByRole('dialog', { name: 'Last occurrence: Renew passport is still open' });
+	const dialog = screen.getByRole('dialog', { name: 'Last occurrence: the item is still open' });
 	const choices = () => [...dialog.querySelectorAll<HTMLElement>('[data-choice]')].map(el => el.dataset.choice);
 	return { dialog, onchoose, onclose, choices };
 }
@@ -26,6 +26,8 @@ describe('ScheduleEndDialog', () => {
 	it('names the item and its status, and says nothing is saved yet', () => {
 		const { dialog } = mount(details({ item_status: 'in-progress' }));
 		expect(dialog).toHaveTextContent('The item is still open (in-progress). Nothing has been saved yet.');
+		expect(dialog).toHaveTextContent('Renew passport · Home');
+		expect(dialog.textContent?.match(/Renew passport/g)).toHaveLength(1);
 	});
 	it('closes with the only option by default', async () => {
 		const { dialog, onchoose } = mount(details());

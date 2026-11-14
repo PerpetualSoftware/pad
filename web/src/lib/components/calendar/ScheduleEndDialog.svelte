@@ -28,7 +28,7 @@
 
 	const closable = $derived(details?.state === 'done' && (details?.close_options.length ?? 0) > 0);
 	const options = $derived(details?.close_options ?? []);
-	const title = $derived(`Last occurrence: ${entry?.item_title || 'this item'} is still open`);
+	const title = 'Last occurrence: the item is still open';
 	const verb = $derived(details?.state === 'skip' ? 'Skipping' : 'Marking done');
 	const primary = $derived(kind === 'close' ? 'Close item' : kind === 'ack' ? 'Acknowledge' : 'End schedule');
 
