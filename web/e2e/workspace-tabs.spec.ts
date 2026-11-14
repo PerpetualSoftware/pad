@@ -259,8 +259,12 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 			await expect(tabs(page)).toHaveCount(1);
 			await closeTab(page, only);
 			await expect(page).toHaveURL((url) => url.pathname === '/');
-			// / has no TopBar; its Create Workspace button is the "+".
-			await expect(page.getByRole('button', { name: 'Create Workspace' }).first()).toHaveClass(/add-highlighted/);
+			// Home highlights its create action after the last tab closes.
+			const create = page.getByRole('button', { name: 'Create Workspace', exact: true });
+			await expect(create).toHaveClass(/add-highlighted/);
+			await expect(create).not.toHaveCSS('box-shadow', 'none');
+			await create.click();
+			await expect(page.getByRole('dialog', { name: /new workspace/i })).toBeVisible();
 		} finally {
 			await teardown(world);
 		}
@@ -292,7 +296,7 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 		}
 	});
 
-	test('a workspace created with "+" opens as a kept tab that survives a reload', async ({
+	test('a workspace created with the workspace switcher opens as a kept tab that survives a reload', async ({
 		page,
 		context,
 		fixture
@@ -308,8 +312,8 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 
 			await page.goto(`/${account.username}/${home}`);
 			await expect(tabs(page)).toHaveCount(1);
-			await page.getByTitle('Find or create a workspace').click();
-			await page.getByRole('option', { name: /new workspace/i }).click();
+			await page.locator('.sidebar .switcher > button').click();
+			await page.getByRole('button', { name: /\+ new workspace/i }).click();
 			const dialog = page.getByRole('dialog', { name: /new workspace/i });
 			await expect(dialog).toBeVisible();
 			const name = `Made here ${Date.now()}`;
@@ -332,17 +336,17 @@ test.describe('workspace tab bar (TASK-3274)', () => {
 });
 
 /**
- * TASK-3276 (PLAN-3002 U4): the "+" discovery surface. Since U3 the bar shows
- * only the open set, so "+" is how a workspace outside it is reached. The
- * create path is covered above ('a workspace created with "+" …').
+ * TASK-3276 (PLAN-3002 U4): workspace discovery in the sidebar switcher.
+ * The tab bar shows the open set; the switcher also reaches other workspaces.
+ * The create path is covered above.
  */
-test.describe('"+" discovery surface (TASK-3276)', () => {
+test.describe('the workspace switcher discovery surface (TASK-3276)', () => {
 	test.beforeEach(async ({ page }, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'the tab bar is desktop-only (PLAN-3002 Q11)');
 		await page.setViewportSize(DESKTOP);
 	});
 
-	test('a user with seven workspaces and six tabs reaches the seventh from "+", as a kept tab', async ({
+	test('a user with seven workspaces and six tabs reaches the seventh from the workspace switcher, as a kept tab', async ({
 		page,
 		context,
 		fixture
@@ -359,13 +363,14 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 			await expect(tabs(page)).toHaveCount(6);
 			await expect(tab(page, seventh)).toHaveCount(0);
 
-			await page.getByTitle('Find or create a workspace').click();
-			const search = page.getByRole('combobox', { name: 'Find a workspace' });
+			await page.locator('.sidebar .switcher > button').click();
+			const search = page.getByRole('textbox', { name: 'Find a workspace' });
 			await expect(search).toBeFocused();
-			// The six open workspaces are not offered; the seventh is.
-			await expect(page.locator('.discovery-option[data-ws-slug]')).toHaveCount(1);
+			// Open and other workspaces are both offered; filtering finds the seventh.
+			await expect(page.locator('.workspace-option')).toHaveCount(7);
 			await search.fill('Seventh');
-			await page.locator(`.discovery-option[data-ws-slug="${seventh}"]`).click();
+			await expect(page.locator('.workspace-option')).toHaveCount(1);
+			await page.locator('.workspace-option').click();
 
 			await expect(page).toHaveURL(new RegExp(`/${account.username}/${seventh}$`));
 			await expect(tabs(page)).toHaveCount(7);
@@ -380,7 +385,7 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 		}
 	});
 
-	test('keyboard only: open "+", search, arrow, Enter; and Escape returns focus to "+"', async ({
+	test('keyboard only: open the workspace switcher, search, arrow, Enter; and Escape returns focus to the workspace switcher', async ({
 		page,
 		context,
 		fixture
@@ -395,25 +400,27 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 
 			await page.goto(`/${account.username}/${home}`);
 			await expect(tabs(page)).toHaveCount(1);
-			const plus = page.getByTitle('Find or create a workspace');
-			const search = page.getByRole('combobox', { name: 'Find a workspace' });
+			const switcher = page.locator('.sidebar .switcher > button');
+			const search = page.getByRole('textbox', { name: 'Find a workspace' });
 
-			// Escape closes and hands focus back to "+".
-			await plus.focus();
+			// Escape closes and hands focus back to the workspace switcher.
+			await switcher.focus();
 			await page.keyboard.press('Enter');
 			await expect(search).toBeFocused();
 			await page.keyboard.press('Escape');
 			await expect(search).toHaveCount(0);
-			await expect(plus).toBeFocused();
+			await expect(switcher).toBeFocused();
 
 			// Open again from the keyboard, narrow to the two "Kb" workspaces,
 			// step to the second, and take it.
 			await page.keyboard.press('Enter');
 			await expect(search).toBeFocused();
 			await page.keyboard.type('Kb');
-			await expect(page.locator('.discovery-option[data-ws-slug]')).toHaveCount(2);
+			await expect(page.locator('.workspace-option')).toHaveCount(2);
 			await page.keyboard.press('ArrowDown');
-			await expect(page.locator('.discovery-option[aria-selected="true"]')).toHaveAttribute('data-ws-slug', beta);
+			await expect(page.locator('.workspace-option').first()).toBeFocused();
+			await page.keyboard.press('ArrowDown');
+			await expect(page.locator('.workspace-option').nth(1)).toBeFocused();
 			await page.keyboard.press('Enter');
 
 			await expect(page).toHaveURL(new RegExp(`/${account.username}/${beta}$`));
@@ -424,9 +431,9 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 		}
 	});
 
-	// TASK-3277 (U4b): a pending invitation is listed in "+" and accepting it
+	// TASK-3277 (U4b): a pending invitation is listed in the workspace switcher and accepting it
 	// lands in the workspace on an EPHEMERAL tab (Q5).
-	test('an invitation in "+" is accepted and lands on an ephemeral tab', async ({ page, context, fixture }) => {
+	test('an invitation in the workspace switcher is accepted and lands on an ephemeral tab', async ({ page, context, fixture }) => {
 		let inviter: World | undefined;
 		let invitee: World | undefined;
 		try {
@@ -449,16 +456,17 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 
 			await page.goto(`/${account.username}/${home}`);
 			await expect(tabs(page)).toHaveCount(1);
-			// BUG-2136 U2: the "+" carries the count before anything is opened.
-			await expect(page.getByTestId('invitation-badge')).toHaveText('1');
-			await page.getByTitle('Find or create a workspace').click();
+			await page.locator('.sidebar .switcher > button').click();
+			await page.getByRole('button', { name: 'Invitations 1', exact: true }).click();
 			const section = page.getByRole('region', { name: 'Invitations' });
 			await expect(section).toBeVisible();
 			await expect(section.locator('.invitation-item')).toHaveCount(1);
 			await section.getByRole('button', { name: /^Accept the invitation to Invited To/ }).click();
 
 			await expect(page).toHaveURL(new RegExp(`/${inviter.account.username}/${shared}$`));
-			await expect(page.getByTestId('invitation-badge')).toHaveCount(0);
+			await page.locator('.sidebar .switcher > button').click();
+			await expect(page.getByRole('button', { name: 'Invitations 0', exact: true })).toBeVisible();
+			await page.keyboard.press('Escape');
 			await expect(tab(page, shared)).toHaveCount(1);
 			await expect(tab(page, shared)).toHaveClass(/ephemeral/);
 			await expect.poll(() => serverOrder(account)).toContain(shared);
@@ -473,9 +481,9 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 			await teardown(inviter);
 		}
 	});
-	// BUG-2136 U2: an invitation is declined from "+": it leaves the list and
-	// the badge, nothing is joined, and the server no longer lists it.
-	test('an invitation in "+" is declined and joins nothing', async ({ page, context, fixture }) => {
+	// BUG-2136 U2: an invitation is declined from the workspace switcher: it leaves the list and
+	// the count, nothing is joined, and the server no longer lists it.
+	test('an invitation in the workspace switcher is declined and joins nothing', async ({ page, context, fixture }) => {
 		let inviter: World | undefined;
 		let invitee: World | undefined;
 		try {
@@ -495,13 +503,13 @@ test.describe('"+" discovery surface (TASK-3276)', () => {
 			await actAs(context, account);
 
 			await page.goto(`/${account.username}/${home}`);
-			await expect(page.getByTestId('invitation-badge')).toHaveText('1');
-			await page.getByTitle('Find or create a workspace').click();
+			await page.locator('.sidebar .switcher > button').click();
+			await page.getByRole('button', { name: 'Invitations 1', exact: true }).click();
 			const section = page.getByRole('region', { name: 'Invitations' });
 			await section.getByRole('button', { name: /^Decline the invitation to Declined From/ }).click();
 
 			await expect(section).toHaveCount(0);
-			await expect(page.getByTestId('invitation-badge')).toHaveCount(0);
+			await expect(page.getByRole('button', { name: 'Invitations 0', exact: true })).toBeVisible();
 			await expect(page).toHaveURL(new RegExp(`/${account.username}/${home}$`));
 			await expect(tab(page, shared)).toHaveCount(0);
 			const mine = (await (await ok(await account.api.get('/api/v1/me/invitations'), 'list invitations')).json()) as {
@@ -718,7 +726,9 @@ test.describe('landings open an ephemeral tab (TASK-3279)', () => {
 			await page.goto(`/${account.username}/${home}`);
 			await expect(tabs(page)).toHaveCount(1);
 			await page.goto('/settings/deleted-workspaces');
-			await page.getByRole('button', { name: /Restore/ }).first().click();
+			const row = page.getByRole('row').filter({ hasText: 'Restore Me' });
+			await row.getByRole('button', { name: 'Restore', exact: true }).click();
+			await expect(row).toHaveCount(0);
 			await expect.poll(() => serverTabs(account)).toContainEqual({ slug: gone, ephemeral: true });
 
 			await page.goto(`/${account.username}/${home}`);

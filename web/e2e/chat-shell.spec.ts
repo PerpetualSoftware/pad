@@ -108,7 +108,7 @@ const sameEditorNode = (page: Page) =>
 		EDITOR_SELECTOR
 	);
 
-const chatButton = (page: Page) => page.locator('header.topbar a.chat-button');
+const chatLink = (page: Page) => page.getByRole('navigation', { name: 'You', exact: true }).getByRole('link', { name: /^Chat/ });
 const pathname = (page: Page) => new URL(page.url()).pathname;
 
 for (const [name, width, role] of [
@@ -146,7 +146,7 @@ for (const [name, width, role] of [
 		expect(caretBefore?.text, 'premise: the caret is in the typed text').toContain('TYPED-BEFORE-CHAT');
 		const sidebarBefore = await page.locator('aside.sidebar').boundingBox();
 
-		await chatButton(page).click();
+		await chatLink(page).click();
 		const region = page.getByRole(role, { name: 'Chat' });
 		await expect(region).toBeVisible();
 		expect(pathname(page)).toBe('/messages');
@@ -165,7 +165,7 @@ for (const [name, width, role] of [
 		expect(Math.abs((await anchorOffset(page))! - anchorBefore)).toBeLessThan(4);
 		await expect(page.locator(EDITOR_SELECTOR)).toContainText('TYPED-BEFORE-CHAT');
 
-		// The caret is where it was (focus went back to the Chat button, as it should);
+		// The caret is where it was (focus went back to the Chat link, as it should);
 		// putting focus in the editor again continues typing in place.
 		expect(await caret(page)).toEqual(caretBefore);
 		await page.locator(EDITOR_SELECTOR).focus();
@@ -181,10 +181,10 @@ test('Back and Forward walk the entries Chat pushed', async ({ page, request, fi
 	await page.setViewportSize({ width: 1600, height: 900 });
 	const home = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
 	await page.goto(home);
-	await expect(chatButton(page)).toBeVisible();
+	await expect(chatLink(page)).toBeVisible();
 	const homePath = pathname(page);
 
-	await chatButton(page).click();
+	await chatLink(page).click();
 	const region = page.getByRole('complementary', { name: 'Chat' });
 	await expect(region).toBeVisible();
 	expect(pathname(page)).toBe('/messages');
@@ -228,7 +228,7 @@ test('a reload or bookmark of /messages/N is the same thread as a route inside P
 	await page.setViewportSize({ width: 1600, height: 900 });
 	const home = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
 	await page.goto(home);
-	await chatButton(page).click();
+	await chatLink(page).click();
 	await page.getByRole('complementary', { name: 'Chat' }).locator('a[href^="/messages/"]').first().click();
 	await expect.poll(() => pathname(page)).toMatch(/^\/messages\/\d+$/);
 
@@ -281,12 +281,12 @@ test('Close and Back are usable again at once after a completed one', async ({ p
 	await page.setViewportSize({ width: 1600, height: 900 });
 	const home = `/${fixture.adminUsername}/${fixture.workspaceSlug}`;
 	await page.goto(home);
-	await expect(chatButton(page)).toBeVisible();
+	await expect(chatLink(page)).toBeVisible();
 	const homePath = pathname(page);
 	const region = page.getByRole('complementary', { name: 'Chat' });
 
 	for (let round = 0; round < 2; round++) {
-		await chatButton(page).click();
+		await chatLink(page).click();
 		await expect(region).toBeVisible();
 		await region.locator(`a[href="/messages/${n}"]`).click();
 		await expect.poll(() => pathname(page)).toBe(`/messages/${n}`);
@@ -314,7 +314,7 @@ test('closing the item pane while Chat is open pops Chat and the pane together',
 	const pane = page.locator('.item-pane');
 	await expect(pane).toBeVisible();
 
-	await chatButton(page).click();
+	await chatLink(page).click();
 	const region = page.getByRole('complementary', { name: 'Chat' });
 	await expect(region).toBeVisible();
 	await expect(pane).toBeVisible();
@@ -345,7 +345,7 @@ test.describe('a pane opened over Chat closes without reopening Chat', () => {
 		const region = page.getByRole('complementary', { name: 'Chat' });
 		const pane = page.locator('.item-pane');
 
-		await chatButton(page).click();
+		await chatLink(page).click();
 		await expect(region).toBeVisible();
 		await page.locator('.item-card').first().click();
 		// The latch released on the traversal's own popstate, not its 3s fallback.
@@ -377,7 +377,7 @@ test.describe('a pane opened over Chat closes without reopening Chat', () => {
 
 		await page.locator('.item-card').nth(0).click();
 		await expect(pane).toBeVisible();
-		await chatButton(page).click();
+		await chatLink(page).click();
 		await expect(region).toBeVisible();
 		await page.locator('.item-card').nth(1).click();
 		await expect(pane).toBeVisible();
@@ -412,7 +412,7 @@ test.describe('a pane opened over Chat closes without reopening Chat', () => {
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
 
-		await chatButton(page).click();
+		await chatLink(page).click();
 		await expect(region).toBeVisible();
 		await pane.locator('button[aria-label="Close pane"]').click();
 		await expect(pane).toBeHidden();
@@ -438,7 +438,7 @@ test('Escape pressed inside the docked Chat does not close the item pane beside 
 	const pane = page.locator('.item-pane');
 	await expect(pane).toBeVisible();
 
-	await chatButton(page).click();
+	await chatLink(page).click();
 	const region = page.getByRole('complementary', { name: 'Chat' });
 	await expect(region).toBeVisible();
 	await region.focus();

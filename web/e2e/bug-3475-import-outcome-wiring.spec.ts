@@ -20,8 +20,8 @@ const STATUS = /\/api\/v1\/workspaces\/import-status\?/;
 async function openImport(page: Page, fixture: { adminUsername: string; workspaceSlug: string }) {
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
 	await expect(page.getByRole('heading', { name: /E2E Workspace/i })).toBeVisible();
-	await page.getByTitle('Find or create a workspace').first().click();
-	await page.getByRole('option', { name: /new workspace/i }).click();
+	await page.locator('.sidebar .switcher > button').click();
+	await page.getByRole('button', { name: /\+ new workspace/i }).click();
 	const dialog = page.getByRole('dialog', { name: /new workspace/i });
 	await expect(dialog).toBeVisible();
 	await dialog.getByRole('button', { name: /^import$/i }).click();

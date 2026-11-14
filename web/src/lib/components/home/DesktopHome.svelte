@@ -1,4 +1,5 @@
 <script lang="ts">
+	import Button from '$lib/components/common/Button.svelte';
 	import { avatarColor } from '$lib/utils/avatar';
 	import { onMount } from 'svelte';
 	import { goto } from '$app/navigation';
@@ -107,17 +108,22 @@
 		</section>
 	</div>
 	<section class="workspaces" aria-label="Workspaces">
-		<header><h2>Workspaces</h2><span>{workspaceStore.workspaces.length} · {pendingInvitations.count} {pendingInvitations.count === 1 ? 'invitation' : 'invitations'}</span></header>
+		<header>
+			<h2>Workspaces</h2><span>{workspaceStore.workspaces.length} · {pendingInvitations.count} {pendingInvitations.count === 1 ? 'invitation' : 'invitations'}</span>
+			<Button variant="primary" class={uiStore.addWorkspaceHighlighted ? 'add-highlighted' : ''} onclick={() => uiStore.openCreateWorkspace()}>Create Workspace</Button>
+		</header>
 		{#if workspaceError}<p role="alert">Couldn’t load your workspaces. <button onclick={loadWorkspaces}>Retry</button></p>{/if}
 		<div class="workspace-cards">{#each workspaceStore.workspaces as ws (ws.id)}
 			<a class="workspace-card" href="/{ws.owner_username}/{ws.slug}"><strong><span class="avatar" style:background={avatarColor(ws.name)}>{ws.name.charAt(0).toUpperCase()}</span>{ws.name}</strong>
 				{#if ws.is_guest}<span>Shared with you · guest</span>{:else if homeOverview.needs}<span>{homeOverview.needs.workspaces.find(w => w.slug === ws.slug)?.count ?? 0} need you</span>{/if}
 			</a>
 		{/each}</div>
-		{#if !workspaceStore.loading && !workspaceStore.workspaces.length && !workspaceError}<button onclick={() => uiStore.openCreateWorkspace()}>+ New workspace</button>{/if}
 	</section>
 </div>
 <style>
+	/* Closing the last tab highlights the way back in (PLAN-3002 Q2). */
+	.workspaces :global(.btn.add-highlighted) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 35%, transparent); }
+	.workspaces > header > span { flex: 1; }
 	.home :global(.strip) { margin-top: 0; }
 	.home { display: flex; flex-direction: column; gap: var(--space-5); }
 	h1 { margin: 0 0 var(--space-2); font-size: 1.4rem; letter-spacing: -.025em; }

@@ -15,7 +15,7 @@ test('the desktop dock shows the empty state for a user with no conversations', 
 		await p.setViewportSize({ width: 1600, height: 900 });
 		await loginViaForm(p, user.email);
 		await p.goto('/');
-		await p.locator('.console-nav .nav-links a[href="/messages"]').click();
+		await p.getByRole('navigation', { name: 'You', exact: true }).getByRole('link', { name: /^Chat/ }).click();
 		const region = p.getByRole('complementary', { name: 'Chat' });
 		await expect(region).toBeVisible();
 		await expect(region.getByRole('heading', { name: /Start a conversation|No one to message yet/ })).toBeVisible();
