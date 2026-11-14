@@ -396,10 +396,19 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				if raw, err = client.ResolveItemCommitment(ws, args[0], req); err != nil {
 					return linkedResolveHint(err, args[0], "target", req.Until)
 				}
-				if _, uerr := client.UpdateItem(ws, args[0], models.ItemUpdate{FieldsPatch: map[string]any{d.DoneField: value}}); uerr != nil {
-					return fmt.Errorf("Marked done %s; the schedule has ended. Closing the item failed: %v. It stays open in Outstanding.", args[0], uerr)
+				// end_schedule has no effect when a concurrent edit gave the schedule
+				// another occurrence: close only when the retry ended it with the item open.
+				var retried struct {
+					Resolution struct {
+						ItemStillOpen bool `json:"item_still_open"`
+					} `json:"resolution"`
 				}
-				closedWith, closedField = value, d.DoneField
+				if json.Unmarshal(raw, &retried) == nil && retried.Resolution.ItemStillOpen {
+					if _, uerr := client.UpdateItem(ws, args[0], models.ItemUpdate{FieldsPatch: map[string]any{d.DoneField: value}}); uerr != nil {
+						return fmt.Errorf("Marked done %s; the schedule has ended. Closing the item failed: %v. It stays open in Outstanding.", args[0], uerr)
+					}
+					closedWith, closedField = value, d.DoneField
+				}
 			} else if err != nil {
 				return linkedResolveHint(err, args[0], "target", req.Until)
 			}

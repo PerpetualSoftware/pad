@@ -456,7 +456,7 @@
 				occurrenceAt = view.next_occurrence.at;
 			}
 			viewing = false;
-			await api.resolveCommitment(entry.workspace!, entry.item_ref, {
+			const resolved = await api.resolveCommitment(entry.workspace!, entry.item_ref, {
 				occurrence_at: occurrenceAt, state,
 				...(until !== undefined ? { until } : {}),
 				...(comment !== undefined ? { comment } : {}),
@@ -465,10 +465,13 @@
 			if (!sameIdentity()) return false;
 			saved = { ...saved, [key]: true };
 			if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null;
+			// end_schedule has no effect when a concurrent edit gave the schedule another
+			// occurrence: only a resolution that ended it with the item open closes the item.
+			const ended = resolved?.resolution?.item_still_open === true;
 			// The schedule has ended; closing the item is a second write that can be refused on its own.
 			let closeError = '';
 			let itemClosed = false;
-			if (end?.closeAs !== undefined && endChoice) {
+			if (ended && end?.closeAs !== undefined && endChoice) {
 				try {
 					await api.items.update(entry.workspace!, entry.item_ref, { fields_patch: { [endChoice.details.done_field]: end.closeAs } });
 					itemClosed = true;
@@ -485,6 +488,9 @@
 			} else if (refreshed === false) {
 				savedRefreshError = true;
 				loadError = false;
+			} else if (end && !ended) {
+				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
+				succeed(end.closeAs !== undefined ? `${verb}. The schedule continues, so the item was not closed.` : `${verb}. The schedule continues.`);
 			} else if (end) {
 				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
 				succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);

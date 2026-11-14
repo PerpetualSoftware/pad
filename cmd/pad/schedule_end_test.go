@@ -257,3 +257,32 @@ func TestRemindDoneCloseItemWithoutClosingValue(t *testing.T) {
 		})
 	}
 }
+
+// TestRemindDoneCloseItemScheduleContinues: when a concurrent edit gives the
+// schedule another occurrence before the end_schedule retry, the retry does
+// not end it, so --close-item must not close the item.
+func TestRemindDoneCloseItemScheduleContinues(t *testing.T) {
+	flow := func(c recordedCall) (int, string) {
+		switch {
+		case c.method == "PATCH":
+			return 200, `{"id":"i1","slug":"TASK-5"}`
+		case strings.HasSuffix(c.path, "/resolve") && strings.Contains(c.body, `"end_schedule":true`):
+			return 200, `{"commitment":` + weekdaysView + `,"resolution":{"occurrence_at":"2026-11-09T14:00:00Z","state":"done","missed_recorded":0}}`
+		case strings.HasSuffix(c.path, "/resolve"):
+			return stillOpenReply(`["done"]`, false)
+		}
+		return 200, weekdaysView
+	}
+	_, stderr, err, calls := runSched(t, flow, "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range calls {
+		if c.method == "PATCH" {
+			t.Fatalf("item closed although the schedule continues: calls=%+v", calls)
+		}
+	}
+	if !strings.Contains(stderr, "was not closed because the schedule continues") {
+		t.Fatalf("stderr = %q", stderr)
+	}
+}

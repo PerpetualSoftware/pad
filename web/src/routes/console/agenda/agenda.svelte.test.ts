@@ -1510,7 +1510,7 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
  beforeEach(() => localStorage.setItem('pad-agenda-mode:user-a', 'day'));
  const stillOpen = (extra: Record<string, unknown> = {}) => ({ code: 'item_still_open', message: 'This is the last occurrence.', details: { state: 'done', occurrence_at: frozenAt, done_field: 'status', item_status: 'open', close_options: ['done'], ack_available: false, ...extra } });
  const ask = async (extra: Record<string, unknown> = {}) => {
-  h.resolve.mockRejectedValueOnce(stillOpen(extra)); h.update.mockResolvedValue({});
+  h.resolve.mockRejectedValueOnce(stillOpen(extra)).mockResolvedValue({ resolution: { item_still_open: true } }); h.update.mockResolvedValue({});
   await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
   return screen.findByRole('dialog', { name: 'Last occurrence: the item is still open' });
  };
@@ -1538,6 +1538,14 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
   await said('Occurrence marked done; the schedule has ended. The item stays open in Outstanding.', 'success');
   expect(h.update).not.toHaveBeenCalled();
   expect(h.toast.mock.calls.some(call => String(call[0]).includes('item is closed'))).toBe(false);
+ });
+ it('does not close the item when the retry did not end the schedule', async () => {
+  const d = await ask();
+  // A concurrent edit gave the schedule another occurrence: end_schedule had no effect.
+  h.resolve.mockResolvedValueOnce({ resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0 } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await said('Occurrence marked done. The schedule continues, so the item was not closed.', 'success');
+  expect(h.update).not.toHaveBeenCalled();
  });
  it('End schedule keeps the item open', async () => {
   const d = await ask();
