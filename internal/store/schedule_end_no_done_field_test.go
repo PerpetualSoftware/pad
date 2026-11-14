@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/PerpetualSoftware/pad/internal/items"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
@@ -19,6 +20,45 @@ func TestResolveLastOccurrenceWithoutDoneField(t *testing.T) {
 			sc := f.reload(t, item.ID)
 			if res.EndedItemOpen || sc.EndedAt == nil || sc.EndedDismissedAt == nil || *sc.EndedAt != *sc.EndedDismissedAt {
 				t.Fatalf("ending = %+v, item_still_open=%v", sc, res.EndedItemOpen)
+			}
+		})
+	}
+}
+
+func TestResolveLastOccurrenceSelectWithoutOptions(t *testing.T) {
+	t.Parallel()
+	const schemaJSON = `{"fields":[{"key":"status","type":"select","options":[]}]}`
+	var schema models.CollectionSchema
+	if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, value := range append([]string{"open"}, models.DefaultTerminalStatuses...) {
+		if err := items.ValidateFields(map[string]any{"status": value}, schema); err != nil {
+			t.Fatalf("select without options must accept %q: %v", value, err)
+		}
+	}
+	for _, state := range []string{"done", "skip"} {
+		t.Run(state, func(t *testing.T) {
+			f := newSchedFixture(t)
+			item, sc := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"}, "2026-10-29T12:00:00Z")
+			f.exec(t, `UPDATE collections SET schema=? WHERE id=?`, schemaJSON, item.CollectionID)
+			in := ResolveInput{OccurrenceAt: f.outstanding(t, item), State: state, Actor: "user"}
+			before, counts := f.reload(t, item.ID), f.endGuardCounts(t, item, sc)
+			_, err := f.resolve(t, item, in, "2026-10-30T09:05:00Z")
+			var end *ErrScheduleWouldEnd
+			if !errors.As(err, &end) {
+				t.Fatalf("resolve = %v, want ErrScheduleWouldEnd", err)
+			}
+			if end.DoneField != "status" || len(end.CloseOptions) == 0 || end.CloseOptions[0] != "done" {
+				t.Fatalf("close options = %+v", end)
+			}
+			if !reflect.DeepEqual(before, f.reload(t, item.ID)) || counts != f.endGuardCounts(t, item, sc) {
+				t.Fatal("refusal wrote changes")
+			}
+			in.EndSchedule = true
+			res := f.mustResolve(t, item, in, "2026-10-30T09:05:00Z")
+			if !res.EndedItemOpen || res.Schedule.EndedAt == nil || res.Schedule.EndedDismissedAt != nil {
+				t.Fatalf("ending = %+v", res)
 			}
 		})
 	}

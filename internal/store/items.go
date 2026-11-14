@@ -5295,7 +5295,7 @@ func resolveCollectionDoneFilter(id, schemaJSON, settingsJSON string) collection
 		if field.Key != key {
 			continue
 		}
-		if field.Type != "select" {
+		if field.Type != "select" || len(field.Options) == 0 {
 			filter.writableTerminals = values
 		} else {
 			for _, option := range field.Options {
