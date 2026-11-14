@@ -152,7 +152,7 @@ func TestResolveLastOccurrenceTerminalItemUnguarded(t *testing.T) {
 			item, sc := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"}, "2026-10-29T12:00:00Z")
 			f.closeItem(t, item, "done")
 			res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: f.outstanding(t, item), State: state, Actor: "user"}, "2026-10-30T09:05:00Z")
-			if res.EndedItemOpen || res.Schedule.EndedAt == nil {
+			if res.EndedItemOpen || res.Schedule.EndedAt == nil || res.Schedule.EndedDismissedAt != nil {
 				t.Fatalf("result = %+v", res)
 			}
 			if n := f.count(t, `SELECT COUNT(*) FROM schedule_changes WHERE schedule_id=? AND reason='ended_item_open'`, sc.ID); n != 0 {

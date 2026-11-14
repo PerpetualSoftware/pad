@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -596,18 +597,29 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		return nil, err
 	}
 	endedItemOpen := false
+	var dismissedAt any
 	if !found && (in.State == "done" || in.State == "skip") {
 		// The last occurrence: ending the schedule of an open item drops it from
 		// every dated view, so it needs the caller's consent. The item is read
 		// under the pin, after any concurrent close or reopen committed.
-		open, err := s.itemOpenTx(tx, sc.ItemID, in.openFilter, in.openArgs)
+		hasDoneField, err := s.itemHasDoneFieldTx(tx, sc.ItemID)
 		if err != nil {
 			return nil, err
 		}
-		if open && !in.EndSchedule {
-			return nil, &ErrScheduleWouldEnd{Fired: sc.ReminderFired, Acknowledged: sc.ReminderAckedAt != nil}
+		if !hasDoneField {
+			// There is no item state to close, so ending the schedule needs
+			// neither consent nor an Outstanding entry.
+			dismissedAt = ts
+		} else {
+			open, err := s.itemOpenTx(tx, sc.ItemID, in.openFilter, in.openArgs)
+			if err != nil {
+				return nil, err
+			}
+			if open && !in.EndSchedule {
+				return nil, &ErrScheduleWouldEnd{Fired: sc.ReminderFired, Acknowledged: sc.ReminderAckedAt != nil}
+			}
+			endedItemOpen = open
 		}
-		endedItemOpen = open
 	}
 	if in.State != "lapsed" {
 		// Done and skip record passed-over instances. Lapse judges each
@@ -666,8 +678,8 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		endedAt = ts
 	}
 	if _, err := tx.Exec(s.q(`
-		UPDATE item_schedules SET next_at = ?, next_wall = ?, next_override_at = NULL, anchor_wall = ?, ended_at = ?, updated_at = ?
-		WHERE id = ?`), nextAt, nextWall, nullStr(anchorWall), endedAt, ts, sc.ID); err != nil {
+		UPDATE item_schedules SET next_at = ?, next_wall = ?, next_override_at = NULL, anchor_wall = ?, ended_at = ?, ended_dismissed_at = ?, updated_at = ?
+		WHERE id = ?`), nextAt, nextWall, nullStr(anchorWall), endedAt, dismissedAt, ts, sc.ID); err != nil {
 		return nil, fmt.Errorf("advance schedule: %w", err)
 	}
 	if !found {
@@ -703,6 +715,32 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		return nil, err
 	}
 	return res, nil
+}
+
+// itemHasDoneFieldTx checks the collection of the pinned item. DoneFieldKey
+// falls back to status even when the schema declares no such field.
+func (s *Store) itemHasDoneFieldTx(tx *sql.Tx, itemID string) (bool, error) {
+	var schemaJSON, settingsJSON string
+	if err := tx.QueryRow(s.q(`SELECT c.schema, c.settings FROM collections c JOIN items i ON i.collection_id=c.id WHERE i.id=?`), itemID).Scan(&schemaJSON, &settingsJSON); err != nil {
+		return false, fmt.Errorf("item done field: %w", err)
+	}
+	var schema models.CollectionSchema
+	if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
+		return false, fmt.Errorf("item done field schema: %w", err)
+	}
+	var settings models.CollectionSettings
+	if settingsJSON != "" {
+		if err := json.Unmarshal([]byte(settingsJSON), &settings); err != nil {
+			return false, fmt.Errorf("item done field settings: %w", err)
+		}
+	}
+	key := models.DoneFieldKey(schema, settings)
+	for _, field := range schema.Fields {
+		if field.Key == key && field.Type == "select" {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // itemOpenTx reads whether the item is non-terminal through a filter loaded
