@@ -483,7 +483,7 @@ Authentication and workspace middleware retain their existing error codes and st
 
 ### Workspace agenda (TASK-4104)
 
-Schedule entries on both `/workspaces/{ws}/agenda` and `/me/agenda` include `agent_role_name` and `agent_role_slug` when the item has an agent role; both fields are omitted otherwise and are never included in calendar feeds (ICS).
+Schedule entries on both `/workspaces/{ws}/agenda` and `/me/agenda` include `agent_role_name` and `agent_role_slug` when the item has an agent role; both fields are omitted otherwise and are never included in calendar feeds (ICS). `priority_list` rows of type `schedule` (an outstanding occurrence) carry the same two fields and the schedule's `audience`; the agent bootstrap's `priority_list` rows are these rows, so they carry them too.
 
 Outstanding schedule entries and admitted priority/waiting rows may carry `forecast: {value, set_by, set_by_name?, set_by_kind, set_at, source}`. This display summary has no `passed` or `history`. `forecasts` lists every visible live schedule (not ended, not errored, item open) whose forecast falls in the window: a date by the day in `tz` [from-day, to-day], an instant in [from, to). Shape `{schedule_id, item_ref, item_title, collection, day, all_day?, forecast}`, earliest first, at most 500; `forecasts_complete: false` means more were not listed. Visibility is the same as for entries. The list never counts toward entry caps, `truncated`, `next_from` or `window_complete`. `forecasts` is always an array, empty when no forecasts match; `forecasts_complete` is always present. Only an explicitly hand-set forecast is shown; it never arms reminders or produces overdue/miss state.
 
