@@ -180,3 +180,23 @@ func TestRemindDismiss(t *testing.T) {
 		t.Fatalf("lost envelope: %s", marker.String())
 	}
 }
+
+func TestRemindDoneCloseItemJSON(t *testing.T) {
+	out, _, err, calls := runSched(t, endFlow(`["done"]`, 200), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item", "--format", "json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 3 || calls[2].method != "PATCH" {
+		t.Fatalf("calls=%+v", calls)
+	}
+	var body map[string]any
+	if err := json.Unmarshal([]byte(out), &body); err != nil {
+		t.Fatal(err)
+	}
+	resolution, _ := body["resolution"].(map[string]any)
+	closed, _ := body["item_closed"].(map[string]any)
+	commitment, _ := body["commitment"].(map[string]any)
+	if resolution["item_still_open"] == true || resolution["state"] != "done" || commitment["ended_at"] == nil || closed["field"] != "status" || closed["value"] != "done" {
+		t.Fatalf("JSON does not describe the completed close: %s", out)
+	}
+}

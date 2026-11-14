@@ -382,7 +382,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				req.OccurrenceAt = sv.NextOccurrence.At
 			}
 			raw, err := client.ResolveItemCommitment(ws, args[0], req)
-			closedWith := ""
+			closedWith, closedField := "", ""
 			if d, open := itemStillOpenDetailsOf(err); open {
 				if !wantClose {
 					return itemStillOpenHint(err, args[0], v.state, d)
@@ -398,7 +398,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				if _, uerr := client.UpdateItem(ws, args[0], models.ItemUpdate{FieldsPatch: map[string]any{d.DoneField: value}}); uerr != nil {
 					return fmt.Errorf("Marked done %s; the schedule has ended. Closing the item failed: %v. It stays open in Outstanding.", args[0], uerr)
 				}
-				closedWith = value
+				closedWith, closedField = value, d.DoneField
 			} else if err != nil {
 				return linkedResolveHint(err, args[0], "target", req.Until)
 			}
@@ -413,6 +413,17 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				fmt.Fprintf(cmd.ErrOrStderr(), "%s was not closed because the schedule continues.\n", args[0])
 			}
 			if formatFlag == "json" {
+				if closedWith != "" {
+					var body map[string]any
+					if err := json.Unmarshal(raw, &body); err != nil {
+						return err
+					}
+					if resolution, ok := body["resolution"].(map[string]any); ok {
+						resolution["item_still_open"] = false
+					}
+					body["item_closed"] = map[string]string{"field": closedField, "value": closedWith}
+					return cli.PrintJSON(body)
+				}
 				return cli.PrintJSON(raw)
 			}
 			line := resolveSentence(v.state, args[0], req, resp.Commitment)
