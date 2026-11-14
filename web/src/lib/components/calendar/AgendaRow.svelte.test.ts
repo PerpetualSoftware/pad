@@ -57,6 +57,18 @@ describe('AgendaRow', () => {
 		expect(forecast.getAttribute('title')).toBe('Forecast March 14, 2031 · set by Alex (agent)');
 		expect(forecast.textContent).toContain('2 days late'); expect(forecast.closest('.chip')).toBeNull();
 	});
+	it('keeps desktop pills separate from the action trail without duplicating them on a phone', () => {
+		const extra = { fired: true, roles: { ...roles, deadline: '2031-03-09T09:00:00Z', deadline_behavior: 'stays_owed' as const } };
+		const { row } = mount(extra);
+		expect(row.querySelectorAll('[data-kind="deadline"]')).toHaveLength(1);
+		expect(row.querySelector('.row-pills [data-kind="deadline"]')).not.toBeNull();
+		expect(row.querySelector('.trail [data-kind="deadline"]')).toBeNull();
+		expect(row.querySelector('.trail')?.contains(screen.getByRole('button', { name: 'Acknowledge TASK-1' }))).toBe(true);
+		cleanup();
+		const phone = mount(extra, { compact: true }).row;
+		expect(phone.querySelectorAll('[data-kind="deadline"]')).toHaveLength(1);
+		expect(phone.querySelector('.meta [data-kind="deadline"]')).not.toBeNull();
+	});
 	it('a past estimate adds no overdue, missed or passed chip', () => {
 		const { container } = mount({ forecast: { value: '2000-01-01', set_by: 'u1', set_by_kind: 'user', set_at: '2026-11-11T09:00:00Z', source: '' } });
 		expect(container.querySelector('[data-kind="forecast"]')).not.toBeNull();

@@ -111,19 +111,23 @@
 				</div>
 			{/if}
 		</div>
-		<div class="trail">
-			{#if !compact}{@render pills()}{/if}
-			{#if draggable && !compact}
-				<span class="grip" title="Drag to another day" aria-hidden="true">
-					<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></svg>
-				</span>
-			{/if}
-			{#if actionable}<OccurrenceActions {entry} {zone} {pending} {compact} disabled={saved} {onaction} />{/if}
+		<div class="row-end">
+			{#if !compact}<div class="row-pills">{@render pills()}</div>{/if}
+			<div class="trail">
+				{#if draggable && !compact}
+					<span class="grip" title="Drag to another day" aria-hidden="true">
+						<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></svg>
+					</span>
+				{/if}
+				{#if actionable}<OccurrenceActions {entry} {zone} {pending} {compact} disabled={saved} {onaction} />{/if}
+			</div>
 		</div>
 	{/if}
 </li>
 
 <style>
+	/* Query the list so rows adapt to a sidebar-sized column as well as a full page. */
+	:global(ul):has(> .agenda-row:not(.compact)) { container: agenda-list / inline-size; }
 	.agenda-row { display: grid; grid-template-columns: 64px 20px minmax(0, 1fr) auto; align-items: center; column-gap: var(--space-3); padding: 9px var(--space-4); min-height: 52px; list-style: none; }
 	.agenda-row[draggable='true'] { cursor: grab; }
 	.agenda-row.dragging { opacity: 0.45; }
@@ -140,7 +144,8 @@
 	.ack { display: inline-flex; gap: 6px; min-width: 0; color: var(--text-secondary); }
 	.ref { font-family: var(--font-mono); font-size: 11.5px; }
 	.inline-meta { flex: 0 0 auto; font-size: 12px; font-weight: 400; color: var(--text-muted); white-space: nowrap; }
-	.trail { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
+	.row-end { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); min-width: 0; }
+	.row-pills, .trail { display: contents; }
 	.chips { display: contents; }
 	.grip { color: var(--text-muted); opacity: 0; }
 	.agenda-row:hover .grip, .agenda-row.dragging .grip { opacity: 1; }
@@ -158,12 +163,28 @@
 	/* A forecast is an estimate: a dashed rule above it, not a filled band. */
 	[data-role='forecast'] { background: linear-gradient(to right, var(--border-strong) 50%, transparent 0) top / 8px 1px repeat-x; }
 
+	@container agenda-list (max-width: 720px) {
+		.agenda-row:not(.compact) { row-gap: var(--space-2); }
+		.agenda-row:not(.compact) .body { grid-column: 3; grid-row: 1; }
+		.agenda-row:not(.compact) .row-end { display: contents; }
+		/* Pills get their own line in the body column, without a second copy in the DOM. */
+		.agenda-row:not(.compact) .row-pills { display: flex; flex-wrap: wrap; gap: var(--space-2); grid-column: 3 / -1; grid-row: 2; min-width: 0; }
+		.agenda-row:not(.compact) .row-pills:has(> .chips:only-child:empty) { display: none; }
+		.agenda-row:not(.compact) .trail { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); grid-column: 4; grid-row: 1; }
+		.agenda-row:not(.compact) .ref { white-space: nowrap; }
+		.agenda-row:not(.compact) .inline-meta { white-space: normal; }
+	}
+	@container agenda-list (max-width: 600px) {
+		.agenda-row:not(.compact) .body { grid-column: 3 / -1; }
+		.agenda-row:not(.compact) .trail { grid-column: 3 / -1; grid-row: 3; flex-wrap: wrap; }
+	}
+
 	.compact { grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; padding: 10px 12px; min-height: 60px; }
 	.compact[data-density='quiet'], .compact[data-density='marker'] { min-height: 44px; }
 	.compact .title { flex-wrap: wrap; }
 	.compact .title a, .compact .untitled { white-space: normal; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; }
 	.compact .inline-meta { white-space: normal; }
-	.compact .trail { gap: 2px; }
+	.compact .row-end { gap: 2px; }
 	/* On a phone the attribution is a line of its own, with no separator to strand. */
 	.compact .ack { flex-basis: 100%; }
 	.ptime { color: var(--text-secondary); font-variant-numeric: tabular-nums; font-weight: 600; }
