@@ -14,9 +14,8 @@
 	// (dvh follows the phone's browser chrome) instead of a growing document.
 	let isThread = $derived(page.route?.id === '/messages/[n]');
 
-	// On a phone this page is standalone and is the document's <main>. On a desktop
-	// it renders inside the shell's <main>, so it is a plain region there (one main
-	// landmark per page).
+	// The root layout owns <main> on both phone and desktop. Standalone phone
+	// threads still size themselves to the viewport instead of the desktop shell.
 	let standalone = $derived(viewport.isMobile);
 
 	// A standalone phone thread fits the visual viewport while the soft keyboard is up,
@@ -52,8 +51,7 @@
 </script>
 
 {#if ready}
-	<svelte:element
-		this={standalone ? 'main' : 'div'}
+	<div
 		class="messages-main"
 		class:standalone
 		class:thread={isThread && chatSetting.enabled}
@@ -69,7 +67,7 @@
 		{:else}
 			<ChatOff />
 		{/if}
-	</svelte:element>
+	</div>
 {/if}
 
 <style>
@@ -101,8 +99,8 @@
 		padding: 0 0 env(safe-area-inset-bottom);
 	}
 
-	/* The bar below (GlobalBottomBar) takes its height, and the body's bottom padding
-	   under it, while it is shown; with the keyboard up the bar is gone. */
+	/* The bar below (GlobalBottomBar) reserves space in the root main-content
+	   while it is shown; with the keyboard up the bar is gone. */
 	.messages-main.thread.standalone {
 		height: 100dvh;
 	}

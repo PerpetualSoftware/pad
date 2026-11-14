@@ -7,9 +7,11 @@
 	import RosterRow from '$lib/components/chat/RosterRow.svelte';
 	import ConversationList from '$lib/components/chat/ConversationList.svelte';
 	import ChatEmptyState from '$lib/components/chat/ChatEmptyState.svelte';
+	import AccountButton from '$lib/components/layout/AccountButton.svelte';
 	import { chatEmptyKind } from '$lib/chat/emptyState';
 	import { chatInbox } from '$lib/stores/chatInbox.svelte';
 	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { uiStore } from '$lib/stores/ui.svelte';
 
 	// `variant` says where it renders: the /messages route, or the Chat host (dock
 	// or drawer) in the shell, which has its own Close.
@@ -52,12 +54,14 @@
 </script>
 
 {#snippet backLink()}<ChatBackLink />{/snippet}
+{#snippet accountAction()}<AccountButton />{/snippet}
 
 <!-- TASK-4515: the shared header row; the route puts its Back link where the thread's chevron goes. -->
 <ChatHeader
 	title="Chat"
 	onClose={variant === 'host' ? () => chatSurface.close() : undefined}
 	lead={variant === 'route' ? backLink : undefined}
+	actions={variant === 'route' && uiStore.isMobile ? accountAction : undefined}
 />
 
 <div class="pane">

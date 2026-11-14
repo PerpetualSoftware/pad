@@ -1,24 +1,11 @@
-<!--
-	YouSheet — the mobile "You" slot surface (PLAN-1694, TASK-1701).
-
-	A docked sheet (anchored above the nav) for ACCOUNT concerns only — the
-	workspace nav now lives in WorkspaceSheet. Profile header, theme toggle, and
-	the account actions carried over from the retired TopBar user menu
-	(Settings/Workspaces/Billing/Admin/Connect/Resources/Sign out).
-
-	Purpose-designed rows (no reused BottomSheet / dropdown). Resources reuse the
-	UserMenuResources link list (pure content) restyled to match.
--->
 <script lang="ts">
 	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
 	import { onMount } from 'svelte';
-	import { goto, afterNavigate } from '$app/navigation';
-	import { page } from '$app/state';
+	import { afterNavigate } from '$app/navigation';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { api } from '$lib/api/client';
 	import { avatarColor, avatarInitial } from '$lib/utils/avatar';
-	import ChatLink from '$lib/components/chat/ChatLink.svelte';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 	import UserMenuResources from '$lib/components/layout/UserMenuResources.svelte';
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
@@ -30,7 +17,6 @@
 	let userEmail = $derived(authStore.user?.email ?? '');
 
 	let connectOpen = $state(false);
-	let onAgenda = $derived(page.url.pathname === '/agenda' || page.url.pathname.startsWith('/agenda/'));
 
 	// Theme toggle — mirrors the app's mechanism (key 'pad-theme', data-theme).
 	let currentTheme = $state<'dark' | 'light'>('dark');
@@ -60,24 +46,20 @@
 		if (nav.type !== 'enter' && open) onclose();
 	});
 
-	function go(href: string) {
-		onclose();
-		goto(href);
-	}
-
 	async function handleLogout() {
 		// BUG-3571: unsaved edits in an open item are asked about first.
 		if (!(await confirmSignOut())) return;
 		try {
 			await signOutLogout(() => api.auth.logout());
 		} finally {
+			authStore.clear();
 			window.location.href = '/login';
 		}
 	}
 </script>
 
 <DockedSheet {open} {onclose} label="Account">
-	<div class="you">
+	<div class="account">
 		{#if authStore.user}
 			<div class="profile">
 				<span class="profile-avatar" style:background={avatarColor(userName || userEmail)}>
@@ -99,46 +81,24 @@
 					</span>
 				</button>
 
-				<a
-					class="row"
-					class:active={onAgenda}
-					href="/agenda"
-					aria-current={onAgenda ? 'page' : undefined}
-					onclick={onclose}
-				>
-					<span class="row-icon" aria-hidden="true">📅</span>
-					<span class="row-label">Agenda</span>
-					<span class="row-chev" aria-hidden="true">›</span>
-				</a>
-				<a class="row" href="/settings/account" onclick={onclose}>
+				<a class="row" href="/settings" onclick={onclose}>
 					<span class="row-icon" aria-hidden="true">⚙️</span>
-					<span class="row-label">Account settings</span>
-					<span class="row-chev" aria-hidden="true">›</span>
+					<span class="row-label">Settings</span><span class="row-chev" aria-hidden="true">›</span>
 				</a>
-				<ChatLink class="row" onclick={onclose}>
-					{#snippet lead()}<span class="row-icon" aria-hidden="true">💬</span>{/snippet}
-					{#snippet trail()}<span class="row-chev" aria-hidden="true">›</span>{/snippet}
-				</ChatLink>
-				<a class="row" href="/" onclick={onclose}>
-					<span class="row-icon" aria-hidden="true">🗂️</span>
-					<span class="row-label">Workspaces</span>
-					<span class="row-chev" aria-hidden="true">›</span>
-				</a>
-				<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
-				{#if authStore.commerceAllowed}
-					<a class="row" href="/settings/billing" onclick={onclose}>
-						<span class="row-icon" aria-hidden="true">💳</span>
-						<span class="row-label">Billing</span>
-						<span class="row-chev" aria-hidden="true">›</span>
-					</a>
-				{/if}
-				{#if authStore.user?.role === 'admin'}
-					<a class="row" href="/settings/admin" onclick={onclose}>
-						<span class="row-icon" aria-hidden="true">🛡️</span>
-						<span class="row-label">Admin</span>
-						<span class="row-chev" aria-hidden="true">›</span>
-					</a>
-				{/if}
+				<div class="settings-shortcuts">
+					<a href="/settings/account" onclick={onclose}>Account</a>
+					{#if authStore.oauthAvailable}
+						<a href="/settings/connected-apps" onclick={onclose}>Connected apps</a>
+					{/if}
+					<!-- Hidden in the mobile apps: no purchase path there (PLAN-3291 DR-3). -->
+					{#if authStore.commerceAllowed}
+						<a href="/settings/billing" onclick={onclose}>Billing</a>
+					{/if}
+					<a href="/settings/deleted-workspaces" onclick={onclose}>Deleted workspaces</a>
+					{#if authStore.user?.role === 'admin'}
+						<a href="/settings/admin" onclick={onclose}>Admin</a>
+					{/if}
+				</div>
 				{#if wsSlug}
 					<button
 						class="row"
@@ -179,7 +139,9 @@
 {/if}
 
 <style>
-	.you {
+	.settings-shortcuts { display: flex; flex-wrap: wrap; gap: var(--space-2); padding: 0 var(--space-3) var(--space-3) 44px; }
+	.settings-shortcuts a { border: 1px solid var(--border); border-radius: 99px; padding: var(--space-1) var(--space-3); font-size: .85em; color: var(--text-secondary); text-decoration: none; }
+	.account {
 		display: flex;
 		flex-direction: column;
 		padding: 0 var(--space-4) var(--space-2);
@@ -248,10 +210,6 @@
 	.rows :global(.row:hover) {
 		background: var(--bg-hover);
 		color: var(--text-primary);
-	}
-	.row.active {
-		color: var(--text-primary);
-		background: var(--bg-tertiary);
 	}
 	.row-icon {
 		font-size: 1.05em;

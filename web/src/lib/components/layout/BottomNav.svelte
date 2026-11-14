@@ -1,22 +1,34 @@
 <!--
-	BottomNav — mobile-only persistent bottom navigation (PLAN-1694).
+	BottomNav — the phone bar, everywhere a signed-in phone can be (PLAN-1694,
+	reworked in TASK-4546).
 
-	Five slots: Workspace · Search · Quick-capture (center ＋) · Chat · You.
-	"Workspace", "You", "Chat" and the center ＋ open docked sheets (DockedSheet) that
-	anchor ABOVE this bar, so the nav stays visible and the active slot stays lit.
-	Activity has no slot of its own: it is a tile in the Workspace sheet.
-	  - ChatHost's phone sheet — the Chat slot (ChatSlot) opens it, badge included.
-	  - WorkspaceSheet — switcher card + Navigate + Collections.
-	  - YouSheet — account (profile, theme, settings, sign out, …).
-	  - QuickCaptureSheet — pick a collection, type a title, create (BUG-1765).
-	Together with the contextual bar they replace the retired mobile <TopBar />
-	inside a workspace (PLAN-1694 Phase 2-3, redesigned in TASK-1701).
+	Five slots: Home · Workspace · Quick-capture (center ＋) · Chat · Search.
+	  - Home links to / and carries the Needs you count; it is active on the
+	    You pages (/, /needs, /agenda).
+	  - Workspace opens WorkspaceSheet (current workspace + Switch, Navigate,
+	    Collections) for the current or last workspace; with no workspace it
+	    goes to Home, which also offers workspace creation.
+	  - ＋ opens QuickCaptureSheet (BUG-1765); outside a workspace it captures
+	    into the last workspace.
+	  - Chat is ChatSlot (ChatHost's phone sheet); no slot while Chat is off.
+	  - Search opens the command palette.
+	The Account sheet opens from the avatar in the top bar (AccountButton), not
+	from this bar. phoneNav holds which docked sheet is open, so only one is.
 
-	Rendered in the workspace layout; shows only on mobile (uiStore.isMobile).
-	Toggles `body.has-bottom-nav` so app.css reflows .main-content.
+	The workspace layout mounts it directly; GlobalBottomBar mounts the same bar
+	outside a workspace. Shows only on mobile (uiStore.isMobile) when signed in.
+	Toggles `body.has-bottom-nav` so app.css reserves the bar's height.
 -->
 <script lang="ts">
-	import { onDestroy } from 'svelte';
+	import { onDestroy, untrack } from 'svelte';
+	import { goto, afterNavigate } from '$app/navigation';
+	import { authStore } from '$lib/stores/auth.svelte';
+	import { homeOverview } from '$lib/stores/homeOverview.svelte';
+	import { chatSetting } from '$lib/stores/chatSetting.svelte';
+	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
+	import { pickShellWorkspace } from '$lib/stores/shellWorkspace';
+	import { phoneNav } from './phoneNav.svelte';
 	import { page } from '$app/state';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -26,29 +38,29 @@
 	import ChatSlot from '$lib/components/layout/ChatSlot.svelte';
 	import QuickCaptureSheet from '$lib/components/layout/QuickCaptureSheet.svelte';
 	import WorkspaceSheet from '$lib/components/layout/WorkspaceSheet.svelte';
-	import YouSheet from '$lib/components/layout/YouSheet.svelte';
 
-	let wsSlug = $derived(workspaceStore.current?.slug);
-	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
+
+	let workspace = $derived(workspaceStore.current ?? pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs));
+	let inWorkspace = $derived(!!workspace && (page.url.pathname === `/${workspace.owner_username}/${workspace.slug}` || page.url.pathname.startsWith(`/${workspace.owner_username}/${workspace.slug}/`)));
+	let wsSlug = $derived(workspace?.slug);
+	let wsUsername = $derived(workspace?.owner_username ?? '');
 	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
-	let wsName = $derived(workspaceStore.current?.name ?? 'Workspace');
+	let wsName = $derived(workspace?.name ?? 'Workspace');
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 
-	let workspaceOpen = $state(false);
-	let youOpen = $state(false);
-	let captureOpen = $state(false);
+	let workspaceOpen = $derived(phoneNav.sheet === 'workspace');
+	let captureOpen = $derived(phoneNav.sheet === 'capture');
+	let homeActive = $derived(['/', '/needs', '/agenda'].includes(page.url.pathname));
 
 	// "Workspace" owns all in-workspace navigation, Activity included, so light it
 	// whenever the active page is workspace content.
-	let onWorkspaceContent = $derived(!!activeKey);
+	let onWorkspaceContent = $derived(!!activeKey && !uiStore.searchOpen && !captureOpen && !chatSurface.isOpen);
 
 	// Tap toggles: a second tap on the active slot closes its surface. Opening
-	// any of the surfaces (Workspace / You / Search / Quick-capture / Chat)
+	// any of the surfaces (Workspace / Account / Search / Quick-capture / Chat)
 	// closes the others (BUG-1765).
 	function closeAllSurfaces() {
-		workspaceOpen = false;
-		youOpen = false;
-		captureOpen = false;
+		phoneNav.sheet = null;
 		uiStore.closeSearch();
 	}
 	// With the Chat sheet open, another slot waits for Chat to close (its history
@@ -60,14 +72,7 @@
 		afterChat(() => {
 			const next = !workspaceOpen;
 			closeAllSurfaces();
-			workspaceOpen = next;
-		});
-	}
-	function toggleYou() {
-		afterChat(() => {
-			const next = !youOpen;
-			closeAllSurfaces();
-			youOpen = next;
+			if (next) { if (workspace) phoneNav.sheet = 'workspace'; else void goto('/'); }
 		});
 	}
 	function toggleSearch() {
@@ -84,23 +89,43 @@
 		afterChat(() => {
 			const next = !captureOpen;
 			closeAllSurfaces();
-			captureOpen = next;
+			if (next) phoneNav.sheet = 'capture';
 		});
 	}
+
+	function openHome(event: MouseEvent) {
+		closeAllSurfaces();
+		if (chatSurface.closeThen(() => void goto('/'))) event.preventDefault();
+	}
+	// Sole overview loader on phone You-page arrivals; Home only loads on desktop.
+	// Match YouNav's refresh policy without tracking loader-owned state.
+	let lastPath = '';
+	$effect(() => {
+		const path = page.url.pathname;
+		if (!uiStore.isMobile || !authStore.authenticated) return;
+		const arrived = path !== lastPath;
+		lastPath = path;
+		untrack(() => {
+			if (homeActive) { if (arrived) void homeOverview.load(path, true); }
+			else if (!homeOverview.needs && !homeOverview.agenda && !homeOverview.loading) void homeOverview.load('shell');
+		});
+	});
+	afterNavigate(nav => { if (!nav.shallow && nav.type !== 'enter') phoneNav.sheet = null; });
 
 	// Drive the .main-content reflow only while the bar is actually shown —
 	// mobile AND no keyboard up. app.css owns the media-gated padding rule;
 	// dropping the class while the keyboard hides the bar avoids a dead gap.
 	$effect(() => {
 		if (typeof document === 'undefined') return;
-		document.body.classList.toggle('has-bottom-nav', uiStore.isMobile && !uiStore.keyboardVisible);
+		document.body.classList.toggle('has-bottom-nav', uiStore.isMobile && authStore.authenticated && !uiStore.keyboardVisible);
 	});
 	onDestroy(() => {
 		if (typeof document !== 'undefined') document.body.classList.remove('has-bottom-nav');
+		phoneNav.sheet = null;
 	});
 </script>
 
-{#if uiStore.isMobile && wsPrefix}
+{#if uiStore.isMobile && authStore.authenticated}
 	<!--
 		Hide the bar while the on-screen keyboard is up so it doesn't sit
 		stranded above the keyboard (PLAN-1694 Phase 1). The docked sheets
@@ -109,6 +134,13 @@
 	-->
 	{#if !uiStore.keyboardVisible}
 	<nav class="bottom-nav" aria-label="Primary">
+		<a class="bn-item" class:active={homeActive} href="/" aria-current={homeActive ? 'page' : undefined} onclick={openHome}>
+			<span class="bn-icon bn-home" aria-hidden="true">🏠
+				{#if homeOverview.needs?.total}<span class="needs-count">{homeOverview.needs.total}</span>{/if}
+			</span>
+			<span class="bn-label">Home</span>
+			{#if homeOverview.needs?.total}<span class="sr-only">{homeOverview.needs.total} need you</span>{/if}
+		</a>
 		<button
 			class="bn-item"
 			class:active={onWorkspaceContent || workspaceOpen}
@@ -124,18 +156,6 @@
 		</button>
 
 		<button
-			class="bn-item"
-			class:active={uiStore.searchOpen}
-			type="button"
-			onclick={toggleSearch}
-			aria-haspopup="dialog"
-			aria-expanded={uiStore.searchOpen}
-		>
-			<span class="bn-icon" aria-hidden="true">🔍</span>
-			<span class="bn-label">Search</span>
-		</button>
-
-		<button
 			class="bn-item bn-capture"
 			class:active={captureOpen}
 			type="button"
@@ -147,34 +167,37 @@
 			<span class="bn-capture-plus" aria-hidden="true">＋</span>
 		</button>
 
-		<ChatSlot onopen={closeAllSurfaces} />
+		{#if chatSetting.enabled}<ChatSlot onopen={closeAllSurfaces} />{/if}
 
 		<button
 			class="bn-item"
-			class:active={youOpen}
+			class:active={uiStore.searchOpen}
 			type="button"
-			onclick={toggleYou}
+			onclick={toggleSearch}
 			aria-haspopup="dialog"
-			aria-expanded={youOpen}
+			aria-expanded={uiStore.searchOpen}
 		>
-			<span class="bn-icon" aria-hidden="true">👤</span>
-			<span class="bn-label">You</span>
+			<span class="bn-icon" aria-hidden="true">🔍</span>
+			<span class="bn-label">Search</span>
 		</button>
+
 	</nav>
 	{/if}
 
-	<WorkspaceSheet open={workspaceOpen} onclose={() => (workspaceOpen = false)} />
-	<YouSheet open={youOpen} onclose={() => (youOpen = false)} />
+	<WorkspaceSheet open={workspaceOpen} onclose={() => (phoneNav.sheet = null)} />
 
 	<QuickCaptureSheet
 		open={captureOpen}
-		onclose={() => (captureOpen = false)}
-		{wsSlug}
-		{wsPrefix}
+		onclose={() => (phoneNav.sheet = null)}
+		wsSlug={inWorkspace ? wsSlug : undefined}
+		wsPrefix={inWorkspace ? wsPrefix : ''}
 	/>
 {/if}
 
 <style>
+	.bn-home { position: relative; }
+	.needs-count { position: absolute; top: -7px; left: 60%; font-size: .65rem; font-weight: 700; min-width: 18px; padding: 2px 4px; border-radius: 99px; background: var(--accent-amber); color: var(--bg-primary); }
+
 	.bottom-nav {
 		position: fixed;
 		bottom: 0;
@@ -187,6 +210,10 @@
 		padding-bottom: env(safe-area-inset-bottom, 0px);
 		background: var(--bg-secondary);
 		border-top: 1px solid var(--border);
+	}
+	.bottom-nav :global(.bn-item) {
+		font-size: 1rem;
+		line-height: 1.2;
 	}
 	.bn-item {
 		flex: 1;
@@ -206,6 +233,13 @@
 	}
 	.bn-item.active {
 		color: var(--text-primary);
+	}
+	.bottom-nav :global(.bn-icon), .bn-avatar {
+		height: 22px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
 	}
 	.bn-icon {
 		font-size: 1.2em;

@@ -18,14 +18,14 @@ import { resolve } from 'node:path';
 
 function logoutBody(file: string): string {
 	const src = readFileSync(resolve(__dirname, file), 'utf8').replace(/^[ \t]*\/\/.*$/gm, '');
-	const start = src.indexOf('async function logout()');
+	const start = src.indexOf('async function handleLogout()');
 	expect(start, `${file} no longer declares logout()`).toBeGreaterThan(-1);
 	return src.slice(start, src.indexOf('\n\t}', start));
 }
 
 describe('console sign-out', () => {
 	it('hard-navigates rather than using goto', () => {
-		const body = logoutBody('./+layout.svelte');
+		const body = logoutBody('../../lib/components/layout/AccountSheet.svelte');
 		expect(body).toContain("window.location.href = '/login'");
 		expect(body).not.toContain('goto(');
 	});
@@ -33,7 +33,7 @@ describe('console sign-out', () => {
 	it('still clears the auth store first', () => {
 		// Order matters: `clear()` is what fires the identity listeners that run
 		// the persistent clears, and a navigation started first can cut them off.
-		const body = logoutBody('./+layout.svelte');
+		const body = logoutBody('../../lib/components/layout/AccountSheet.svelte');
 		expect(body.indexOf('authStore.clear()')).toBeLessThan(body.indexOf('window.location.href'));
 	});
 

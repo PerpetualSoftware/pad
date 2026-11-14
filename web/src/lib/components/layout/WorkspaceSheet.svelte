@@ -1,13 +1,10 @@
 <!--
 	WorkspaceSheet — the mobile "Workspace" slot surface (PLAN-1694, TASK-1701).
 
-	A docked sheet (DockedSheet, anchored above the nav) for moving around the
-	current workspace: a Navigate tile grid (Dashboard/Activity/Insights/Roles/
-	Starred/Tags/Settings) and the Collections list.
-
-	The workspace *switcher* used to live here as a card; IDEA-1835 moved it to
-	the persistent top bar (MobileContextBar), so this sheet is now navigation
-	only. The bottom-nav slot keeps its "Workspace" label and avatar.
+	A docked sheet (DockedSheet, anchored above the nav): the current workspace
+	with a Switch button (WorkspaceSwitcher in card mode, TASK-4546), then a
+	Navigate tile grid (Dashboard/Activity/Insights/Roles/Starred/Tags/Settings)
+	and the Collections list.
 -->
 <script lang="ts">
 	import { page } from '$app/state';
@@ -17,6 +14,7 @@
 	import { isAgentCollection } from '$lib/types';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { getPrimaryDestinations, getActiveKey } from '$lib/nav/destinations';
+	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
 
 	let { open, onclose }: { open: boolean; onclose: () => void } = $props();
@@ -57,6 +55,7 @@
 
 <DockedSheet {open} {onclose} label="Workspace">
 	<div class="ws">
+		<WorkspaceSwitcher mobile card />
 		<!-- Navigate -->
 		<div class="ws-label">Navigate</div>
 		<div class="ws-grid">

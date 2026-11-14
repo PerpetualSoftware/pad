@@ -32,6 +32,7 @@
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import ChatHost from '$lib/components/chat/ChatHost.svelte';
+	import MobileYouBar from '$lib/components/layout/MobileYouBar.svelte';
 	import GlobalBottomBar from '$lib/components/layout/GlobalBottomBar.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
@@ -88,12 +89,12 @@
 	);
 
 	// Inside a workspace route ([username]/[workspace]/…) the mobile chrome is
-	// the BottomNav + YouSheet + contextual bar (PLAN-1694 Phase 2-3), so the
+	// the BottomNav + AccountSheet + contextual bar (PLAN-1694 Phase 2-3), so the
 	// global mobile <TopBar /> is retired there. It's kept for non-workspace
-	// shell pages (the workspace picker / user home) which have no BottomNav.
+	// shell pages; You pages use MobileYouBar and the shared bottom bar.
 	let inWorkspace = $derived(!!page.params.workspace);
 	$effect(() => {
-		if (uiStore.isMobile || inWorkspace || !authReady || !authStore.authenticated) return;
+		if (inWorkspace || !authReady || !authStore.authenticated) return;
 		const ws = pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs);
 		if (ws) untrack(() => {
 			if (workspaceStore.current?.id !== ws.id) void workspaceStore.setCurrent(ws);
@@ -101,7 +102,7 @@
 		});
 	});
 
-	let showMobileTopbar = $derived(uiStore.isMobile && !inWorkspace && !isMessagesPage);
+	let showMobileTopbar = $derived(uiStore.isMobile && !inWorkspace && !isMessagesPage && !isConsolePage);
 
 	// `body.has-mobile-topbar` gates the .app-layout top padding in app.css so
 	// the offset only applies when the fixed mobile TopBar is actually rendered.
@@ -442,23 +443,14 @@
 {:else if isAuthPage || isSharePage}
 	{@render children()}
 {:else if (isConsolePage || isMessagesPage) && uiStore.isMobile}
-	<!--
-		Console pages (and /messages on a phone, the chat inbox, which has no
-		workspace shell there) render their own chrome and bypass the app shell
-		below, but they still need the global CreateWorkspaceModal +
-		toast surface — the / "Create Workspace" CTA and the
-		/?openCreate=1 redirect (TASK-1529) both fire
-		`uiStore.openCreateWorkspace()`, which is a no-op unless the
-		modal is actually mounted somewhere in the tree.
-
-		On a desktop /messages the shell below renders, so Chat keeps Pad's chrome
-		(TASK-4315). The page is wrapped so an open Chat drawer can make it inert
-		without remounting it; the Chat host itself sits outside the wrapper.
-	-->
-	<div style="display: contents" inert={coveredPage.active}>
+	<!-- Phone You pages and standalone messages keep the document scroller.
+	     The header, chat host, search palette and bar sit outside covered content. -->
+	{#if isConsolePage}<MobileYouBar />{/if}
+	<main class="main-content" inert={coveredPage.active}>
 		{@render children()}
-	</div>
+	</main>
 	<ChatHost />
+	<CommandPalette />
 	<!-- The compact phone bar: a sibling of the host, outside the inert wrapper above, so it stays live under the Chat sheet. -->
 	<GlobalBottomBar />
 	<CreateWorkspaceModal
@@ -474,7 +466,7 @@
 	{#if showMobileTopbar}
 		<!--
 			Inside a workspace the mobile header is retired in favour of BottomNav
-			+ YouSheet + contextual bar (PLAN-1694 Phase 2-3); this is gated on
+			+ AccountSheet + contextual bar (PLAN-1694 Phase 2-3); this is gated on
 			`!inWorkspace` so it only serves non-workspace shell pages (the
 			workspace picker / user home), which have no BottomNav.
 

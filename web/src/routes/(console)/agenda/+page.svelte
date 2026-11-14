@@ -938,6 +938,8 @@
 		.rail.single { grid-template-columns: minmax(0, 1fr); max-width: 420px; }
 	}
 	@media (max-width: 768px) {
+		/* The rail is in normal flow at phone widths; .main-content reserves the
+		   day list, rail and month view together. The drag bar is desktop-only. */
 		.layout { margin-top: var(--space-4); }
 		.rail, .rail.single { grid-template-columns: minmax(0, 1fr); max-width: none; }
 		.card.below { max-width: none; }

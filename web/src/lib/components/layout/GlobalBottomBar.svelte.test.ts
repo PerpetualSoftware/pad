@@ -6,11 +6,15 @@ import { tick, flushSync } from 'svelte';
 import { cs, parked, chatSurfaceMock } from './chatSurfaceMock.fixture.svelte';
 import { kb } from '../../chat/uiKeyboard.fixture.svelte';
 
-const h = vi.hoisted(() => ({ chatOn: true, authed: true, goto: vi.fn() }));
+const h = vi.hoisted(() => ({ chatOn: true, authed: true, hasWorkspace: true, goto: vi.fn() }));
+vi.mock('$lib/stores/homeOverview.svelte', () => ({ homeOverview: { needs: { total: 7 }, load: vi.fn() } }));
+vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { get current() { return h.hasWorkspace ? { slug: 'ws', owner_username: 'u', name: 'WS' } : null; } } }));
+vi.mock('$lib/components/layout/WorkspaceSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
+vi.mock('$lib/components/layout/QuickCaptureSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
 vi.mock('$app/state', () => ({ page: { url: new URL('http://localhost/') } }));
 vi.mock('$app/navigation', () => ({ goto: h.goto, afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/ui.svelte', () => ({
-	uiStore: {
+	uiStore: { closeSearch: vi.fn(), openSearch: vi.fn(), onNavigate: vi.fn(),
 		get isMobile() {
 			return kb.mobile;
 		},
@@ -28,7 +32,6 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		onIdentityChange: () => () => {}
 	}
 }));
-vi.mock('$lib/components/layout/YouSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
 vi.mock('$lib/stores/chatSurface.svelte', async () => ({
 	chatSurface: (await import('./chatSurfaceMock.fixture.svelte')).chatSurfaceMock
 }));
@@ -49,7 +52,7 @@ const label = (b: HTMLElement) => b.getAttribute('aria-label') ?? b.querySelecto
 beforeEach(() => {
 	cleanup();
 	h.chatOn = true;
-	h.authed = true;
+	h.authed = true; h.hasWorkspace = true;
 	h.goto.mockClear();
 	kb.mobile = true;
 	kb.visible = false;
@@ -68,10 +71,10 @@ afterEach(() => {
 });
 
 describe('GlobalBottomBar', () => {
-	it('has Workspaces (to /), Chat and You', async () => {
+	it('shares the five-slot phone bar', async () => {
 		render(GlobalBottomBar);
 		await tick();
-		expect(items().map(label)).toEqual(['Workspaces', 'Chat', 'You']);
+		expect(items().map(label)).toEqual(['Home', 'Workspace', 'Quick capture', 'Chat', 'Search']);
 		expect(document.querySelector<HTMLAnchorElement>('nav.bottom-nav a')!.getAttribute('href')).toBe('/');
 		expect(document.querySelector('nav.bottom-nav')!.getAttribute('aria-label')).toBe('Primary');
 	});
@@ -89,7 +92,7 @@ describe('GlobalBottomBar', () => {
 		h.chatOn = false;
 		render(GlobalBottomBar);
 		await tick();
-		expect(items().map(label)).toEqual(['Workspaces', 'You']);
+		expect(items().map(label)).toEqual(['Home', 'Workspace', 'Quick capture', 'Search']);
 	});
 
 	it('renders nothing when signed out', async () => {
@@ -134,11 +137,11 @@ describe('GlobalBottomBar', () => {
 		expect(chatSurfaceMock.open).toHaveBeenCalledWith('/messages');
 	});
 
-	it('You waits for an open Chat to close, then opens', async () => {
+	it('Workspace waits for an open Chat to close, then opens', async () => {
 		cs.open = true;
 		render(GlobalBottomBar);
 		await tick();
-		const you = items().find((b) => label(b) === 'You')!;
+		const you = items().find((b) => label(b) === 'Workspace')!;
 		you.click();
 		flushSync();
 		expect(you.getAttribute('aria-expanded')).toBe('false');
@@ -148,7 +151,7 @@ describe('GlobalBottomBar', () => {
 		expect(you.getAttribute('aria-expanded')).toBe('true');
 	});
 
-	it('Workspaces waits for an open Chat to close, then goes', async () => {
+	it('Home waits for an open Chat to close, then goes', async () => {
 		cs.open = true;
 		render(GlobalBottomBar);
 		await tick();
@@ -157,4 +160,11 @@ describe('GlobalBottomBar', () => {
 		parked.shift()!();
 		expect(h.goto).toHaveBeenCalledWith('/');
 	});
+});
+
+it('Workspace goes to the picker when no workspace exists', async () => {
+ h.hasWorkspace = false;
+ render(GlobalBottomBar); await tick();
+ items().find(b => label(b) === 'Workspace')!.click();
+ expect(h.goto).toHaveBeenCalledWith('/');
 });

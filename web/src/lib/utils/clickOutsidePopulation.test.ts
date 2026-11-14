@@ -16,7 +16,6 @@ const POPULATION = [
 	'lib/components/collections/BoardView.svelte',
 	'lib/components/common/EmojiPickerButton.svelte',
 	'lib/components/timeline/ReactionPicker.svelte',
-	'routes/(console)/+layout.svelte',
 ];
 
 // A RETIRED member. TopBar's member was the workspace overflow menu, deleted
@@ -24,7 +23,8 @@ const POPULATION = [
 // is on the shared Menu primitive. It no longer has a menu of its own to
 // dismiss, so it is held to the half of the rule that still applies: no
 // click-based outside closer comes back.
-const RETIRED = ['lib/components/layout/TopBar.svelte'];
+// The phone console menu is now visible tabs plus the shared Account sheet.
+const RETIRED = ['lib/components/layout/TopBar.svelte', 'routes/(console)/+layout.svelte'];
 
 // A click listener on the window or document: the closer shape this replaced.
 const CLICK_CLOSER = [

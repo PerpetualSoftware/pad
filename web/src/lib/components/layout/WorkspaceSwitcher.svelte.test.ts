@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, cleanup, fireEvent, screen } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 const mocks = vi.hoisted(() => ({
@@ -82,4 +82,20 @@ describe('mobile WorkspaceSwitcher', () => {
 		expect(mocks.tabs.open).toHaveBeenCalledWith('beta', false);
 		expect(mocks.goto).toHaveBeenCalledWith('/u/beta/docs');
 	});
+});
+
+
+it('offers Create workspace in the phone switcher and opens the create modal', async () => {
+	const { uiStore } = await import('$lib/stores/ui.svelte');
+	const create = vi.spyOn(uiStore, 'openCreateWorkspace');
+	await mount([]);
+	await fireEvent.click(screen.getByRole('button', { name: /Create workspace/i }));
+	expect(create).toHaveBeenCalledTimes(1);
+	create.mockRestore();
+});
+
+it.each([1, 4])('formats the workspace card role and %i workspace count separately', async count => {
+	mocks.workspaces = Array.from({ length: count }, (_, i) => ws(String(i), 'Workspace'));
+	render(WorkspaceSwitcher, { mobile: true, card: true, current: { ...ws('alpha', 'Alpha'), is_guest: true } as never });
+	expect(document.querySelector('.workspace-meta small')).toHaveTextContent(`Guest · ${count} ${count === 1 ? 'workspace' : 'workspaces'}`);
 });

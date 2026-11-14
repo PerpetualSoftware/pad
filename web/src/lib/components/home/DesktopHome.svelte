@@ -8,6 +8,7 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import NeedsRowView from '$lib/components/needs/NeedsRow.svelte';
 	import AgendaWeekStrip from '$lib/components/calendar/AgendaWeekStrip.svelte';
@@ -51,7 +52,14 @@
 		workspaceError = false;
 		try { await workspaceStore.ensureAll(); } catch { workspaceError = true; }
 	}
-	onMount(() => { void homeOverview.load('/'); void loadWorkspaces(); });
+	// BottomNav owns overview refreshes on phone arrivals, including /.
+	// Keep the desktop loading policy unchanged (TASK-4559 is separate).
+	onMount(() => {
+		if (!viewport.isMobile) void homeOverview.load('/');
+		else void pendingInvitations.refresh();
+		void loadWorkspaces();
+	});
+	const needsLimit = $derived(viewport.isMobile ? 2 : 4);
 	async function snooze(row: NeedsRow, body: NeedsSnoozeRequest) {
 		const key = needKey(row); if (busy[key]) return;
 		const sameIdentity = authStore.identityFence(); busy = { ...busy, [key]: true }; actionError = '';
@@ -85,24 +93,24 @@
 <div class="home">
 	<header class="greeting">
 		<h1>{greeting}</h1>
-		<div class="summary"><p>{date} · <strong>{homeOverview.needs?.total ?? '…'}</strong> need you · <strong>{owed}</strong> owed today · <strong>{pastDeadline}</strong> past deadline</p><a href="/agenda">Open the full agenda →</a></div>
+		<div class="summary"><p><span class="summary-date">{date} · </span><strong>{homeOverview.needs?.total ?? '…'}</strong> need you · <strong>{owed}</strong> owed today · <strong>{pastDeadline}</strong> past deadline</p><a href="/agenda">Open the full agenda →</a></div>
 	</header>
 	{#if homeOverview.error}<p role="alert">{homeOverview.error} <button onclick={() => homeOverview.load('/', true)}>Retry</button></p>{/if}
 	{#if actionError}<p role="alert">{actionError}</p>{/if}
-	<AgendaWeekStrip {days} {today} {entries} {zone} dragging={null} hoverDay="" onselect={openAgenda} onenter={() => {}} ondrop={() => {}} loadState={() => homeOverview.loading ? 'none' : homeOverview.agenda?.window_complete === false ? 'partial' : 'full'} />
+	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} {entries} {zone} dragging={null} hoverDay="" onselect={openAgenda} onenter={() => {}} ondrop={() => {}} loadState={() => homeOverview.loading ? 'none' : homeOverview.agenda?.window_complete === false ? 'partial' : 'full'} />
 	<div class="overview-columns">
 		<section class="panel needs-panel" aria-label="Needs you">
 			<header><h2>Needs you <span class="badge">{homeOverview.needs?.total ?? '…'}</span></h2><span class="sort">Oldest waiting</span></header>
-			<ul>{#each homeOverview.needs?.rows.slice(0,4) ?? [] as row (needKey(row))}
-				<NeedsRowView {row} showWorkspace view="active" busy={!!busy[needKey(row)]} menuOpen={menu === needKey(row)} onmenu={open => menu = open ? needKey(row) : ''} ondismiss={row => snooze(row, { kind: 'dismiss' })} ondefer={(row, defer_until) => snooze(row, { kind: 'defer', defer_until })} onrestore={() => {}} />
+			<ul>{#each homeOverview.needs?.rows.slice(0, needsLimit) ?? [] as row (needKey(row))}
+				<NeedsRowView compact={viewport.isMobile} {row} showWorkspace view="active" busy={!!busy[needKey(row)]} menuOpen={menu === needKey(row)} onmenu={open => menu = open ? needKey(row) : ''} ondismiss={row => snooze(row, { kind: 'dismiss' })} ondefer={(row, defer_until) => snooze(row, { kind: 'defer', defer_until })} onrestore={() => {}} />
 			{/each}</ul>
 			{#if !homeOverview.loading && homeOverview.needs?.total === 0}<p class="empty">Nothing needs you right now.</p>{/if}
-			<footer><span>{Math.max(0, (homeOverview.needs?.total ?? 0) - Math.min(4, homeOverview.needs?.rows.length ?? 0))} more, across {homeOverview.needs?.workspaces.length ?? 0} workspaces</span><a href="/needs">See all {homeOverview.needs?.total ?? 0} →</a></footer>
+			<footer><span>{Math.max(0, (homeOverview.needs?.total ?? 0) - Math.min(needsLimit, homeOverview.needs?.rows.length ?? 0))} more<span class="workspace-count">, across {homeOverview.needs?.workspaces.length ?? 0} workspaces</span></span><a href="/needs">See all {homeOverview.needs?.total ?? 0} →</a></footer>
 		</section>
 		<section class="panel today-panel" aria-label="Today">
 			<header><h2>Today <span class="today-date">{new Intl.DateTimeFormat('en-US', {weekday:'short', day:'numeric',timeZone:zone}).format(new Date())}</span></h2><AudienceToggle value={audience} {counts} onchange={value => audience = value} /></header>
-			{#if attention.length}<h3>{pastDeadline ? 'Past deadline' : 'Needs attention'}</h3><ul>{#each attention as entry (entryKey(entry))}<AgendaRow {entry} {zone} {audience} showDay pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>{/if}
-			<h3>Today</h3><ul>{#each todayRows as entry (entryKey(entry))}<AgendaRow {entry} {zone} {audience} pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>
+			{#if attention.length}<h3>{pastDeadline ? 'Past deadline' : 'Needs attention'}</h3><ul>{#each attention as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} showDay pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>{/if}
+			<h3>Today</h3><ul>{#each todayRows as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>
 			{#if !homeOverview.loading && !todayRows.length}<p class="empty">Nothing scheduled today.</p>{/if}
 			<footer><span>Agents: {agents.length} reminders today, {agents.filter(e => isOpenState(e.state)).length} owed, {agents.filter(e => e.state === 'missed' || e.state === 'lapsed').length} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
@@ -144,4 +152,18 @@
 	.workspace-card strong { display: flex; align-items: center; gap: var(--space-2); color: var(--text-primary); font-size: .9rem; }
 	.avatar { display: inline-flex; align-items: center; justify-content: center; background: var(--accent-purple); color: var(--bg-primary); width: 22px; height: 22px; border-radius: var(--radius-sm); }
 	@media (max-width: 1100px) { .overview-columns { grid-template-columns: 1fr; } .workspace-cards { grid-template-columns: repeat(2,minmax(0,1fr)); } }
+	@media (max-width: 768px) {
+		.home { gap: var(--space-3); }
+		.summary { font-size: 1rem; }
+		.summary-date, .summary > a, .sort, .workspace-count { display: none; }
+		.overview-columns { gap: var(--space-4); }
+		.panel > header { padding: var(--space-3) var(--space-4); min-height: 46px; }
+		.today-panel > header { flex-wrap: wrap; }
+		.today-panel h2 { white-space: nowrap; }
+		.today-panel :global(.seg .count) { display: none; }
+		.today-panel :global(.seg .option) { padding-inline: var(--space-3); }
+		footer { padding-inline: var(--space-4); }
+		.today-panel footer, .workspaces > header { flex-wrap: wrap; }
+		.workspace-cards { grid-template-columns: 1fr; }
+	}
 </style>

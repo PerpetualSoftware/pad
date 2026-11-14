@@ -29,7 +29,7 @@ const GATED = new Set([
 	// TASK-3601: the plan-limit prompt's copy; the model takes commerceAllowed.
 	'lib/billing/planLimitPrompt.ts',
 	'lib/components/layout/TopBar.svelte',
-	'lib/components/layout/YouSheet.svelte',
+	'lib/components/layout/AccountSheet.svelte',
 	'routes/(console)/settings/+layout.svelte',
 	'routes/(console)/settings/account/+page.svelte',
 	'routes/(console)/settings/billing/+page.svelte',
@@ -103,7 +103,7 @@ describe('no commerce outside the commerceAllowed gate', () => {
 	// Billing link is pinned structurally: its opening tag sits directly under
 	// the commerceAllowed block, comments aside.
 	it('the account menus open their Billing link directly under commerceAllowed', () => {
-		for (const rel of ['lib/components/layout/TopBar.svelte', 'lib/components/layout/YouSheet.svelte']) {
+		for (const rel of ['lib/components/layout/TopBar.svelte', 'lib/components/layout/AccountSheet.svelte']) {
 			const lines = files.find((f) => f.rel === rel)!.text.split('\n');
 			const at = lines.findIndex((l) => /href="\/settings\/billing"/.test(l));
 			expect(at, rel).toBeGreaterThan(0);

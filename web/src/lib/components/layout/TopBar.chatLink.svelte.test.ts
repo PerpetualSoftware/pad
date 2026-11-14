@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 
+vi.mock('$lib/stores/breakpoint.svelte', () => ({ viewport: { isMobile: true, isCoarsePointer: false }, MOBILE_MEDIA_QUERY: '(max-width: 768px)' }));
 const h = vi.hoisted(() => ({ chatOn: true }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(async () => {}), afterNavigate: vi.fn() }));
 vi.mock('$lib/api/client', () => ({
@@ -84,10 +85,11 @@ describe('desktop TopBar (TASK-4545)', () => {
 		expect(labels).toEqual(['Settings', 'Light mode', 'Keyboard shortcuts', 'GitHub', 'Community', 'Docs', 'Tutorials', 'Connect a project…', 'Sign out']);
 		expect(document.querySelector('.user-dropdown-email')?.textContent).toBe('ada@example.com');
 	});
-	it('keeps the phone account menu', async () => {
+	it('opens the phone Account sheet without a Chat row', async () => {
 		render(TopBar, { mobile: true }); await settle();
-		trigger().click(); await settle();
-		expect(row()).not.toBeNull();
+		document.querySelector<HTMLButtonElement>('button[aria-label="Account"]')!.click(); await settle();
+		expect(document.querySelector('[role="dialog"][aria-label="Account"]')).not.toBeNull();
+		expect(row()).toBeNull();
 	});
 });
 
@@ -96,3 +98,18 @@ it('the phone bar is unchanged: no Chat button', async () => {
 	await settle();
 	expect(document.querySelector('header.topbar a.chat-button')).toBeNull();
 });
+
+if (!('animate' in Element.prototype)) {
+	(Element.prototype as unknown as { animate: unknown }).animate = function () {
+		const animation = {
+			onfinish: null as null | (() => void),
+			cancel() {},
+			finish() {},
+			currentTime: 0,
+			addEventListener() {},
+			finished: Promise.resolve()
+		};
+		queueMicrotask(() => animation.onfinish?.());
+		return animation;
+	};
+}
