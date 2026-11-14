@@ -20,11 +20,13 @@ const AgendaMaxPerSchedule = 100
 
 // AgendaSchedule is a schedule with the facts of its item the agenda shows.
 type AgendaSchedule struct {
-	Schedule    *models.ItemSchedule
-	ItemRef     string
-	ItemTitle   string
-	Collection  string // slug
-	RolesOrigin string
+	Schedule      *models.ItemSchedule
+	ItemRef       string
+	ItemTitle     string
+	Collection    string // slug
+	RolesOrigin   string
+	AgentRoleName string
+	AgentRoleSlug string
 	// Terminal is set by agenda and calendar admission: the item is in a
 	// terminal status of its collection.
 	Terminal bool
@@ -176,22 +178,24 @@ func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneAr
 		terminalSQL = "CASE WHEN " + doneSQL + " THEN 1 ELSE 0 END"
 		iargs = append(iargs, doneArgs...)
 	}
-	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number, `+terminalSQL+`
-		FROM items i JOIN collections c ON c.id = i.collection_id WHERE i.id IN (`+placeholders(len(ids))+`)`), append(iargs, ids...)...)
+	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number, `+terminalSQL+`, COALESCE(ar.name, ''), COALESCE(ar.slug, '')
+		FROM items i JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id WHERE i.id IN (`+placeholders(len(ids))+`)`), append(iargs, ids...)...)
 	if err != nil {
 		return fmt.Errorf("read agenda items: %w", err)
 	}
 	defer irows.Close()
 	for irows.Next() {
-		var id, title, slug, coll, prefix string
+		var id, title, slug, coll, prefix, roleName, roleSlug string
 		var number *int64
 		var terminal int
-		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number, &terminal); err != nil {
+		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number, &terminal, &roleName, &roleSlug); err != nil {
 			return fmt.Errorf("scan agenda item: %w", err)
 		}
 		a := byID[id]
 		a.ItemTitle, a.Collection, a.ItemRef = title, coll, slug // a legacy item has no ref
 		a.Terminal = terminal == 1
+		a.AgentRoleName, a.AgentRoleSlug = roleName, roleSlug
 		if number != nil {
 			a.ItemRef = fmt.Sprintf("%s-%d", prefix, *number)
 		}
@@ -485,14 +489,17 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 
 // AgendaForecast is a live schedule forecast, independent of occurrence admission.
 type AgendaForecast struct {
-	ScheduleID string
-	ItemID     string
-	ItemRef    string
-	ItemTitle  string
-	Collection string
-	Day        string
-	AllDay     bool
-	Forecast   models.ForecastSummary
+	ScheduleID    string
+	ItemID        string
+	ItemRef       string
+	ItemTitle     string
+	Collection    string
+	Day           string
+	AllDay        bool
+	Audience      string
+	AgentRoleName string
+	AgentRoleSlug string
+	Forecast      models.ForecastSummary
 }
 
 // ListForecastsForAgenda reads visible open schedules whose forecasts fall in
@@ -509,10 +516,12 @@ func (s *Store) ListForecastsForAgenda(workspaceID string, scope PendingReminder
 	args = append(args, openArgs...)
 	args = append(args, from.Add(-24*time.Hour).UTC().Format("2006-01-02"), to.Add(48*time.Hour).UTC().Format("2006-01-02"))
 	rows, err := s.db.Query(s.q(`SELECT f.schedule_id, i.id, i.title, i.slug, c.slug, c.prefix, i.item_number,
-  f.value, f.set_by, COALESCE(u.name,''), f.set_by_kind, f.set_at, f.source
+  f.value, f.set_by, COALESCE(u.name,''), f.set_by_kind, f.set_at, f.source,
+  s.audience, COALESCE(ar.name, ''), COALESCE(ar.slug, '')
  FROM schedule_forecasts f JOIN item_schedules s ON s.id=f.schedule_id
  JOIN items i ON i.id=s.item_id JOIN collections c ON c.id=i.collection_id
  LEFT JOIN users u ON u.id=f.set_by
+ LEFT JOIN agent_roles ar ON ar.id=i.agent_role_id
  WHERE f.workspace_id=? AND s.workspace_id=? AND i.workspace_id=?
   AND s.ended_at IS NULL AND s.error_code IS NULL AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`
   AND f.value >= ? AND f.value < ? ORDER BY f.value, f.schedule_id`), args...)
@@ -528,7 +537,8 @@ func (s *Store) ListForecastsForAgenda(workspaceID string, scope PendingReminder
 		var number *int64
 		f := &row.Forecast
 		if err := rows.Scan(&row.ScheduleID, &row.ItemID, &row.ItemTitle, &row.ItemRef, &row.Collection, &prefix, &number,
-			&f.Value, &f.SetBy, &f.SetByName, &f.SetByKind, &f.SetAt, &f.Source); err != nil {
+			&f.Value, &f.SetBy, &f.SetByName, &f.SetByKind, &f.SetAt, &f.Source,
+			&row.Audience, &row.AgentRoleName, &row.AgentRoleSlug); err != nil {
 			return nil, false, fmt.Errorf("scan agenda forecast: %w", err)
 		}
 		row.AllDay = len(f.Value) == 10

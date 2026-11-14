@@ -1,5 +1,9 @@
 <script lang="ts">
 	import { onMount, tick, untrack } from 'svelte';
+	import { afterNavigate, goto } from '$app/navigation';
+	import { chatSurface } from '$lib/stores/chatSurface.svelte';
+	import { currentHref, currentSearch } from '$lib/utils/pageLocation';
+	import { audienceCounts, defaultAudience, filterAudience, parseAudience, splitAudience, type AudienceView } from '$lib/calendar/audience';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -35,6 +39,19 @@
 	const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
 	let selectedDay = $state('');
 	const day = $derived(selectedDay || todayIn(zone));
+	const isAgent = false;
+	let audience = $state<AudienceView>(defaultAudience(isAgent));
+	function readAudience() { audience = parseAudience(new URLSearchParams(currentSearch()).get('audience'), isAgent); }
+	onMount(readAudience);
+	afterNavigate(navigation => { if (!navigation.shallow) readAudience(); });
+	function setAudience(value: AudienceView) {
+		if (chatSurface.closeThen(() => setAudience(value))) return;
+		audience = value;
+		const url = new URL(currentHref());
+		if (value === defaultAudience(isAgent)) url.searchParams.delete('audience');
+		else url.searchParams.set('audience', value);
+		void goto(url, { replace: true, reset: false });
+	}
 	let mode = $state<'week' | 'day' | 'month'>('week');
 	const month = $derived(day.slice(0, 7));
 	let mobile = $state(false);
@@ -106,7 +123,10 @@
 	let toastedError = '';
 	const dragCache = new Map<string, { to: string; promise: Promise<CommitmentMoveResult> }>();
 	// Created entries never reach the page: creation is intake, not a commitment.
-	const entries = $derived(filterEntries(data?.entries ?? [], showCompleted));
+	const unfiltered = $derived(filterEntries(data?.entries ?? [], showCompleted));
+	const audienceData = $derived(splitAudience(unfiltered, data?.priority_list ?? [], audience));
+	const entries = $derived(audienceData.entries);
+	const counts = $derived(audienceCounts(data?.entries ?? []));
 	const groups = $derived(groupEntries(entries));
 	const incomplete = $derived(!!(data?.window_complete === false || data?.truncated || data?.unavailable?.length || data?.unexpanded?.length || data?.next_from));
 	const status = $derived(loading ? 'Loading agenda…' : updating ? 'Updating agenda…' : announcement);
@@ -118,7 +138,7 @@
 	// What needs attention is listed once, above the days, and left out of its own day's rows.
 	const attention = $derived.by(() => {
 		if (!data || mode === 'month') return [];
-		return attentionEntries(entries, data.priority_list).flatMap(item => {
+		return audienceData.attention.flatMap(item => {
 			const row = item.entry as AgendaWorkEntry;
 			const entry = item.inWindow ? item.entry as AgendaEntry
 				: workOccurrence(row, zone) ?? (row.at && row.day ? { ...row, type: 'schedule' as const, state: workState(row), at: row.at, day: row.day } : null);
@@ -126,14 +146,14 @@
 		});
 	});
 	const lifted = $derived(new Set(attention.filter(item => item.inWindow).map(item => entryKey(item.entry))));
-	const markers = $derived(roleMarkers(entries, zone, data?.forecasts ?? [], data?.next_from));
+	const markers = $derived(new Map([...roleMarkers(unfiltered, zone, data?.forecasts ?? [], data?.next_from)].map(([date, roles]) => [date, { deadlines: filterAudience(roles.deadlines, audience), forecasts: filterAudience(roles.forecasts, audience) }])));
 	const dayRows = (date: string) => groups.find(group => group.day === date)?.entries ?? [];
 	function summary(date: string) {
 		const deadlines = markers.get(date)?.deadlines.length ?? 0;
 		return [daySummary(dayRows(date)), ...(deadlines ? [`${deadlines} deadline${deadlines === 1 ? '' : 's'}`] : [])].filter(Boolean).join(' · ');
 	}
 	const listDays = $derived(mode === 'week' ? stripDays : groups.map(group => group.day));
-	const hiddenCompleted = $derived(!showCompleted && !!data && entries.length === 0 && data.entries.some(isCompleted));
+	const hiddenCompleted = $derived(!showCompleted && !!data && entries.length === 0 && filterAudience(data.entries, audience).some(isCompleted));
 	const nothing = $derived(!!data && !loading && !loadError && !incomplete && !hiddenCompleted && entries.length === 0 && attention.length === 0);
 	// What a drag over a day would do, in words.
 	const dragNote = $derived.by(() => {
@@ -158,7 +178,8 @@
 	const nextDay = $derived(cursor ? roleDay(cursor, zone) : null);
 	const monthEntries = $derived(entries.filter(entry => !nextDay || entry.day <= nextDay));
 	// What needs attention in the month, by the derivation the week's band uses.
-	const monthAttention = $derived(new Set(data ? attentionEntries(monthEntries, data.priority_list).filter(item => item.inWindow).map(item => entryKey(item.entry as AgendaEntry)) : []));
+	const monthAttention = $derived(new Set(data ? attentionEntries(unfiltered.filter(entry => !nextDay || entry.day <= nextDay), data.priority_list).filter(item => item.inWindow).map(item => entryKey(item.entry as AgendaEntry)) : []));
+	const monthAttentionCounts = $derived(new Map(groupEntries(unfiltered.filter(entry => monthAttention.has(entryKey(entry)))).map(group => [group.day, group.entries.length])));
 	// Each day's commitments, what needs attention first, so it is never behind "+N more".
 	// Completed entries are never rows or counted: each day's fold into one line that ends its list.
 	const monthCompleted = $derived(new Map(groupEntries(monthEntries.filter(isCompleted)).map(group => [group.day, group.entries])));
@@ -180,7 +201,10 @@
 		return nextDay && date > nextDay ? 'none' : 'partial';
 	}
 	function monthCellLabel(date: string) {
-		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${entryCount(monthRows.get(date)?.length ?? 0)}${dayIncomplete(date) ? ', Incomplete' : ''}`;
+		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${entryCount(monthRows.get(date)?.length ?? 0)}${monthAttentionCounts.get(date) ? `, ${monthAttentionLabel(monthAttentionCounts.get(date)!)}` : ''}${dayIncomplete(date) ? ', Incomplete' : ''}`;
+	}
+	function monthAttentionLabel(count: number) {
+		return `${count} ${count === 1 ? 'needs' : 'need'} attention`;
 	}
 	async function setSurface(value: 'agenda' | 'list') {
 		if (value === surface) return;
@@ -679,7 +703,7 @@
 
 <svelte:head><title>Agenda</title></svelte:head>
 <svelte:window onkeydown={event => { if (event.key === 'Escape') clearDrag(); }} />
-<AgendaToolbar {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selectedGroup} {workspaces} {showCompleted} bind:heading={periodHeading}
+<AgendaToolbar {audience} {counts} onaudience={setAudience} {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selectedGroup} {workspaces} {showCompleted} bind:heading={periodHeading}
 	onmode={setMode} onmove={movePeriod} ontoday={goToday} ongroup={setGroup} onmanage={() => manageGroups = {}} onshowcompleted={setShowCompleted} />
 
 <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{status}</div>
@@ -736,28 +760,29 @@
 	{#if loadError && !savedRefreshError}{@render failed()}{/if}
 	<MonthGrid bind:this={monthGrid} {month} today={todayIn(zone)} selected={day} {mobile} loaded={data}
 		cellLabel={monthCellLabel} heading={longDay} summary={(date) => dayIncomplete(date) ? 'Not fully loaded' : daySummary(monthDays.get(date) ?? [])}
-		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length && !monthCompleted.get(date)?.length}
+		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length && !monthCompleted.get(date)?.length && !monthAttentionCounts.get(date)}
 		onopen={openDay} onchoose={(date) => selectedDay = date}>
 		{#snippet cell(date: string, phone: boolean)}
+			{#if monthAttentionCounts.get(date)}<span class="month-attention">{monthAttentionLabel(monthAttentionCounts.get(date)!)}</span>{/if}
 			{#if phone}
 				<!-- The phone month is the week's list: every entry of the day, with its actions. -->
 				{#if monthDays.get(date)?.length || monthCompleted.get(date)?.length}
 					<ul class="card month-day">
 						{#each monthDays.get(date) ?? [] as entry (entryKey(entry))}
-							<AgendaRow {entry} {zone} {now} compact pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} onaction={action} />
+							<AgendaRow {audience} {isAgent} {entry} {zone} {now} compact pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} onaction={action} />
 						{/each}
-						<AgendaCompleted completed={monthCompleted.get(date) ?? []} {zone} {now} compact onaction={action} />
+						<AgendaCompleted {audience} {isAgent} completed={monthCompleted.get(date) ?? []} {zone} {now} compact onaction={action} />
 					</ul>
 				{/if}
 			{:else}
-				{#each (monthRows.get(date) ?? []).slice(0, 3) as row (row.key)}<CalendarEntry {row} {zone} preview keyboard={false} />{/each}
+				{#each (monthRows.get(date) ?? []).slice(0, 3) as row (row.key)}<CalendarEntry {audience} {isAgent} audienceEntry={monthEntries.find(entry => entryKey(entry) === row.key)} {row} {zone} preview keyboard={false} />{/each}
 				{#if (monthRows.get(date)?.length ?? 0) > 3}<button class="more" tabindex="-1" onclick={() => openDay(date)}>+{monthRows.get(date)!.length - 3} more</button>{/if}
 			{/if}
 			{#if dayIncomplete(date)}<p class="incomplete-day">Not fully loaded</p>{/if}
 		{/snippet}
 	</MonthGrid>
 	{#if nothing}<p class="quiet-note">No entries this month.</p>{/if}
-	<AgendaDayDialog day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} completed={openedDay ? monthCompleted.get(openedDay) ?? [] : []} {zone} {now} {mobile}
+	<AgendaDayDialog {audience} {isAgent} day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} completed={openedDay ? monthCompleted.get(openedDay) ?? [] : []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
 	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} /></div>{/if}
 {:else}
@@ -800,9 +825,9 @@
 							</EmptyState>
 						</div>
 					{:else if data && (entries.length > 0 || attention.length > 0)}
-						{#if attention.length}<AgendaAttention items={attention} {zone} {now} {pending} {saved} compact={mobile} onaction={action} />{/if}
+						{#if attention.length}<AgendaAttention {audience} {isAgent} items={attention} {zone} {now} {pending} {saved} compact={mobile} onaction={action} />{/if}
 						{#each listDays as date (date)}
-							<AgendaDayGroup day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
+							<AgendaDayGroup {audience} {isAgent} day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
 								deadlines={markers.get(date)?.deadlines} forecasts={markers.get(date)?.forecasts} {zone} {now} complete={!dayIncomplete(date)}
 								{pending} {saved} compact={mobile} movable={mode === 'week' && !mobile} {dragging} hover={hoverDay === date} impact={dragImpact} titles={linkedTitles}
 								onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />
@@ -859,6 +884,7 @@
 {/if}
 
 <style>
+	.month-attention { display: block; font-size: 11px; color: var(--accent-red); padding: 0 4px; }
 	.more { font: inherit; color: var(--text-secondary); border: 0; background: transparent; cursor: pointer; border-radius: 4px; text-align: left; font-size: 11.5px; font-weight: 600; padding: 1px 4px; }
 	.month-day { list-style: none; margin: 0; padding: 0; overflow: hidden; }
 	.month-day > :global(* + *) { border-top: 1px solid var(--border-subtle); }

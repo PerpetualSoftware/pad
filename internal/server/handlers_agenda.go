@@ -48,6 +48,8 @@ type agendaEntry struct {
 	Reason         string                  `json:"reason,omitempty"`
 	RolesOrigin    string                  `json:"roles_origin,omitempty"`
 	Audience       string                  `json:"audience,omitempty"`
+	AgentRoleName  string                  `json:"agent_role_name,omitempty"`
+	AgentRoleSlug  string                  `json:"agent_role_slug,omitempty"`
 	ScheduleID     string                  `json:"schedule_id,omitempty"`
 	Field          string                  `json:"field,omitempty"`
 	Date           string                  `json:"date,omitempty"`
@@ -492,6 +494,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 				Type: "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
 				Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Floating: &sc.Floating, State: e.State, AcknowledgedAt: e.AcknowledgedAt, AcknowledgedBy: e.AcknowledgedBy,
 				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Audience: sc.Audience,
+				AgentRoleName: as.AgentRoleName, AgentRoleSlug: as.AgentRoleSlug,
 				Roles: &e.Roles, OccurrenceKey: e.OccurrenceKey, RolesOrigin: as.RolesOrigin, ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
 				CommentID: e.CommentID, MissedCount: e.MissedCount, Stale: e.Stale, instant: e.At, subKey: sc.ID,
 			}

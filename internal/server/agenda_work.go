@@ -148,6 +148,8 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 		e.Type, e.At, e.Day, e.State, e.ScheduleID = "schedule", current.At.In(run.loc).Format(time.RFC3339), current.At.In(run.loc).Format("2006-01-02"), current.State, sc.ID
 		e.Roles, e.OccurrenceKey, e.RolesOrigin = &current.Roles, current.OccurrenceKey, current.Roles.RolesOrigin
 		e.Fired = current.Fired
+		e.Audience = sc.Audience
+		e.AgentRoleName, e.AgentRoleSlug = c.AgentRoleName, c.AgentRoleSlug
 		e.AcknowledgedAt, e.AcknowledgedBy = current.AcknowledgedAt, current.AcknowledgedBy
 		e.Wall, e.Overdue, e.Rank = current.Wall.String(), current.Overdue, agendaPriority(c)
 		e.Reason = "outstanding"

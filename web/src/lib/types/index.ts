@@ -3809,6 +3809,9 @@ export interface AgendaForecast {
  collection: string;
  day: string;
  all_day?: boolean;
+ audience?: 'human' | 'agent' | 'both';
+ agent_role_name?: string;
+ agent_role_slug?: string;
  forecast: CommitmentForecastSummary;
  workspace?: string;
  workspace_name?: string;
@@ -3824,6 +3827,8 @@ export interface AcknowledgedBy {
 }
 
 export interface AgendaEntry {
+ agent_role_name?: string;
+ agent_role_slug?: string;
  forecast?: CommitmentForecastSummary;
 	type: 'schedule' | 'date' | 'created' | 'completed';
 	at: string;

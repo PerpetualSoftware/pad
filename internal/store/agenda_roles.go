@@ -348,6 +348,7 @@ func agendaSeedWindows(roles scheduleRoles, loc *time.Location, from, to time.Ti
 
 // AgendaWorkCandidate is an admitted open item before group classification.
 type AgendaWorkCandidate struct {
+	AgentRoleName, AgentRoleSlug                           string
 	ItemID, ItemRef, ItemTitle, Collection, Fields, Schema string
 	CanCloseItem                                           bool
 }
@@ -377,7 +378,7 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 	}
 	scopeSQL, args := scopeClause("i", scope)
 	open, oa := s.nonTerminalFilter(workspaceID, "i")
-	query := `SELECT i.id,i.slug,i.title,c.slug,c.prefix,i.item_number,i.fields,c.schema FROM items i JOIN collections c ON c.id=i.collection_id WHERE i.workspace_id=? AND i.deleted_at IS NULL AND c.deleted_at IS NULL AND ` + open + scopeSQL
+	query := `SELECT i.id,i.slug,i.title,c.slug,c.prefix,i.item_number,i.fields,c.schema,COALESCE(ar.name, ''),COALESCE(ar.slug, '') FROM items i JOIN collections c ON c.id=i.collection_id LEFT JOIN agent_roles ar ON ar.id=i.agent_role_id WHERE i.workspace_id=? AND i.deleted_at IS NULL AND c.deleted_at IS NULL AND ` + open + scopeSQL
 	query += ` AND (` + workSQL + ` OR EXISTS (SELECT 1 FROM item_schedules sc WHERE sc.item_id=i.id) OR EXISTS (SELECT 1 FROM schedule_gates g WHERE g.blocked_item_id=i.id))`
 	params := append(append(append([]any{workspaceID}, oa...), args...), workIDs...)
 	if recipient != "" {
@@ -396,7 +397,7 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 		var c AgendaWorkCandidate
 		var prefix string
 		var num *int64
-		if err := rows.Scan(&c.ItemID, &c.ItemRef, &c.ItemTitle, &c.Collection, &prefix, &num, &c.Fields, &c.Schema); err != nil {
+		if err := rows.Scan(&c.ItemID, &c.ItemRef, &c.ItemTitle, &c.Collection, &prefix, &num, &c.Fields, &c.Schema, &c.AgentRoleName, &c.AgentRoleSlug); err != nil {
 			return nil, false, err
 		}
 		if num != nil {

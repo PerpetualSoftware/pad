@@ -1,4 +1,5 @@
 <script lang="ts">
+	import type { AudienceView } from '$lib/calendar/audience';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import AgendaCompleted from './AgendaCompleted.svelte';
 	import AgendaRow from './AgendaRow.svelte';
@@ -6,6 +7,8 @@
 	import type { AgendaEntry, CommitmentMoveResult } from '$lib/types';
 
 	interface Props {
+		audience?: AudienceView;
+		isAgent?: boolean;
 		day: string;
 		today: string;
 		/** The day's rows, in display order. Completed entries fold into one line. */
@@ -40,7 +43,7 @@
 		ondrop?: (day: string) => void;
 	}
 
-	let { day, today, entries, summary = '', lifted = 0, deadlines = [], forecasts = [], zone, now = new Date(Date.now()), complete = true, pending, saved, compact = false, movable = false, heading = true,
+	let { audience = 'mine', isAgent = false, day, today, entries, summary = '', lifted = 0, deadlines = [], forecasts = [], zone, now = new Date(Date.now()), complete = true, pending, saved, compact = false, movable = false, heading = true,
 		dragging = null, hover = false, impact = null, titles = {}, onaction, ondragstart, ondragend, onenter, ondrop }: Props = $props();
 
 	const uid = $props.id();
@@ -64,11 +67,11 @@
 	{/if}
 	<ul class="list">
 		{#each rows as entry (entryKey(entry))}
-			<AgendaRow {entry} {zone} {now} {compact} {movable} dragging={!!dragging && entryKey(dragging) === entryKey(entry)}
+			<AgendaRow {audience} {isAgent} {entry} {zone} {now} {compact} {movable} dragging={!!dragging && entryKey(dragging) === entryKey(entry)}
 				pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} {ondragstart} {ondragend} />
 		{/each}
-		{#each deadlines as entry, index (index)}<AgendaRow {entry} {zone} {now} {compact} marker="deadline" {onaction} />{/each}
-		{#each forecasts as entry, index (index)}<AgendaRow {entry} {zone} {now} {compact} marker="forecast" {onaction} />{/each}
+		{#each deadlines as entry, index (index)}<AgendaRow {audience} {isAgent} {entry} {zone} {now} {compact} marker="deadline" {onaction} />{/each}
+		{#each forecasts as entry, index (index)}<AgendaRow {audience} {isAgent} {entry} {zone} {now} {compact} marker="forecast" {onaction} />{/each}
 		{#if landing}
 			<li class="ghost" aria-hidden="true">
 				<span class="time">{isAllDay(landing) ? 'All day' : localTime(landing.at, zone)}</span>
@@ -83,7 +86,7 @@
 				{#if impact?.violations?.some(violation => violation.item_id === change.item_id && violation.role === change.role)}<Chip size="sm" color="var(--accent-red)">Outside its bound</Chip>{/if}
 			</li>
 		{/each}
-		<AgendaCompleted {completed} {zone} {now} {compact} {onaction} />
+		<AgendaCompleted {audience} {isAgent} {completed} {zone} {now} {compact} {onaction} />
 		{#if empty && complete && !landing && !linked.length}<li class="empty">{lifted > 0 ? 'Listed under Needs attention.' : 'Nothing scheduled.'}</li>{/if}
 	</ul>
 </section>

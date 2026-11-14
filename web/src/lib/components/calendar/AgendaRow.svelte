@@ -1,4 +1,7 @@
 <script lang="ts">
+	import type { AudienceView } from '$lib/calendar/audience';
+	import AudienceChip from './AudienceChip.svelte';
+	import AgentOwner from './AgentOwner.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import OccurrenceActions from './OccurrenceActions.svelte';
 	import RolePill from './RolePill.svelte';
@@ -8,6 +11,8 @@
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
+		audience?: AudienceView;
+		isAgent?: boolean;
 		entry: AgendaEntry;
 		/** The zone dates are read in. Entries carry no zone of their own, so this is the viewer's. */
 		zone: string;
@@ -30,7 +35,7 @@
 		ondragend?: () => void;
 	}
 
-	let { entry, zone, now = new Date(Date.now()), pending = false, saved = false, compact = false, movable = false, dragging = false, showDay = false, marker, onaction, ondragstart, ondragend }: Props = $props();
+	let { audience = 'mine', isAgent = false, entry, zone, now = new Date(Date.now()), pending = false, saved = false, compact = false, movable = false, dragging = false, showDay = false, marker, onaction, ondragstart, ondragend }: Props = $props();
 
 	const href = $derived(entryHref(entry));
 	const schedule = $derived(entry.type === 'schedule');
@@ -61,6 +66,7 @@
 	{#if href}<a {href}>{entry.item_title}</a>{:else}<span class="untitled">{entry.item_title}</span>{/if}
 {/snippet}
 {#snippet pills()}
+	<AudienceChip {entry} view={audience} {isAgent} />
 	{#if deadline}<RolePill kind="deadline" value={deadline} behavior={entry.roles?.deadline_behavior} {zone} {now} title={deadlineTitle} />{/if}
 	{#if forecast}<RolePill kind="forecast" value={forecast.value} deadline={entry.roles?.deadline} {zone} {now} title={forecastText(forecast, zone)} />{/if}
 	<span class="chips">{#each chips as chip, index (index)}<Chip size="sm" color={chip.color}>{chip.text}</Chip>{/each}</span>
@@ -79,7 +85,8 @@
 		<div class="body">
 			<div class="title">
 				<span class="kind">{marker === 'deadline' ? 'Deadline' : 'Forecast'}</span>{@render title()}
-				<span class="inline-meta">{entry.workspace_name} · {entry.item_ref}{#if marker === 'forecast' && entry.forecast}{' '}· set by {forecastSetter(entry.forecast)}{/if}</span>
+				<span class="inline-meta">{entry.workspace_name} · {entry.item_ref}<AgentOwner {entry} />{#if marker === 'forecast' && entry.forecast}{' '}· set by {forecastSetter(entry.forecast)}{/if}</span>
+				<AudienceChip {entry} view={audience} {isAgent} />
 			</div>
 		</div>
 	{:else}
@@ -91,14 +98,14 @@
 		<div class="body">
 			<div class="title">
 				{@render title()}
-				{#if density === 'quiet' && !compact}<span class="inline-meta">{entry.workspace_name} · {entry.item_ref}</span>{/if}
+				{#if density === 'quiet' && !compact}<span class="inline-meta">{entry.workspace_name} · {entry.item_ref}<AgentOwner {entry} /></span>{/if}
 			</div>
 			{#if density === 'full' || compact}
 				<div class="meta">
 					{#if compact}<span class="ptime">{times.join(' ')}</span>{/if}
 					{#if entry.workspace_name}<WorkspaceTile name={entry.workspace_name} />{/if}
 					<span class="ref">{entry.item_ref}</span>
-					{#if entry.audience === 'agent'}<span>· for agents</span>{/if}
+					<AgentOwner {entry} />
 					{#if acknowledged}<span class="ack">{#if !compact}<span aria-hidden="true">·</span>{/if}<span>{acknowledged}</span></span>{/if}
 					{#if compact}{@render pills()}{/if}
 				</div>

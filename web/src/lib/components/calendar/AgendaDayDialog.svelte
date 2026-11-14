@@ -1,11 +1,14 @@
 <script lang="ts">
+	import type { AudienceView } from '$lib/calendar/audience';
 	import type { AgendaEntry } from '$lib/types';
 	import { dayLabel, entryCount } from '$lib/calendar/monthGrid';
 	import { daySummary, entryKey, type AgendaAction } from '$lib/calendar/presentation';
 	import DialogShell from '../common/DialogShell.svelte';
 	import AgendaCompleted from './AgendaCompleted.svelte';
 	import AgendaRow from './AgendaRow.svelte';
-	let { day, today, entries, completed = [], zone, now, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
+	let { audience = 'mine', isAgent = false, day, today, entries, completed = [], zone, now, mobile, incomplete, error = '', pending, saved, onclose, onaction }: {
+		audience?: AudienceView;
+		isAgent?: boolean;
 		day: string | null; today: string;
 		/** The day's commitment rows in display order: what needs attention first. */
 		entries: AgendaEntry[];
@@ -26,9 +29,9 @@
 	{#if day && entries.length + completed.length}
 		<ul>
 			{#each entries as entry (entryKey(entry))}
-				<AgendaRow {entry} {zone} {now} compact={mobile} pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} />
+				<AgendaRow {audience} {isAgent} {entry} {zone} {now} compact={mobile} pending={pending[entryKey(entry)]} saved={saved[entryKey(entry)]} {onaction} />
 			{/each}
-			<AgendaCompleted {completed} {zone} {now} compact={mobile} {onaction} />
+			<AgendaCompleted {audience} {isAgent} {completed} {zone} {now} compact={mobile} {onaction} />
 		</ul>
 	{/if}
 </DialogShell>

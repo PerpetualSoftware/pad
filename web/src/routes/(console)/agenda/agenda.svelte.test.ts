@@ -4,6 +4,7 @@ import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
 const h = vi.hoisted(() => ({ toast: vi.fn(), agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+vi.mock('$app/navigation', () => ({ afterNavigate: vi.fn(), goto: async (url: URL) => { window.history.replaceState({}, '', url); } }));
 vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
@@ -1194,7 +1195,8 @@ describe('agenda Month page', () => {
   expect(lines[1]).toHaveAttribute('title', 'Lapsed one · 10:00 · Lapsed · First workspace');
   expect(within(cell).getByRole('button', { name: '+2 more' })).toBeTruthy();
   expect(cell.querySelector('.count')).toHaveTextContent('5 · 4 owed');
-  expect(within(cell).queryByText('Today')).toBeNull(); expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 5 entries$/);
+  expect(within(cell).queryByText('Today')).toBeNull(); expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 5 entries, 2 need attention$/);
+  expect(within(cell).getByText('2 need attention')).toBeTruthy();
   expect(cellOf('2026-11-06').querySelector('.count')).toBeNull();
  });
  it('lists attention entries first in day detail, under a title and summary for the day', async () => {
@@ -1598,5 +1600,70 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
   await fireEvent.click(screen.getByRole('menuitem', { name: 'Dismiss' }));
   await waitFor(() => expect(h.dismiss).toHaveBeenCalledWith('work', 'EX-30'));
   await said('Dismissed. EX-30 stays open.', 'success');
+ });
+});
+
+describe('agenda audience views', () => {
+ beforeEach(() => { window.history.replaceState({}, '', '/agenda'); });
+ afterEach(() => { window.history.replaceState({}, '', '/agenda'); });
+ const choose = async (name: string) => fireEvent.click(within(screen.getByRole('group', { name: 'Audience' })).getByRole('button', { name: new RegExp(`^${name} `) }));
+ const mixed = () => response([
+  row({ item_title: 'Personal reminder', state: 'scheduled' }),
+  row({ item_ref: 'EX-31', schedule_id: 'agent', audience: 'agent', item_title: 'Agent reminder', agent_role_name: 'Atlas', agent_role_slug: 'atlas' }),
+  row({ item_ref: 'EX-32', schedule_id: 'missed-agent', audience: 'agent', state: 'missed', item_title: 'Missed agent' }),
+  row({ item_ref: 'EX-33', schedule_id: 'missed-human', state: 'missed', item_title: 'Missed human' })
+ ], { priority_list: [workRow({ item_title: 'Rail item' })], counts: [{ day: '2026-11-05', completed: 7, open: 4, burndown: 4 }] });
+ it('filters the day and strip locally while attention, summary and Outstanding stay unchanged', async () => {
+  h.agenda.mockResolvedValue(mixed()); render(Agenda);
+  await screen.findByText('Personal reminder');
+  expect(screen.queryByText('Agent reminder')).toBeNull();
+  const attention = screen.getByRole('region', { name: 'Needs attention' });
+  expect(within(attention).getByText('Missed agent')).toBeTruthy();
+  expect(within(attention).getByText('Agents')).toBeTruthy();
+  const rail = document.querySelector('.rail')!;
+  const railBefore = rail.textContent;
+  const stripBefore = stripDay('2026-11-05').getAttribute('aria-label');
+  await choose('Agents');
+  expect(screen.queryByText('Personal reminder')).toBeNull();
+  expect(screen.getByText('Agent reminder')).toBeTruthy();
+  expect(screen.getByText('Atlas')).toBeTruthy();
+  expect(within(attention).getByText('You')).toBeTruthy();
+  expect(rail.textContent).toBe(railBefore);
+  expect(stripDay('2026-11-05').getAttribute('aria-label')).not.toBe(stripBefore);
+  expect(h.agenda).toHaveBeenCalledTimes(1);
+  expect(new URL(window.location.href).searchParams.get('audience')).toBe('agents');
+  await choose('All');
+  expect(screen.getByText('Personal reminder')).toBeTruthy();
+  expect(screen.getByText('Agent reminder')).toBeTruthy();
+  await choose('Mine');
+  expect(new URL(window.location.href).searchParams.has('audience')).toBe(false);
+ });
+ it('reads the URL choice and preserves unrelated query parameters', async () => {
+  window.history.replaceState({}, '', '/agenda?audience=agents&group=team');
+  h.agenda.mockResolvedValue(mixed()); render(Agenda);
+  await screen.findByText('Agent reminder');
+  expect(screen.queryByText('Personal reminder')).toBeNull();
+  await choose('Mine');
+  expect(window.location.search).toBe('?group=team');
+ });
+ it('keeps month attention markers when the corresponding audience rows are hidden', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'month');
+  h.agenda.mockResolvedValue(response([row({ item_title: 'Hidden miss', audience: 'agent', state: 'missed' })]));
+  render(Agenda);
+  await screen.findByRole('grid');
+  expect(screen.queryByText('Hidden miss')).toBeNull();
+  expect(screen.getByText('1 needs attention')).toBeTruthy();
+  await choose('Agents');
+  expect(screen.getByText('Hidden miss')).toBeTruthy();
+  expect(screen.getByText('1 needs attention')).toBeTruthy();
+ });
+ it('puts audience in the phone header and workspace groups in view options', async () => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  render(Agenda); await screen.findByText('First item');
+  expect(screen.queryByRole('button', { name: /^Workspaces:/ })).toBeNull();
+  expect(document.querySelector('.header-actions')?.contains(screen.getByRole('group', { name: 'Audience' }))).toBe(true);
+  await fireEvent.click(screen.getByRole('button', { name: 'View options' }));
+  await fireEvent.click(groupItem('Team'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
  });
 });

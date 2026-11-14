@@ -440,6 +440,7 @@ export function roleMarkers(entries: AgendaEntry[], zone: string, forecasts: Age
 		forecast.add(key);
 		on(row.day).forecasts.push({ type: 'schedule', state: 'outstanding', at: row.forecast.value, day: row.day, all_day: row.all_day,
 			item_ref: row.item_ref, item_title: row.item_title, collection: row.collection, schedule_id: row.schedule_id,
+			audience: row.audience, agent_role_name: row.agent_role_name, agent_role_slug: row.agent_role_slug,
 			workspace: row.workspace, workspace_name: row.workspace_name, owner_username: row.owner_username, forecast: row.forecast });
 	}
 
