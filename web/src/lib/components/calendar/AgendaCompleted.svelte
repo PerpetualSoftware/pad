@@ -1,10 +1,13 @@
 <script lang="ts">
+	import type { AudienceView } from '$lib/calendar/audience';
 	import AgendaRow from './AgendaRow.svelte';
 	import { entryKey, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	/** The line that ends a day's list: "N completed ›", folded until asked for. */
-	let { completed, zone, now, compact = false, onaction }: {
+	let { audience = 'mine', isAgent = false, completed, zone, now, compact = false, onaction }: {
+		audience?: AudienceView;
+		isAgent?: boolean;
 		/** The day's completed entries. With none, nothing is drawn. */
 		completed: AgendaEntry[];
 		zone: string; now?: Date; compact?: boolean;
@@ -23,7 +26,7 @@
 		</button>
 		<ul id={`${uid}-completed`} hidden={!open}>
 			{#if open}
-				{#each completed as entry (entryKey(entry))}<AgendaRow {entry} {zone} {now} {compact} {onaction} />{/each}
+				{#each completed as entry (entryKey(entry))}<AgendaRow {audience} {isAgent} {entry} {zone} {now} {compact} {onaction} />{/each}
 			{/if}
 		</ul>
 	</li>

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import AudienceToggle from './AudienceToggle.svelte';
+	import type { AudienceView, AudienceCounts } from '$lib/calendar/audience';
 	import Button from '$lib/components/common/Button.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
@@ -9,6 +11,9 @@
 	type Mode = 'day' | 'week' | 'month';
 
 	interface Props {
+		audience: AudienceView;
+		counts: AudienceCounts;
+		onaudience: (value: AudienceView) => void;
 		mode: Mode;
 		/** The period on show, named once. */
 		period: string;
@@ -30,7 +35,7 @@
 		onshowcompleted: (show: boolean) => void;
 	}
 
-	let { mode, period, zone, mobile = false, groups, selectedGroup, workspaces, showCompleted, heading = $bindable(), onmode, onmove, ontoday, ongroup, onmanage, onshowcompleted }: Props = $props();
+	let { audience, counts, onaudience, mode, period, zone, mobile = false, groups, selectedGroup, workspaces, showCompleted, heading = $bindable(), onmode, onmove, ontoday, ongroup, onmanage, onshowcompleted }: Props = $props();
 
 	const RANGES: { value: Mode; label: string }[] = [{ value: 'day', label: 'Day' }, { value: 'week', label: 'Week' }, { value: 'month', label: 'Month' }];
 	let open = $state<'filter' | 'view' | 'range' | null>(null);
@@ -56,9 +61,21 @@
 	}
 </script>
 
+{#snippet workspaceOptions()}
+	{#if groups}
+		{#each groups as group (group.id)}
+			<MenuItem checked={group.id === selectedGroup} hint={groupSize(group)} onclick={() => pick(() => ongroup(group.id))}>{groupLabel(group)}</MenuItem>
+		{/each}
+		<div class="sep" role="separator"></div>
+		<MenuItem onclick={() => pick(onmanage)}>Manage groups…</MenuItem>
+	{/if}
+{/snippet}
+
 <PageHeader title="Agenda">
 	{#snippet actions()}
-		{#if groups && selected}
+		{#if mobile}
+			<div class="phone-audience"><AudienceToggle value={audience} {counts} onchange={onaudience} /></div>
+		{:else if groups && selected}
 			<button type="button" class="filter" aria-label={`Workspaces: ${groupLabel(selected)}`} aria-haspopup="menu" aria-expanded={open === 'filter'} onclick={event => toggle('filter', event)}>
 				<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3l9 5-9 5-9-5 9-5z" /><path d="M3 13l9 5 9-5" /></svg>
 				<span class="name">{groupLabel(selected)}</span>
@@ -66,17 +83,17 @@
 				<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6" /></svg>
 			</button>
 			<Menu open={open === 'filter'} {trigger} mode="portal" width={260} sheetOnMobile sheetMenu sheetTitle="Workspaces" ariaLabel="Workspaces" onclose={() => open = null}>
-				{#each groups as group (group.id)}
-					<MenuItem checked={group.id === selectedGroup} hint={groupSize(group)} onclick={() => pick(() => ongroup(group.id))}>{groupLabel(group)}</MenuItem>
-				{/each}
-				<div class="sep" role="separator"></div>
-				<MenuItem onclick={() => pick(onmanage)}>Manage groups…</MenuItem>
+				{@render workspaceOptions()}
 			</Menu>
 		{/if}
 		<Button class="icon" aria-label="View options" aria-haspopup="menu" aria-expanded={open === 'view'} onclick={event => toggle('view', event)}>
 			<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
 		</Button>
 		<Menu open={open === 'view'} {trigger} mode="portal" width={260} sheetOnMobile sheetMenu sheetTitle="View options" ariaLabel="View options" onclose={() => open = null}>
+			{#if mobile && groups}
+				{@render workspaceOptions()}
+				<div class="sep" role="separator"></div>
+			{/if}
 			<MenuItem checked={showCompleted} onclick={() => pick(() => onshowcompleted(!showCompleted))}>Show completed</MenuItem>
 			<MenuItem href="/settings/account" hint={zone}>Time zone</MenuItem>
 		</Menu>
@@ -103,12 +120,16 @@
 				{/each}
 			</Menu>
 		{:else}
+			<span class="show">Show</span>
+			<AudienceToggle value={audience} {counts} onchange={onaudience} />
 			<SegmentedControl label="Range" value={mode} onchange={onmode} options={RANGES} />
 		{/if}
 	</div>
 </PageHeader>
 
 <style>
+	.show { font-size: 12px; color: var(--text-muted); }
+	.phone-audience { flex: 1; min-width: 0; }
 	.filter { display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; min-height: 34px; padding: 6px 10px 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); color: var(--text-primary); font: inherit; font-size: 13px; font-weight: 600; cursor: pointer; }
 	.filter:hover { background: var(--bg-hover); }
 	.filter:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
@@ -124,6 +145,7 @@
 	.zone:hover { color: var(--text-secondary); text-decoration: underline; }
 	.spacer { flex: 1; }
 	@media (max-width: 768px) {
+		:global(.page-header .header-actions:has(.phone-audience)) { width: 100%; }
 		.filter { max-width: 190px; min-height: 36px; }
 		.size { display: none; }
 		.toolbar { gap: 6px; margin-top: var(--space-3); }

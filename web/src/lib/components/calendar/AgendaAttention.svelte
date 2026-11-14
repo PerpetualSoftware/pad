@@ -1,9 +1,12 @@
 <script lang="ts">
+	import type { AudienceView } from '$lib/calendar/audience';
 	import AgendaRow from './AgendaRow.svelte';
 	import { entryKey, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
+		audience?: AudienceView;
+		isAgent?: boolean;
 		/** What needs attention, most severe first. Each is listed here instead of in its day. */
 		items: { key: string; entry: AgendaEntry }[];
 		zone: string;
@@ -14,14 +17,14 @@
 		onaction: (entry: AgendaEntry, action: AgendaAction) => void;
 	}
 
-	let { items, zone, now = new Date(Date.now()), pending, saved, compact = false, onaction }: Props = $props();
+	let { audience = 'mine', isAgent = false, items, zone, now = new Date(Date.now()), pending, saved, compact = false, onaction }: Props = $props();
 </script>
 
 <section class="attention" aria-label="Needs attention">
 	<h2>Needs attention</h2><span class="badge">{items.length}</span>
 	<ul>
 		{#each items as item (item.key)}
-			<AgendaRow entry={item.entry} {zone} {now} {compact} showDay pending={pending[entryKey(item.entry)]} saved={saved[entryKey(item.entry)]} {onaction} />
+			<AgendaRow {audience} {isAgent} entry={item.entry} {zone} {now} {compact} showDay pending={pending[entryKey(item.entry)]} saved={saved[entryKey(item.entry)]} {onaction} />
 		{/each}
 	</ul>
 </section>

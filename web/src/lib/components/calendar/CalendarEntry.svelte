@@ -1,11 +1,16 @@
 <script lang="ts">
+ import AudienceChip from './AudienceChip.svelte';
+ import AgentOwner from './AgentOwner.svelte';
+ import { classify, type AudienceView } from '$lib/calendar/audience';
+ import type { AgendaEntry } from '$lib/types';
  import { dayLabel, timeLabel, type CalendarRow } from '$lib/calendar/monthGrid';
  import { shouldOpenInPane } from '../collections/itemCardClick';
  import { canonicalValueColor, formatFieldLabel } from '$lib/utils/fieldColors';
  import { acknowledgedText, forecastText, occurrenceState, type OccurrenceState } from '$lib/calendar/presentation';
  import Chip from '../common/Chip.svelte';
  import StateMark from './StateMark.svelte';
- let {row, zone, basePath = '', onopen, preview = false, keyboard = true}: {row:CalendarRow;zone:string;basePath?:string;onopen?:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
+ let {audienceEntry, audience = 'mine', isAgent = false, row, zone, basePath = '', onopen, preview = false, keyboard = true}: {audienceEntry?: AgendaEntry; audience?: AudienceView; isAgent?: boolean; row:CalendarRow;zone:string;basePath?:string;onopen?:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
+ const owner = $derived(audienceEntry && classify(audienceEntry) === 'agents' && audienceEntry.agent_role_name ? audienceEntry : null);
  let state = $derived(occurrenceState(row.state));
  let done = $derived((!!row.terminal && !row.abandoned) || row.state === 'done');
  let closed = $derived(done || !!row.abandoned);
@@ -20,18 +25,20 @@
  // Everything the one-line preview leaves out, for its tooltip and accessible name.
  // A forecast marker is an estimate, not the entry itself: it says so first.
  let tip = $derived([row.kind === 'forecast' ? 'Forecast' : '', row.title, time || 'All day', row.label, state?.label ?? (row.terminal ? formatFieldLabel(row.terminal) : ''),
-  row.overdue ? 'Overdue' : '', acknowledged, row.workspaceName].filter(Boolean).join(' · '));
+  row.overdue ? 'Overdue' : '', acknowledged, row.workspaceName, owner?.agent_role_name].filter(Boolean).join(' · '));
  let href = $derived(row.href === undefined ? `${basePath}/${encodeURIComponent(row.target)}` : row.href ?? undefined);
  function click(e: MouseEvent) { if (onopen && shouldOpenInPane(e,true)) {e.preventDefault();onopen(row);} }
 </script>
 {#if preview}
- <a class="line" class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:attention={row.attention} class:closed class:struck={row.abandoned} {href} title={tip} aria-label={tip} tabindex={keyboard ? 0 : -1} onclick={click}>
-  <StateMark {...mark} overdue={!!row.overdue || !!row.attention} />{#if time}<time>{time}</time>{/if}<span class="t">{name}</span>
+ <a class="line" class:with-owner={!!owner} class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:attention={row.attention} class:closed class:struck={row.abandoned} {href} title={tip} aria-label={tip} tabindex={keyboard ? 0 : -1} onclick={click}>
+  <StateMark {...mark} overdue={!!row.overdue || !!row.attention} />{#if time}<time>{time}</time>{/if}<span class="t">{name}</span>{#if audienceEntry}<AudienceChip entry={audienceEntry} view={audience} {isAgent} />{/if}
+  {#if owner}<span class="owner-meta"><span class="ref">{owner.item_ref}</span><AgentOwner entry={owner} /></span>{/if}
  </a>
 {:else}
 <a class="entry" class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:closed class:struck={row.abandoned} class:bad {href} tabindex={keyboard ? 0 : -1} onclick={click}>
- <span class="title"><StateMark {...mark} overdue={!!row.overdue} /> <span class="ref">{row.ref}</span> <span class="name">{name}</span></span>
+ <span class="title"><StateMark {...mark} overdue={!!row.overdue} /> <span class="ref">{row.ref}</span>{#if audienceEntry}<AgentOwner entry={audienceEntry} />{/if} <span class="name">{name}</span></span>
  <span class="meta">
+  {#if audienceEntry}<AudienceChip entry={audienceEntry} view={audience} {isAgent} />{/if}
   {#if row.allDay}<span>All day</span>{:else if time}<span>{time}</span>{/if}
   {#if row.workspaceName}<span>{row.workspaceName}</span>{/if}
   {#if row.label}<span>{row.label}</span>{/if}
@@ -48,6 +55,8 @@
 </a>
 {/if}
 <style>
+ .with-owner { flex-wrap: wrap; }
+ .owner-meta { display: flex; align-items: center; flex-basis: 100%; padding-left: 14px; font-size: 11px; }
  .forecast, .forecast-marker { border: 1px dashed var(--border-strong); }
  .forecast { display: block; padding: var(--space-1); font-size: 0.85rem; }
  .forecast-marker .forecast { border: 0; }

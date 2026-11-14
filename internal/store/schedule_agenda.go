@@ -20,11 +20,13 @@ const AgendaMaxPerSchedule = 100
 
 // AgendaSchedule is a schedule with the facts of its item the agenda shows.
 type AgendaSchedule struct {
-	Schedule    *models.ItemSchedule
-	ItemRef     string
-	ItemTitle   string
-	Collection  string // slug
-	RolesOrigin string
+	Schedule      *models.ItemSchedule
+	ItemRef       string
+	ItemTitle     string
+	Collection    string // slug
+	RolesOrigin   string
+	AgentRoleName string
+	AgentRoleSlug string
 	// Terminal is set by agenda and calendar admission: the item is in a
 	// terminal status of its collection.
 	Terminal bool
@@ -176,22 +178,24 @@ func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneAr
 		terminalSQL = "CASE WHEN " + doneSQL + " THEN 1 ELSE 0 END"
 		iargs = append(iargs, doneArgs...)
 	}
-	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number, `+terminalSQL+`
-		FROM items i JOIN collections c ON c.id = i.collection_id WHERE i.id IN (`+placeholders(len(ids))+`)`), append(iargs, ids...)...)
+	irows, err := s.db.Query(s.q(`SELECT i.id, i.title, i.slug, c.slug, c.prefix, i.item_number, `+terminalSQL+`, COALESCE(ar.name, ''), COALESCE(ar.slug, '')
+		FROM items i JOIN collections c ON c.id = i.collection_id
+		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id WHERE i.id IN (`+placeholders(len(ids))+`)`), append(iargs, ids...)...)
 	if err != nil {
 		return fmt.Errorf("read agenda items: %w", err)
 	}
 	defer irows.Close()
 	for irows.Next() {
-		var id, title, slug, coll, prefix string
+		var id, title, slug, coll, prefix, roleName, roleSlug string
 		var number *int64
 		var terminal int
-		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number, &terminal); err != nil {
+		if err := irows.Scan(&id, &title, &slug, &coll, &prefix, &number, &terminal, &roleName, &roleSlug); err != nil {
 			return fmt.Errorf("scan agenda item: %w", err)
 		}
 		a := byID[id]
 		a.ItemTitle, a.Collection, a.ItemRef = title, coll, slug // a legacy item has no ref
 		a.Terminal = terminal == 1
+		a.AgentRoleName, a.AgentRoleSlug = roleName, roleSlug
 		if number != nil {
 			a.ItemRef = fmt.Sprintf("%s-%d", prefix, *number)
 		}

@@ -3,6 +3,7 @@ import type { Site } from './chatHistoryScan';
 // Sites that were handled in this PR (the 23 groups of the ruling), plus the two reads/writes beside them that stay not-applicable.
 // The census checks that each file still carries the call named by the kind.
 export const TREATED: Site[] = [
+	{ file: "routes/(console)/agenda/+page.svelte", text: "void goto(url, { replace: true, reset: false });", n: 1, kind: "close-then", why: "The audience choice updates the agenda URL after closeThen has popped any open Chat entries; currentHref names the page being filtered." },
 	{ file: "lib/components/layout/GlobalBottomBar.svelte", text: "if (chatSurface.closeThen(() => void goto('/'))) e.preventDefault();", n: 1, kind: "close-then", why: "Workspaces slot while the phone Chat sheet is open: the link navigation is held, Chat closes first, and goto('/') runs after Chat's entries are popped so none is left under /." },
 	{ file: "lib/api/client.ts", text: "const target = returnPathProvider?.() || window.location.pathname + window.location.search;", n: 1, kind: "page-location", why: "401 return-to target: the registered provider (root layout, currentPathSearch) names the page beneath an open Chat; the address bar is the default. client.ts cannot import $app/state (the materializer bundle)." },
 	{ file: "lib/utils/pageLocation.ts", text: "return typeof window === 'undefined' ? null : window.location;", n: 1, kind: "own", why: "the helper itself: window.location when no Chat is shallow-open (raw replaceState writes do not move page.url), page.url otherwise." },

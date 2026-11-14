@@ -3824,6 +3824,8 @@ export interface AcknowledgedBy {
 }
 
 export interface AgendaEntry {
+ agent_role_name?: string;
+ agent_role_slug?: string;
  forecast?: CommitmentForecastSummary;
 	type: 'schedule' | 'date' | 'created' | 'completed';
 	at: string;
