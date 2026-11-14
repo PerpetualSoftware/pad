@@ -20,6 +20,7 @@ var reservedUsernames = map[string]bool{
 
 	// App routes
 	"settings": true, "admin": true, "console": true,
+	"agenda": true, "needs": true, "tutorials": true,
 	"dashboard": true, "api": true, "health": true,
 	"new": true, "create": true, "edit": true, "delete": true,
 
