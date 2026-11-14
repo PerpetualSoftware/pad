@@ -23,7 +23,7 @@ export const EACH_KEY_REASONS = {
 export type EachKeyReason = keyof typeof EACH_KEY_REASONS;
 
 export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: string }> = {
-	"lib/components/home/DesktopHome.svelte :: each homeOverview.needs?.rows.slice(0,4) ?? [] as row (needKey(row))": { reason: 'db-primary-key', note: 'One Needs response has one row per workspace and item reference; slicing preserves uniqueness.' },
+	"lib/components/home/DesktopHome.svelte :: each homeOverview.needs?.rows.slice(0, needsLimit) ?? [] as row (needKey(row))": { reason: 'db-primary-key', note: 'One Needs response has one row per workspace and item reference; slicing preserves uniqueness.' },
 	"lib/components/home/DesktopHome.svelte :: each attention as entry (entryKey(entry))": { reason: 'deduped', note: 'attentionEntries builds a Map; additional overdue entries are appended only when entryKey is absent.' },
 	"lib/components/home/DesktopHome.svelte :: each todayRows as entry (entryKey(entry))": { reason: 'db-primary-key', note: 'One agenda response filtered by day and audience; entryKey includes workspace, item, schedule or field and instant.' },
 	"lib/components/home/DesktopHome.svelte :: each workspaceStore.workspaces as ws (ws.id)": { reason: 'db-primary-key', note: 'The workspace store holds one workspace per database primary key.' },
@@ -306,8 +306,6 @@ export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: stri
 	"routes/[username]/[workspace]/tags/[tag]/+page.svelte :: each group.items as item (item.id) #2": { reason: 'object-or-map-keys', note: "`localIndex.getAll` | SvelteMap keyed by item id." },
 	"routes/[username]/[workspace]/tags/[tag]/+page.svelte :: each groupedItems as group (group.collection.id)": { reason: 'object-or-map-keys', note: "`groupedItems` | Map keyed by `collection_id`." },
 	"routes/[username]/[workspace]/tags/[tag]/+page.svelte :: each groupedItems as group (group.collection.id) #2": { reason: 'object-or-map-keys', note: "`groupedItems` | Map keyed by `collection_id`." },
-	"routes/(console)/+page.svelte :: each ownedWorkspaces as ws (ws.id)": { reason: 'db-primary-key', note: "`api.workspaces.list` \u2190 `GetUserWorkspaces` (workspace_members.go:661) | `workspace_members` has PRIMARY KEY(workspace_id, user_id) and the query filters to one user." },
-	"routes/(console)/+page.svelte :: each sharedWorkspaces as ws (ws.id)": { reason: 'db-primary-key', note: "GetUserWorkspaces, one per membership" },
 	"routes/(console)/needs/+page.svelte :: each SORTS as s (s.value)": { reason: 'static-literal', note: "static `SORTS` literal | three distinct sort values" },
 	"routes/(console)/needs/+page.svelte :: each groups as g (g.slug)": { reason: 'grouped-by-key', note: "`groups` is built one entry per workspace slug (a Map find-or-create over the loaded rows)" },
 	"routes/(console)/needs/+page.svelte :: each g.rows as row (keyOf(row))": { reason: 'deduped', note: "key is workspace slug + item ref, one row per item per workspace from `GET /me/needs`; `loadMore` filters out keys already held before appending" },

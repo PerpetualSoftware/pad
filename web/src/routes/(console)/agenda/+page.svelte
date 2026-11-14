@@ -938,9 +938,9 @@
 		.rail.single { grid-template-columns: minmax(0, 1fr); max-width: 420px; }
 	}
 	@media (max-width: 768px) {
-  /* The rail is in normal flow at phone widths; .main-content reserves the
-     day list, rail and month view together. Lift the sticky action bar too. */
-  :global(body.has-bottom-nav) .dragbar { bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4)); }
+		/* The rail is in normal flow at phone widths; .main-content reserves the
+		   day list, rail and month view together. Lift the sticky action bar too. */
+		:global(body.has-bottom-nav) .dragbar { bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px) + var(--space-4)); }
 		.layout { margin-top: var(--space-4); }
 		.rail, .rail.single { grid-template-columns: minmax(0, 1fr); max-width: none; }
 		.card.below { max-width: none; }

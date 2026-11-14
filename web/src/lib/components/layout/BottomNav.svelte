@@ -7,7 +7,7 @@
 	    You pages (/, /needs, /agenda).
 	  - Workspace opens WorkspaceSheet (current workspace + Switch, Navigate,
 	    Collections) for the current or last workspace; with no workspace it
-	    goes to the workspace picker.
+	    goes to Home, which also offers workspace creation.
 	  - ＋ opens QuickCaptureSheet (BUG-1765); outside a workspace it captures
 	    into the last workspace.
 	  - Chat is ChatSlot (ChatHost's phone sheet); no slot while Chat is off.
@@ -97,6 +97,7 @@
 		closeAllSurfaces();
 		if (chatSurface.closeThen(() => void goto('/'))) event.preventDefault();
 	}
+	// Sole overview loader on phone You-page arrivals; Home only loads on desktop.
 	// Match YouNav's refresh policy without tracking loader-owned state.
 	let lastPath = '';
 	$effect(() => {
@@ -210,6 +211,10 @@
 		background: var(--bg-secondary);
 		border-top: 1px solid var(--border);
 	}
+	.bottom-nav :global(.bn-item) {
+		font-size: 1rem;
+		line-height: 1.2;
+	}
 	.bn-item {
 		flex: 1;
 		display: flex;
@@ -228,6 +233,13 @@
 	}
 	.bn-item.active {
 		color: var(--text-primary);
+	}
+	.bottom-nav :global(.bn-icon), .bn-avatar {
+		height: 22px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		flex-shrink: 0;
 	}
 	.bn-icon {
 		font-size: 1.2em;

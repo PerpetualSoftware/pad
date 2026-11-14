@@ -1,12 +1,15 @@
 <script lang="ts">
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
+	import Menu from '$lib/components/common/Menu.svelte';
 	import DeferMenu from './DeferMenu.svelte';
 	import type { NeedsRow, NeedsView } from '$lib/types';
 
 	interface Props {
 		row: NeedsRow;
 		showWorkspace?: boolean;
+		/** Home on phones keeps actions in an overflow sheet. */
+		compact?: boolean;
 		view: NeedsView;
 		busy?: boolean;
 		/** Whether this row's defer menu is open; the page keeps one open at a time. */
@@ -17,7 +20,10 @@
 		onrestore: (row: NeedsRow) => void;
 	}
 
-	let { row, showWorkspace = false, view, busy = false, menuOpen = false, onmenu = () => {}, ondismiss, ondefer, onrestore }: Props = $props();
+	let { row, compact = false, showWorkspace = false, view, busy = false, menuOpen = false, onmenu = () => {}, ondismiss, ondefer, onrestore }: Props = $props();
+
+	let trigger = $state<HTMLElement>();
+	let deferring = $state(false);
 
 	function ago(iso: string): string {
 		const ms = Date.now() - new Date(iso).getTime();
@@ -43,7 +49,7 @@
 	});
 </script>
 
-<li class="needs-row" data-testid="needs-row" data-ref={row.item.ref}>
+<li class="needs-row" class:compact data-testid="needs-row" data-ref={row.item.ref}>
 	<div class="main">
 		<!-- An empty path means the workspace owner no longer resolves (BUG-4050): no route, so no link (href="" would reload this page). -->
 		{#if row.item.path}
@@ -61,11 +67,22 @@
 				<span data-testid="needs-hint"><Chip size="sm" color="var(--accent-amber)">{hint}</Chip></span>
 			{/each}
 		</div>
-		<p class="why">{row.why.text}{#if row.why.by} <span class="by">({row.why.by})</span>{/if}</p>
+		<p class="why">{row.why.text}{#if row.why.by}{' '}<span class="by">({row.why.by})</span>{/if}</p>
 		{#if view === 'hidden' && snoozeNote}<p class="snooze">{snoozeNote}</p>{/if}
 	</div>
 	<div class="actions">
-		{#if view === 'hidden'}
+		{#if compact && view === 'active'}
+			<Button size="sm" variant="ghost" aria-label={`Actions ${row.item.ref}`} aria-haspopup="dialog" aria-expanded={menuOpen} disabled={busy}
+				onclick={(event: MouseEvent) => { trigger = event.currentTarget as HTMLElement; deferring = false; onmenu(!menuOpen); }}>⋯</Button>
+			<Menu open={menuOpen} {trigger} mode="portal" sheetOnMobile sheetTitle={row.item.title} ariaLabel={`Actions ${row.item.ref}`} onclose={() => onmenu(false)} focusKey={deferring ? 'defer' : 'actions'}>
+				{#if deferring}
+					<DeferMenu onclose={() => onmenu(false)} onpick={(iso) => { onmenu(false); ondefer(row, iso); }} />
+				{:else}
+					<Button size="sm" variant="ghost" disabled={busy} onclick={() => { onmenu(false); ondismiss(row); }}>Dismiss</Button>
+					<Button size="sm" variant="ghost" disabled={busy} onclick={() => deferring = true}>Defer</Button>
+				{/if}
+			</Menu>
+		{:else if view === 'hidden'}
 			<Button size="sm" disabled={busy} onclick={() => onrestore(row)}>Restore</Button>
 		{:else}
 			<Button size="sm" variant="ghost" disabled={busy} onclick={() => ondismiss(row)}>Dismiss</Button>
@@ -105,6 +122,12 @@
 		border-bottom: 1px solid var(--border);
 		list-style: none;
 	}
+	.compact { display: grid; grid-template-columns: minmax(0, 1fr) auto; padding: var(--space-3); column-gap: var(--space-2); row-gap: 0; }
+	.compact:last-child { border-bottom: 0; }
+	.compact .main { display: contents; }
+	.compact .title, .compact .why { grid-column: 1 / -1; overflow-wrap: anywhere; }
+	.compact .actions { grid-column: 2; grid-row: 2; }
+	.compact .meta { grid-column: 1; }
 	.main {
 		min-width: 0;
 		flex: 1;
