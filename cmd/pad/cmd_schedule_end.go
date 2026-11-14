@@ -56,11 +56,13 @@ func itemStillOpenHint(err error, ref, state string, d itemStillOpenDetails) err
 	}
 	var ways []string
 	if state == "done" {
-		value := "VALUE"
-		if len(d.CloseOptions) > 0 {
-			value = d.CloseOptions[0]
+		switch len(d.CloseOptions) {
+		case 0:
+		case 1:
+			ways = append(ways, "--close-item to close it too")
+		default:
+			ways = append(ways, "--close-item=VALUE to close it too (choose one of: "+strings.Join(d.CloseOptions, ", ")+")")
 		}
-		ways = append(ways, "--close-item[="+value+"] to close it too")
 	}
 	ways = append(ways, "--end-schedule to keep it open (it stays in Outstanding)")
 	if d.AckAvailable {

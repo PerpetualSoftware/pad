@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -162,17 +163,38 @@ func TestRemindEndScheduleFlags(t *testing.T) {
 			t.Fatalf("%v err=%v calls=%v", args, err, calls)
 		}
 	}
-	// Without a flag the refusal says what to run, and keeps its envelope.
-	for _, ack := range []bool{false, true} {
-		_, _, err, calls := runSched(t, func(recordedCall) (int, string) { return stillOpenReply(`["done"]`, ack) }, "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z")
-		want := "TASK-5's schedule ends with this occurrence but the item is still open (status: open). Re-run with --close-item[=done] to close it too, "
-		if err == nil || !strings.HasPrefix(err.Error(), want) || !strings.Contains(err.Error(), "--end-schedule to keep it open (it stays in Outstanding)") || strings.Contains(err.Error(), "pad remind ack") != ack || len(calls) != 1 {
-			t.Fatalf("hint=%v", err)
-		}
-		var marker strings.Builder
-		writeRootStructuredError(&marker, err)
-		if !strings.Contains(marker.String(), `"code":"item_still_open"`) {
-			t.Fatalf("lost envelope: %s", marker.String())
+}
+
+func TestRemindItemStillOpenHints(t *testing.T) {
+	for _, tc := range []struct{ name, options, closeHint string }{
+		{"no options", `[]`, ""},
+		{"one option", `["done"]`, "--close-item to close it too"},
+		{"several options", `["shipped","done"]`, "--close-item=VALUE to close it too (choose one of: shipped, done)"},
+	} {
+		for _, state := range []string{"done", "skip"} {
+			for _, ack := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/ack=%v", tc.name, state, ack), func(t *testing.T) {
+					_, _, err, calls := runSched(t, func(recordedCall) (int, string) { return stillOpenReply(tc.options, ack) }, "", "remind", state, "TASK-5", "--occurrence", "2026-11-09T14:00:00Z")
+					if err == nil || len(calls) != 1 {
+						t.Fatalf("err=%v calls=%+v", err, calls)
+					}
+					if !strings.Contains(err.Error(), "--end-schedule to keep it open") || strings.Contains(err.Error(), "pad remind ack") != ack {
+						t.Errorf("hint=%v", err)
+					}
+					if tc.closeHint == "" || state == "skip" {
+						if strings.Contains(err.Error(), "--close-item") {
+							t.Errorf("unavailable close suggested: %v", err)
+						}
+					} else if !strings.Contains(err.Error(), tc.closeHint) {
+						t.Errorf("hint=%v, want %q", err, tc.closeHint)
+					}
+					var marker strings.Builder
+					writeRootStructuredError(&marker, err)
+					if !strings.Contains(marker.String(), `"code":"item_still_open"`) {
+						t.Errorf("lost envelope: %s", marker.String())
+					}
+				})
+			}
 		}
 	}
 }
