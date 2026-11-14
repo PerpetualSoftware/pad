@@ -1246,7 +1246,7 @@ The auth methods follow from the scheme of the issuer URL:
   API token works too.
 - **http:** personal API tokens only. Every OAuth route and discovery document
   answers `404`, and `/mcp`'s `401` names no authorization server. Mint a token
-  in **Console → Settings → API Tokens** and give the client
+  in **Settings → Account → API tokens** and give the client
   `Authorization: Bearer <token>`.
 
 The OAuth server is built at startup, and only when the issuer URL is https.
