@@ -21,7 +21,7 @@ func (f *linkPG) gate(blocked, blocker int) error {
 }
 
 func (f *linkPG) done(i int) error {
-	_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*f.scs[i].NextAt), State: "done", Actor: "user"})
+	_, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*f.scs[i].NextAt), State: "done", Actor: "user", EndSchedule: true})
 	return err
 }
 

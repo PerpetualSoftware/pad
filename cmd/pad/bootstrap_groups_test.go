@@ -48,3 +48,28 @@ func TestBootstrapMarkdownGroupsAndCompleteness(t *testing.T) {
 		})
 	}
 }
+
+func TestBootstrapAgendaResolutionHints(t *testing.T) {
+	for _, tc := range []struct {
+		name, rows       string
+		resolve, dismiss bool
+	}{
+		{"occurrence", `[{"item_ref":"TASK-1","type":"schedule","reason":"outstanding"}]`, true, false},
+		{"ended", `[{"item_ref":"TASK-2","type":"item","reason":"schedule_ended"}]`, false, true},
+		{"mixed", `[{"item_ref":"TASK-1","type":"schedule","reason":"outstanding"},{"item_ref":"TASK-2","type":"item","reason":"schedule_ended"}]`, true, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var a bootstrapAgendaView
+			if err := json.Unmarshal([]byte(`{"priority_list":`+tc.rows+`}`), &a); err != nil {
+				t.Fatal(err)
+			}
+			out := captureStdout(t, func() { printBootstrapAgenda(&a) })
+			if strings.Contains(out, "done|skip|move") != tc.resolve {
+				t.Fatalf("resolve hint: %q", out)
+			}
+			if strings.Contains(out, "pad remind dismiss TASK-2 (or close the item)") != tc.dismiss {
+				t.Fatalf("dismiss hint: %q", out)
+			}
+		})
+	}
+}

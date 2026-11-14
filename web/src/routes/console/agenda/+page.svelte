@@ -4,7 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { agendaRows, attentionEntries, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -23,8 +23,9 @@
 	import MoveImpactDialog from '$lib/components/calendar/MoveImpactDialog.svelte';
 	import OutstandingPanel from '$lib/components/calendar/OutstandingPanel.svelte';
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
+	import ScheduleEndDialog, { type ScheduleEndChoice } from '$lib/components/calendar/ScheduleEndDialog.svelte';
 	import WeekSummary from '$lib/components/calendar/WeekSummary.svelte';
-	import type { AgendaEntry, AgendaForecast, AgendaResponse, AgendaWorkEntry, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
+	import type { AgendaEntry, AgendaForecast, AgendaResponse, AgendaWorkEntry, ItemStillOpenDetails, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
 
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
@@ -74,6 +75,9 @@
 	let forecastEntry = $state<AgendaEntry | null>(null);
 	let dialogEntry = $state<AgendaEntry | null>(null);
 	let dialogMode = $state<'snooze' | 'move'>('snooze');
+	// A done or skip the server refused because it would end an open item's schedule (TASK-4537).
+	let endChoice = $state<{ entry: AgendaEntry; details: ItemStillOpenDetails; comment?: string } | null>(null);
+	let endError = $state('');
 	let dragging = $state<AgendaEntry | null>(null);
 	let dragImpact = $state<CommitmentMoveResult | null>(null);
 	let linkedTitles = $state<Record<string, string>>({});
@@ -324,7 +328,7 @@
 		await Promise.resolve();
 		if (!current()) return;
 		if (loadedUser !== userId) {
-			data = null; openedDay = null; lastAnnouncedMonth = ''; pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; actionError = ''; announcement = '';
+			data = null; openedDay = null; lastAnnouncedMonth = ''; pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; endChoice = null; endError = ''; actionError = ''; announcement = '';
 			review = null; committing = false; linkedTitles = {}; clearDrag(); loadedUser = userId;
 		}
 		if (!userId) { data = null; loading = false; updating = false; return; }
@@ -425,10 +429,11 @@
 		if (state === 'move' || state === 'snooze') { dialogMode = state; dialogEntry = entry; }
 		else void resolve(entry, state);
 	}
-	async function resolve(entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string) {
+	// end: the caller confirmed ending the schedule of an open item. closeAs then closes the item with that value.
+	async function resolve(entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string, end?: { closeAs?: string }): Promise<boolean> {
 		const key = entryKey(entry);
 		const history = lapsed(entry) && state === 'done';
-		if (pending[key] || saved[key] || !(canResolve(entry) || history)) return;
+		if (pending[key] || saved[key] || !(canResolve(entry) || history)) return false;
 		const sameIdentity = authStore.identityFence();
 		pending = { ...pending, [key]: true };
 		actionError = ''; announcement = '';
@@ -438,7 +443,7 @@
 			let occurrenceAt = entry.at;
 			if (!history) {
 				const view = await api.getCommitment(entry.workspace!, entry.item_ref);
-				if (!sameIdentity()) return;
+				if (!sameIdentity()) return false;
 				// A pinned occurrence's key carries the instant it is read at, so two
 				// occurrences sharing a wall time (a DST fall-back hour) stay distinct.
 				const keyAt = entry.occurrence_key?.includes('|') ? entry.occurrence_key.split('|')[0] : '';
@@ -446,30 +451,67 @@
 				if (view.ended_at || !view.next_occurrence || !entry.wall || view.next_occurrence.wall !== entry.wall || !sameInstant) {
 					actionError = staleCopy;
 					await load(day, zone, true);
-					return;
+					return false;
 				}
 				occurrenceAt = view.next_occurrence.at;
 			}
 			viewing = false;
-			await api.resolveCommitment(entry.workspace!, entry.item_ref, {
+			const resolved = await api.resolveCommitment(entry.workspace!, entry.item_ref, {
 				occurrence_at: occurrenceAt, state,
 				...(until !== undefined ? { until } : {}),
-				...(comment !== undefined ? { comment } : {})
+				...(comment !== undefined ? { comment } : {}),
+				...(end ? { end_schedule: true } : {})
 			});
-			if (!sameIdentity()) return;
+			if (!sameIdentity()) return false;
 			saved = { ...saved, [key]: true };
 			if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null;
+			// end_schedule has no effect when a concurrent edit gave the schedule another
+			// occurrence: only a resolution that ended it with the item open closes the item.
+			const ended = resolved?.resolution?.item_still_open === true;
+			// The schedule has ended; closing the item is a second write that can be refused on its own.
+			let closeError = '';
+			let itemClosed = false;
+			if (ended && end?.closeAs !== undefined && endChoice) {
+				try {
+					await api.items.update(entry.workspace!, entry.item_ref, { fields_patch: { [endChoice.details.done_field]: end.closeAs } });
+					itemClosed = true;
+				} catch (error) {
+					const message = (error as { message?: unknown })?.message;
+					closeError = `The schedule has ended, but closing the item failed: ${typeof message === 'string' && message ? message : 'try again'}. It stays open in Outstanding.`;
+				}
+				if (!sameIdentity()) return false;
+			}
 			const refreshed = await load(day, zone, true);
-			if (!sameIdentity()) return;
-			if (refreshed === false) {
+			if (!sameIdentity()) return false;
+			if (closeError) {
+				actionError = closeError;
+			} else if (refreshed === false) {
 				savedRefreshError = true;
 				loadError = false;
+			} else if (end && !ended && !resolved?.commitment?.ended_at) {
+				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
+				succeed(end.closeAs !== undefined ? `${verb}. The schedule continues, so the item was not closed.` : `${verb}. The schedule continues.`);
+			} else if (end && !ended) {
+				// The schedule ended, but not with the item open: it was closed concurrently,
+				// or its collection can no longer close it.
+				succeed(`${state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done'}; the schedule has ended.`);
+			} else if (end) {
+				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
+				succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
 			} else {
 				succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
 			}
+			return true;
 		} catch (error) {
-			if (!sameIdentity()) return;
+			if (!sameIdentity()) return false;
 			const code = (error as { code?: string })?.code;
+			// The last occurrence of an open item: nothing was written. Ask how to end it.
+			if (code === 'item_still_open' && (state === 'done' || state === 'skip') && !end) {
+				const details = (error as { details?: Partial<ItemStillOpenDetails> })?.details ?? {};
+				endError = '';
+				endChoice = { entry, comment, details: { state, occurrence_at: details.occurrence_at ?? '', done_field: details.done_field || 'status', item_status: details.item_status ?? '', close_options: details.close_options ?? [], ack_available: !!details.ack_available } };
+				return false;
+			}
 			const stale = code === 'stale' || (viewing && code === 'not_found');
 			// The alert this ack named was re-armed (snoozed or moved) before it landed: show the agenda as it is now.
 			const notFired = state === 'ack' && code === 'not_fired';
@@ -479,6 +521,40 @@
 			const ownerRequired = code === 'deadline_owner_required' && typeof message === 'string' && message !== '';
 			actionError = ownerRequired ? message : stale ? staleCopy : notFired ? notFiredCopy : forbidden ? permissionCopy : genericCopy;
 			if (stale || notFired || forbidden) await load(day, zone, true);
+			return false;
+		} finally {
+			if (sameIdentity()) pending = { ...pending, [key]: false };
+		}
+	}
+	async function chooseEnd(choice: ScheduleEndChoice) {
+		const asked = endChoice;
+		if (!asked) return;
+		const { entry, details, comment } = asked;
+		endError = '';
+		const done = choice.kind === 'ack'
+			? await resolve(entry, 'ack')
+			: await resolve(entry, details.state, undefined, comment, choice.kind === 'close' ? { closeAs: choice.value } : {});
+		if (endChoice !== asked) return;
+		if (done || actionError === staleCopy) endChoice = null;
+		else { endError = actionError || genericCopy; actionError = ''; }
+	}
+	async function dismissEnded(row: AgendaWorkEntry) {
+		const key = endedKey(row);
+		if (pending[key] || !row.workspace) return;
+		const sameIdentity = authStore.identityFence();
+		pending = { ...pending, [key]: true };
+		actionError = '';
+		try {
+			await api.dismissEndedCommitment(row.workspace, row.item_ref);
+			if (!sameIdentity()) return;
+			await load(day, zone, true);
+			if (sameIdentity()) succeed(`Dismissed. ${row.item_ref} stays open.`);
+		} catch (error) {
+			if (!sameIdentity()) return;
+			const code = (error as { code?: string })?.code;
+			// It is live again (a timing edit revived it): show the agenda as it is now.
+			if (code === 'not_ended' || code === 'not_found') { await load(day, zone, true); return; }
+			actionError = code === 'forbidden' || code === 'permission_denied' ? permissionCopy : 'Could not dismiss this. Try again.';
 		} finally {
 			if (sameIdentity()) pending = { ...pending, [key]: false };
 		}
@@ -755,7 +831,7 @@
 						<div class="card rail-note">Not loaded.</div>
 					{:else if data}
 						<div class="card"><WeekSummary range={mode} {data} {today} /></div>
-						{#if mode === 'week'}<div class="card"><OutstandingPanel {data} {zone} {now} {pending} {saved} compact={mobile} onaction={action} /></div>{/if}
+						{#if mode === 'week'}<div class="card"><OutstandingPanel {data} {zone} {now} {pending} {saved} compact={mobile} onaction={action} ondismiss={dismissEnded} /></div>{/if}
 					{/if}
 				</aside>
 			{/if}
@@ -772,6 +848,10 @@
 	pending={dialogEntry ? !!pending[entryKey(dialogEntry)] : false} error={actionError}
 	onclose={() => dialogEntry = null}
 	onsubmit={(until, comment) => { if (dialogEntry) { if (dialogMode === 'move') void moveTarget(dialogEntry, until, comment || undefined); else void resolve(dialogEntry, 'snooze', until, comment); } }} />
+<ScheduleEndDialog open={!!endChoice} entry={endChoice?.entry ?? null} details={endChoice?.details ?? null} {mobile}
+	pending={endChoice ? !!pending[entryKey(endChoice.entry)] : false} error={endError}
+	onclose={() => { endChoice = null; endError = ''; }}
+	onchoose={choice => void chooseEnd(choice)} />
 {#if review}
 	<MoveImpactDialog entry={review.entry} preview={review.preview} {zone} {mobile} titles={linkedTitles} initialReason={review.reason}
 		pending={committing} error={actionError} onclose={cancelReview}

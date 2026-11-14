@@ -120,7 +120,7 @@ func TestCommitmentResolveStaleAndBroken(t *testing.T) {
 	if d["ended"] != false || next["at"] != resolveX || next["wall"] != "2099-01-01T09:00:00" {
 		t.Errorf("stale details = %v", d)
 	}
-	if rr := f.resolve(map[string]any{"occurrence_at": resolveX, "state": "done"}); rr.Code != 200 {
+	if rr := f.resolve(map[string]any{"occurrence_at": resolveX, "state": "done", "end_schedule": true}); rr.Code != 200 {
 		t.Fatalf("resolve: %d %s", rr.Code, rr.Body.String())
 	}
 	d = f.expectErr(f.resolve(map[string]any{"occurrence_at": resolveX, "state": "done"}), 409, "stale", "")

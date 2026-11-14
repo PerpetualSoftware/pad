@@ -229,3 +229,29 @@ describe('OutstandingPanel acknowledged work', () => {
 		expect(onaction).toHaveBeenCalledWith(expect.objectContaining({ state: 'acknowledged' }), 'move');
 	});
 });
+
+describe('OutstandingPanel schedule_ended rows (TASK-4537)', () => {
+	const ended = (extra: Partial<AgendaWorkEntry> = {}) => work({ type: 'item', reason: 'schedule_ended', ended_at: '2026-11-04T15:00:00Z', roles: undefined, ...extra });
+	it('says the schedule ended and the item is still open, and offers Dismiss', async () => {
+		const row = ended();
+		const ondismiss = vi.fn();
+		mount({ priority_list: [row] }, { ondismiss });
+		const li = rowOf(row.item_ref);
+		expect(li.querySelector('.m')).toHaveTextContent('Schedule ended Wed 4 · item still open');
+		expect(within(li).getByRole('link', { name: row.item_title })).toBeTruthy();
+		await fireEvent.click(within(li).getByRole('button', { name: `Actions for ${row.item_ref}` }));
+		expect(items()).toEqual(['Dismiss']);
+		await fireEvent.click(screen.getByRole('menuitem', { name: 'Dismiss' }));
+		expect(ondismiss).toHaveBeenCalledWith(row);
+	});
+	it('shows Saving while its dismissal is pending and no menu without a handler', () => {
+		const a = ended(), b = ended();
+		mount({ priority_list: [a, b] }, { pending: { [`ended:w:${a.item_ref}`]: true }, ondismiss: vi.fn() });
+		expect(within(rowOf(a.item_ref)).getByText('Saving…')).toBeTruthy();
+		expect(within(rowOf(b.item_ref)).getByRole('button', { name: `Actions for ${b.item_ref}` })).toBeTruthy();
+		cleanup();
+		const c = ended();
+		mount({ priority_list: [c] });
+		expect(within(rowOf(c.item_ref)).queryByRole('button')).toBeNull();
+	});
+});

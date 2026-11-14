@@ -398,6 +398,8 @@ func (s *Store) carrySourceScheduleTx(tx *sql.Tx, sourceWorkspaceID, sourceItemI
 
 // endScheduleTx ends a schedule without a rule edit: the schedule row first, then
 // its managed reminder, the order every schedule writer uses. History is kept.
+// The ending is dismissed at once: the schedule moved with its item, so a
+// restored source must not show it in Outstanding as ended.
 func (s *Store) endScheduleTx(tx *sql.Tx, scheduleID string) error {
 	before, err := s.scheduleSnapshotTx(tx, scheduleID)
 	if err != nil {
@@ -405,9 +407,9 @@ func (s *Store) endScheduleTx(tx *sql.Tx, scheduleID string) error {
 	}
 	ts := now()
 	if _, err := tx.Exec(s.q(`
-		UPDATE item_schedules SET ended_at = ?, next_at = NULL, next_wall = NULL, next_override_at = NULL,
+		UPDATE item_schedules SET ended_at = ?, ended_dismissed_at = ?, next_at = NULL, next_wall = NULL, next_override_at = NULL,
 			anchor_wall = NULL, error_code = NULL, updated_at = ?
-		WHERE id = ?`), ts, ts, scheduleID); err != nil {
+		WHERE id = ?`), ts, ts, ts, scheduleID); err != nil {
 		return fmt.Errorf("copy item across workspaces: end source schedule: %w", err)
 	}
 	if err := s.deleteManagedReminderTx(tx, scheduleID); err != nil {

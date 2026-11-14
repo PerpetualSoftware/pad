@@ -5,7 +5,7 @@
 	import RolePill from './RolePill.svelte';
 	import RowMenu from './RowMenu.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
-	import { ACKNOWLEDGE_HELP, acknowledgedText, canAcknowledge, canMove, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { ACKNOWLEDGE_HELP, acknowledgedText, canAcknowledge, canMove, endedKey, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry } from '$lib/types';
 
 	interface Props {
@@ -19,9 +19,11 @@
 		/** Phone layout: taller rows and 44 px menu buttons. */
 		compact?: boolean;
 		onaction: (entry: AgendaEntry, action: AgendaAction) => void;
+		/** Dismiss a schedule_ended row: the item stays open (TASK-4537). Its pending key is endedKey(row). */
+		ondismiss?: (row: AgendaWorkEntry) => void;
 	}
 
-	let { data, zone, now = new Date(Date.now()), pending, saved, compact = false, onaction }: Props = $props();
+	let { data, zone, now = new Date(Date.now()), pending, saved, compact = false, onaction, ondismiss }: Props = $props();
 
 	type Tab = 'priority' | 'waiting' | 'none';
 	const id = $props.id();
@@ -62,6 +64,7 @@
 			{@const key = entry ? entryKey(entry) : ''}
 			{@const busy = !!entry && (!!pending[key] || !!saved[key])}
 			{@const owed = row.reason === 'deadline_still_owed'}
+			{@const ended = row.reason === 'schedule_ended'}
 			{@const deadline = row.roles?.deadline}
 			<li data-work={row.item_ref}>
 				<div class="text">
@@ -70,7 +73,9 @@
 					</div>
 					<div class="m">
 						{#if row.workspace_name}<WorkspaceTile name={row.workspace_name} />{/if}
-						{#if tab !== 'none'}
+						{#if ended}
+							<span class="when">Schedule ended{#if row.ended_at}{' '}{shortDay(roleDay(row.ended_at, zone), today)}{/if} · item still open</span>
+						{:else if tab !== 'none'}
 							{#if owed}
 								<span class="when passed">Deadline passed{#if deadline}{' '}{shortDay(roleDay(deadline, zone), today)}{/if}</span>
 							{:else if row.roles?.target}
@@ -86,7 +91,15 @@
 					</div>
 					{#if row.state === 'acknowledged'}<div class="ack">{acknowledgedText(row.acknowledged_at, row.acknowledged_by, zone, now)}</div>{/if}
 				</div>
-				{#if entry && pending[key]}
+				{#if ended && pending[endedKey(row)]}
+					<span class="busy"><span class="spinner" aria-hidden="true"></span><span class="sr-only">Saving…</span></span>
+				{:else if ended && ondismiss}
+					<RowMenu label={`Actions for ${row.item_ref}`} title={row.item_title}>
+						{#snippet children(pick)}
+							<MenuItem title="Take it off Outstanding for everyone; the item stays open" onclick={() => pick(() => ondismiss(row))}>Dismiss</MenuItem>
+						{/snippet}
+					</RowMenu>
+				{:else if entry && pending[key]}
 					<span class="busy"><span class="spinner" aria-hidden="true"></span><span class="sr-only">Saving…</span></span>
 				{:else if entry}
 					<RowMenu label={`Actions for ${row.item_ref}`} title={row.item_title} disabled={busy}>

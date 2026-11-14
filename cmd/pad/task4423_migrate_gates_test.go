@@ -95,7 +95,7 @@ func TestTASK4423_R10Migrate(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if _, err := src.ResolveOccurrence(ws.ID, items[0].ID, store.ResolveInput{OccurrenceAt: occurrenceAt, State: "done", Actor: "user"}); err != nil {
+			if _, err := src.ResolveOccurrence(ws.ID, items[0].ID, store.ResolveInput{OccurrenceAt: occurrenceAt, State: "done", Actor: "user", EndSchedule: true}); err != nil {
 				t.Fatal(err)
 			}
 			if _, err := src.ScheduleGates(ws.ID, items[2].ID, access); err != nil {

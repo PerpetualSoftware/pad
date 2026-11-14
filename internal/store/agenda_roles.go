@@ -347,7 +347,10 @@ func agendaSeedWindows(roles scheduleRoles, loc *time.Location, from, to time.Ti
 }
 
 // AgendaWorkCandidate is an admitted open item before group classification.
-type AgendaWorkCandidate struct{ ItemID, ItemRef, ItemTitle, Collection, Fields, Schema string }
+type AgendaWorkCandidate struct {
+	ItemID, ItemRef, ItemTitle, Collection, Fields, Schema string
+	CanCloseItem                                           bool
+}
 
 // ListAgendaWork applies visibility and recipient admission before the scan cap.
 // listNoDate admits unscheduled work collections for a personal listing.
@@ -360,7 +363,10 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 		return nil, false, err
 	}
 	var workIDs []any
+	canClose := make(map[string]bool, len(collections))
 	for _, c := range collections {
+		filter := resolveCollectionDoneFilter(c.ID, c.Schema, c.Settings)
+		canClose[c.Slug] = len(filter.writableTerminals) > 0
 		if listNoDate && models.CollectionTracksWorkJSON(c.Settings) {
 			workIDs = append(workIDs, c.ID)
 		}
@@ -396,6 +402,7 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 		if num != nil {
 			c.ItemRef = fmt.Sprintf("%s-%d", prefix, *num)
 		}
+		c.CanCloseItem = canClose[c.Collection]
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {

@@ -49,6 +49,8 @@ const (
 	ErrStaleOccurrence           ErrorCode = "stale"
 	ErrScheduleBroken            ErrorCode = "schedule_error"
 	ErrScheduleBusy              ErrorCode = "schedule_busy"
+	ErrItemStillOpen             ErrorCode = "item_still_open" // TASK-4537: a done or skip would end an open item's schedule
+	ErrNotEnded                  ErrorCode = "not_ended"       // TASK-4537: dismiss-ended on a live schedule
 	ErrScheduleLinked            ErrorCode = "schedule_linked"
 	ErrDeadlineApprovalRequired  ErrorCode = "deadline_approval_required"
 	ErrLinkViolationAck          ErrorCode = "link_violation_ack"
@@ -540,6 +542,7 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"commitment_preview_required": {},
 	"validation_error":            {},
 	"not_fired":                   {}, "stale": {}, "schedule_error": {}, "schedule_busy": {},
+	"item_still_open": {}, "not_ended": {}, // TASK-4537
 
 	"hard_deadline":           {},
 	"deadline_owner_required": {},
@@ -1902,7 +1905,7 @@ func commitmentGraphCode(code, route string) bool {
 	switch ErrorCode(code) {
 	case ErrInvalidBody:
 		return cli.IsCommitmentRoute(route)
-	case ErrOccurrenceNotFired, ErrStaleOccurrence, ErrScheduleBroken, ErrScheduleBusy, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired:
+	case ErrOccurrenceNotFired, ErrStaleOccurrence, ErrScheduleBroken, ErrScheduleBusy, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired, ErrItemStillOpen, ErrNotEnded:
 		return true
 	}
 	return false
@@ -1916,7 +1919,7 @@ func commitmentValidationDetails(raw json.RawMessage) bool {
 		return false
 	}
 	switch d.Field {
-	case "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment":
+	case "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule":
 		return true
 	}
 	return false
@@ -1938,6 +1941,7 @@ func classifyCommitmentStderr(message string) (ErrorCode, string, json.RawMessag
 		"this linked change needs a commitment move preview before applying":                                   ErrCommitmentPreviewRequired,
 		"this occurrence has not fired yet, so there is nothing to acknowledge.":                               ErrOccurrenceNotFired,
 		"invalid commitment link configuration":                                                                ErrLinkInvalid,
+		"the schedule has an outstanding occurrence; there is nothing ended to dismiss.":                       ErrNotEnded,
 	}
 	if code, ok := messages[lower]; ok {
 		var details json.RawMessage

@@ -3,8 +3,8 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
-const h = vi.hoisted(() => ({ toast: vi.fn(), agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
-vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, items: { get: h.item } } }));
+const h = vi.hoisted(() => ({ toast: vi.fn(), agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/stores/auth.svelte', async () => {
@@ -1503,5 +1503,100 @@ describe('created entries stay off the agenda; Show completed is its own toggle 
   await fireEvent.click(screen.getByRole('button', { name: 'Show it' }));
   expect(screen.queryByText('Completed work is hidden.')).toBeNull();
   await fireEvent.click(await screen.findByRole('button', { name: '1 completed' })); expect(screen.getByText('Closed one')).toBeTruthy(); noCreated();
+ });
+});
+
+describe('the last occurrence of an open item (TASK-4537)', () => {
+ beforeEach(() => localStorage.setItem('pad-agenda-mode:user-a', 'day'));
+ const stillOpen = (extra: Record<string, unknown> = {}) => ({ code: 'item_still_open', message: 'This is the last occurrence.', details: { state: 'done', occurrence_at: frozenAt, done_field: 'status', item_status: 'open', close_options: ['done'], ack_available: false, ...extra } });
+ const ask = async (extra: Record<string, unknown> = {}) => {
+  h.resolve.mockRejectedValueOnce(stillOpen(extra)).mockResolvedValue({ resolution: { item_still_open: true } }); h.update.mockResolvedValue({});
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  return screen.findByRole('dialog', { name: 'Last occurrence: the item is still open' });
+ };
+ it('Close item too ends the schedule first, then closes the item', async () => {
+  const d = await ask();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await waitFor(() => expect(h.update).toHaveBeenCalledWith('work', 'EX-30', { fields_patch: { status: 'done' } }));
+  expect(h.resolve).toHaveBeenNthCalledWith(2, 'work', 'EX-30', { occurrence_at: frozenAt, state: 'done', end_schedule: true });
+  expect(h.resolve.mock.invocationCallOrder[1]).toBeLessThan(h.update.mock.invocationCallOrder[0]);
+  await said('Occurrence marked done; the schedule has ended and the item is closed.', 'success');
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: /Last occurrence/ })).toBeNull());
+ });
+ it('reports an open item when the close choice is cleared during resolve', async () => {
+  const d = await ask();
+  const pendingResolve = deferred<unknown>();
+  h.resolve.mockReturnValueOnce(pendingResolve.promise);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledTimes(2));
+  // Reloading user context clears the dialog while the resolve is in flight.
+  h.user = null; h.signal?.set('auth', 1);
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: /Last occurrence/ })).toBeNull());
+  h.user = { id: 'user-a', timezone: 'America/New_York' }; h.signal?.set('auth', 2);
+  await screen.findAllByText('First item');
+  pendingResolve.resolve({ resolution: { item_still_open: true } });
+  await said('Occurrence marked done; the schedule has ended. The item stays open in Outstanding.', 'success');
+  expect(h.update).not.toHaveBeenCalled();
+  expect(h.toast.mock.calls.some(call => String(call[0]).includes('item is closed'))).toBe(false);
+ });
+ it('does not close the item when the retry did not end the schedule', async () => {
+  const d = await ask();
+  // A concurrent edit gave the schedule another occurrence: end_schedule had no effect.
+  h.resolve.mockResolvedValueOnce({ resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0 } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await said('Occurrence marked done. The schedule continues, so the item was not closed.', 'success');
+  expect(h.update).not.toHaveBeenCalled();
+ });
+ it('an ending without item_still_open says the schedule ended, not that it continues', async () => {
+  const d = await ask();
+  // The item was closed concurrently: the retry ends the schedule with the item not open.
+  h.resolve.mockResolvedValueOnce({ commitment: { ended_at: frozenAt }, resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0 } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await said('Occurrence marked done; the schedule has ended.', 'success');
+  expect(h.update).not.toHaveBeenCalled();
+ });
+ it('End schedule keeps the item open', async () => {
+  const d = await ask();
+  await fireEvent.click(within(d).getByLabelText(/End schedule, keep item open/));
+  await fireEvent.click(within(d).getByRole('button', { name: 'End schedule' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledTimes(2));
+  expect(h.resolve).toHaveBeenLastCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done', end_schedule: true });
+  expect(h.update).not.toHaveBeenCalled();
+  await said('Occurrence marked done; the schedule has ended. The item stays open in Outstanding.', 'success');
+ });
+ it('Acknowledge instead acknowledges and writes no ending', async () => {
+  const d = await ask({ ack_available: true });
+  await fireEvent.click(within(d).getByLabelText(/Acknowledge instead/));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Acknowledge' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledTimes(2));
+  expect(h.resolve).toHaveBeenLastCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'ack' });
+  expect(h.update).not.toHaveBeenCalled();
+ });
+ it('Cancel writes nothing', async () => {
+  const d = await ask();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: /Last occurrence/ })).toBeNull());
+  await settle();
+  expect(h.resolve).toHaveBeenCalledTimes(1); expect(h.update).not.toHaveBeenCalled();
+ });
+ it('a close refused after the schedule ended says so and refreshes', async () => {
+  const d = await ask(); h.update.mockRejectedValue({ code: 'open_children', message: 'EX-30 has open children' });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await said('The schedule has ended, but closing the item failed: EX-30 has open children. It stays open in Outstanding.');
+  expect(h.agenda.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(h.toast.mock.calls.some(call => String(call[0]).includes('item is closed'))).toBe(false);
+ });
+ it('Dismiss on a schedule_ended Outstanding row', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'week');
+  const ended = workRow({ type: 'item', reason: 'schedule_ended', ended_at: '2026-11-04T15:00:00Z', roles: undefined, at: undefined, day: undefined, state: undefined });
+  h.agenda.mockResolvedValueOnce(response([row()], { priority_list: [ended] })).mockResolvedValue(response([row()]));
+  h.dismiss.mockResolvedValue({ commitment: {} });
+  await mount();
+  const item = document.querySelector<HTMLElement>('li[data-work="EX-30"]')!;
+  expect(item).toHaveTextContent('Schedule ended');
+  await fireEvent.click(within(item).getByRole('button', { name: 'Actions for EX-30' }));
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Dismiss' }));
+  await waitFor(() => expect(h.dismiss).toHaveBeenCalledWith('work', 'EX-30'));
+  await said('Dismissed. EX-30 stays open.', 'success');
  });
 });

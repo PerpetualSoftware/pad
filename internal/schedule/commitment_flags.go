@@ -212,4 +212,7 @@ type CommitmentResolve struct {
 	Until        string `json:"until,omitempty"`
 	// ActualDoneAt is when the work was really finished, for state done only.
 	ActualDoneAt string `json:"actual_done_at,omitempty"`
+	// EndSchedule consents to a done or skip that ends the schedule while the
+	// item stays open (TASK-4537); sent only when true.
+	EndSchedule bool `json:"end_schedule,omitempty"`
 }

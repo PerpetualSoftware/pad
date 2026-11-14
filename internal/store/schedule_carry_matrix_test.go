@@ -79,7 +79,7 @@ func (m *matrixRun) resolve(in ResolveInput, at time.Time) {
 func (m *matrixRun) fireAndDone() {
 	m.t.Helper()
 	m.fireOurs(dueOf(m.sched(), m.view))
-	m.resolve(ResolveInput{State: "done"}, m.ts.Add(time.Minute))
+	m.resolve(ResolveInput{State: "done", EndSchedule: true}, m.ts.Add(time.Minute))
 }
 
 func driveNone(m *matrixRun) time.Time { return rt("2026-10-29T13:00:00Z") }

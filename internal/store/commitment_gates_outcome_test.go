@@ -37,7 +37,7 @@ func (f *linkFix) deadline(t *testing.T, i int, behavior string) {
 func (f *linkFix) resolve(t *testing.T, i int, state string) {
 	t.Helper()
 	sc := f.reload(t, f.items[i].ID)
-	if _, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: state, Actor: "user", MaySkipBeforeDeadline: true}); err != nil {
+	if _, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: state, Actor: "user", MaySkipBeforeDeadline: true, EndSchedule: true}); err != nil {
 		t.Fatalf("resolve %s: %v", state, err)
 	}
 }
@@ -377,7 +377,7 @@ func TestABlockerWhoseCommitmentHadEndedIsJudgedByItsStatus(t *testing.T) {
 
 func (f *linkFix) resolve2(t *testing.T, it *models.Item, sc *models.ItemSchedule, state string) {
 	t.Helper()
-	if _, err := f.s.ResolveOccurrence(f.ws.ID, it.ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: state, Actor: "user"}); err != nil {
+	if _, err := f.s.ResolveOccurrence(f.ws.ID, it.ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: state, Actor: "user", EndSchedule: true}); err != nil {
 		t.Fatal(err)
 	}
 }

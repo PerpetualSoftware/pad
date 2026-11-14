@@ -67,6 +67,8 @@ var lifecycleSites = map[string]string{
 	"internal/store/commitment_notices.go::EnqueueLinkedWriteDeadlineApprovalNotice::buildChildrenDoneExpr": "keep: the terminal filter the commitment pin needs to recompute a refused link write; it counts nothing, and a deadline on a reference item is deliberate (TASK-4423)",
 	"internal/store/schedule_resolve.go::resolveOccurrenceAt::nonTerminalFilter":                            "keep: uses the evaluator terminal rule for skip-records-the-miss-first; a deadline on a reference item is deliberate, like its schedule (TASK-4353)",
 
+	"internal/store/schedule_resolve.go::closeOccurrenceTx::buildChildrenDoneExpr": "keep: checks the close state of an explicitly scheduled item; a reference item with a writable terminal value still needs consent to end its schedule (TASK-4537)",
+
 	// Progress.
 	"internal/store/items.go::GetItemProgress::buildChildrenDoneExpr":                   "exclude: counted only where buildChildrenUncountedExpr is false",
 	"internal/store/items.go::GetItemProgress::buildChildrenUncountedExpr":              "exclude: reference children are uncounted",

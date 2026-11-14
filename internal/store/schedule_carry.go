@@ -37,6 +37,9 @@ type carriedSchedule struct {
 	NextOverrideAt   string
 	AnchorWall       string
 	EndedAt          string
+	// EndedDismissedAt is carried only by a bundle import; a fresh copy and a
+	// cross-workspace carry never set it.
+	EndedDismissedAt string
 
 	// FiredAt is the managed row's fired mark ("" = armed). RemindAt is read only
 	// when FiredAt is set: a fired row's instant is history, not a schedule.
@@ -120,16 +123,16 @@ func (s *Store) insertCarriedScheduleTx(tx *sql.Tx, workspaceID, itemID string, 
 // preparedCarry is a carried schedule that passed every check, with everything
 // the write needs derived.
 type preparedCarry struct {
-	overrides                           []models.ScheduleOverrideExport
-	drops                               []string
-	spec                                schedule.Spec
-	dtend                               schedule.Wall
-	hasEnd                              bool
-	anchorWall                          string
-	endedAt, firedAt, ackedAt, override string
-	createdAt, updatedAt                string
-	nextAt, nextWall, remindAt          any
-	occs                                []carriedOccurrence
+	overrides                                        []models.ScheduleOverrideExport
+	drops                                            []string
+	spec                                             schedule.Spec
+	dtend                                            schedule.Wall
+	hasEnd                                           bool
+	anchorWall                                       string
+	endedAt, dismissedAt, firedAt, ackedAt, override string
+	createdAt, updatedAt                             string
+	nextAt, nextWall, remindAt                       any
+	occs                                             []carriedOccurrence
 }
 
 // prepareCarriedSchedule is the validation half of insertCarriedScheduleTx: pure
@@ -191,6 +194,13 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 	}
 	if ackedAt != "" && (firedAt == "" || endedAt != "" || in.NextWall == "") {
 		return preparedCarry{}, dropf("acked_at", "combination")
+	}
+	dismissedAt, err := carryInstant("ended_dismissed_at", in.EndedDismissedAt)
+	if err != nil {
+		return preparedCarry{}, err
+	}
+	if dismissedAt != "" && endedAt == "" {
+		return preparedCarry{}, dropf("ended_dismissed_at", "combination")
 	}
 	override, err := carryInstant("next_override_at", in.NextOverrideAt)
 	if err != nil {
@@ -257,7 +267,7 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 
 	return preparedCarry{
 		overrides: overrides, drops: drops,
-		spec: spec, dtend: end, hasEnd: hasEnd, anchorWall: anchorWall, endedAt: endedAt, firedAt: firedAt, ackedAt: ackedAt, override: override,
+		spec: spec, dtend: end, hasEnd: hasEnd, anchorWall: anchorWall, endedAt: endedAt, dismissedAt: dismissedAt, firedAt: firedAt, ackedAt: ackedAt, override: override,
 		createdAt: createdAt, updatedAt: updatedAt, nextAt: nextAt, nextWall: nextWall, remindAt: remindAt, occs: occs,
 	}, nil
 }
@@ -283,7 +293,7 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 	}
 	sc := &models.ItemSchedule{ID: id, WorkspaceID: workspaceID, ItemID: itemID, Kind: in.Kind, Dtstart: spec.Start.String(), Floating: spec.Floating,
 		RDates: wallStrings(spec.RDates), ExDates: wallStrings(spec.ExDates), Anchor: in.Anchor, Audience: in.Audience, LeadMinutes: in.LeadMinutes,
-		NextAt: textPointer(nextAt), NextWall: textPointer(nextWall), NextOverrideAt: optional(override), AnchorWall: optional(anchorWall), EndedAt: optional(endedAt), CreatedAt: createdAt, UpdatedAt: updatedAt}
+		NextAt: textPointer(nextAt), NextWall: textPointer(nextWall), NextOverrideAt: optional(override), AnchorWall: optional(anchorWall), EndedAt: optional(endedAt), EndedDismissedAt: optional(p.dismissedAt), CreatedAt: createdAt, UpdatedAt: updatedAt}
 	if hasEnd {
 		sc.Dtend = ptr(end.String())
 	}
@@ -442,7 +452,7 @@ func carriedFromExport(x models.ScheduleExport, commentIDs map[string]string) (c
 		Kind: x.Kind, Dtstart: x.Dtstart, Dtend: x.Dtend, Tz: x.Tz, Floating: x.Floating, Rrule: x.Rrule,
 		RDates: rd, ExDates: ex, Anchor: x.Anchor, Audience: x.Audience, LeadMinutes: x.LeadMinutes,
 		NextWall: x.NextWall, NextAt: x.NextAt, NextOverrideAt: x.NextOverrideAt, AnchorWall: x.AnchorWall,
-		EndedAt: x.EndedAt, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt,
+		EndedAt: x.EndedAt, EndedDismissedAt: x.EndedDismissedAt, CreatedAt: x.CreatedAt, UpdatedAt: x.UpdatedAt,
 		Roles: x.Roles, Overrides: x.Overrides,
 	}
 	if x.Reminder != nil {
@@ -545,7 +555,7 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 			ItemID: sc.ItemID, Kind: sc.Kind, Dtstart: sc.Dtstart, Dtend: derefStr(sc.Dtend), Tz: derefStr(sc.Tz),
 			Floating: sc.Floating, Rrule: derefStr(sc.Rrule), Anchor: sc.Anchor, Audience: sc.Audience, LeadMinutes: sc.LeadMinutes,
 			NextAt: derefStr(sc.NextAt), NextWall: derefStr(sc.NextWall), NextOverrideAt: derefStr(sc.NextOverrideAt),
-			AnchorWall: derefStr(sc.AnchorWall), EndedAt: derefStr(sc.EndedAt), CreatedAt: sc.CreatedAt, UpdatedAt: sc.UpdatedAt,
+			AnchorWall: derefStr(sc.AnchorWall), EndedAt: derefStr(sc.EndedAt), EndedDismissedAt: derefStr(sc.EndedDismissedAt), CreatedAt: sc.CreatedAt, UpdatedAt: sc.UpdatedAt,
 			Occurrences: occ[sc.ID],
 		}
 		for _, w := range sc.RDates {

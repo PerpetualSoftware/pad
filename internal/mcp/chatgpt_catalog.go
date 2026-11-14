@@ -343,6 +343,7 @@ var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_item", "schedule-forecast"}:    "deferred to v2",
 	{"pad_item", "schedule-edit"}:        "deferred to v2",
 	{"pad_item", "schedule-delete"}:      "deferred to v2",
+	{"pad_item", "schedule-dismiss"}:     "deferred to v2",
 	{"pad_item", "schedule-resolve"}:     "deferred to v2",
 	{"pad_item", "schedule-renegotiate"}: "deferred to v2",
 	{"pad_item", "schedule-link"}:        "deferred to v2",

@@ -11,6 +11,7 @@ var ValidActions = []string{
 	"verified", // TASK-3617: a batch of acceptance-criteria verdicts
 	// TASK-4102: item schedule writes. Metadata holds names only.
 	"schedule_created", "schedule_updated", "schedule_deleted", "schedule_resolved", "schedule_acknowledged",
+	"schedule_end_dismissed", // TASK-4537: an ended schedule dismissed from Outstanding
 }
 
 // Audit action constants for auth/admin events

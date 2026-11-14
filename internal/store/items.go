@@ -5152,8 +5152,10 @@ type collectionDoneFilter struct {
 	collectionID string
 	doneKey      string
 	values       []string
+	// writableTerminals are terminal values the resolved field can hold.
+	writableTerminals []string
 	// abandoned is the subset of values that closes without delivering
-	// (models.AbandonedValuesForDoneField). Only progress reads it.
+	// (models.AbandonedValuesForDoneField). Progress and close options use it.
 	abandoned []string
 	// reference is true when the collection holds reference material, not
 	// work (PLAN-3535, models.CollectionTracksWorkJSON). Only progress reads
@@ -5265,36 +5267,80 @@ func scanCollectionDoneFilters(rows *sql.Rows) []collectionDoneFilter {
 		if err := rows.Scan(&id, &schemaJSON, &settingsJSON); err != nil {
 			continue
 		}
-		var schema models.CollectionSchema
-		if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
-			// Malformed schema → emit a default-fallback filter so the
-			// collection's items still get evaluated against the status
-			// column + global default terminals. This matches pre-TASK-604
-			// behavior for those items.
-			filters = append(filters, collectionDoneFilter{
-				collectionID: id,
-				doneKey:      "status",
-				values:       models.DefaultTerminalStatuses,
-				abandoned:    models.DefaultAbandonedStatuses(),
-				reference:    !models.CollectionTracksWorkJSON(settingsJSON),
-			})
-			continue
-		}
-		var settings models.CollectionSettings
-		if settingsJSON != "" {
-			_ = json.Unmarshal([]byte(settingsJSON), &settings)
-		}
-		key, values := models.TerminalValuesForDoneField(schema, settings)
-		_, abandoned := models.AbandonedValuesForDoneField(schema, settings)
-		filters = append(filters, collectionDoneFilter{
-			collectionID: id,
-			doneKey:      key,
-			values:       values,
-			abandoned:    abandoned,
-			reference:    !models.CollectionTracksWork(settings),
-		})
+		filters = append(filters, resolveCollectionDoneFilter(id, schemaJSON, settingsJSON))
 	}
 	return filters
+}
+
+// resolveCollectionDoneFilter is shared by collection reads and transactional
+// schedule resolution, including the fallback for undecodable collection JSON.
+func resolveCollectionDoneFilter(id, schemaJSON, settingsJSON string) collectionDoneFilter {
+	var schema models.CollectionSchema
+	if err := models.UnmarshalItemFieldSchema([]byte(schemaJSON), &schema); err != nil {
+		return collectionDoneFilter{
+			collectionID: id, doneKey: "status", values: models.DefaultTerminalStatuses,
+			writableTerminals: models.DefaultTerminalStatuses,
+			abandoned:         models.DefaultAbandonedStatuses(),
+			reference:         !models.CollectionTracksWorkJSON(settingsJSON),
+		}
+	}
+	var settings models.CollectionSettings
+	if settingsJSON != "" {
+		_ = json.Unmarshal([]byte(settingsJSON), &settings)
+	}
+	key, values := models.TerminalValuesForDoneField(schema, settings)
+	_, abandoned := models.AbandonedValuesForDoneField(schema, settings)
+	filter := collectionDoneFilter{collectionID: id, doneKey: key, values: values, abandoned: abandoned, reference: !models.CollectionTracksWork(settings)}
+	for _, field := range schema.Fields {
+		if field.Key != key {
+			continue
+		}
+		switch field.Type {
+		case "text", "url":
+			filter.writableTerminals = values
+		case "select":
+			if len(field.Options) == 0 {
+				filter.writableTerminals = values
+				break
+			}
+		options:
+			for _, option := range field.Options {
+				for _, seen := range filter.writableTerminals {
+					if strings.EqualFold(option, seen) {
+						continue options // a repeated option is offered once
+					}
+				}
+				for _, value := range values {
+					if strings.EqualFold(option, value) {
+						filter.writableTerminals = append(filter.writableTerminals, option)
+						break
+					}
+				}
+			}
+		default:
+			// Other types cannot store a terminal string as compared by LOWER(fields.<key>).
+		}
+		break
+	}
+	return filter
+}
+
+// closeOptions preserves the field's option order and excludes abandoning closes.
+func (f collectionDoneFilter) closeOptions() []string {
+	options := []string{}
+	for _, value := range f.writableTerminals {
+		abandoned := false
+		for _, negative := range f.abandoned {
+			if strings.EqualFold(value, negative) {
+				abandoned = true
+				break
+			}
+		}
+		if !abandoned {
+			options = append(options, value)
+		}
+	}
+	return options
 }
 
 // buildChildrenDoneExpr compiles a set of per-collection done filters into

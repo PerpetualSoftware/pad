@@ -3798,6 +3798,11 @@ export const api = {
 		request<CommitmentResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/resolve`, {
 			method: 'POST', body: JSON.stringify(body)
 		}),
+	/** Dismiss an open item's ended schedule from Outstanding, for everyone (TASK-4537). */
+	dismissEndedCommitment: (ws: string, ref: string) =>
+		request<{ commitment: ItemCommitmentView }>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/dismiss-ended`, {
+			method: 'POST', body: '{}'
+		}),
 
  listCommitmentLinks: (ws: string, ref: string) =>
   request<{ links: CommitmentLink[] }>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/links`),

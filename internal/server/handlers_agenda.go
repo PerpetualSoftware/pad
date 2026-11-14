@@ -58,6 +58,9 @@ type agendaEntry struct {
 	CommentID      string                  `json:"comment_id,omitempty"`
 	MissedCount    int                     `json:"missed_count,omitempty"`
 	Stale          bool                    `json:"stale,omitempty"`
+	// EndedAt is set on a schedule_ended Outstanding entry: when the item's
+	// schedule ended while the item stayed open (TASK-4537).
+	EndedAt string `json:"ended_at,omitempty"`
 
 	Workspace     string `json:"workspace,omitempty"`
 	WorkspaceName string `json:"workspace_name,omitempty"`

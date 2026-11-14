@@ -653,6 +653,7 @@ var nulExcluded = map[string]string{
 	"item_schedules.next_at":                 "re-formatted from a computed time, never the request's text (TASK-4102, migration 162)",
 	"item_schedules.next_override_at":        "re-formatted from a parsed RFC3339 time, never the request's text (TASK-4102, migration 162)",
 	"item_schedules.ended_at":                "server timestamp from now() (TASK-4102, migration 162)",
+	"item_schedules.ended_dismissed_at":      "server timestamp from now(); a bundle import re-formats a parsed instant, never the bundle text (TASK-4537, migration 180)",
 	"item_schedules.error_code":              "a fixed schedule.Code or cap code constant, never third-party text (TASK-4102, migration 162)",
 	"item_schedules.created_at":              "server timestamp from now() (TASK-4102, migration 162)",
 	"item_schedules.updated_at":              "server timestamp from now() (TASK-4102, migration 162)",

@@ -92,3 +92,24 @@ func (x *WorkspaceExport) HasV4ScheduleMembers() bool {
 	}
 	return false
 }
+
+// UnmarshalJSON dismisses historical endings from bundles that predate the
+// dismissal key. An explicitly empty or null value keeps the ending visible.
+func (x *ScheduleExport) UnmarshalJSON(b []byte) error {
+	type plain ScheduleExport
+	var decoded plain
+	if err := json.Unmarshal(b, &decoded); err != nil {
+		return err
+	}
+	var raw struct {
+		Dismissed json.RawMessage `json:"ended_dismissed_at"`
+	}
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	if raw.Dismissed == nil {
+		decoded.EndedDismissedAt = decoded.EndedAt
+	}
+	*x = ScheduleExport(decoded)
+	return nil
+}

@@ -77,7 +77,7 @@ func TestResolveOccurrenceAckTransitions(t *testing.T) {
 				}
 				f.exec(t, `UPDATE item_reminders SET fired_at=? WHERE schedule_id=?`, ackNow, sc.ID)
 				f.mustResolve(t, f.item, ackInput(), ackNow)
-				f.mustResolve(t, f.item, ResolveInput{OccurrenceAt: rt(ackAt), State: "done", Actor: "user"}, ackNow)
+				f.mustResolve(t, f.item, ResolveInput{OccurrenceAt: rt(ackAt), State: "done", Actor: "user", EndSchedule: true}, ackNow)
 				if _, err := f.resolve(t, f.item, ackInput(), ackNow); isStale(err) == nil {
 					t.Fatalf("resolved=%v", err)
 				}
@@ -145,7 +145,7 @@ func TestResolveOccurrenceAckConcurrentWriters(t *testing.T) {
 					<-start
 					in := ackInput()
 					if i == 1 {
-						in.State = other
+						in.State, in.EndSchedule = other, true
 						if other == "snooze" {
 							in.Until = ptr(rt("2026-10-31T12:00:00Z"))
 						}

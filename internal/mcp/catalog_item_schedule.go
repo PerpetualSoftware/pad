@@ -152,7 +152,7 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 			details, _ := json.Marshal(map[string]string{"field": field, "code": code})
 			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: message, Details: details}), nil
 		}
-		for _, k := range []string{"until", "actual_done_at", "comment"} {
+		for _, k := range []string{"until", "actual_done_at", "comment", "end_schedule"} {
 			if _, present := input[k]; present {
 				return fieldError(k, "combination", k+" cannot be set with ack")
 			}
@@ -208,6 +208,21 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	case strings.TrimSpace(until) != "":
 		return errStructured(name, fmt.Errorf("until applies to snooze and move only, not %s", state)), nil
 	}
+	// end_schedule consents to ending an open item's schedule on its last
+	// occurrence (TASK-4537): a boolean, for done and skip only, as the route
+	// refuses it.
+	endSchedule := false
+	if v, present := input["end_schedule"]; present && v != nil {
+		b, ok := v.(bool)
+		if !ok {
+			return NewErrorResult(ErrorPayload{Code: ErrInvalidBody, Message: "end_schedule must be a boolean"}), nil
+		}
+		if needsUntil {
+			details, _ := json.Marshal(map[string]string{"field": "end_schedule", "code": "combination"})
+			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: "end_schedule is for done and skip", Details: details}), nil
+		}
+		endSchedule = b
+	}
 	// actual_done_at is for done, and a blank one is not given.
 	actual := ""
 	if a, _ := input["actual_done_at"].(string); strings.TrimSpace(a) != "" {
@@ -237,6 +252,9 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	}
 	if needsUntil {
 		out["until"] = until
+	}
+	if endSchedule {
+		out["end_schedule"] = true
 	}
 	return env.Dispatch(ctx, []string{"item", "remind", state}, out)
 }

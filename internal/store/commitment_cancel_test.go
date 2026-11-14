@@ -28,7 +28,7 @@ func (f *linkFix) cancelLink(t *testing.T, parent, child int, policy string) *mo
 func (f *linkFix) skipAs(t *testing.T, i int, actor string) {
 	t.Helper()
 	sc := f.reload(t, f.items[i].ID)
-	if _, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: actor, MaySkipBeforeDeadline: true, LinkAccess: f.allEdit()}); err != nil {
+	if _, err := f.s.ResolveOccurrence(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: actor, MaySkipBeforeDeadline: true, LinkAccess: f.allEdit(), EndSchedule: true}); err != nil {
 		t.Fatalf("skip: %v", err)
 	}
 }
@@ -163,7 +163,7 @@ func TestSkippingANoLongerNeededOccurrenceRecordsNoMiss(t *testing.T) {
 	f.skipAs(t, 0, "user")
 	sc := f.reload(t, f.items[1].ID)
 	// A moment after the child's deadline, before any tick.
-	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true}, rt("2030-03-06T00:00:00Z")); err != nil {
+	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[1].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, EndSchedule: true}, rt("2030-03-06T00:00:00Z")); err != nil {
 		t.Fatal(err)
 	}
 	if n := f.misses(t, 1); n != 0 {
@@ -363,7 +363,7 @@ func (f *linkFix) reminderCounts(t *testing.T, i int) (total, fired int) {
 func (f *linkFix) skipAt(t *testing.T, i int, nowT string) {
 	t.Helper()
 	sc := f.reload(t, f.items[i].ID)
-	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, LinkAccess: f.allEdit()}, rt(nowT)); err != nil {
+	if _, err := f.s.resolveOccurrenceAt(f.ws.ID, f.items[i].ID, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user", MaySkipBeforeDeadline: true, LinkAccess: f.allEdit(), EndSchedule: true}, rt(nowT)); err != nil {
 		t.Fatalf("skip: %v", err)
 	}
 }

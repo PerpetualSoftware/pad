@@ -245,7 +245,7 @@ func TestBootstrapAgendaLeavesOutTheRest(t *testing.T) {
 	f := newBootFixture(t)
 	f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
 	over, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
-	f.mustResolve(t, over, ResolveInput{OccurrenceAt: rt("2026-10-28T09:00:00Z"), State: "done", Actor: "user"}, "2026-10-29T08:00:00Z")
+	f.mustResolve(t, over, ResolveInput{OccurrenceAt: rt("2026-10-28T09:00:00Z"), State: "done", Actor: "user", EndSchedule: true}, "2026-10-29T08:00:00Z")
 	archived, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
 	f.exec(t, `UPDATE items SET deleted_at = ? WHERE id = ?`, "2026-10-28T10:00:00Z", archived.ID)
 	open, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-28T09:00", Tz: "UTC"}, "2026-10-28T00:00:00Z")
