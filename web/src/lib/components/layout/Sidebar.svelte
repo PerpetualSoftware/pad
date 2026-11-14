@@ -6,6 +6,8 @@
 	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
 	import QuickCaptureSheet from './QuickCaptureSheet.svelte';
 	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
+	import { pickShellWorkspace } from '$lib/stores/shellWorkspace';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { page } from '$app/state';
 	import { dndzone } from 'svelte-dnd-action';
 	import type { DndEvent } from 'svelte-dnd-action';
@@ -54,7 +56,7 @@
 	let pickerRef = $state<HTMLDivElement>();
 
 	let shellWorkspace = $derived(!uiStore.isMobile && !page.params.workspace
-		? workspaceStore.workspaces?.find(w => w.slug === lastWorkspace.current?.slug && w.owner_username === lastWorkspace.current?.owner_username) ?? workspaceStore.workspaces?.[0] ?? workspaceStore.current
+		? pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs) ?? workspaceStore.current
 		: workspaceStore.current);
 	let captureOpen = $state(false);
 	let wsSlug = $derived(shellWorkspace?.slug);

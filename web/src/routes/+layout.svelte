@@ -27,6 +27,7 @@
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { sweepExpiredRefusedRawDrafts } from '$lib/items/refusedRawDraft';
 	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
+	import { pickShellWorkspace } from '$lib/stores/shellWorkspace';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
@@ -93,7 +94,7 @@
 	let inWorkspace = $derived(!!page.params.workspace);
 	$effect(() => {
 		if (uiStore.isMobile || inWorkspace || !authReady || !authStore.authenticated) return;
-		const ws = workspaceStore.workspaces.find(w => w.slug === lastWorkspace.current?.slug && w.owner_username === lastWorkspace.current?.owner_username) ?? workspaceStore.workspaces[0];
+		const ws = pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs);
 		if (ws) untrack(() => {
 			if (workspaceStore.current?.id !== ws.id) void workspaceStore.setCurrent(ws);
 			void collectionStore.ensureCollections(ws.slug).catch(() => {});

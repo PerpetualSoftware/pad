@@ -17,6 +17,8 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
 	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
+	import { pickShellWorkspace } from '$lib/stores/shellWorkspace';
+	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { canEditCollection } from '$lib/utils/permissions';
 	import type { Collection, WorkspaceMembership } from '$lib/types';
@@ -56,7 +58,7 @@
 	let targetMembership = $state<WorkspaceMembership | null>(null);
 	let loadingWorkspace = $state(false);
 	let workspaceError = $state('');
-	const selectedWorkspace = $derived(workspaceStore.workspaces?.find(w => w.slug === chosenWorkspace) ?? workspaceStore.workspaces?.find(w => w.slug === lastWorkspace.current?.slug && w.owner_username === lastWorkspace.current?.owner_username) ?? workspaceStore.workspaces?.[0]);
+	const selectedWorkspace = $derived(workspaceStore.workspaces?.find(w => w.slug === chosenWorkspace) ?? pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs));
 	const targetSlug = $derived(wsSlug || selectedWorkspace?.slug);
 	const targetPrefix = $derived(wsSlug ? wsPrefix : selectedWorkspace ? `/${selectedWorkspace.owner_username}/${selectedWorkspace.slug}` : '');
 	const collections = $derived((wsSlug ? collectionStore.collections : targetCollections).filter(c => !isAgentCollection(c) && (wsSlug ? workspaceStore.canEditCollection(c.id) : canEditCollection(targetMembership, c.id))));
