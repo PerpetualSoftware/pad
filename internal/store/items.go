@@ -5312,7 +5312,9 @@ func resolveCollectionDoneFilter(id, schemaJSON, settingsJSON string) collection
 	return filter
 }
 
-// closeOptions preserves the field's option order and excludes abandoning closes.
+// closeOptions preserves the field's option order and excludes abandoning
+// closes, unless the field has no delivering close: then the abandoning ones
+// are the only way to close the item, so they are offered.
 func (f collectionDoneFilter) closeOptions() []string {
 	options := []string{}
 	for _, value := range f.writableTerminals {
@@ -5326,6 +5328,9 @@ func (f collectionDoneFilter) closeOptions() []string {
 		if !abandoned {
 			options = append(options, value)
 		}
+	}
+	if len(options) == 0 {
+		options = append(options, f.writableTerminals...)
 	}
 	return options
 }
