@@ -5303,7 +5303,13 @@ func resolveCollectionDoneFilter(id, schemaJSON, settingsJSON string) collection
 				filter.writableTerminals = values
 				break
 			}
+		options:
 			for _, option := range field.Options {
+				for _, seen := range filter.writableTerminals {
+					if strings.EqualFold(option, seen) {
+						continue options // a repeated option is offered once
+					}
+				}
 				for _, value := range values {
 					if strings.EqualFold(option, value) {
 						filter.writableTerminals = append(filter.writableTerminals, option)
