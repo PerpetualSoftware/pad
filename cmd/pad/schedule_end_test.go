@@ -85,21 +85,38 @@ func TestRemindDoneCloseItemFlow(t *testing.T) {
 			t.Fatalf("patch = %s", calls[2].body)
 		}
 	})
-	for _, tc := range []struct{ name, options, flag, want string }{
-		{"ambiguous options write nothing", `["shipped","done"]`, "--close-item", "shipped, done"},
-		{"no option", `[]`, "--close-item", "no delivering close"},
-		{"value outside the options", `["done"]`, "--close-item=cancelled", "not a delivering close"},
+	for _, tc := range []struct {
+		name, options, flag string
+		wants               []string
+	}{
+		{"ambiguous options write nothing", `["shipped","done"]`, "--close-item", []string{"shipped, done", "--close-item=VALUE"}},
+		{"no option", `[]`, "--close-item", []string{"no delivering close value", "--end-schedule", "pad item update"}},
+		{"explicit value without options", `[]`, "--close-item=cancelled", []string{"no delivering close value", "--end-schedule", "pad item update"}},
+		{"value outside the options", `["done"]`, "--close-item=cancelled", []string{"not a delivering close", "done"}},
+		{"value outside several options", `["shipped","done"]`, "--close-item=cancelled", []string{"not a delivering close", "shipped, done"}},
+		{"explicit empty is a value", `["done"]`, "--close-item=", []string{"not a delivering close", "done"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			_, _, err, calls := runSched(t, endFlow(tc.options, 200), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", tc.flag)
-			if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "Nothing was written") {
-				t.Fatalf("err=%v", err)
+			if err == nil {
+				t.Fatal("expected refusal")
 			}
-			if len(calls) != 1 {
+			for _, want := range append(tc.wants, "Nothing was written") {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error %q missing %q", err, want)
+				}
+			}
+			if len(calls) != 1 || calls[0].method != "POST" || calls[0].path != schedPath+"/resolve" {
 				t.Fatalf("wrote after the refusal: %+v", calls)
+			}
+			var marker strings.Builder
+			writeRootStructuredError(&marker, err)
+			if !strings.Contains(marker.String(), `"code":"item_still_open"`) {
+				t.Errorf("lost envelope: %s", marker.String())
 			}
 		})
 	}
+
 	t.Run("PATCH failure", func(t *testing.T) {
 		_, _, err, calls := runSched(t, endFlow(`["done"]`, 409), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item")
 		if err == nil || !strings.Contains(err.Error(), "Marked done TASK-5; the schedule has ended. Closing the item failed:") || !strings.Contains(err.Error(), "It stays open in Outstanding.") {
@@ -217,33 +234,4 @@ func TestRemindDoneCloseItemWithoutClosingValue(t *testing.T) {
 			}
 		})
 	}
-	t.Run("no delivering option", func(t *testing.T) {
-		_, _, err, calls := runSched(t, endFlow(`[]`, 200), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item")
-		if err == nil || !strings.Contains(err.Error(), "no delivering close value") || !strings.Contains(err.Error(), "--end-schedule") || !strings.Contains(err.Error(), "close the item yourself") {
-			t.Errorf("hint=%v", err)
-		}
-		if len(calls) != 1 {
-			t.Fatalf("wrote after refusal: %+v", calls)
-		}
-		var marker strings.Builder
-		writeRootStructuredError(&marker, err)
-		if !strings.Contains(marker.String(), `"code":"item_still_open"`) {
-			t.Errorf("lost envelope: %s", marker.String())
-		}
-	})
-	t.Run("explicit value without delivering options", func(t *testing.T) {
-		out, _, err, calls := runSched(t, endFlow(`[]`, 200), "", "remind", "done", "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--close-item=cancelled")
-		if err != nil || len(calls) != 3 {
-			t.Fatalf("err=%v calls=%+v", err, calls)
-		}
-		if resolveBody(t, calls[1])["end_schedule"] != true || calls[2].method != "PATCH" {
-			t.Fatalf("calls=%+v", calls)
-		}
-		if fp, _ := resolveBody(t, calls[2])["fields_patch"].(map[string]any); fp["status"] != "cancelled" {
-			t.Errorf("patch=%s", calls[2].body)
-		}
-		if !strings.Contains(out, "closed TASK-5 (cancelled)") {
-			t.Errorf("out=%q", out)
-		}
-	})
 }

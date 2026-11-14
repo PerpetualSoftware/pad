@@ -77,13 +77,12 @@ func itemStillOpenHint(err error, ref, state string, d itemStillOpenDetails) err
 // pickCloseValue chooses the value --close-item closes the item with: the one
 // given, else the only delivering close. Nothing has been written yet.
 func pickCloseValue(given, ref string, d itemStillOpenDetails) (string, error) {
-	if given != closeItemAuto && strings.TrimSpace(given) != "" {
-		if len(d.CloseOptions) == 0 {
-			// With no delivering option, an explicit value is left to item validation.
-			return given, nil
-		}
+	if len(d.CloseOptions) == 0 {
+		return "", fmt.Errorf("%s has no delivering close value; end the schedule with --end-schedule, or close the item with pad item update. Nothing was written", ref)
+	}
+	if given != closeItemAuto {
 		for _, o := range d.CloseOptions {
-			if strings.EqualFold(strings.TrimSpace(o), strings.TrimSpace(given)) {
+			if strings.EqualFold(o, given) {
 				return o, nil
 			}
 		}
@@ -92,8 +91,6 @@ func pickCloseValue(given, ref string, d itemStillOpenDetails) (string, error) {
 	switch len(d.CloseOptions) {
 	case 1:
 		return d.CloseOptions[0], nil
-	case 0:
-		return "", fmt.Errorf("%s has no delivering close value; end the schedule with --end-schedule, or close the item yourself. Nothing was written", ref)
 	}
 	return "", fmt.Errorf("%s's %s field has more than one delivering close; pass --close-item=VALUE with one of: %s. Nothing was written", ref, d.DoneField, strings.Join(d.CloseOptions, ", "))
 }
