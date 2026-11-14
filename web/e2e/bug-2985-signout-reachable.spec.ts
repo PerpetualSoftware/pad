@@ -42,7 +42,7 @@ test('BUG-2985: Sign out renders within the user menu panel, not below its edge'
 	// KNOWS, not something it might be early to observe.
 	test.skip(
 		test.info().project.name.includes('mobile'),
-		'desktop top bar only — mobile signs out through YouSheet, a different surface',
+		'desktop top bar only — mobile signs out through AccountSheet, a different surface',
 	);
 
 	const trigger = page.locator('[aria-label="User menu"]');

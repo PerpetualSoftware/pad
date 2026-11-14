@@ -2,7 +2,7 @@
 // GlobalBottomBar serves signed-in pages; the Chat sheet covers the page but never the
 // bar; <main> is only left live for the sheet when a workspace's own BottomNav is in it.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, cleanup } from '@testing-library/svelte';
+import { render, cleanup, screen } from '@testing-library/svelte';
 import { createRawSnippet, tick, flushSync } from 'svelte';
 
 const api = vi.hoisted(() => ({
@@ -56,6 +56,7 @@ vi.mock('$app/navigation', () => ({
 }));
 
 import Layout from './+layout.svelte';
+import PhoneShellRoutes from '../test/PhoneShellRoutes.svelte';
 import { authStore } from '$lib/stores/auth.svelte';
 import { chatInbox } from '$lib/stores/chatInbox.svelte';
 import { page } from '$app/state';
@@ -124,6 +125,34 @@ afterEach(() => {
 });
 
 const bar = () => document.querySelector('nav.bottom-nav[aria-label="Primary"]');
+
+describe('phone route landmarks and Account access', () => {
+	async function mountRoute(path: string) {
+		page.url = new URL(`http://localhost${path}`);
+		page.params = {};
+		render(PhoneShellRoutes);
+		await settle();
+	}
+
+	it.each(['/', '/needs', '/settings/account', '/messages'])('has exactly one main landmark at %s', async (path) => {
+		await mountRoute(path);
+		expect(document.querySelectorAll('main')).toHaveLength(1);
+		expect(document.querySelector('main.main-content')).not.toBeNull();
+		expect(document.querySelector(path === '/messages' ? '.messages-main' : '.console-main')?.closest('main')).not.toBeNull();
+	});
+
+	it('opens Account from the standalone phone inbox header', async () => {
+		await mountRoute('/messages');
+		const account = screen.getByRole('button', { name: 'Account', exact: true });
+		expect(account.closest('header.chat-header')).not.toBeNull();
+		expect(screen.queryByRole('navigation', { name: 'You pages' })).toBeNull();
+		account.click();
+		await settle();
+		const sheet = screen.getByRole('dialog', { name: 'Account', exact: true });
+		expect(inertAncestor(sheet)).toBeNull();
+		expect((document.querySelector('main.main-content') as HTMLElement).inert).toBe(true);
+	});
+});
 
 describe('the compact bar outside a workspace', () => {
 	it.each([

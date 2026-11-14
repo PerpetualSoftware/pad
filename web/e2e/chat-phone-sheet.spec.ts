@@ -7,7 +7,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
  * where it is proven). Runs only on the real phone project (Pixel 7). Covers the
  * Chat slot and its badge, the sheet above the bar, Back / Forward / reload / Close,
  * the page underneath keeping its place, sibling slots while Chat is open, the
- * standalone route with its compact bar, the soft keyboard (a faked visualViewport),
+ * standalone route with the shared bar, the soft keyboard (a faked visualViewport),
  * and the long-press menu.
  */
 
@@ -44,21 +44,29 @@ const bar = (page: Page) => page.locator('nav.bottom-nav[aria-label="Primary"]')
 const chatSlot = (page: Page) => page.locator('nav.bottom-nav [data-chat-slot]');
 const home = (f: Fixture) => `/${f.adminUsername}/${f.workspaceSlug}`;
 
+async function expectBarSlots(page: Page) {
+	await expect
+		.poll(() =>
+			bar(page).locator('.bn-item').evaluateAll((els) =>
+				els.map((e) => e.querySelector('.bn-label')?.textContent?.trim() ?? e.getAttribute('aria-label'))
+			)
+		)
+		.toEqual(['Home', 'Workspace', 'Quick capture', 'Chat', 'Search']);
+	await expect(bar(page).getByRole('button', { name: 'You', exact: true })).toHaveCount(0);
+}
+
 test.beforeEach(async ({}, testInfo) => {
 	test.skip(testInfo.project.name !== 'mobile-chromium', 'this spec targets the real phone project (Pixel 7)');
 });
 
-test('the bar has Workspace, Search, plus, Chat, You; the badge is on Chat', async ({ page, request, fixture }) => {
+test('the bar has Home, Workspace, plus, Chat, Search and no You slot; the badge is on Chat', async ({ page, request, fixture }) => {
 	await seedDM(request, fixture, 'slots');
 	await page.goto(home(fixture));
 	await expect(bar(page)).toBeVisible();
-	const names = await bar(page)
-		.locator('.bn-item')
-		.evaluateAll((els) => els.map((e) => e.querySelector('.bn-label')?.textContent?.trim() ?? e.getAttribute('aria-label')));
-	expect(names).toEqual(['Workspace', 'Search', 'Quick capture', 'Chat', 'You']);
+	await expectBarSlots(page);
 	await expect(bar(page).getByText('Activity', { exact: true })).toHaveCount(0);
 	await expect(chatSlot(page).locator('.unread-badge')).toBeVisible({ timeout: 15_000 });
-	await expect(bar(page).locator('button.bn-item', { hasText: 'You' }).locator('.unread-badge')).toHaveCount(0);
+	await expect(bar(page).locator('.bn-item:not([data-chat-slot]) .unread-badge')).toHaveCount(0);
 	// Activity is a tile in the Workspace sheet now.
 	await bar(page).locator('button.bn-item', { hasText: 'Workspace' }).click();
 	await expect(page.locator('.ds-panel[aria-label="Workspace"]').getByText('Activity', { exact: true })).toBeVisible();
@@ -103,17 +111,17 @@ test('Chat opens above the bar; Back, Forward, reload and Close behave', async (
 	await expect(sheet(page)).toBeHidden({ timeout: FAST_MS });
 	expect(pathname(page)).toBe(homePath);
 
-	// A reload of the shallow URL is the standalone route, with the compact bar.
+	// A reload of the shallow URL is the standalone route, with the shared bar.
 	await chatSlot(page).click();
 	await expect(sheet(page)).toBeVisible();
 	await page.reload();
-	await expect(page.locator('main.messages-main')).toBeVisible();
+	await expect(page.getByRole('main').locator('.messages-main')).toBeVisible();
 	await expect(sheet(page)).toHaveCount(0);
 	await expect(bar(page)).toBeVisible();
-	await expect(bar(page).locator('.bn-label')).toHaveText(['Workspaces', 'Chat', 'You']);
+	await expectBarSlots(page);
 });
 
-test('the page underneath keeps its text, and You or Workspace while Chat is open leave the draft', async ({
+test('opening Workspace while Chat is open preserves the thread draft', async ({
 	page,
 	request,
 	fixture
@@ -126,22 +134,17 @@ test('the page underneath keeps its text, and You or Workspace while Chat is ope
 	await expect(box).toBeVisible();
 	await box.fill('half written reply');
 
-	// You: Chat goes away, You opens above the bar.
-	await bar(page).locator('button.bn-item', { hasText: 'You' }).click();
+	// Workspace replaces Chat above the bar.
+	await bar(page).getByRole('button', { name: 'Workspace', exact: true }).click();
 	await expect(sheet(page)).toBeHidden({ timeout: FAST_MS });
-	await expect(page.locator('.ds-panel[aria-label="Account"]')).toBeVisible();
+	await expect(page.locator('.ds-panel[aria-label="Workspace"]')).toBeVisible();
 
 	// Reopen Chat from the slot, then the thread: the draft is still there.
 	await chatSlot(page).click();
 	await expect(sheet(page)).toBeVisible();
-	await expect(page.locator('.ds-panel[aria-label="Account"]')).toBeHidden();
+	await expect(page.locator('.ds-panel[aria-label="Workspace"]')).toBeHidden();
 	await sheet(page).locator(`a[href="/messages/${n}"]`).click();
 	await expect(sheet(page).getByRole('textbox', { name: 'Message' })).toHaveValue('half written reply');
-
-	// Workspace while Chat is open.
-	await bar(page).locator('button.bn-item', { hasText: 'Workspace' }).click();
-	await expect(sheet(page)).toBeHidden({ timeout: FAST_MS });
-	await expect(page.locator('.ds-panel[aria-label="Workspace"]')).toBeVisible();
 });
 
 test('a soft keyboard: the composer stays inside the visual viewport, no double inset, bar hidden, Close reachable', async ({
@@ -258,10 +261,10 @@ test('a long press opens the message menu; a 12px move does not; Escape closes o
 	await expect(sheet(page)).toBeHidden({ timeout: FAST_MS });
 });
 
-test('/ has the compact bar; login and a share page have none', async ({ page, fixture, browser }) => {
+test('/ has Home, Workspace, plus, Chat, Search and no You slot; login and a share page have no bar', async ({ page, fixture, browser }) => {
 	await page.goto('/');
 	await expect(bar(page)).toBeVisible();
-	await expect(bar(page).locator('.bn-label')).toHaveText(['Workspaces', 'Chat', 'You']);
+	await expectBarSlots(page);
 	await chatSlot(page).click();
 	await expect(sheet(page)).toBeVisible();
 	await expect(bar(page)).toBeVisible();

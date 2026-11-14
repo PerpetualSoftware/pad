@@ -446,9 +446,9 @@
 	<!-- Phone You pages and standalone messages keep the document scroller.
 	     The header, chat host, search palette and bar sit outside covered content. -->
 	{#if isConsolePage}<MobileYouBar />{/if}
-	<div class="main-content" inert={coveredPage.active}>
+	<main class="main-content" inert={coveredPage.active}>
 		{@render children()}
-	</div>
+	</main>
 	<ChatHost />
 	<CommandPalette />
 	<!-- The compact phone bar: a sibling of the host, outside the inert wrapper above, so it stays live under the Chat sheet. -->

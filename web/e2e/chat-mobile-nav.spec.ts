@@ -38,7 +38,7 @@ async function unreadTotal(request: APIRequestContext, f: Fixture): Promise<numb
 
 const label = (total: number) => (total > 99 ? '99+' : String(total));
 
-test('the Chat slot badge matches the server and opens the Chat sheet; You keeps a Chat row', async ({
+test('the Chat slot badge matches the server and opens the Chat sheet', async ({
 	page,
 	request,
 	fixture
@@ -47,9 +47,7 @@ test('the Chat slot badge matches the server and opens the Chat sheet; You keeps
 	await seedUnread(request, fixture);
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
 	const chat = page.locator('.bottom-nav [data-chat-slot]');
-	const you = page.locator('.bottom-nav button.bn-item', { hasText: 'You' });
 	await expect(chat).toBeVisible();
-	await expect(you.locator('.unread-badge')).toHaveCount(0);
 
 	// Other specs share this admin's inbox, so the server total is re-read on each poll.
 	await expect
@@ -68,9 +66,8 @@ test('the Chat slot badge matches the server and opens the Chat sheet; You keeps
 	const m = await page.locator('.bottom-nav').evaluate((e) => ({ sw: e.scrollWidth, cw: e.clientWidth }));
 	expect(m.sw, `.bottom-nav scrollWidth ${m.sw} > clientWidth ${m.cw}`).toBeLessThanOrEqual(m.cw);
 
-	// The You sheet keeps its own Chat row, and it opens the same sheet.
-	await you.click();
-	await page.locator('.rows a[href="/messages"]').click();
+	// The Chat slot opens the sheet above the bar.
+	await chat.click();
 	await page.waitForURL((u) => u.pathname === '/messages');
 	await expect(page.locator('.ds-panel[aria-label="Chat"]')).toBeVisible();
 	await expect(page.locator('.bottom-nav')).toBeVisible();

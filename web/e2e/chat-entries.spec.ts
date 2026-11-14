@@ -7,7 +7,7 @@ import type { APIRequestContext, Page } from '@playwright/test';
  *
  * Layout is the question (the sidebar footer row once overflowed on desktop,
  * comment 89264cdd), and jsdom does no layout, so this runs in a real engine at
- * the 1280 desktop width (255 px sidebar) and in the mobile drawer. The badge is
+ * the 1280 desktop width (255 px sidebar), mobile drawer and phone bar. The badge is
  * compared with GET /api/v1/me/chat/unread `total`, never with a constant.
  */
 
@@ -114,19 +114,18 @@ test('E9: Home shows the sidebar Chat link with the same badge', async ({ page, 
 	expect(hrefs).toEqual(['/', '/needs', '/agenda', '/messages']);
 });
 
-test('E9: the / Chat link works from the mobile menu', async ({ page, request, fixture }, testInfo) => {
+test('E9: the Home phone bar Chat slot matches the server badge and opens Chat', async ({ page, request, fixture }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'one project drives both widths');
 	await seedUnread(request, fixture);
-	// The console menu collapses at max-width 640px; the sidebar's drawer at 768px.
+	// Narrow Home uses the shared phone bar.
 	await page.setViewportSize({ width: 600, height: 900 });
 	await page.goto('/');
-	await page.locator('.mobile-hamburger').click();
-	const entry = '.console-nav .nav-links.open a[href="/messages"]';
+	const entry = 'nav.bottom-nav [data-chat-slot]';
 	await expect(page.locator(entry)).toBeVisible();
 	await expectBadgeMatchesServer(page, request, fixture, entry);
-	await noHorizontalOverflow(page, '.console-nav .nav-links.open');
+	await noHorizontalOverflow(page, 'nav.bottom-nav');
 	await page.locator(entry).click();
 	await page.waitForURL((u) => u.pathname === '/messages');
-	// At phone width Chat is the sheet over the console (TASK-4315 PR 4), not a page of its own.
+	// At phone width Chat is the sheet over Home (TASK-4315 PR 4), not a page of its own.
 	await expect(page.locator('.ds-panel[aria-label="Chat"]')).toBeVisible();
 });

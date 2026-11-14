@@ -419,7 +419,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await uploadAttachment(fixture, request, doc.id, 'docked.png');
 		await page.goto(itemUrl(fixture, doc.slug));
 
-		await page.getByRole('button', { name: /You/ }).first().click();
+		await page.getByRole('button', { name: 'Account', exact: true }).click();
 		await expect(page.locator('.ds-panel')).toBeVisible();
 		await page.keyboard.press('Escape');
 		await expect(page.locator('.ds-panel')).toHaveCount(0);
@@ -458,7 +458,7 @@ test.describe('attachment viewer — global key & gesture owners (TASK-2436)', (
 		await uploadAttachment(fixture, request, doc.id, 'docked.png');
 		await page.goto(itemUrl(fixture, doc.slug));
 
-		await page.getByRole('button', { name: /You/ }).first().click();
+		await page.getByRole('button', { name: 'Account', exact: true }).click();
 		const sheet = page.locator('.ds-panel');
 		await expect(sheet).toBeVisible();
 

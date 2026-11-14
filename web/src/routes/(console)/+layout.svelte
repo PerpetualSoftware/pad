@@ -29,7 +29,7 @@
 {/if}
 <style>
 	.console-layout.desktop { min-height: 0; }
-	.console-layout { background: var(--bg-primary); }
+	.console-layout { min-height: 100vh; background: var(--bg-primary); }
 	.console-main { max-width: 960px; margin: 0 auto; padding: var(--space-8) var(--space-6); }
 	.console-main.wide { max-width: 1240px; }
 	@media (max-width: 768px) { .console-main { padding: var(--space-5) var(--space-3); } }
