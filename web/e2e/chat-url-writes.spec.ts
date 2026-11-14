@@ -44,7 +44,7 @@ async function seedTasks(request: APIRequestContext, f: Fixture, ws = f.workspac
 }
 
 const pathname = (page: Page) => new URL(page.url()).pathname;
-const chatButton = (page: Page) => page.locator('header.topbar a.chat-button');
+const chatLink = (page: Page) => page.getByRole('navigation', { name: 'You', exact: true }).getByRole('link', { name: /^Chat/ });
 const histLen = (page: Page) => page.evaluate(() => history.length);
 
 type Setup = { prev: string; board: string; n: number };
@@ -68,7 +68,7 @@ async function openBoard(page: Page, request: APIRequestContext, f: Fixture, tag
 
 async function openChat(page: Page, depth: 1 | 2, n: number) {
 	const host = page.locator('[data-chat-host]');
-	await chatButton(page).click();
+	await chatLink(page).click();
 	await expect(host).toBeVisible();
 	if (depth === 2) {
 		await host.locator(`a[href="/messages/${n}"]`).click();

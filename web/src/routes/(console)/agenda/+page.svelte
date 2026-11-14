@@ -8,7 +8,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -468,11 +468,7 @@
 			if (!history) {
 				const view = await api.getCommitment(entry.workspace!, entry.item_ref);
 				if (!sameIdentity()) return false;
-				// A pinned occurrence's key carries the instant it is read at, so two
-				// occurrences sharing a wall time (a DST fall-back hour) stay distinct.
-				const keyAt = entry.occurrence_key?.includes('|') ? entry.occurrence_key.split('|')[0] : '';
-				const sameInstant = !keyAt || (!!view.next_occurrence && Date.parse(keyAt) === Date.parse(view.next_occurrence.at));
-				if (view.ended_at || !view.next_occurrence || !entry.wall || view.next_occurrence.wall !== entry.wall || !sameInstant) {
+				if (!outstandingMatches(entry, view) || !view.next_occurrence) {
 					actionError = staleCopy;
 					await load(day, zone, true);
 					return false;

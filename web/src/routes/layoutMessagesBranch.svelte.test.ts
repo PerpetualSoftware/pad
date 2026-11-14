@@ -107,12 +107,12 @@ describe('TASK-4044: the root layout gives /messages no workspace shell', () => 
 		});
 	});
 
-	it('control: / renders its child and not the app shell', async () => {
+	it('control: / renders its child inside the app shell', async () => {
 		await mountAt('/');
 		expect({ child: hasChild(), sidebar: hasSidebar(), topbar: hasTopBar() }).toEqual({
 			child: true,
-			sidebar: false,
-			topbar: false,
+			sidebar: true,
+			topbar: true,
 		});
 	});
 

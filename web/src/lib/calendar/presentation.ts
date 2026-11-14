@@ -116,6 +116,22 @@ export function entryKey(entry: AgendaEntry): string {
 	return `${entry.type}|${entry.workspace}|${entry.owner_username}|${entry.item_ref}|${entry.schedule_id ?? entry.field ?? ''}|${entry.at}`;
 }
 
+/**
+ * Whether the schedule's outstanding occurrence is the one this entry shows, so
+ * resolving `next.at` acts on the occurrence the user clicked. A pinned
+ * occurrence's key carries the instant it is read at, so two occurrences that
+ * share a wall time (a DST fall-back hour) stay distinct.
+ */
+export function outstandingMatches(
+	entry: Pick<AgendaEntry, 'wall' | 'occurrence_key'>,
+	view: { ended_at?: string | null; next_occurrence?: { at: string; wall?: string } | null }
+): boolean {
+	const next = view.next_occurrence;
+	if (view.ended_at || !next || !entry.wall || next.wall !== entry.wall) return false;
+	const keyAt = entry.occurrence_key?.includes('|') ? entry.occurrence_key.split('|')[0] : '';
+	return !keyAt || Date.parse(keyAt) === Date.parse(next.at);
+}
+
 export function entryHref(entry: AgendaEntry): string | null {
 	const parts = [entry.owner_username, entry.workspace, entry.collection, entry.item_ref];
 	return parts.every(Boolean) ? `/${parts.map(part => encodeURIComponent(part!)).join('/')}` : null;

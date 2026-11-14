@@ -6,6 +6,8 @@ import { api } from '$lib/api/client';
 import { uiStore } from '$lib/stores/ui.svelte';
 import type { Workspace } from '$lib/types';
 
+vi.mock('$lib/components/home/DesktopHome.svelte', () => import('../../test/StubComponent.svelte'));
+vi.mock('$lib/stores/breakpoint.svelte', () => ({ viewport: { isMobile: true } }));
 vi.mock('$lib/api/client', () => ({ api: { workspaces: { list: vi.fn() } } }));
 vi.mock('$lib/stores/auth.svelte', () => ({
 	authStore: { userId: 'owner', user: { username: 'river-pilot' } },

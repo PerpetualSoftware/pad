@@ -45,6 +45,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 // A $state-backed double: see the fixture for why a plain array is not one.
 vi.mock('$lib/stores/collections.svelte', async () => await import('./sidebarQuickAdd.fixture.svelte'));
 
+import { page } from '$app/state';
 import Sidebar from './Sidebar.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
 
@@ -65,6 +66,8 @@ async function type(text: string) {
 }
 
 beforeEach(() => {
+	page.params = { username: 'u', workspace: 'ws' };
+	page.url = new URL('http://localhost/u/ws/tasks');
 	cleanup();
 	pending.resolve = pending.reject = null;
 });

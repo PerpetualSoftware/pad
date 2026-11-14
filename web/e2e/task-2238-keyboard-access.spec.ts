@@ -7,7 +7,7 @@ import { browserLogin } from './lib/collab-helpers';
  *    only way to a user's detail. The name is now a button.
  *  - C108: workspace settings declared tabs without the tabs pattern; it is
  *    complete now (panel, aria-controls, roving tabindex, arrow keys). The
- *    console nav claimed to be a menu; it is links, with aria-current.
+ *    desktop You group uses links with aria-current.
  */
 test.describe('TASK-2238: keyboard access', () => {
 	test.beforeEach(async ({ page }, testInfo) => {
@@ -50,16 +50,22 @@ test.describe('TASK-2238: keyboard access', () => {
 		await expect(tabs.last()).toBeFocused();
 	});
 
-	test('the console nav is links, and the current one is marked', async ({ page }) => {
-		await page.goto('/settings/account');
-		const nav = page.locator('#console-nav-links');
-		await expect(nav).not.toHaveAttribute('role', 'menu');
+	test('the sidebar You group is links, keyboard accessible, and marks the current page', async ({ page }) => {
+		await page.goto('/');
+		const nav = page.getByRole('navigation', { name: 'You', exact: true });
 		await expect(nav.locator('[role="menuitem"]')).toHaveCount(0);
-		await expect(nav.locator('a[aria-current="page"]')).toHaveCount(1);
-		await expect(nav.locator('a[aria-current="page"]')).toHaveText(/Settings/);
+		await expect(nav.getByRole('link')).toHaveCount(4);
+		for (const [name, path] of [['Home', '/'], ['Needs you', '/needs'], ['Agenda', '/agenda']] as const) {
+			const link = nav.getByRole('link', { name: new RegExp(name) });
+			await link.focus();
+			await page.keyboard.press('Enter');
+			await expect(page).toHaveURL(url => url.pathname === path);
+			await expect(nav.locator('a[aria-current="page"]')).toHaveCount(1);
+			await expect(link).toHaveAttribute('aria-current', 'page');
+		}
+		await expect(nav.getByRole('link', { name: /^Chat/ })).toHaveAttribute('href', '/messages');
 		await page.goto('/settings/deleted-workspaces');
-		await expect(nav.locator('a[aria-current="page"]')).toHaveCount(1);
-		await expect(nav.locator('a[aria-current="page"]')).toHaveText(/Settings/);
+		await expect(nav.locator('a[aria-current="page"]')).toHaveCount(0);
 		const settings = page.getByRole('navigation', { name: 'Settings', exact: true });
 		await expect(settings.locator('a[aria-current="page"]')).toHaveCount(1);
 		await expect(settings.locator('a[aria-current="page"]')).toHaveText('Deleted workspaces');

@@ -1,4 +1,6 @@
 <script lang="ts">
+	import DesktopHome from '$lib/components/home/DesktopHome.svelte';
+	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
@@ -43,7 +45,7 @@
 			});
 		}
 
-		void loadWorkspaces();
+		if (viewport.isMobile) void loadWorkspaces();
 	});
 
 	async function loadWorkspaces() {
@@ -88,6 +90,9 @@
 	<title>Console - Pad</title>
 </svelte:head>
 
+{#if !viewport.isMobile}
+	<DesktopHome />
+{:else}
 <div class="console-page">
 	{#if loading && !retrying}
 		<div class="loading" role="status">Loading workspaces...</div>
@@ -184,6 +189,7 @@
 	{/if}
 </div>
 
+{/if}
 <style>
 	/* Closing the last workspace tab lands here with the create action
 	   highlighted as the way back in (PLAN-3002 Q2). This page has no

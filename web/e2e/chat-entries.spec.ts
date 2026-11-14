@@ -66,7 +66,7 @@ test('E9: the sidebar Chat entry at desktop 1280 (255 px sidebar)', async ({ pag
 	await seedUnread(request, fixture);
 	await page.setViewportSize({ width: 1280, height: 900 });
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
-	const entry = 'nav.collection-nav a.nav-item[href="/messages"]';
+	const entry = 'nav[aria-label="You"] a[href="/messages"]';
 	await expect(page.locator(entry)).toBeVisible();
 	await expect(page.locator(entry)).toHaveAttribute('href', '/messages');
 	const sidebar = await page.locator('aside.sidebar').evaluate((e) => e.getBoundingClientRect().width);
@@ -75,7 +75,7 @@ test('E9: the sidebar Chat entry at desktop 1280 (255 px sidebar)', async ({ pag
 	expect(Math.round(sidebar)).toBeLessThanOrEqual(260);
 	expect(await unreadTotal(request, fixture)).toBeGreaterThan(0);
 	await expectBadgeMatchesServer(page, request, fixture, entry);
-	await noHorizontalOverflow(page, 'nav.collection-nav');
+	await noHorizontalOverflow(page, 'nav[aria-label="You"]');
 	await noHorizontalOverflow(page, 'aside.sidebar');
 	await noHorizontalOverflow(page, 'aside.sidebar .sidebar-inner');
 	await page.locator(entry).click();
@@ -98,20 +98,20 @@ test('E9: the sidebar Chat entry in the mobile drawer', async ({ page, request, 
 	await noHorizontalOverflow(page, 'aside.sidebar');
 });
 
-test('E9: the / nav shows the Chat link with the same badge', async ({ page, request, fixture }, testInfo) => {
+test('E9: Home shows the sidebar Chat link with the same badge', async ({ page, request, fixture }, testInfo) => {
 	test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');
 	await seedUnread(request, fixture);
 	await page.setViewportSize({ width: 1280, height: 900 });
 	await page.goto('/');
-	const entry = '.console-nav .nav-links a[href="/messages"]';
+	const entry = 'nav[aria-label="You"] a[href="/messages"]';
 	await expect(page.locator(entry)).toBeVisible();
 	await expect(page.locator(entry)).toHaveText(/Chat/);
 	await expectBadgeMatchesServer(page, request, fixture, entry);
-	await noHorizontalOverflow(page, '.console-nav');
-	await noHorizontalOverflow(page, '.console-nav .nav-links');
-	// Account navigation keeps this order, including Settings after Chat.
-	const hrefs = await page.locator('.console-nav .nav-links a').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
-	expect(hrefs).toEqual(['/', '/needs', '/agenda', '/messages', '/settings/account']);
+	await noHorizontalOverflow(page, 'aside.sidebar');
+	await noHorizontalOverflow(page, 'nav[aria-label="You"]');
+	// The persistent You group keeps the same order on Home.
+	const hrefs = await page.locator('nav[aria-label="You"] a').evaluateAll((els) => els.map((e) => e.getAttribute('href')));
+	expect(hrefs).toEqual(['/', '/needs', '/agenda', '/messages']);
 });
 
 test('E9: the / Chat link works from the mobile menu', async ({ page, request, fixture }, testInfo) => {

@@ -1,3 +1,4 @@
+vi.mock('$lib/stores/breakpoint.svelte', () => ({ viewport: { isMobile: true } }));
 // Runs in the jsdom vitest project (filename ends `.svelte.test.ts`).
 //
 // TASK-2430 — the console shell owns a global Escape that

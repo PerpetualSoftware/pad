@@ -191,3 +191,13 @@ describe('the Chat host in the root layout', () => {
 		expect(document.querySelector('a[aria-label^="Chat"].chat-button')).toBeNull();
 	});
 });
+
+
+describe('persistent desktop shell (TASK-4545)', () => {
+	it.each(['/', '/needs', '/agenda', '/settings/account', '/tutorials', '/messages'])('renders the shell on %s', async path => {
+		await mountAt(path);
+		expect(document.querySelector('header.topbar')).not.toBeNull();
+		expect(document.querySelector('aside')).not.toBeNull();
+		expect(document.querySelector('.console-nav')).toBeNull();
+	});
+});

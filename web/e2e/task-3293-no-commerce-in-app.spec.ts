@@ -157,7 +157,8 @@ for (const leg of [
 			// A plan-limit refusal: the prompt states the limit; only the browser
 			// adds the upgrade. It is the create dialog's inline prompt (TASK-3601).
 			await page.goto('/');
-			await page.getByRole('button', { name: 'Create Workspace', exact: true }).click();
+			await page.locator('.sidebar .switcher > button').click();
+			await page.getByRole('dialog', { name: 'Switch workspace' }).getByRole('button', { name: /\+ New workspace/i }).click();
 			await page.getByPlaceholder('Workspace name').fill('Over the limit');
 			await Promise.all([
 				page.waitForResponse((r) => r.url().endsWith('/api/v1/workspaces') && r.request().method() === 'POST'),

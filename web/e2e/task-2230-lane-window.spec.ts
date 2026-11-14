@@ -117,9 +117,11 @@ test('a drop at the end of a capped lane keeps the stored order strict around th
 		const box = (await last.boundingBox())!;
 		return box.y + box.height * 0.8;
 	};
-	const sortWrite = page.waitForRequest((r) => r.method() === 'PUT' && r.url().includes('/items/sort-order'), { timeout: 30_000 });
+	// The status change lands before the reorder; a request alone does not
+	// mean the server has committed the order we are about to read.
+	const sortWrite = page.waitForResponse((r) => r.request().method() === 'PUT' && r.url().endsWith(`/workspaces/${ws}/items/sort-order`), { timeout: 30_000 });
 	await dragIntoLaneAt(page, 'Mover card', 'Done', endOfWindow);
-	await sortWrite;
+	expect((await sortWrite).ok()).toBe(true);
 
 	await expect
 		.poll(async () => (await storedDoneLane(request, fixture, ws)).map(([t]) => t).indexOf('Mover card'), { timeout: 10_000 })

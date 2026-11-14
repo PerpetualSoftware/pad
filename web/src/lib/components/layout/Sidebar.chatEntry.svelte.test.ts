@@ -58,7 +58,7 @@ vi.mock('$lib/stores/auth.svelte', async (orig) => {
 
 import Sidebar from './Sidebar.svelte';
 
-const entry = () => document.querySelector<HTMLAnchorElement>('nav.collection-nav a.nav-item[href="/messages"]');
+const entry = () => document.querySelector<HTMLAnchorElement>('nav[aria-label="You"] a[href="/messages"]');
 
 // TASK-4044 3c (Option C, ruling 687eb810 Q-e): chat is per user, so the entry is
 // gated on being signed in, not on the workspace's guest flag.
@@ -68,7 +68,7 @@ describe('Sidebar Chat entry (TASK-4044 3c)', () => {
 	h.chatOn = true;
 });
 
-	it('a member sees it, after Tags, with the unread badge and a global href', async () => {
+	it('a member sees it, after Agenda, with the unread badge and a global href', async () => {
 		h.ws.current = { slug: 'ws', owner_username: 'u', is_guest: false };
 		h.auth.authenticated = true;
 		render(Sidebar);
@@ -78,7 +78,7 @@ describe('Sidebar Chat entry (TASK-4044 3c)', () => {
 		expect(a.getAttribute('href')).toBe('/messages');
 		expect(a.getAttribute('aria-label')).toBe('Chat, 4 unread');
 		expect(a.querySelector('.unread-badge')?.textContent).toBe('4');
-		expect(a.previousElementSibling?.getAttribute('href')).toBe('/u/ws/tags');
+		expect(a.previousElementSibling?.getAttribute('href')).toBe('/agenda');
 	});
 
 	it('a signed-in guest member of the workspace sees it too', async () => {

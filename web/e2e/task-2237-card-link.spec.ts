@@ -69,7 +69,9 @@ test.describe('TASK-2237: a card is a stretched link, not a link full of buttons
 
 		// The meta row is not inside the title link; the overlay makes it a
 		// target anyway. Click the age label, well away from the title text.
-		const box = (await card.locator('.meta-age').boundingBox())!;
+		const age = card.locator('.meta-age');
+		await age.scrollIntoViewIfNeeded();
+		const box = (await age.boundingBox())!;
 		await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
 		await expect.poll(itemParam).not.toBeNull();
 	});

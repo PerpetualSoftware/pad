@@ -71,78 +71,28 @@ beforeEach(() => {
 });
 afterEach(() => cleanup());
 
-describe('TopBar chat menu row (TASK-4044)', () => {
-	it('is a menuitem in the user menu, with the count in its name', async () => {
-		render(TopBar, { props: {} });
+
+describe('desktop TopBar (TASK-4545)', () => {
+	it('has no discovery or Chat entry and has the approved account menu', async () => {
+		render(TopBar);
 		await settle();
+		expect(document.querySelector('.workspace-add')).toBeNull();
+		expect(document.querySelector('.chat-button')).toBeNull();
+		trigger().click(); await settle();
 		expect(row()).toBeNull();
-		trigger().click();
-		await settle();
+		const labels = [...document.querySelectorAll('[role="menuitem"]')].map(el => el.textContent?.trim());
+		expect(labels).toEqual(['Settings', 'Light mode', 'Keyboard shortcuts', 'GitHub', 'Community', 'Docs', 'Tutorials', 'Connect a project…', 'Sign out']);
+		expect(document.querySelector('.user-dropdown-email')?.textContent).toBe('ada@example.com');
+	});
+	it('keeps the phone account menu', async () => {
+		render(TopBar, { mobile: true }); await settle();
+		trigger().click(); await settle();
 		expect(row()).not.toBeNull();
-		expect(row()?.getAttribute('role')).toBe('menuitem');
-		expect(row()?.getAttribute('aria-label')).toBe('Chat, 2 unread');
-	});
-
-	it('has no Chat row while the setting is off (TASK-4315)', async () => {
-		h.chatOn = false;
-		render(TopBar, { props: {} });
-		await settle();
-		trigger().click();
-		await settle();
-		expect(document.querySelector('a.menu-link[href="/settings/account"]')).not.toBeNull();
-		expect(row()).toBeNull();
-	});
-
-	it('closes the menu when clicked', async () => {
-		render(TopBar, { props: {} });
-		await settle();
-		trigger().click();
-		await settle();
-		const a = row()!;
-		a.addEventListener('click', (e) => e.preventDefault());
-		a.click();
-		await settle();
-		expect(trigger().getAttribute('aria-expanded')).toBe('false');
-		expect(row()).toBeNull();
 	});
 });
 
-describe('TopBar chat menu row focus (TASK-4315 PR 3b)', () => {
-	it('leaves focus on the user-menu trigger, not on the row that is about to be removed', async () => {
-		render(TopBar, { props: {} });
-		await settle();
-		trigger().click();
-		await settle();
-		const a = row()!;
-		a.addEventListener('click', (e) => e.preventDefault());
-		a.focus();
-		a.click();
-		await settle();
-		expect(row()).toBeNull();
-		expect(document.activeElement).toBe(trigger());
-	});
-});
-
-describe('TopBar Chat button (TASK-4315 PR 3b)', () => {
-	const button = () => document.querySelector<HTMLAnchorElement>('header.topbar a.chat-button');
-
-	it('the desktop bar shows it with the unread count, without opening the menu', async () => {
-		render(TopBar, { props: {} });
-		await settle();
-		expect(button()).not.toBeNull();
-		expect(button()?.getAttribute('aria-label')).toBe('Chat, 2 unread');
-	});
-
-	it('shows nothing while Chat is off', async () => {
-		h.chatOn = false;
-		render(TopBar, { props: {} });
-		await settle();
-		expect(button()).toBeNull();
-	});
-
-	it('the phone bar is unchanged: no Chat button', async () => {
-		render(TopBar, { props: { mobile: true } });
-		await settle();
-		expect(button()).toBeNull();
-	});
+it('the phone bar is unchanged: no Chat button', async () => {
+	render(TopBar, { props: { mobile: true } });
+	await settle();
+	expect(document.querySelector('header.topbar a.chat-button')).toBeNull();
 });

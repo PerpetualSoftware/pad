@@ -20,6 +20,7 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn(), befor
 vi.mock('$lib/stores/workspace.svelte', async () => await import('./sidebarCmdN.fixture.svelte'));
 vi.mock('$lib/stores/collections.svelte', async () => await import('./sidebarQuickAdd.fixture.svelte'));
 
+import { page } from '$app/state';
 import Sidebar from './Sidebar.svelte';
 import { uiStore } from '$lib/stores/ui.svelte';
 import { ws } from './sidebarCmdN.fixture.svelte';
@@ -32,6 +33,8 @@ async function settle() {
 }
 
 beforeEach(() => {
+	page.params = { username: 'u', workspace: 'ws' };
+	page.url = new URL('http://localhost/u/ws/tasks');
 	cleanup();
 	uiStore.clearQuickAddRequest();
 	ws.current = { slug: 'ws-a', owner_username: 'u', is_guest: false };

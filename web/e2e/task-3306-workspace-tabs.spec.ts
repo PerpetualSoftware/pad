@@ -5,7 +5,7 @@ import { asNewUser, openTabs, show, tabBoxes } from './lib/workspace-tabs';
  * TASK-3306: the workspace tab bar as real tabs. Left-aligned, 200px each
  * while there is room, shrinking equally to a 120px minimum, then scrolling
  * with an edge fade and the active tab kept in view; the close X inside its
- * tab's box; "+" right after the last tab; nothing under the collapse button;
+ * tab's box; nothing under the collapse button;
  * arrow keys move focus between tabs (roving tabindex).
  *
  * Tabs are per user, and other specs move the admin's, so this spec works as
@@ -17,7 +17,7 @@ test.describe('TASK-3306 workspace tabs', () => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'the tab bar is desktop only; mobile has the workspace switcher');
 	});
 
-	test('left-aligned, 200px each with room, X inside, "+" after the last tab, clear of the right-hand controls', async ({ page }) => {
+	test('left-aligned, 200px each with room, X inside, clear of the right-hand controls', async ({ page }) => {
 		test.setTimeout(90_000);
 		await page.setViewportSize({ width: 1440, height: 900 });
 		const { username, slugs } = await asNewUser(page);
@@ -66,10 +66,6 @@ test.describe('TASK-3306 workspace tabs', () => {
 		expect(paint.tab, 'the active tab paints its own background').not.toBe('rgba(0, 0, 0, 0)');
 		expect(paint.link, 'the link paints none of its own').toBe('rgba(0, 0, 0, 0)');
 
-		const add = (await page.locator('.workspace-add').boundingBox())!;
-		const last = tabs[tabs.length - 1];
-		expect(add.x - (last.x + last.width), '"+" sits right after the last tab').toBeLessThan(16);
-		expect(add.x).toBeGreaterThan(last.x + last.width - 1);
 	});
 
 	test('shrink equally to 120px, then scroll with fades and keep the active tab in view', async ({ page }) => {

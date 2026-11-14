@@ -32,13 +32,13 @@ async function createAdminDM(request: APIRequestContext, f: Fixture, agent: stri
 	return n;
 }
 
-const chatButton = (page: Page) => page.locator('header.topbar a.chat-button');
+const chatLink = (page: Page) => page.getByRole('navigation', { name: 'You', exact: true }).getByRole('link', { name: /^Chat/ });
 const host = (page: Page) => page.locator('[data-chat-host]');
 const SIDEBAR = 260;
 const BOUNDARY = SIDEBAR + 440 + 560; // 1260
 
 async function openThread(page: Page, n: number) {
-	await chatButton(page).click();
+	await chatLink(page).click();
 	await expect(host(page)).toBeVisible();
 	await host(page).locator(`a[href="/messages/${n}"]`).click();
 	await expect(host(page).getByText('hello from the agent')).toBeVisible();
@@ -49,7 +49,7 @@ async function setup(page: Page, request: APIRequestContext, fixture: Fixture, t
 	await page.setViewportSize({ width, height: 900 });
 	await browserLogin(page);
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
-	await expect(chatButton(page)).toBeVisible();
+	await expect(chatLink(page)).toBeVisible();
 	return n;
 }
 
@@ -65,14 +65,14 @@ test.describe('Chat dock and drawer layout', () => {
 		await setup(page, request, fixture, 'boundary', BOUNDARY);
 		expect((await page.locator('aside.sidebar').boundingBox())!.width, 'premise: sidebar width').toBe(SIDEBAR);
 
-		await chatButton(page).click();
+		await chatLink(page).click();
 		await expect(page.getByRole('complementary', { name: 'Chat' })).toBeVisible();
 		await expect(page.getByRole('dialog', { name: 'Chat' })).toHaveCount(0);
 		await page.getByRole('complementary', { name: 'Chat' }).getByRole('button', { name: 'Close Chat' }).click();
 		await expect(host(page)).toHaveCount(0);
 
 		await page.setViewportSize({ width: BOUNDARY - 1, height: 900 });
-		await chatButton(page).click();
+		await chatLink(page).click();
 		await expect(page.getByRole('dialog', { name: 'Chat' })).toBeVisible();
 		await expect(page.getByRole('complementary', { name: 'Chat' })).toHaveCount(0);
 	});
@@ -109,17 +109,14 @@ test.describe('Chat dock and drawer layout', () => {
 	});
 
 	test('toggling the sidebar with Chat open re-decides dock or drawer', async ({ page, request, fixture }) => {
-		// 1100 is a drawer with the sidebar (840 left) and a dock without it (1100 >= 1000).
-		await setup(page, request, fixture, 'sidebar', 1100);
-		await chatButton(page).click();
-		await expect(page.getByRole('dialog', { name: 'Chat' })).toBeVisible();
-		await page.keyboard.press('Escape');
-		await expect(host(page)).toHaveCount(0);
-
-		// Hide the sidebar first (the drawer would cover it), then open Chat: a dock.
+		// Open from the sidebar while there is room for a dock, then hide it.
+		await setup(page, request, fixture, 'sidebar', BOUNDARY + 100);
+		await chatLink(page).click();
+		await expect(page.getByRole('complementary', { name: 'Chat' })).toBeVisible();
 		await page.getByRole('button', { name: 'Hide sidebar' }).click();
 		await expect(page.locator('aside.sidebar.collapsed')).toHaveCount(1);
-		await chatButton(page).click();
+		// 1100 remains a dock without the sidebar, but becomes a drawer with it.
+		await page.setViewportSize({ width: 1100, height: 900 });
 		await expect(page.getByRole('complementary', { name: 'Chat' })).toBeVisible();
 
 		// Show it again with Chat open: back to a drawer.
@@ -163,11 +160,11 @@ test.describe('Chat dock and drawer layout', () => {
 		await expect(menu).toBeHidden();
 		await expect(drawer).toBeVisible();
 
-		// Escape then closes the drawer and focus returns to the Chat button.
+		// Escape then closes the drawer and focus returns to the Chat link.
 		await drawer.focus();
 		await page.keyboard.press('Escape');
 		await expect(host(page)).toHaveCount(0);
-		await expect(chatButton(page)).toBeFocused();
+		await expect(chatLink(page)).toBeFocused();
 	});
 
 	test('docked: Escape inside the dock closes neither the dock nor the item pane', async ({ page, request, fixture }) => {
@@ -179,7 +176,7 @@ test.describe('Chat dock and drawer layout', () => {
 		await page.locator('.item-card').first().click();
 		const pane = page.locator('.item-pane');
 		await expect(pane).toBeVisible();
-		await chatButton(page).click();
+		await chatLink(page).click();
 		const dock = page.getByRole('complementary', { name: 'Chat' });
 		await expect(dock).toBeVisible();
 		await dock.locator('a[href^="/messages/"]').first().click();

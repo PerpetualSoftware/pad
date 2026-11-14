@@ -88,8 +88,8 @@ test.describe('TASK-2240: icon-only buttons have names', () => {
 
 		// The create-workspace modal's close.
 		await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}`);
-		await page.getByTitle('Find or create a workspace').first().click();
-		await page.getByRole('option', { name: /new workspace/i }).click();
+		await page.locator('.sidebar .switcher > button').click();
+		await page.getByRole('button', { name: /\+ new workspace/i }).click();
 		const create = page.getByRole('dialog', { name: /new workspace/i });
 		await expect(create).toBeVisible();
 		await create.getByRole('button', { name: 'Close', exact: true }).click();

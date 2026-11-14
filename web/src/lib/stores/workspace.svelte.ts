@@ -335,6 +335,12 @@ export const workspaceStore = {
 		return perms.canEditItem(currentMembership, item);
 	},
 
+	async ensureAll() {
+		const pending = loadAllFlight.inFlightFor(LOAD_ALL_KEY);
+		if (pending) return pending;
+		if (!listCommitted) return workspaceStore.loadAll();
+	},
+
 	async loadAll() {
 		return loadAllFlight.run(LOAD_ALL_KEY, async ({ isLatest }) => {
 			// Captured before the request, compared after it (BUG-2991).

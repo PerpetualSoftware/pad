@@ -78,7 +78,7 @@ test('a shown kept draft survives the keeper and a reload, and the newer text is
 	expect((await read()).content, 'premise: the server never got E').not.toContain('Typed E');
 
 	const again = await (await browser.newContext({ storageState: state })).newPage();
-	await browserLogin(again);
+	// storageState already restores the authenticated session; /login would redirect.
 	await again.goto(url);
 	await expect(again.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 	const notice = again.getByTestId('refused-raw-draft');
@@ -101,7 +101,7 @@ test('a shown kept draft survives the keeper and a reload, and the newer text is
 
 	// The next open offers E again, until it is resolved.
 	const third = await (await browser.newContext({ storageState: afterRestore })).newPage();
-	await browserLogin(third);
+	// storageState already restores the authenticated session; /login would redirect.
 	await third.goto(url);
 	await expect(third.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 	await expect(third.getByTestId('refused-raw-draft')).toBeVisible({ timeout: SYNC_TIMEOUT });

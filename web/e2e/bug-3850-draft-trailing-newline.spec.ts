@@ -96,7 +96,7 @@ test('a draft typed at the end of a body stored with a trailing newline restores
 	expect(moved.seq, 'premise: seq moved past the base, so restore goes as a patch').toBeGreaterThan(k.baseSeq);
 
 	const again = await (await browser.newContext({ storageState: state })).newPage();
-	await browserLogin(again);
+	// storageState already carries the session; /login would redirect during a second login.
 	await again.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${doc.ref}`);
 	await expect(again.locator(SYNCED_BADGE_SELECTOR)).toBeVisible({ timeout: SYNC_TIMEOUT });
 	const notice = again.getByTestId('refused-raw-draft');
@@ -214,7 +214,7 @@ test('a patch restore waits for the editor: disabled with the reason while not s
 	again.on('request', (r) => {
 		if (r.method() === 'POST' && r.url().endsWith(`/items/${doc.id}/patch`)) patches.push(r.url());
 	});
-	await browserLogin(again);
+	// storageState already carries the session; /login would redirect during a second login.
 	await again.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/docs?item=${doc.ref}`);
 	const notice = again.getByTestId('refused-raw-draft');
 	const restore = notice.getByRole('button', { name: 'Restore it' });

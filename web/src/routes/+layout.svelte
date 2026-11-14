@@ -26,11 +26,13 @@
 	import { notifyNetworkUnreachable } from '$lib/api/networkUnreachableToast';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { sweepExpiredRefusedRawDrafts } from '$lib/items/refusedRawDraft';
+	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
+	import { pickShellWorkspace } from '$lib/stores/shellWorkspace';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import ChatHost from '$lib/components/chat/ChatHost.svelte';
 	import GlobalBottomBar from '$lib/components/layout/GlobalBottomBar.svelte';
-	import ChatButton from '$lib/components/chat/ChatButton.svelte';
 	import CommandPalette from '$lib/components/search/CommandPalette.svelte';
 	import ToastContainer from '$lib/components/common/ToastContainer.svelte';
 	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
@@ -90,6 +92,15 @@
 	// global mobile <TopBar /> is retired there. It's kept for non-workspace
 	// shell pages (the workspace picker / user home) which have no BottomNav.
 	let inWorkspace = $derived(!!page.params.workspace);
+	$effect(() => {
+		if (uiStore.isMobile || inWorkspace || !authReady || !authStore.authenticated) return;
+		const ws = pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs);
+		if (ws) untrack(() => {
+			if (workspaceStore.current?.id !== ws.id) void workspaceStore.setCurrent(ws);
+			void collectionStore.ensureCollections(ws.slug).catch(() => {});
+		});
+	});
+
 	let showMobileTopbar = $derived(uiStore.isMobile && !inWorkspace && !isMessagesPage);
 
 	// `body.has-mobile-topbar` gates the .app-layout top padding in app.css so
@@ -294,7 +305,7 @@
 			!workspaceStore.loading
 		) {
 			workspacesRequested = true;
-			workspaceStore.loadAll();
+			void workspaceStore.ensureAll().catch(() => {});
 			// The open set is per user, so there is none to load without one
 			// (the auth-endpoint-unavailable case). Until it answers, and if it
 			// fails, every workspace reads as having no stored route.
@@ -430,7 +441,7 @@
 	<!-- Auth check in progress — blank screen to avoid flash -->
 {:else if isAuthPage || isSharePage}
 	{@render children()}
-{:else if isConsolePage || (isMessagesPage && uiStore.isMobile)}
+{:else if (isConsolePage || isMessagesPage) && uiStore.isMobile}
 	<!--
 		Console pages (and /messages on a phone, the chat inbox, which has no
 		workspace shell there) render their own chrome and bypass the app shell
@@ -508,10 +519,7 @@
 					<path d="M3 6L8 11L13 6" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 			</button>
-			<!-- The bar is collapsed: Chat stays one click away beside its expand tab. -->
-			<div class="topbar-collapsed-chat" inert={coveredPage.active}>
-				<ChatButton compact />
-			</div>
+
 		{/if}
 		<div class="app-shell">
 			<Sidebar />
@@ -634,12 +642,6 @@
 		padding: 0;
 		opacity: 0.5;
 		transition: opacity 0.2s ease, color 0.15s ease, background 0.15s ease;
-	}
-	.topbar-collapsed-chat {
-		position: absolute;
-		top: 0;
-		left: calc(50% + 32px);
-		z-index: 10;
 	}
 	.app-layout:hover .topbar-expand-btn {
 		opacity: 1;
