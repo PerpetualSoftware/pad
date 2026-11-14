@@ -15,7 +15,7 @@
 --
 -- This migration creates the empty tables and indexes. WRITE-PATH wiring
 -- (consent screen → /authorize/decide → INSERT into oauth_connections) +
--- READ-PATH switch on /settings/connected-apps come in Phase C. Phase A's
+-- READ-PATH switch on /console/connected-apps come in Phase C. Phase A's
 -- only behavioural change is the dual-read introspection gate at
 -- internal/server/middleware_mcp_auth.go — which consults BOTH the legacy
 -- session.Extra path AND any rows in these new tables, OR-merging the
@@ -28,7 +28,7 @@
 --
 -- request_id is the OAuth grant chain identifier (fosite Requester.GetID(),
 -- stable across refresh-token rotation). One row per "connection" the user
--- authorized via consent — that's the granularity the /settings/connected-apps
+-- authorized via consent — that's the granularity the /console/connected-apps
 -- page (TASK-954) already deduplicates by. Created in /authorize/decide
 -- (Phase C); deleted on full chain revocation (Phase C explicit DELETE
 -- after RevokeRefreshTokenFamily / RevokeAccessTokenFamily).
@@ -41,7 +41,7 @@
 -- Scope flags all default to ON, matching IDEA-1517 §2a's "default-on at
 -- /authorize" semantic — the common case is "this assistant works
 -- everywhere across my pad." Users who want narrower scope toggle them
--- off either at consent time or post-hoc in /settings/connected-apps.
+-- off either at consent time or post-hoc in /console/connected-apps.
 --
 -- updated_at: ON UPDATE trigger / app-level touch lives in the store
 -- methods (`SetScopeFlags`, `RenameConnection`, etc.) — SQLite doesn't
