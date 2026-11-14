@@ -16,6 +16,9 @@ type agendaForecast struct {
 	Collection    string                 `json:"collection"`
 	Day           string                 `json:"day"`
 	AllDay        bool                   `json:"all_day,omitempty"`
+	Audience      string                 `json:"audience,omitempty"`
+	AgentRoleName string                 `json:"agent_role_name,omitempty"`
+	AgentRoleSlug string                 `json:"agent_role_slug,omitempty"`
 	Forecast      models.ForecastSummary `json:"forecast"`
 	Workspace     string                 `json:"workspace,omitempty"`
 	WorkspaceName string                 `json:"workspace_name,omitempty"`
@@ -23,7 +26,8 @@ type agendaForecast struct {
 }
 
 func agendaForecastRow(row store.AgendaForecast) agendaForecast {
-	return agendaForecast{ScheduleID: row.ScheduleID, ItemRef: row.ItemRef, ItemTitle: row.ItemTitle, Collection: row.Collection, Day: row.Day, AllDay: row.AllDay, Forecast: row.Forecast}
+	return agendaForecast{ScheduleID: row.ScheduleID, ItemRef: row.ItemRef, ItemTitle: row.ItemTitle, Collection: row.Collection, Day: row.Day, AllDay: row.AllDay,
+		Audience: row.Audience, AgentRoleName: row.AgentRoleName, AgentRoleSlug: row.AgentRoleSlug, Forecast: row.Forecast}
 }
 
 // appendWorkspaceForecasts keeps the earliest forecasts across all admitted

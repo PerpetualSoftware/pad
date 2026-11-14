@@ -489,14 +489,17 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 
 // AgendaForecast is a live schedule forecast, independent of occurrence admission.
 type AgendaForecast struct {
-	ScheduleID string
-	ItemID     string
-	ItemRef    string
-	ItemTitle  string
-	Collection string
-	Day        string
-	AllDay     bool
-	Forecast   models.ForecastSummary
+	ScheduleID    string
+	ItemID        string
+	ItemRef       string
+	ItemTitle     string
+	Collection    string
+	Day           string
+	AllDay        bool
+	Audience      string
+	AgentRoleName string
+	AgentRoleSlug string
+	Forecast      models.ForecastSummary
 }
 
 // ListForecastsForAgenda reads visible open schedules whose forecasts fall in
@@ -513,10 +516,12 @@ func (s *Store) ListForecastsForAgenda(workspaceID string, scope PendingReminder
 	args = append(args, openArgs...)
 	args = append(args, from.Add(-24*time.Hour).UTC().Format("2006-01-02"), to.Add(48*time.Hour).UTC().Format("2006-01-02"))
 	rows, err := s.db.Query(s.q(`SELECT f.schedule_id, i.id, i.title, i.slug, c.slug, c.prefix, i.item_number,
-  f.value, f.set_by, COALESCE(u.name,''), f.set_by_kind, f.set_at, f.source
+  f.value, f.set_by, COALESCE(u.name,''), f.set_by_kind, f.set_at, f.source,
+  s.audience, COALESCE(ar.name, ''), COALESCE(ar.slug, '')
  FROM schedule_forecasts f JOIN item_schedules s ON s.id=f.schedule_id
  JOIN items i ON i.id=s.item_id JOIN collections c ON c.id=i.collection_id
  LEFT JOIN users u ON u.id=f.set_by
+ LEFT JOIN agent_roles ar ON ar.id=i.agent_role_id
  WHERE f.workspace_id=? AND s.workspace_id=? AND i.workspace_id=?
   AND s.ended_at IS NULL AND s.error_code IS NULL AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`
   AND f.value >= ? AND f.value < ? ORDER BY f.value, f.schedule_id`), args...)
@@ -532,7 +537,8 @@ func (s *Store) ListForecastsForAgenda(workspaceID string, scope PendingReminder
 		var number *int64
 		f := &row.Forecast
 		if err := rows.Scan(&row.ScheduleID, &row.ItemID, &row.ItemTitle, &row.ItemRef, &row.Collection, &prefix, &number,
-			&f.Value, &f.SetBy, &f.SetByName, &f.SetByKind, &f.SetAt, &f.Source); err != nil {
+			&f.Value, &f.SetBy, &f.SetByName, &f.SetByKind, &f.SetAt, &f.Source,
+			&row.Audience, &row.AgentRoleName, &row.AgentRoleSlug); err != nil {
 			return nil, false, fmt.Errorf("scan agenda forecast: %w", err)
 		}
 		row.AllDay = len(f.Value) == 10

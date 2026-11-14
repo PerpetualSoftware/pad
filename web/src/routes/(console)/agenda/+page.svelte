@@ -201,7 +201,10 @@
 		return nextDay && date > nextDay ? 'none' : 'partial';
 	}
 	function monthCellLabel(date: string) {
-		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${entryCount(monthRows.get(date)?.length ?? 0)}${monthAttentionCounts.get(date) ? `, ${monthAttentionCounts.get(date)} needs attention` : ''}${dayIncomplete(date) ? ', Incomplete' : ''}`;
+		return `${calendarDayLabel(date, true)}${date === todayIn(zone) ? ', Today' : ''}, ${entryCount(monthRows.get(date)?.length ?? 0)}${monthAttentionCounts.get(date) ? `, ${monthAttentionLabel(monthAttentionCounts.get(date)!)}` : ''}${dayIncomplete(date) ? ', Incomplete' : ''}`;
+	}
+	function monthAttentionLabel(count: number) {
+		return `${count} ${count === 1 ? 'needs' : 'need'} attention`;
 	}
 	async function setSurface(value: 'agenda' | 'list') {
 		if (value === surface) return;
@@ -760,7 +763,7 @@
 		count={monthCount} empty={(date) => !dayIncomplete(date) && !monthDays.get(date)?.length && !monthCompleted.get(date)?.length && !monthAttentionCounts.get(date)}
 		onopen={openDay} onchoose={(date) => selectedDay = date}>
 		{#snippet cell(date: string, phone: boolean)}
-			{#if monthAttentionCounts.get(date)}<span class="month-attention">{monthAttentionCounts.get(date)} needs attention</span>{/if}
+			{#if monthAttentionCounts.get(date)}<span class="month-attention">{monthAttentionLabel(monthAttentionCounts.get(date)!)}</span>{/if}
 			{#if phone}
 				<!-- The phone month is the week's list: every entry of the day, with its actions. -->
 				{#if monthDays.get(date)?.length || monthCompleted.get(date)?.length}

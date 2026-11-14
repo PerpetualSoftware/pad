@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { AgendaEntry, AgendaWorkEntry } from '$lib/types';
+import type { AgendaEntry, AgendaForecast, AgendaWorkEntry } from '$lib/types';
+import { roleMarkers } from './presentation';
 import { classify, defaultAudience, audienceChip, filterAudience, audienceCounts, parseAudience, splitAudience, type AudienceView } from './audience';
 
 const entry = (overrides: Partial<AgendaEntry> = {}): AgendaEntry => ({
@@ -9,6 +10,19 @@ const entry = (overrides: Partial<AgendaEntry> = {}): AgendaEntry => ({
 const views: AudienceView[] = ['mine', 'agents', 'all'];
 
 describe('agenda audience', () => {
+	it('keeps a forecast-only agent marker in Agents with its owner and out of Mine', () => {
+		const row: AgendaForecast = {
+			schedule_id: 'agent-forecast', item_ref: 'TASK-1', item_title: 'Agent forecast', collection: 'tasks',
+			day: '2031-04-02', all_day: true, audience: 'agent', agent_role_name: 'Atlas', agent_role_slug: 'atlas',
+			forecast: { value: '2031-04-02', set_by: 'user-1', set_by_kind: 'user', set_at: '2031-03-10T09:00:00Z', source: 'hand estimate' }
+		};
+		const markers = roleMarkers([], 'UTC', [row]).get(row.day)!.forecasts;
+		expect(markers).toHaveLength(1);
+		expect(classify(markers[0])).toBe('agents');
+		expect(filterAudience(markers, 'agents')).toEqual(markers);
+		expect(filterAudience(markers, 'mine')).toEqual([]);
+		expect(markers[0]).toMatchObject({ audience: 'agent', agent_role_name: 'Atlas', agent_role_slug: 'atlas' });
+	});
 	it.each([
 		['human', 'mine'], ['agent', 'agents'], ['both', 'mine'], [undefined, 'mine']
 	] as const)('classifies schedule audience %s as %s', (audience, expected) => {

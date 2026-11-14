@@ -1195,7 +1195,8 @@ describe('agenda Month page', () => {
   expect(lines[1]).toHaveAttribute('title', 'Lapsed one · 10:00 · Lapsed · First workspace');
   expect(within(cell).getByRole('button', { name: '+2 more' })).toBeTruthy();
   expect(cell.querySelector('.count')).toHaveTextContent('5 · 4 owed');
-  expect(within(cell).queryByText('Today')).toBeNull(); expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 5 entries, 2 needs attention$/);
+  expect(within(cell).queryByText('Today')).toBeNull(); expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 5 entries, 2 need attention$/);
+  expect(within(cell).getByText('2 need attention')).toBeTruthy();
   expect(cellOf('2026-11-06').querySelector('.count')).toBeNull();
  });
  it('lists attention entries first in day detail, under a title and summary for the day', async () => {
