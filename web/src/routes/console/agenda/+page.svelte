@@ -467,9 +467,11 @@
 			if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null;
 			// The schedule has ended; closing the item is a second write that can be refused on its own.
 			let closeError = '';
+			let itemClosed = false;
 			if (end?.closeAs !== undefined && endChoice) {
 				try {
 					await api.items.update(entry.workspace!, entry.item_ref, { fields_patch: { [endChoice.details.done_field]: end.closeAs } });
+					itemClosed = true;
 				} catch (error) {
 					const message = (error as { message?: unknown })?.message;
 					closeError = `The schedule has ended, but closing the item failed: ${typeof message === 'string' && message ? message : 'try again'}. It stays open in Outstanding.`;
@@ -485,7 +487,7 @@
 				loadError = false;
 			} else if (end) {
 				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
-				succeed(end.closeAs !== undefined ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
+				succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
 			} else {
 				succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
 			}

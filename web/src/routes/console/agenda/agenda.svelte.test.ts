@@ -1523,6 +1523,22 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
   await said('Occurrence marked done; the schedule has ended and the item is closed.', 'success');
   await waitFor(() => expect(screen.queryByRole('dialog', { name: /Last occurrence/ })).toBeNull());
  });
+ it('reports an open item when the close choice is cleared during resolve', async () => {
+  const d = await ask();
+  const pendingResolve = deferred<unknown>();
+  h.resolve.mockReturnValueOnce(pendingResolve.promise);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledTimes(2));
+  // Reloading user context clears the dialog while the resolve is in flight.
+  h.user = null; h.signal?.set('auth', 1);
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: /Last occurrence/ })).toBeNull());
+  h.user = { id: 'user-a', timezone: 'America/New_York' }; h.signal?.set('auth', 2);
+  await screen.findAllByText('First item');
+  pendingResolve.resolve({ resolution: { item_still_open: true } });
+  await said('Occurrence marked done; the schedule has ended. The item stays open in Outstanding.', 'success');
+  expect(h.update).not.toHaveBeenCalled();
+  expect(h.toast.mock.calls.some(call => String(call[0]).includes('item is closed'))).toBe(false);
+ });
  it('End schedule keeps the item open', async () => {
   const d = await ask();
   await fireEvent.click(within(d).getByLabelText(/End schedule, keep item open/));
@@ -1552,6 +1568,7 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
   await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
   await said('The schedule has ended, but closing the item failed: EX-30 has open children. It stays open in Outstanding.');
   expect(h.agenda.mock.calls.length).toBeGreaterThanOrEqual(2);
+  expect(h.toast.mock.calls.some(call => String(call[0]).includes('item is closed'))).toBe(false);
  });
  it('Dismiss on a schedule_ended Outstanding row', async () => {
   localStorage.setItem('pad-agenda-mode:user-a', 'week');
