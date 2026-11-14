@@ -1547,6 +1547,14 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
   await said('Occurrence marked done. The schedule continues, so the item was not closed.', 'success');
   expect(h.update).not.toHaveBeenCalled();
  });
+ it('an ending without item_still_open says the schedule ended, not that it continues', async () => {
+  const d = await ask();
+  // The item was closed concurrently: the retry ends the schedule with the item not open.
+  h.resolve.mockResolvedValueOnce({ commitment: { ended_at: frozenAt }, resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0 } });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await said('Occurrence marked done; the schedule has ended.', 'success');
+  expect(h.update).not.toHaveBeenCalled();
+ });
  it('End schedule keeps the item open', async () => {
   const d = await ask();
   await fireEvent.click(within(d).getByLabelText(/End schedule, keep item open/));

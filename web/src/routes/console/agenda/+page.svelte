@@ -488,9 +488,13 @@
 			} else if (refreshed === false) {
 				savedRefreshError = true;
 				loadError = false;
-			} else if (end && !ended) {
+			} else if (end && !ended && !resolved?.commitment?.ended_at) {
 				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
 				succeed(end.closeAs !== undefined ? `${verb}. The schedule continues, so the item was not closed.` : `${verb}. The schedule continues.`);
+			} else if (end && !ended) {
+				// The schedule ended, but not with the item open: it was closed concurrently,
+				// or its collection can no longer close it.
+				succeed(`${state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done'}; the schedule has ended.`);
 			} else if (end) {
 				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
 				succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
