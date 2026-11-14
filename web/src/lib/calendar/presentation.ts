@@ -402,12 +402,12 @@ export function workState(row: AgendaWorkEntry): 'outstanding' | 'acknowledged' 
 	return row.state === 'acknowledged' ? 'acknowledged' : 'outstanding';
 }
 
-/** A rail row as the open occurrence it stands for, or null when it has no target to act on. */
 /** The pending key of a schedule_ended Outstanding row's Dismiss (TASK-4537). */
 export function endedKey(row: AgendaWorkEntry): string {
 	return `ended:${row.workspace ?? ''}:${row.item_ref}`;
 }
 
+/** A rail row as the open occurrence it stands for, or null when it has no target to act on. */
 export function workOccurrence(row: AgendaWorkEntry, zone: string): AgendaEntry | null {
 	if (row.type !== 'schedule' || !row.roles?.target) return null;
 	const target = row.roles.target;
