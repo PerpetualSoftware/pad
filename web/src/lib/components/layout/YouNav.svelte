@@ -12,11 +12,15 @@
 	// Refresh the counts on arrival at a You page; elsewhere load once, so
 	// navigating inside a workspace does not refetch needs and the agenda.
 	const YOU_PATHS = new Set(['/', '/needs', '/agenda']);
+	// Plain let, not $state: the effect reads and writes it.
+	let lastPath = '';
 	$effect(() => {
 		const path = page.url.pathname.replace(/\/+$/, '') || '/';
 		if (!authStore.authenticated) return;
+		const arrived = path !== lastPath;
+		lastPath = path;
 		untrack(() => {
-			if (YOU_PATHS.has(path)) void homeOverview.load(path);
+			if (YOU_PATHS.has(path)) { if (arrived) void homeOverview.load(path, true); }
 			else if (!homeOverview.needs && !homeOverview.agenda && !homeOverview.loading) void homeOverview.load('shell');
 		});
 	});

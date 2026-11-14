@@ -64,7 +64,8 @@
 		void goto('/agenda');
 	}
 	async function action(entry: AgendaEntry, kind: AgendaAction) {
-		if (kind !== 'done' && kind !== 'ack' && kind !== 'skip') { openAgenda(); return; }
+		// The full agenda records a lapsed occurrence at its own instant; Home hands it over.
+		if ((kind !== 'done' && kind !== 'ack' && kind !== 'skip') || entry.state === 'lapsed') { openAgenda(); return; }
 		const key = entryKey(entry); if (busy[key] || !entry.workspace) return;
 		const sameIdentity = authStore.identityFence(); busy = { ...busy, [key]: true }; actionError = '';
 		try {

@@ -49,3 +49,19 @@ it('refuses Done when the outstanding occurrence is a different instant at the s
 	expect(await screen.findByText(/Open the full agenda to review it/)).toBeTruthy();
 	expect(h.resolve).not.toHaveBeenCalled();
 });
+
+it('hands a lapsed occurrence to the full agenda instead of resolving it (TASK-4545 review)', async () => {
+	const { goto } = await import('$app/navigation');
+	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
+	h.getCommitment.mockClear(); h.resolve.mockClear(); vi.mocked(goto).mockClear();
+	h.list.mockResolvedValue([]);
+	h.needs.mockResolvedValue({ rows: [], total: 0, hidden: 0, workspaces: [] });
+	h.agenda.mockResolvedValue({ entries: [{ type: 'schedule', state: 'lapsed', at: '2026-11-13T09:00:00Z', wall: '2026-11-13T09:00', day: '2026-11-13', item_ref: 'TASK-2', item_title: 'Lapsed', collection: 'tasks', workspace: 'ws0', owner_username: 'mara', schedule_id: 's2', roles: { target: null, deadline: null } }], priority_list: [], window_complete: true });
+	const { homeOverview } = await import('$lib/stores/homeOverview.svelte');
+	await homeOverview.load('/', true);
+	render(Home);
+	await fireEvent.click(await screen.findByRole('button', { name: /TASK-2/ }));
+	expect(goto).toHaveBeenCalledWith('/agenda');
+	expect(h.getCommitment).not.toHaveBeenCalled();
+	expect(h.resolve).not.toHaveBeenCalled();
+});
