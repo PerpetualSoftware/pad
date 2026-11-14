@@ -82,12 +82,14 @@ func pickCloseValue(given, ref string, d itemStillOpenDetails) (string, error) {
 	if len(d.CloseOptions) == 0 {
 		return "", fmt.Errorf("%s has no delivering close value; end the schedule with --end-schedule, or close the item with pad item update. Nothing was written", ref)
 	}
-	if given != closeItemAuto {
-		for _, o := range d.CloseOptions {
-			if strings.EqualFold(o, given) {
-				return o, nil
-			}
+	// A real option wins over the bare-flag sentinel, so an option that is
+	// itself named "auto" can still be chosen.
+	for _, o := range d.CloseOptions {
+		if strings.EqualFold(o, given) {
+			return o, nil
 		}
+	}
+	if given != closeItemAuto {
 		return "", fmt.Errorf("--close-item %q is not a delivering close of %s's %s field; choose one of: %s. Nothing was written", given, ref, d.DoneField, strings.Join(d.CloseOptions, ", "))
 	}
 	switch len(d.CloseOptions) {
