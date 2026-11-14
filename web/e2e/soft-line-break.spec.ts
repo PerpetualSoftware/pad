@@ -103,6 +103,8 @@ test('a no-edit view of a flat legacy op-log preserves the stored newlines', asy
 	legacy.destroy();
 	const db = new DatabaseSync(E2E_DB_PATH);
 	try {
+		// The live test server may be committing another worker's write.
+		db.exec('PRAGMA busy_timeout = 5000');
 		const row = db.prepare(`INSERT INTO item_yjs_updates
 			(item_id, update_data, schema_version, created_at, content_hash, content_bearing)
 			VALUES (?, ?, ?, ?, ?, 1)`).run(doc.id, frame, SCHEMA_VERSION, new Date().toISOString(), createHash('sha256').update(frame).digest('hex'));
