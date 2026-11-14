@@ -12,7 +12,7 @@ class HomeOverview {
 	private key = '';
 	private pending: Promise<void> | null = null;
 	constructor() {
-		authStore.onIdentityChange(() => { this.key = ''; this.pending = null; this.needs = null; this.agenda = null; this.error = ''; });
+		authStore.onIdentityChange(() => { this.key = ''; this.pending = null; this.needs = null; this.agenda = null; this.error = ''; this.loading = false; });
 	}
 	get zone() { return authStore.user?.timezone || browserZone() || 'UTC'; }
 	get today() { return todayIn(this.zone); }

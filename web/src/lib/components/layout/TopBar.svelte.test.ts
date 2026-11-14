@@ -26,7 +26,7 @@ const mocks = vi.hoisted(() => ({
 		reorder: vi.fn(),
 		update: vi.fn(),
 	},
-	// BUG-2136 U2: the "+" badge reads the pending-invitations store, which
+	// BUG-2136 U2: the switcher's Invitations count reads the pending-invitations store, which
 	// the bar refreshes on mount, window focus and every navigation.
 	invitationCount: 0,
 	refreshInvitations: vi.fn(async () => {}),
@@ -303,8 +303,6 @@ describe('TopBar: no window key owner (successor to TASK-2430)', () => {
 });
 
 describe('TopBar invitation refresh (BUG-2136 U2)', () => {
-	const addBtn = () => document.querySelector<HTMLButtonElement>('.workspace-add')!;
-	const badge = () => document.querySelector('[data-testid="invitation-badge"]');
 
 	it('refreshes on mount, on window focus and after every navigation, and stops on unmount', async () => {
 		await mountWith([BETA]);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgendaEntry } from '$lib/types';
-import { weekWindow, weekLabel, targetOnDay, dayWindow, shiftDay, todayIn, wallToInstant, groupEntries, filterEntries, entryChips, canMove, entryHref, isAllDay } from './presentation';
+import { weekWindow, weekLabel, targetOnDay, dayWindow, shiftDay, todayIn, wallToInstant, groupEntries, filterEntries, entryChips, canMove, entryHref, isAllDay, outstandingMatches } from './presentation';
 
 const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-03-08T04:00:00Z', day: '2026-03-07', item_ref: 'EX-30', item_title: 'Example', collection: 'tasks', workspace: 'work', workspace_name: 'Work', owner_username: 'alice', state: 'outstanding', ...extra });
 
@@ -382,4 +382,22 @@ describe('acknowledged: seen, still owed', () => {
   expect(acknowledgedText(at, undefined, 'UTC', now)).toBe('Acknowledged by unknown user · Sun 8, 09:15');
   expect(acknowledgedText(undefined, { user_id: 'u1', name: 'Alice', actor: 'user' }, 'UTC', now)).toBe('Acknowledged by Alice');
  });
+});
+
+describe('outstandingMatches (TASK-4545)', () => {
+	const next = { at: '2026-11-01T06:30:00Z', wall: '2026-11-01T01:30' };
+	it('matches the same wall with no pinned key', () => {
+		expect(outstandingMatches({ wall: '2026-11-01T01:30' }, { next_occurrence: next })).toBe(true);
+	});
+	it('refuses when either wall is missing', () => {
+		expect(outstandingMatches({}, { next_occurrence: { at: next.at } })).toBe(false);
+	});
+	it('refuses a pinned key at another instant sharing the wall time (DST fall-back)', () => {
+		expect(outstandingMatches({ wall: '2026-11-01T01:30', occurrence_key: '2026-11-01T05:30:00Z|s' }, { next_occurrence: next })).toBe(false);
+		expect(outstandingMatches({ wall: '2026-11-01T01:30', occurrence_key: '2026-11-01T06:30:00Z|s' }, { next_occurrence: next })).toBe(true);
+	});
+	it('refuses an ended schedule or no outstanding occurrence', () => {
+		expect(outstandingMatches({ wall: '2026-11-01T01:30' }, { ended_at: '2026-10-01T00:00:00Z', next_occurrence: next })).toBe(false);
+		expect(outstandingMatches({ wall: '2026-11-01T01:30' }, { next_occurrence: null })).toBe(false);
+	});
 });

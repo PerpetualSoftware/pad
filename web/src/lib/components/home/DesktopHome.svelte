@@ -13,7 +13,7 @@
 	import AudienceToggle from '$lib/components/calendar/AudienceToggle.svelte';
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import { audienceCounts, filterAudience, type AudienceView } from '$lib/calendar/audience';
-	import { attentionEntries, deadlineTone, entryKey, isOpenState, shiftDay, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
@@ -71,7 +71,7 @@
 			const view = await api.getCommitment(entry.workspace, entry.item_ref);
 			if (!sameIdentity()) return;
 			const occurrence = view.next_occurrence;
-			if (!occurrence || view.ended_at || occurrence.wall !== entry.wall) throw new Error('This occurrence changed. Open the full agenda to review it.');
+			if (!occurrence || !outstandingMatches(entry, view)) throw new Error('This occurrence changed. Open the full agenda to review it.');
 			await api.resolveCommitment(entry.workspace, entry.item_ref, { occurrence_at: occurrence.at, state: kind });
 			if (sameIdentity()) await homeOverview.load('/', true);
 		} catch { if (sameIdentity()) actionError = 'Could not update this occurrence. Open the full agenda to review it.'; }

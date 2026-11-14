@@ -1,7 +1,7 @@
 import { afterEach, it, expect, vi } from 'vitest';
 import { render, screen, cleanup, fireEvent } from '@testing-library/svelte';
-const h = vi.hoisted(() => ({ needs: vi.fn(), snooze: vi.fn(async () => ({})), agenda: vi.fn(), list: vi.fn() }));
-vi.mock('$lib/api/client', () => ({ api: { needs: { list: h.needs, snooze: h.snooze }, getMyAgenda: h.agenda, workspaces: { list: h.list } } }));
+const h = vi.hoisted(() => ({ needs: vi.fn(), snooze: vi.fn(async () => ({})), agenda: vi.fn(), list: vi.fn(), getCommitment: vi.fn(), resolve: vi.fn(async () => ({})) }));
+vi.mock('$lib/api/client', () => ({ api: { needs: { list: h.needs, snooze: h.snooze }, getMyAgenda: h.agenda, getCommitment: h.getCommitment, resolveCommitment: h.resolve, workspaces: { list: h.list } } }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({ pendingInvitations: { count: 1, refresh: vi.fn() } }));
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { userId: 'u', user: { name: 'Mara Lindqvist', timezone: 'UTC' }, identityFence: () => () => true, onIdentityChange: () => () => {} } }));
@@ -31,4 +31,21 @@ it('renders Home counts with one call per data source, independent of workspace 
 	expect(h.snooze).toHaveBeenCalledWith('ws0', 'TASK-0', { kind: 'dismiss' });
 	expect(await screen.findByRole('link', { name: 'See all 6 →' })).toBeTruthy();
 	expect(h.list).toHaveBeenCalledTimes(1);
+});
+
+// TASK-4545 review: Home runs the agenda page's occurrence guard, so Done never
+// resolves a different occurrence that shares the clicked one's wall time.
+it('refuses Done when the outstanding occurrence is a different instant at the same wall time', async () => {
+	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
+	h.list.mockResolvedValue([]);
+	h.needs.mockResolvedValue({ rows: [], total: 0, hidden: 0, workspaces: [] });
+	h.agenda.mockResolvedValue({ entries: [{ type: 'schedule', state: 'outstanding', at: '2026-11-13T16:00:00Z', wall: '2026-11-13T16:00', occurrence_key: '2026-11-13T16:00:00Z|s1', day: '2026-11-13', item_ref: 'TASK-1', item_title: 'Pinned', collection: 'tasks', workspace: 'ws0', owner_username: 'mara', schedule_id: 's1', roles: { target: null, deadline: null } }], priority_list: [], window_complete: true });
+	h.getCommitment.mockResolvedValue({ ended_at: null, next_occurrence: { at: '2026-11-13T17:00:00Z', wall: '2026-11-13T16:00' } });
+	const { homeOverview } = await import('$lib/stores/homeOverview.svelte');
+	await homeOverview.load('/', true);
+	render(Home);
+	await fireEvent.click(await screen.findByRole('button', { name: 'Done TASK-1' }));
+	await vi.waitFor(() => expect(h.getCommitment).toHaveBeenCalled());
+	expect(await screen.findByText(/Open the full agenda to review it/)).toBeTruthy();
+	expect(h.resolve).not.toHaveBeenCalled();
 });
