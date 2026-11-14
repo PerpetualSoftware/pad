@@ -24,7 +24,7 @@
 <nav class="settings-tabs" aria-label="Settings">
 	{#each tabs as tab (tab.href)}
 		<a href={tab.href} aria-current={isActive(tab.href) ? 'page' : undefined}>
-			{tab.label}{#if tab.label === 'Admin'}{' '}<span class="admins-pill">admins</span>{/if}
+			{tab.label}{#if tab.label === 'Admin'}{' '}<span class="admins-pill" aria-hidden="true">admins</span>{/if}
 		</a>
 	{/each}
 </nav>

@@ -13,7 +13,7 @@ for (const oauthAvailable of [false, true]) for (const commerceAllowed of [false
  it(`shows tabs for OAuth=${oauthAvailable}, commerce=${commerceAllowed}, admin=${admin}`, () => {
   Object.assign(h, { oauthAvailable, commerceAllowed, user: { role: admin ? 'admin' : 'user' }, url: new URL('https://pad.test/settings/account') });
   render(Settings, { children });
-  const expected = [['Account', '/settings/account'], ...(oauthAvailable ? [['Connected apps', '/settings/connected-apps']] : []), ...(commerceAllowed ? [['Billing', '/settings/billing']] : []), ['Deleted workspaces', '/settings/deleted-workspaces'], ...(admin ? [['Admin admins', '/settings/admin']] : [])];
+  const expected = [['Account', '/settings/account'], ...(oauthAvailable ? [['Connected apps', '/settings/connected-apps']] : []), ...(commerceAllowed ? [['Billing', '/settings/billing']] : []), ['Deleted workspaces', '/settings/deleted-workspaces'], ...(admin ? [['Admin', '/settings/admin']] : [])];
   expect(screen.getAllByRole('link')).toHaveLength(expected.length);
   for (const [name, href] of expected) expect(screen.getByRole('link', { name })).toHaveAttribute('href', href);
   expect(screen.getByRole('link', { name: 'Account' })).toHaveAttribute('aria-current', 'page');
@@ -21,7 +21,7 @@ for (const oauthAvailable of [false, true]) for (const commerceAllowed of [false
  });
 }
 it.each([
- ['/settings/account', 'Account'], ['/settings/connected-apps', 'Connected apps'], ['/settings/billing', 'Billing'], ['/settings/deleted-workspaces', 'Deleted workspaces'], ['/settings/admin/instance', 'Admin admins'], ['/settings/move-to-cloud', null]
+ ['/settings/account', 'Account'], ['/settings/connected-apps', 'Connected apps'], ['/settings/billing', 'Billing'], ['/settings/deleted-workspaces', 'Deleted workspaces'], ['/settings/admin/instance', 'Admin'], ['/settings/move-to-cloud', null]
 ])('selects the tab for %s', (path, label) => {
  Object.assign(h, { oauthAvailable: true, commerceAllowed: true, user: { role: 'admin' }, url: new URL('https://pad.test' + path) });
  render(Settings, { children });
