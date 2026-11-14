@@ -93,3 +93,14 @@ it('falls back to the first workspace', async () => {
 	render(Sidebar); await settle();
 	expect(screen.getByRole('button', { name: /First/ })).toBeTruthy();
 });
+it('does not refetch the counts on a workspace page once they are loaded', async () => {
+	const { homeOverview } = await import('$lib/stores/homeOverview.svelte');
+	const { api } = await import('$lib/api/client');
+	await homeOverview.load('/', true);
+	vi.mocked(api.getMyAgenda).mockClear();
+	vi.mocked(api.needs.list).mockClear();
+	page.url = new URL('http://localhost/u/one/tasks'); page.params = { username: 'u', workspace: 'one' };
+	render(Sidebar); await settle();
+	expect(api.getMyAgenda).not.toHaveBeenCalled();
+	expect(api.needs.list).not.toHaveBeenCalled();
+});

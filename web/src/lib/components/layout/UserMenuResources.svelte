@@ -36,11 +36,9 @@
 
 	let {
 		cloudMode = false,
-	desktop = false,
 		onclose
 	}: {
 		cloudMode?: boolean;
-	desktop?: boolean;
 		// Caller hands in the close-the-dropdown handler (typically
 		// `closeUserMenu` from TopBar). Triggered on every link click so
 		// the menu collapses without waiting for the link to navigate.
@@ -89,7 +87,7 @@
 		{ label: 'Tutorials', href: LEARN_URL }
 	];
 
-	const links = $derived(desktop ? [{ label: 'Docs', href: DOCS_URL }, { label: 'Changelog', href: CHANGELOG_URL }, { label: 'GitHub', href: GITHUB_REPO_URL }] as ResourceLink[] : cloudMode ? cloudLinks : selfHostedLinks);
+	const links = $derived(cloudMode ? cloudLinks : selfHostedLinks);
 </script>
 
 <div class="dropdown-divider"></div>

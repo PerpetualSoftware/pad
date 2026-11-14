@@ -585,7 +585,7 @@
 						and GitHub on Cloud and a trimmed Docs/GitHub list on
 						self-hosted. Closes the product → marketing handoff seam.
 					-->
-					<UserMenuResources desktop={!mobile} cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
+					<UserMenuResources cloudMode={authStore.cloudMode} onclose={closeUserMenu} />
 
 					<!--
 						"Connect a project…" sits after the Resources block and just

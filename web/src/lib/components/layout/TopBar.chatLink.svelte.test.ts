@@ -81,7 +81,7 @@ describe('desktop TopBar (TASK-4545)', () => {
 		trigger().click(); await settle();
 		expect(row()).toBeNull();
 		const labels = [...document.querySelectorAll('[role="menuitem"]')].map(el => el.textContent?.trim());
-		expect(labels).toEqual(['Settings', 'Light mode', 'Keyboard shortcuts', 'Docs', 'Changelog', 'GitHub', 'Connect a project…', 'Sign out']);
+		expect(labels).toEqual(['Settings', 'Light mode', 'Keyboard shortcuts', 'GitHub', 'Community', 'Docs', 'Tutorials', 'Connect a project…', 'Sign out']);
 		expect(document.querySelector('.user-dropdown-email')?.textContent).toBe('ada@example.com');
 	});
 	it('keeps the phone account menu', async () => {

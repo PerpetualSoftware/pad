@@ -9,7 +9,17 @@
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import UnreadBadge from '$lib/components/chat/UnreadBadge.svelte';
 	const todayCount = $derived(homeOverview.agenda?.entries.filter(e => e.day === homeOverview.today && (e.type === 'schedule' || e.type === 'date')).length);
-	$effect(() => { const path = page.url.pathname; if (authStore.authenticated) untrack(() => { void homeOverview.load(path); }); });
+	// Refresh the counts on arrival at a You page; elsewhere load once, so
+	// navigating inside a workspace does not refetch needs and the agenda.
+	const YOU_PATHS = new Set(['/', '/needs', '/agenda']);
+	$effect(() => {
+		const path = page.url.pathname.replace(/\/+$/, '') || '/';
+		if (!authStore.authenticated) return;
+		untrack(() => {
+			if (YOU_PATHS.has(path)) void homeOverview.load(path);
+			else if (!homeOverview.needs && !homeOverview.agenda && !homeOverview.loading) void homeOverview.load('shell');
+		});
+	});
 </script>
 <nav aria-label="You" class="you-nav">
 	<div class="you-heading"><h2>You</h2><button aria-label="Quick capture" title="Quick capture (C)" onclick={() => uiStore.requestQuickAdd()}>+</button></div>
