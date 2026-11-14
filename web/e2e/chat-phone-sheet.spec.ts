@@ -258,8 +258,8 @@ test('a long press opens the message menu; a 12px move does not; Escape closes o
 	await expect(sheet(page)).toBeHidden({ timeout: FAST_MS });
 });
 
-test('/console has the compact bar; login and a share page have none', async ({ page, fixture, browser }) => {
-	await page.goto('/console');
+test('/ has the compact bar; login and a share page have none', async ({ page, fixture, browser }) => {
+	await page.goto('/');
 	await expect(bar(page)).toBeVisible();
 	await expect(bar(page).locator('.bn-label')).toHaveText(['Workspaces', 'Chat', 'You']);
 	await chatSlot(page).click();

@@ -2,7 +2,7 @@ import { expect } from '@playwright/test';
 import { test } from './fixtures';
 
 /**
- * TASK-3121 — the Decision provider section on console/admin/settings.
+ * TASK-3121 — the Decision provider section on /settings/admin/instance.
  *
  * What only a browser can show: the key the admin typed is sent once and
  * never comes back. The input is emptied after save and stays empty after a
@@ -37,7 +37,7 @@ test('TASK-3121: a saved decision key is write-only in the page', async ({ page,
 	expect(initial.effective.enabled).toBe(false);
 
 	try {
-		await page.goto('/console/admin/settings');
+		await page.goto('/settings/admin/instance');
 		const section = page.getByTestId('decision-provider-section');
 		await expect(section).toBeVisible();
 		await expect(section.getByTestId('decision-privacy-line')).toHaveText(

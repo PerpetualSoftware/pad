@@ -71,7 +71,7 @@ describe('parseChatPath: the /messages route\'s own rule', () => {
 		expect(parseChatPath(path)).toEqual(want);
 	});
 
-	it.each(['/messagesfoo', '/messages/1/x', '/', '/', '/alice/ws/messages/3'])(
+	it.each(['/messagesfoo', '/messages/1/x', '/console', '/', '/needs', '/agenda', '/settings/account', '/alice/ws/messages/3'])(
 		'%s is not Chat',
 		(path) => {
 			expect(parseChatPath(path)).toBeNull();
