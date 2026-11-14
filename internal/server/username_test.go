@@ -1,18 +1,28 @@
 package server
 
 import (
-	"strings"
+	"fmt"
 	"testing"
 )
 
 func TestUsernameAccountRoutesReserved(t *testing.T) {
 	for _, name := range []string{"agenda", "needs", "tutorials"} {
-		for _, variant := range []string{name, strings.ToUpper(name), strings.ToUpper(name[:1]) + name[1:]} {
-			t.Run(variant, func(t *testing.T) {
-				if err := ValidateUsername(variant); err == nil {
-					t.Errorf("ValidateUsername(%q) accepted a reserved account route", variant)
-				}
-			})
+		t.Run(name, func(t *testing.T) {
+			want := fmt.Sprintf("username %q is reserved", name)
+			if err := ValidateUsername(name); err == nil || err.Error() != want {
+				t.Errorf("ValidateUsername(%q) = %v, want %q", name, err, want)
+			}
+		})
+	}
+}
+
+func TestIsReservedUsernameCaseInsensitive(t *testing.T) {
+	for _, name := range []string{"Tutorials", "NEEDS", "Agenda"} {
+		if !IsReservedUsername(name) {
+			t.Errorf("IsReservedUsername(%q) = false", name)
 		}
+	}
+	if IsReservedUsername("mara") {
+		t.Error("mara must not be reserved")
 	}
 }
