@@ -178,7 +178,9 @@
 		{/if}
 		{#if loadingWorkspace}<p role="status">Loading collections…</p>{/if}
 		{#if workspaceError}<p role="alert">{workspaceError}</p><button onclick={() => targetSlug && loadTarget(targetSlug)}>Retry</button>{/if}
-		{#if collections.length === 0}
+		{#if loadingWorkspace || workspaceError}
+			<!-- Loading or failed: the status above stands in for the empty state. -->
+		{:else if collections.length === 0}
 			<p class="capture-empty">You can't add items in this workspace.</p>
 			<div class="capture-actions">
 				<button class="capture-cancel" type="button" onclick={close}>Close</button>

@@ -71,3 +71,13 @@ it('captures into the last workspace and lets a You page change it', async () =>
 	await fireEvent.click(screen.getByRole('button', { name: 'Add' })); await settle();
 	expect(vi.mocked(api.items.create).mock.calls[1][0]).toBe('ws');
 });
+
+it('shows no empty-state message while the workspace collections load (TASK-4545 review)', async () => {
+	let release: (v: unknown) => void = () => {};
+	vi.mocked(api.collections.list).mockImplementationOnce(() => new Promise(r => { release = r; }) as never);
+	render(QuickCaptureSheet, { props: { open: true, onclose: () => {}, wsSlug: undefined, wsPrefix: '' } });
+	for (let i = 0; i < 5; i++) await tick();
+	expect(screen.getByRole('status').textContent).toContain('Loading collections');
+	expect(document.querySelector('.capture-empty')).toBeNull();
+	release([]);
+});
