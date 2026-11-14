@@ -102,8 +102,9 @@ type ScheduleExport struct {
 	AnchorWall     string `json:"anchor_wall,omitempty"`
 	EndedAt        string `json:"ended_at,omitempty"`
 	// EndedDismissedAt is when the ended schedule was dismissed from
-	// Outstanding (TASK-4537); it requires EndedAt.
-	EndedDismissedAt string `json:"ended_dismissed_at,omitempty"`
+	// Outstanding (TASK-4537); it requires EndedAt. Always export the key:
+	// its absence identifies an ending from before dismissal was supported.
+	EndedDismissedAt string `json:"ended_dismissed_at"`
 	CreatedAt        string `json:"created_at"`
 	UpdatedAt        string `json:"updated_at"`
 

@@ -20,10 +20,52 @@ func TestAgendaEndedScheduleRemainsUnplaced(t *testing.T) {
 			w := newBootAgendaWorld(t, "2031-03-10T12:00:00Z")
 			ended := w.sched(t, w.owner, "Unplaced", "2031-03-10T09:00", "both")
 			live := w.sched(t, w.owner, "Live", "2031-03-10T10:00", "both")
-			// An ended schedule is unplaced once its ending is dismissed; an
-			// undismissed one is a schedule_ended Outstanding entry (TASK-4537).
-			assignment := map[string]string{"ended": "ended_at='2031-03-10T11:00:00Z',ended_dismissed_at='2031-03-10T11:30:00Z',next_at=NULL,next_wall=NULL", "no_wall": "next_wall=NULL", "no_instant": "next_at=NULL"}[absent]
+			// A pre-change export has no dismissal key. Importing it keeps
+			// historical endings out of Outstanding.
+			assignment := map[string]string{"ended": "ended_at='2031-03-10T11:00:00Z',next_at=NULL,next_wall=NULL", "no_wall": "next_wall=NULL", "no_instant": "next_at=NULL"}[absent]
 			meAgendaExec(t, w.agendaWorld, `UPDATE item_schedules SET `+assignment+` WHERE item_id=?`, ended.ID)
+			if absent == "ended" {
+				bundle, err := w.srv.store.ExportWorkspace(w.ws.Slug)
+				if err != nil {
+					t.Fatal(err)
+				}
+				blob, err := json.Marshal(bundle)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var legacy map[string]any
+				if err := json.Unmarshal(blob, &legacy); err != nil {
+					t.Fatal(err)
+				}
+				for _, row := range legacy["schedules"].([]any) {
+					delete(row.(map[string]any), "ended_dismissed_at")
+				}
+				blob, err = json.Marshal(legacy)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var data models.WorkspaceExport
+				if err := json.Unmarshal(blob, &data); err != nil {
+					t.Fatal(err)
+				}
+				dst, err := w.srv.store.ImportWorkspace(&data, "Legacy agenda", w.owner.ID, "cli")
+				if err != nil {
+					t.Fatal(err)
+				}
+				w.ws = dst
+				items, err := w.srv.store.ListItems(dst.ID, models.ItemListParams{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				for i := range items {
+					switch items[i].Title {
+					case "Unplaced":
+						ended = &items[i]
+					case "Live":
+						live = &items[i]
+					}
+				}
+			}
 			for _, personal := range []bool{false, true} {
 				run := w.srv.newAgendaRead(meAgendaNow, meAgendaNow.Add(time.Hour), usertz.Resolve(nil), "")
 				run.listNoDate = personal

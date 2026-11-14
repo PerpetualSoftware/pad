@@ -377,3 +377,40 @@ func (f *schedFixture) reload2(t *testing.T, wsID, itemID string) *models.ItemSc
 	}
 	return sc
 }
+
+func TestScheduleEndImportDismissalPresence(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, key, want string }{
+		{"legacy missing", "", "2026-10-30T09:05:00Z"},
+		{"explicit dismissal", `,"ended_dismissed_at":"2026-10-30T10:00:00Z"`, "2026-10-30T10:00:00Z"},
+		{"explicit empty", `,"ended_dismissed_at":""`, ""},
+		{"explicit null", `,"ended_dismissed_at":null`, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newSchedFixture(t)
+			data := f.exportBundle(t)
+			var sc models.ScheduleExport
+			raw := `{"id":"legacy","item_id":"` + f.item.ID + `","kind":"check","dtstart":"2026-10-30T09:00:00","tz":"UTC","anchor":"calendar","audience":"both","ended_at":"2026-10-30T09:05:00Z","created_at":"2026-10-29T12:00:00Z","updated_at":"2026-10-30T09:05:00Z"` + tc.key + `}`
+			if err := json.Unmarshal([]byte(raw), &sc); err != nil {
+				t.Fatal(err)
+			}
+			data.Schedules = []models.ScheduleExport{sc}
+			dst, rep := f.importBundle(t, data, "Import dismissal")
+			if len(rep.DroppedSchedules) != 0 {
+				t.Fatalf("dropped: %+v", rep)
+			}
+			got := f.reload2(t, dst.ID, f.itemByTitle(t, dst.ID, f.item.Title).ID)
+			if got == nil || derefStr(got.EndedDismissedAt) != tc.want {
+				t.Fatalf("dismissal = %+v, want %q", got, tc.want)
+			}
+		})
+	}
+	// A current export must preserve an intentionally undismissed ending.
+	f := newSchedFixture(t)
+	item, _ := f.mk(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"}, "2026-10-29T12:00:00Z")
+	f.mustResolve(t, item, ResolveInput{OccurrenceAt: f.outstanding(t, item), State: "done", Actor: "user", EndSchedule: true}, "2026-10-30T09:05:00Z")
+	dst, _ := f.importBundle(t, f.exportBundle(t), "Current ending")
+	if got := f.reload2(t, dst.ID, f.itemByTitle(t, dst.ID, item.Title).ID); got == nil || got.EndedDismissedAt != nil {
+		t.Fatalf("current ending changed: %+v", got)
+	}
+}
