@@ -3850,7 +3850,6 @@ export interface AcknowledgedBy {
 }
 
 export interface AgendaEntry {
- last_resolution?: ScheduleLastResolution;
  agent_role_name?: string;
  agent_role_slug?: string;
  forecast?: CommitmentForecastSummary;
@@ -4087,8 +4086,8 @@ export interface CommitmentChange {
 }
 
 export interface CommitmentResolveResult {
-	commitment: ItemCommitmentView;
-	resolution: { resolution_id?: string; last_resolution?: ScheduleLastResolution; occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline'; item_still_open?: boolean };
+	commitment: Omit<ItemCommitmentView, 'last_resolution'>;
+	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline'; item_still_open?: boolean };
 }
 
 export interface ItemCopySchedule {
@@ -4186,8 +4185,6 @@ export interface CommitmentMoveChange {
  root?: boolean;
 }
 export interface CommitmentMoveResult {
- resolution_id?: string;
- last_resolution?: ScheduleLastResolution;
  revision: string;
  changes: CommitmentMoveChange[];
  violations?: CommitmentMoveChange[];

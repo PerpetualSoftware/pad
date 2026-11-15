@@ -689,10 +689,13 @@ and the `--force` retry to stderr and exit non-zero on `schedule_active`.
 ## Reopen a schedule resolution (v0.118)
 
 `pad_item` adds the mutating `schedule-reopen` action with required `ref` and
-`resolution_id` (the exact journal UUID from a commitment or resolve/move result).
+`resolution_id` (the exact journal UUID from an editor’s GET commitment
+`last_resolution`).
 Stdio runs `pad item remind reopen REF --resolution ID`; HTTP posts
 `{"resolution_id":"ID"}` to `/workspaces/{ws}/items/{ref}/commitment/reopen`.
-Both transports preserve the full `{commitment,reopen}` result. ChatGPT defers
+Both transports preserve the full `{commitment,reopen}` result. Schedule-resolve
+and schedule-move results (applied or preview) contain neither `last_resolution`
+nor `resolution_id`, including nested commitment views. ChatGPT defers
 this schedule action to v2, consistent with the other schedule mutations.
 
 The command is also available as `pad remind reopen REF`. Without `--resolution`,
