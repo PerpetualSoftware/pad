@@ -58,6 +58,7 @@ const (
 	ErrNotEnded                  ErrorCode = "not_ended"       // TASK-4537: dismiss-ended on a live schedule
 	ErrScheduleLinked            ErrorCode = "schedule_linked"
 	ErrDeadlineApprovalRequired  ErrorCode = "deadline_approval_required"
+	ErrTargetAfterDeadline       ErrorCode = "target_after_deadline"
 	ErrLinkViolationAck          ErrorCode = "link_violation_ack"
 	ErrCommitmentChanged         ErrorCode = "commitment_changed"
 	ErrLinkBudget                ErrorCode = "link_budget"
@@ -534,6 +535,7 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"invalid_body":                {},
 	"schedule_linked":             {},
 	"deadline_approval_required":  {},
+	"target_after_deadline":       {},
 	"link_violation_ack":          {},
 	"link_budget":                 {},
 	"link_edit_required":          {},
@@ -1912,7 +1914,7 @@ func commitmentGraphCode(code, route string) bool {
 	switch ErrorCode(code) {
 	case ErrInvalidBody:
 		return cli.IsCommitmentRoute(route)
-	case ErrReopenUnavailable, ErrReopenNotSupported, ErrReopenConflict, ErrReopenDependency, ErrReopenDeadlinePassed, ErrOccurrenceNotFired, ErrStaleOccurrence, ErrScheduleBroken, ErrScheduleBusy, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired, ErrItemStillOpen, ErrNotEnded:
+	case ErrTargetAfterDeadline, ErrReopenUnavailable, ErrReopenNotSupported, ErrReopenConflict, ErrReopenDependency, ErrReopenDeadlinePassed, ErrOccurrenceNotFired, ErrStaleOccurrence, ErrScheduleBroken, ErrScheduleBusy, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired, ErrItemStillOpen, ErrNotEnded:
 		return true
 	}
 	return false
@@ -1926,7 +1928,7 @@ func commitmentValidationDetails(raw json.RawMessage) bool {
 		return false
 	}
 	switch d.Field {
-	case "resolution_id", "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule":
+	case "resolution_id", "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule", "confirm_past_deadline":
 		return true
 	}
 	return false
@@ -1934,6 +1936,9 @@ func commitmentValidationDetails(raw json.RawMessage) bool {
 
 func classifyCommitmentStderr(message string) (ErrorCode, string, json.RawMessage, bool) {
 	lower := strings.ToLower(strings.TrimSpace(message))
+	if strings.HasPrefix(lower, "this moves the target past its hard deadline (") {
+		return ErrTargetAfterDeadline, message, nil, true
+	}
 	messages := map[string]ErrorCode{
 		"this schedule is linked; unlink it before changing its timing or a linked role":                       ErrScheduleLinked,
 		"this date is linked to something you can't view. ask a workspace owner to change or remove the link.": ErrScheduleLinked,

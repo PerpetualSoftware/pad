@@ -234,34 +234,35 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
 	{Name: "tz", Type: "string", Description: "IANA wall/display zone (default: account zone). Excludes floating."},
 	{Name: "floating", Type: "bool", Description: "Use recipient wall zone. Excludes tz."},
-	{Name: "state", Type: "string", Description: "done | skip | snooze | move | ack (fired only; still owed, no comment). Required: schedule-resolve."},
-	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required: snooze, move."},
+	{Name: "state", Type: "string", Description: "schedule-resolve: done | skip | snooze | move | ack (fired only; still owed, no comment)."},
+	{Name: "until", Type: "string", Description: "Required snooze/move RFC3339 re-fire/target instant."},
 	{Name: "resolution_id", Type: "string", Description: "Exact last_resolution ID; required for schedule-reopen."},
-	{Name: "occurrence_at", Type: "string", Description: "Required for schedule-resolve: RFC3339 next_occurrence.at from schedule."},
+	{Name: "occurrence_at", Type: "string", Description: "Required schedule-resolve RFC3339 next_occurrence.at from schedule."},
 	{Name: "actual_done_at", Type: "string", Description: "Actual completion (RFC3339). schedule-resolve done only."},
+	{Name: "confirm_past_deadline", Type: "bool", Description: "Confirm a move that puts the target after its hard deadline."},
 	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
-	{Name: "reason", Type: "string", Description: "Why dates change; required for schedule-renegotiate and graph changes moving hard deadlines."},
-	{Name: "scope", Type: "string", Description: "occurrence (default) | series. For: schedule-renegotiate."},
-	{Name: "deadline_days", Type: "number", Description: "Series offset in days. For: schedule-renegotiate."},
-	{Name: "deadline_secs", Type: "number", Description: "Series offset in seconds. For: schedule-renegotiate."},
-	{Name: "deadline_behavior", Type: "string", Description: "lapses | stays_owed. For: schedule-renegotiate."},
-	{Name: "remove_deadline", Type: "bool", Description: "Drop the series deadline. For: schedule-renegotiate."},
+	{Name: "reason", Type: "string", Description: "Why dates change; required for renegotiation or graph hard-deadline changes."},
+	{Name: "scope", Type: "string", Description: "schedule-renegotiate: occurrence (default) | series."},
+	{Name: "deadline_days", Type: "number", Description: "schedule-renegotiate: series day offset."},
+	{Name: "deadline_secs", Type: "number", Description: "schedule-renegotiate: series second offset."},
+	{Name: "deadline_behavior", Type: "string", Description: "schedule-renegotiate: lapses | stays_owed."},
+	{Name: "remove_deadline", Type: "bool", Description: "schedule-renegotiate: drop series deadline."},
 	{Name: "revision", Type: "string", Description: "Opaque preview token; return unchanged with graph applies. Required: schedule-renegotiate preview=false."},
-	{Name: "preview", Type: "bool", Description: "Preview by default. schedule-renegotiate: false applies with revision. schedule-link: apply=true commits."},
+	{Name: "preview", Type: "bool", Description: "Default preview. schedule-renegotiate: false applies with revision; schedule-link: apply=true commits."},
 	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required: agenda; with stale, resumes the list."},
-	{Name: "to", Type: "string", Description: "RFC3339 instant: agenda end (<=92 days from from; not with stale), or schedule-move destination. Required for both."},
+	{Name: "to", Type: "string", Description: "Required RFC3339 agenda end (<=92 days after from; excludes stale) or schedule-move destination."},
 	{Name: "stale", Type: "bool", Description: "agenda: yours unresolved over 14 days, not a window."},
 
 	{Name: "child", Type: "string", Description: "Child ref for schedule-link creation; ref is the parent."},
 	{Name: "parent_role", Type: "string", Description: "schedule-link: parent's target | earliest | deadline | occupied_until."},
 	{Name: "child_role", Type: "string", Description: "schedule-link: child's target | earliest | deadline | occupied_until."},
-	{Name: "link_offset", Type: "object", Description: "schedule-link API offset: {mode:elapsed,elapsed_secs} or {mode:civil,days,clock_secs,all_day,zone}. All chosen members required, including 0/false; no other-mode members. zone: pinned IANA, never Local."},
+	{Name: "link_offset", Type: "object", Description: "schedule-link: {mode:elapsed,elapsed_secs} or {mode:civil,days,clock_secs,all_day,zone}. All chosen members required (even 0/false), no others. zone: pinned IANA, never Local."},
 	{Name: "cancel_policy", Type: "string", Description: "schedule-link: waiting_on (server default) | cancel_child_occurrence."},
 	{Name: "link_id", Type: "string", Description: "schedule-link: edit this link; schedule-unlink: remove it."},
 	{Name: "gate_id", Type: "string", Description: "schedule-gate: remove this gate; omit blocker."},
 	{Name: "blocker", Type: "string", Description: "schedule-gate: blocker ref; waits for success (fixed occurrence if scheduled)."},
-	{Name: "apply", Type: "bool", Description: "schedule-link/move: true commits; default previews without writes. Repeat preview inputs with revision; stale revision refuses."},
-	{Name: "acknowledge_violations", Type: "bool", Description: "schedule-link/move: accept previewed bound violations with its fresh revision; bounds and links remain."},
+	{Name: "apply", Type: "bool", Description: "schedule-link/move: commit; default preview writes nothing. Repeat inputs and revision; stale revisions refuse."},
+	{Name: "acknowledge_violations", Type: "bool", Description: "schedule-link/move: accept previewed bound violations with fresh revision; keep bounds/links."},
 
 	// ── Execution lease ── (#1221)
 	{Name: "holder", Type: "string", Description: "Lease holder label for action=claim/release. Optional; defaults to your agent name. Display only with a worker_id."},
@@ -467,7 +468,7 @@ Actions:
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-reopen — Undo one resolution. Required: ref, resolution_id. Keeps its comment.
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
-    snooze and move also need until. Optional: comment, actual_done_at (done only), end_schedule.
+    snooze and move also need until. Optional: comment, actual_done_at, end_schedule, confirm_past_deadline (move only).
   schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
     series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a
@@ -476,10 +477,10 @@ Actions:
     parent_role, child_role, link_offset. With link_id: edit link_offset and/or cancel_policy.
     Optional: reason, revision, acknowledge_violations, cancel_policy. Read links/gates with schedule.
   schedule-unlink — Remove a time link. Required: link_id. Keeps both commitments.
-  schedule-move — Preview linked date cascade; apply=true commits. Required: ref, role, to.
-    Optional: reason, revision, acknowledge_violations. Returns changes, violations, left_in_place,
-    renegotiates_deadline and revision. Deadline changes need reason and fresh revision;
-    bound crossings also need acknowledge_violations. Both ends must be readable and editable.
+  schedule-move — Preview linked dates; apply=true commits. Required: ref, role, to.
+    Returns revision, changes, violations, past_deadline, left_in_place, renegotiates_deadline.
+    Reviewed apply needs revision plus: reason for deadline changes; acknowledge_violations for bound crossings;
+    confirm_past_deadline for past_deadline (target only). Both ends must be readable and editable.
   schedule-gate — Wait for blocker success (fixed occurrence if scheduled): ref, blocker.
     With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
   schedule-dismiss — Clear an ended schedule from Outstanding. ref required.

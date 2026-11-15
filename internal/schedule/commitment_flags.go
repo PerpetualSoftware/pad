@@ -206,10 +206,11 @@ func commitmentWindowEnd(start Wall, value string) (Wall, error) {
 
 // CommitmentResolve is the body of POST .../commitment/resolve.
 type CommitmentResolve struct {
-	OccurrenceAt string `json:"occurrence_at"`
-	State        string `json:"state"`
-	Comment      string `json:"comment,omitempty"`
-	Until        string `json:"until,omitempty"`
+	ConfirmPastDeadline bool   `json:"confirm_past_deadline,omitempty"`
+	OccurrenceAt        string `json:"occurrence_at"`
+	State               string `json:"state"`
+	Comment             string `json:"comment,omitempty"`
+	Until               string `json:"until,omitempty"`
 	// ActualDoneAt is when the work was really finished, for state done only.
 	ActualDoneAt string `json:"actual_done_at,omitempty"`
 	// EndSchedule consents to a done or skip that ends the schedule while the

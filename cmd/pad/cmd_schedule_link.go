@@ -390,13 +390,22 @@ func renderLinkedMove(m models.LinkedMoveResult, apply bool, hint string) {
 	if m.RenegotiatesDeadline {
 		fmt.Println("Renegotiates a hard deadline (renegotiates_deadline=true).")
 	}
+	if !apply && m.PastDeadline != "" {
+		fmt.Printf("Crosses its hard deadline (%s): --apply needs --past-deadline.\n", fmtInstant(m.PastDeadline, nil))
+	}
 	fmt.Printf("Revision: %s\n", m.Revision)
 	if !apply {
 		fmt.Printf("Apply with: %s ... --apply --revision %s (repeat the previewed flags)\n", hint, m.Revision)
 	}
 }
 
-func runLinkedMove(c *cobra.Command, ref, role, to string, f linkedWriteFlags) error {
+func runLinkedMove(c *cobra.Command, ref, role, to string, f linkedWriteFlags, pastDeadline bool) error {
+	if pastDeadline && role != "target" {
+		return fmt.Errorf("--past-deadline requires --role target")
+	}
+	if pastDeadline && !f.apply {
+		return fmt.Errorf("--past-deadline requires --apply")
+	}
 	if c.Flags().Changed("until") || c.Flags().Changed("occurrence") {
 		return fmt.Errorf("--until and --occurrence cannot be used with --role; use --to")
 	}
@@ -413,13 +422,16 @@ func runLinkedMove(c *cobra.Command, ref, role, to string, f linkedWriteFlags) e
 	body := map[string]any{"role": role, "to": t.UTC().Format(time.RFC3339)}
 	if f.apply {
 		f.body(body)
+		if pastDeadline {
+			body["confirm_past_deadline"] = true
+		}
 	} else if f.reason != "" {
 		body["reason"] = f.reason
 	}
 	client, _ := getClient()
 	raw, err := client.MoveLinkedCommitment(getWorkspace(), ref, !f.apply, body)
 	if err != nil {
-		return err
+		return pastDeadlineHint(err)
 	}
 	if formatFlag == "json" {
 		return cli.PrintJSON(raw)
@@ -440,5 +452,19 @@ func linkedResolveHint(err error, ref, role, to string) error {
 		}
 		return fmt.Errorf("%w\nPreview linked dates with: pad remind move %s --role %s --to %s", err, ref, role, to)
 	}
-	return staleHint(err, ref)
+	return staleHint(pastDeadlineHint(err), ref)
+}
+
+// Preserve the structured API refusal for MCP while giving CLI users its flag.
+func pastDeadlineHint(err error) error {
+	var apiErr *cli.APIError
+	if errors.As(err, &apiErr) && apiErr.Code == "target_after_deadline" {
+		var details struct {
+			Deadline string `json:"deadline"`
+		}
+		if json.Unmarshal(apiErr.Details, &details) == nil && details.Deadline != "" {
+			return &hintedError{err: err, msg: fmt.Sprintf("This moves the target past its hard deadline (%s). Re-run with --past-deadline to move it anyway.", fmtInstant(details.Deadline, nil))}
+		}
+	}
+	return err
 }

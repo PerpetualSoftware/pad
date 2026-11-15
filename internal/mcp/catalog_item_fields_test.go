@@ -1667,7 +1667,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"forecast": true, "clear_forecast": true, "forecast_source": true,
 		// Graph writes affect commitment/link/gate rows, never item fields.
 		"child": true, "parent_role": true, "child_role": true, "link_offset": true, "cancel_policy": true,
-		"link_id": true, "gate_id": true, "blocker": true, "apply": true, "acknowledge_violations": true,
+		"link_id": true, "gate_id": true, "blocker": true, "apply": true, "acknowledge_violations": true, "confirm_past_deadline": true,
 
 		// Item COLUMNS, not entries in the fields blob.
 		"title": true, "content": true, "slug": true, "pinned": true,

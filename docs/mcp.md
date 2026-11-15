@@ -563,7 +563,7 @@ included in `schedule` (`links` and `gates`); no extra list action is needed.
 | `schedule-link` create | `ref` (parent), `child`, `parent_role`, `child_role`, `link_offset` | `cancel_policy`, `reason`, `revision`, `acknowledge_violations`, `preview`, `apply` |
 | `schedule-link` edit | `link_id`, at least one of `link_offset` or `cancel_policy` | `reason`, `revision`, `acknowledge_violations`, `preview`, `apply`; no item ref needed |
 | `schedule-unlink` | `link_id` | Removes only the link; keeps both commitments |
-| `schedule-move` | `ref`, `role`, `to` | `reason`, `revision`, `acknowledge_violations`, `apply`; previews the linked cascade by default |
+| `schedule-move` | `ref`, `role`, `to` | `reason`, `revision`, `acknowledge_violations`, `confirm_past_deadline`, `apply`; previews the linked cascade by default |
 | `schedule-gate` add | `ref`, `blocker` | Wait for blocker success; fix its outstanding occurrence if scheduled |
 | `schedule-gate` remove | `gate_id` | Omit `blocker`; combining them is refused |
 
@@ -575,7 +575,7 @@ unchanged. A hard deadline change requires a reason and a fresh preview revision
 a readable dependent bound crossing also requires `acknowledge_violations:true`.
 Stale revisions return `commitment_changed`. Other cheap applies may omit revision.
 Links return `{link, moved}` (`link:null` on preview); moves return
-`{revision, changes, violations?, left_in_place?, renegotiates_deadline?}`.
+`{revision, changes, violations?, left_in_place?, renegotiates_deadline?, past_deadline?}`.
 Deletion routes return 204 with no JSON body.
 
 `parent_role`, `child_role` and a move's `role` are `target | earliest | deadline |
@@ -606,7 +606,7 @@ is the same tree. Elapsed offsets accept signed Go durations plus `d` (for examp
 Do not mix modes. Link edits need an offset or cancel policy. Preview is the
 default; repeat flags with `--apply --revision TOKEN` and, when needed,
 `--ack-violations`. Linked moves refuse `--until` and `--occurrence`. Plain resolve
-behavior is unchanged; `commitment_preview_required` adds a linked-move retry hint.
+retains its occurrence semantics; `commitment_preview_required` adds a linked-move retry hint.
 Graph removals print confirmation without a prompt: they remove a constraint,
 whereas schedule `rm` prompts because it deletes occurrence history.
 
@@ -708,3 +708,30 @@ Both MCP transports preserve `reopen_unavailable`, `reopen_not_supported`,
 `reopen_conflict`, `reopen_dependency`, `reopen_deadline_passed`, and structured
 `validation_error` details for `resolution_id` (`required` or `format`). Existing
 visibility, edit, archived, schedule-error and busy contracts still apply.
+
+
+## Confirm a target past its hard deadline (v0.119)
+
+`schedule-resolve` with `state: move` and `schedule-move` with `role: target`
+require `confirm_past_deadline: true` whenever the resulting target is strictly
+after its own occurrence's deadline, including overrides and already-late targets.
+Without consent they refuse with `409 target_after_deadline` and `{deadline}`
+(RFC3339 UTC) details, without writes. Resolve rejects true on other states with
+`validation_error {field:"confirm_past_deadline",code:"combination"}`.
+Confirmed resolve keeps `resolution.warning: "target_after_deadline"`.
+
+Move previews and applies expose optional `past_deadline`. Applying requires the
+preview revision, any dependent `acknowledge_violations`, then deadline consent;
+confirmation is excluded from the revision. Linked resolve still returns
+`commitment_preview_required` first when other changes need review. Link writes
+and renegotiation are unchanged. Stdio uses `--past-deadline`; the linked CLI form
+requires `--role target --apply`. Both MCP transports pass consent and preserve
+the refusal code. ChatGPT defers these schedule actions to v2; web MCP has no
+schedule move action.
+
+This bumps ToolSurfaceVersion from 0.118 to 0.119: previously successful crossing
+moves now refuse unless explicitly confirmed, so the behavior is incompatible
+although the new boolean parameter and response member are additive.
+
+Schedule parameter descriptions were condensed without changing their rules to
+keep the existing MCP prompt budget.

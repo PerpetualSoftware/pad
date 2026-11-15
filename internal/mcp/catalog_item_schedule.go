@@ -223,6 +223,18 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 		}
 		endSchedule = b
 	}
+	confirmPastDeadline := false
+	if v, present := input["confirm_past_deadline"]; present && v != nil {
+		b, ok := v.(bool)
+		if !ok {
+			return NewErrorResult(ErrorPayload{Code: ErrInvalidBody, Message: "confirm_past_deadline must be a boolean"}), nil
+		}
+		if b && state != "move" {
+			details, _ := json.Marshal(map[string]string{"field": "confirm_past_deadline", "code": "combination"})
+			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: "confirm_past_deadline is for move", Details: details}), nil
+		}
+		confirmPastDeadline = b
+	}
 	// actual_done_at is for done, and a blank one is not given.
 	actual := ""
 	if a, _ := input["actual_done_at"].(string); strings.TrimSpace(a) != "" {
@@ -252,6 +264,9 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	}
 	if needsUntil {
 		out["until"] = until
+	}
+	if confirmPastDeadline {
+		out["confirm_past_deadline"], out["past_deadline"] = true, true
 	}
 	if endSchedule {
 		out["end_schedule"] = true
@@ -452,7 +467,7 @@ func actionItemScheduleGraph(action string) ActionFn {
 		case "schedule-unlink":
 			keys = append(keys, "link_id")
 		case "schedule-move":
-			keys = append(keys, "ref", "role", "to", "reason", "revision", "apply", "preview", "acknowledge_violations")
+			keys = append(keys, "ref", "role", "to", "reason", "revision", "apply", "preview", "acknowledge_violations", "confirm_past_deadline")
 		case "schedule-gate":
 			keys = append(keys, "ref", "blocker", "gate_id")
 		}
@@ -477,7 +492,7 @@ func actionItemScheduleGraph(action string) ActionFn {
 				out[k] = s
 			}
 		}
-		for _, k := range []string{"apply", "preview", "acknowledge_violations"} {
+		for _, k := range []string{"apply", "preview", "acknowledge_violations", "confirm_past_deadline"} {
 			v, ok := out[k]
 			delete(out, k)
 			if !ok || v == nil {
@@ -561,6 +576,17 @@ func actionItemScheduleGraph(action string) ActionFn {
 			}
 			if err := require("ref", "role", "to"); err != nil {
 				return fail(err)
+			}
+			if confirm, _ := out["confirm_past_deadline"].(bool); confirm {
+				if !apply {
+					return fail(fmt.Errorf("confirm_past_deadline requires apply=true"))
+				}
+				if out["role"] != "target" {
+					return fail(fmt.Errorf("confirm_past_deadline requires role=target"))
+				}
+				out["past_deadline"] = true
+			} else {
+				delete(out, "confirm_past_deadline")
 			}
 			to := out["to"].(string)
 			t, err := time.Parse(time.RFC3339, to)

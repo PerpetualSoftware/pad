@@ -807,6 +807,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item remind move": {Summary: "resolve or cascade move", Args: mkArgs("ref"), Flags: func() map[string]cmdhelp.Flag {
 				f := mkFlags("workspace", "comment", "occurrence", "until", "role", "to", "revision", "reason")
 				f["apply"], f["ack-violations"] = cmdhelp.Flag{Type: "bool"}, cmdhelp.Flag{Type: "bool"}
+				f["past-deadline"] = cmdhelp.Flag{Type: "bool"}
 				return f
 			}()},
 			"item remind link add":  {Args: mkArgs("parent-ref", "child-ref"), Flags: graphFixtureFlags(mkFlags("workspace", "parent-role", "child-role", "offset-json", "cancel-policy", "reason", "revision"))},
