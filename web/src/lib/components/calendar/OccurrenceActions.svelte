@@ -4,7 +4,7 @@
 	import type { ToastAction } from '$lib/stores/toast.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
-	import { ACKNOWLEDGE_HELP, canAcknowledge, canMove, canResolve, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { ACKNOWLEDGE_HELP, canAcknowledge, canMove, canResolve, entryKey, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 	import RowMenu from './RowMenu.svelte';
 
@@ -33,8 +33,8 @@
 		if (!undoMenu || !getUndo) return;
 		checkingUndo = true;
 		const action = await getUndo(requested);
-		if (mine === menuRead && entry === requested) {
-			undo = action;
+		if (mine === menuRead) {
+			if (entryKey(entry) === entryKey(requested)) undo = action;
 			checkingUndo = false;
 		}
 	}

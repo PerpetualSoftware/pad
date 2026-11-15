@@ -1,7 +1,8 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
+import { render, screen, fireEvent, cleanup, act } from '@testing-library/svelte';
 import AgendaRow from './AgendaRow.svelte';
 import type { AgendaEntry } from '$lib/types';
+import type { ToastAction } from '$lib/stores/toast.svelte';
 
 const now = new Date('2031-03-09T12:00:00Z');
 const roles = { target: '2031-03-10T09:00:00Z', earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' as const };
@@ -162,6 +163,50 @@ describe('AgendaRow', () => {
 
 
 describe('agenda Undo menu layout (TASK-4539)', () => {
+ const deferredUndo = () => {
+  let resolve!: (action: ToastAction | undefined) => void;
+  const promise = new Promise<ToastAction | undefined>(done => { resolve = done; });
+  return { promise, resolve };
+ };
+ it.each([true, false])('finishes a history read after replacing the entry object (same occurrence=%s)', async same => {
+  const pending = deferredUndo();
+  const getUndo = vi.fn().mockReturnValue(pending.promise);
+  const original = entry({ state: 'done', occurrence_key: 'key' });
+  const { rerender } = render(AgendaRow, { props: { entry: original, zone: 'UTC', onaction: vi.fn() }, context: new Map([['agendaUndo', getUndo]]) });
+  await fireEvent.click(screen.getByRole('button', { name: 'Actions TASK-1' }));
+  expect(screen.getByRole('menuitem', { name: 'Checking…' })).toBeDisabled();
+  await rerender({ entry: same ? { ...original } : { ...original, occurrence_key: 'other', at: '2031-03-11T09:00:00Z', day: '2031-03-11' } });
+  await act(() => pending.resolve({ label: 'Undo Done', onAction: vi.fn() }));
+  expect(screen.queryByRole('menuitem', { name: 'Checking…' })).toBeNull();
+  if (same) expect(screen.getByRole('menuitem', { name: 'Undo Done' })).toBeEnabled();
+  else {
+   expect(screen.getByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+   expect(screen.queryByRole('menuitem', { name: /^Undo / })).toBeNull();
+  }
+  expect(getUndo).toHaveBeenCalledExactlyOnceWith(original);
+ });
+ it.each([true, false])('a newer history menu open wins when the older read resolves first=%s', async olderFirst => {
+  const older = deferredUndo(); const newer = deferredUndo();
+  const getUndo = vi.fn().mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+  render(AgendaRow, { props: { entry: entry({ state: 'done', occurrence_key: 'key' }), zone: 'UTC', onaction: vi.fn() }, context: new Map([['agendaUndo', getUndo]]) });
+  const trigger = screen.getByRole('button', { name: 'Actions TASK-1' });
+  await fireEvent.click(trigger);
+  await fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+  await fireEvent.click(trigger);
+  expect(getUndo).toHaveBeenCalledTimes(2);
+  const resolveOlder = () => act(() => older.resolve({ label: 'Undo Done', onAction: vi.fn() }));
+  if (olderFirst) {
+   await resolveOlder();
+   expect(screen.getByRole('menuitem', { name: 'Checking…' })).toBeDisabled();
+   expect(screen.queryByRole('menuitem', { name: /^Undo / })).toBeNull();
+  }
+  await act(() => newer.resolve(undefined));
+  if (!olderFirst) await resolveOlder();
+  expect(screen.getByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+  expect(screen.queryByRole('menuitem', { name: 'Checking…' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: /^Undo / })).toBeNull();
+  expect(getUndo).toHaveBeenCalledTimes(2);
+ });
  it.each([false, true])('history has only the Undo menu on compact=%s', async compact => {
   const onAction = vi.fn(); const getUndo = vi.fn().mockResolvedValue({ label: 'Undo Done', onAction });
   render(AgendaRow, { props: { entry: entry({ state: 'done', occurrence_key: 'key' }), zone: 'UTC', compact, onaction: vi.fn() }, context: new Map([['agendaUndo', getUndo]]) });
