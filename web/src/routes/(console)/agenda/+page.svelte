@@ -30,7 +30,7 @@
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
 	import ScheduleEndDialog, { type ScheduleEndChoice } from '$lib/components/calendar/ScheduleEndDialog.svelte';
 	import WeekSummary from '$lib/components/calendar/WeekSummary.svelte';
-	import type { AgendaEntry, AgendaForecast, AgendaResponse, AgendaWorkEntry, ItemStillOpenDetails, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
+	import type { AgendaEntry, AgendaForecast, AgendaResponse, AgendaWorkspaceSelection, AgendaWorkEntry, ItemStillOpenDetails, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
 
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
@@ -117,19 +117,24 @@
 	let workspaceGroups = $state<WorkspaceGroup[] | null>(null);
 	let workspaces = $state<Workspace[] | null>(null);
 	let groupsReady = $state(false);
-	let selectedGroup = $state('all');
+	let selection = $state<AgendaWorkspaceSelection>({ kind: 'group', id: 'all' });
+	let selectionSerial = 0;
+	let workspacesLoading = $state(false);
+	let workspacesError = $state(false);
+	let refusedWorkspace = $state<string | null>(null);
+	let availabilityAnnouncement = $state('');
+	const listedWorkspaces = $derived(workspaces?.filter(workspace => workspace.id !== refusedWorkspace) ?? null);
 	// The groups dialog, and the group whose edit step it opens at.
 	let manageGroups = $state<{ edit?: string } | null>(null);
 	let groupsTicket = 0;
 	let workspacesTicket = 0;
 	let ticket = 0;
-	// What the agenda request depends on: whether groups loaded, the selected id and its members.
+	// Agenda scope depends on the selection and, for groups, its members.
 	// A primitive, so a refetched groups array that changes neither (e.g. renaming another group) does not reload.
-	const groupKey = $derived(workspaceGroups
-		? `${selectedGroup}:${workspaceGroups.find(group => group.id === selectedGroup)?.workspace_ids.join(',') ?? ''}`
-		: '');
-	const emptyGroup = $derived(workspaces !== null && !!workspaceGroups?.some(group =>
-		group.id === selectedGroup && group.kind === 'named' && !group.workspace_ids.some(id => workspaces!.some(workspace => workspace.id === id))));
+	const selectionKey = $derived(selection.kind === 'workspace' ? `workspace:${selection.id}`
+		: `group:${selection.id}:${workspaceGroups?.find(group => group.id === selection.id)?.workspace_ids.join(',') ?? ''}`);
+	const emptyGroup = $derived(selection.kind === 'group' && workspaces !== null && !!workspaceGroups?.some(group =>
+		group.id === selection.id && group.kind === 'named' && !group.workspace_ids.some(id => workspaces!.some(workspace => workspace.id === id))));
 	let loadedUser: string | undefined;
 	let preferenceUser: string | undefined;
 	let dragSerial = 0;
@@ -143,9 +148,21 @@
 	const counts = $derived(audienceCounts(data?.entries ?? []));
 	const groups = $derived(groupEntries(entries));
 	const incomplete = $derived(!!(data?.window_complete === false || data?.truncated || data?.unavailable?.length || data?.unexpanded?.length || data?.next_from));
-	const status = $derived(loading ? 'Loading agenda…' : updating ? 'Updating agenda…' : announcement);
-	const selectedGroupName = $derived.by(() => {
-		const group = workspaceGroups?.find(candidate => candidate.id === selectedGroup);
+	const status = $derived(loading ? 'Loading agenda…' : updating ? 'Updating agenda…' : availabilityAnnouncement || announcement);
+	function workspaceLabel(workspace: Workspace): string {
+		const duplicate = workspaces?.some(other => other.id !== workspace.id && (other.name === workspace.name || other.slug === workspace.slug));
+		if (!duplicate) return workspace.name;
+		if (workspace.owner_username) return `${workspace.name} · @${workspace.owner_username}`;
+		let length = 6;
+		while (length < workspace.id.length && workspaces?.some(other => other.id !== workspace.id && other.id.endsWith(workspace.id.slice(-length)))) length++;
+		return `${workspace.name} · ${workspace.id.slice(-length)}`;
+	}
+	const selectedScopeName = $derived.by(() => {
+		if (selection.kind === 'workspace') {
+			const workspace = workspaces?.find(candidate => candidate.id === selection.id);
+			return workspace ? workspaceLabel(workspace) : 'Selected workspace';
+		}
+		const group = workspaceGroups?.find(candidate => candidate.id === selection.id);
 		return !group || group.kind === 'all' ? '' : group.kind === 'mine' ? 'My workspaces' : group.name;
 	});
 
@@ -348,52 +365,100 @@
 		heading?.focus({ preventScroll: true });
 		heading?.scrollIntoView?.({ block: 'start' });
 	}
-	function setGroup(id: string) {
-		selectedGroup = id;
+	function setSelection(value: AgendaWorkspaceSelection, persist = true) {
+		if (!persist || value.kind !== selection.kind || value.id !== selection.id) {
+			ticket++; selectionSerial++;
+			selection = value;
+			data = null; wantRest = false; loadingRest = false; updating = false; loadError = false;
+			savedRefreshError = false; actionError = ''; announcement = ''; availabilityAnnouncement = '';
+			openedDay = null; clearDrag();
+		}
 		const userId = authStore.user?.id;
-		if (!userId || userId !== preferenceUser) return;
-		try { localStorage.setItem(`pad-agenda-group:${userId}`, id); } catch { /* Keep the in-memory choice. */ }
+		if (!persist || !userId || userId !== preferenceUser) return;
+		const stored = value.kind === 'workspace' ? `workspace:${value.id}` : value.id;
+		try { localStorage.setItem(`pad-agenda-group:${userId}`, stored); } catch { /* Keep the in-memory choice. */ }
+	}
+	function setGroup(id: string) { setSelection({ kind: 'group', id }); }
+	function setWorkspace(id: string) { setSelection({ kind: 'workspace', id }); }
+	function workspaceUnavailable(refresh = true) {
+		if (selection.kind !== 'workspace') return;
+		const refused = selection.id;
+		setGroup('all');
+		refusedWorkspace = refused;
+		availabilityAnnouncement = 'That workspace is no longer available. Showing all workspaces.';
+		if (refresh) void loadWorkspaces();
+	}
+	function refusedSelection(error: unknown, requested: AgendaWorkspaceSelection): boolean {
+		if (requested.kind !== 'workspace' || (error as { code?: string })?.code !== 'not_found') return false;
+		workspaceUnavailable();
+		return true;
 	}
 	async function loadGroupContext() {
 		const mine = ++groupsTicket;
 		const sameIdentity = authStore.identityFence();
 		const userId = authStore.user?.id;
 		const current = () => mine === groupsTicket && sameIdentity();
-		workspaceGroups = null; workspaces = null; groupsReady = false; selectedGroup = 'all'; manageGroups = null;
+		workspacesTicket++;
+		workspaceGroups = null; workspaces = null; groupsReady = false; manageGroups = null;
+		refusedWorkspace = null; workspacesLoading = false; workspacesError = false;
+		setSelection({ kind: 'group', id: 'all' }, false);
+		pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; endChoice = null; endError = '';
+		review = null; committing = false; linkedTitles = {}; lastAnnouncedMonth = ''; loadedUser = userId;
 		if (!userId) { groupsReady = true; return; }
 		let remembered = 'all';
 		try { remembered = localStorage.getItem(`pad-agenda-group:${userId}`) || 'all'; } catch { /* Storage is optional. */ }
-		// The workspace list only feeds the empty-group check and the dialog, so the agenda never waits on it.
+		const workspacePreference = remembered.startsWith('workspace:');
+		if (workspacePreference) {
+			const id = remembered.slice('workspace:'.length);
+			if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(id)) {
+				setWorkspace(id.toLowerCase());
+				groupsReady = true;
+			} else setGroup('all');
+		}
+		const restoring = selectionSerial;
+		// Both lists load independently; a remembered workspace can be read immediately.
 		void loadWorkspaces();
 		try {
 			const response = await api.workspaceGroups.list();
-			if (!current()) return;
+			if (!current() || restoring !== selectionSerial) return;
 			workspaceGroups = response.groups;
-			selectedGroup = workspaceGroups.some(group => group.id === remembered) ? remembered : 'all';
-		} catch { /* No picker; the agenda loads without a group. */ }
+			if (!workspacePreference && restoring === selectionSerial) {
+				setSelection({ kind: 'group', id: workspaceGroups.some(group => group.id === remembered) ? remembered : 'all' }, false);
+			}
+		} catch { /* A remembered workspace stays scoped even when groups fail. */ }
 		if (current()) groupsReady = true;
 	}
-	// Refetched with the groups after each write, so members added elsewhere are known before the empty-group check reads them.
 	async function loadWorkspaces() {
 		const mine = ++workspacesTicket;
 		const sameIdentity = authStore.identityFence();
+		const requested = selectionSerial;
+		const current = () => mine === workspacesTicket && sameIdentity();
+		workspacesLoading = true; workspacesError = false;
 		try {
 			const response = await api.workspaces.list();
-			if (mine === workspacesTicket && sameIdentity()) workspaces = response;
-		} catch { /* Keep the last list; with none, the empty-group check is skipped. */ }
+			if (!current()) return;
+			workspaces = response; refusedWorkspace = null;
+			if (requested === selectionSerial && selection.kind === 'workspace' && !response.some(workspace => workspace.id === selection.id)) workspaceUnavailable(false);
+		} catch {
+			if (current()) workspacesError = true;
+		} finally {
+			if (current()) workspacesLoading = false;
+		}
 	}
 	async function refreshGroups(resetGroup?: string) {
 		const mine = ++groupsTicket;
 		const sameIdentity = authStore.identityFence();
+		const requested = selectionSerial;
 		const current = () => mine === groupsTicket && sameIdentity();
-		void loadWorkspaces();
+		// Group management also refreshes workspace membership; a group-list retry does not.
+		if (workspaceGroups) void loadWorkspaces();
 		try {
 			const response = await api.workspaceGroups.list();
 			if (!current()) return;
-			if (selectedGroup === resetGroup || !response.groups.some(group => group.id === selectedGroup)) setGroup('all');
+			if (requested === selectionSerial && selection.kind === 'group' && (selection.id === resetGroup || !response.groups.some(group => group.id === selection.id))) setGroup('all');
 			workspaceGroups = response.groups;
 		} catch {
-			if (current() && selectedGroup === resetGroup) setGroup('all');
+			if (current() && requested === selectionSerial && selection.kind === 'group' && selection.id === resetGroup) setGroup('all');
 		}
 	}
 	$effect(() => {
@@ -404,7 +469,8 @@
 	async function load(date: string, timeZone: string, quiet = false): Promise<boolean | undefined> {
 		const mine = ++ticket;
 		const viewMode = mode;
-		const requestedGroup = selectedGroup;
+		const requestedSelection = { ...selection };
+		const requestScope = requestedSelection.kind === 'workspace' || requestedSelection.id !== 'all' || workspaceGroups ? requestedSelection : undefined;
 		const sameIdentity = authStore.identityFence();
 		const userId = authStore.user?.id;
 		const current = () => mine === ticket && sameIdentity();
@@ -422,14 +488,17 @@
 		else if (announcement === lastAnnouncedMonth) announcement = '';
 		try {
 			const { from, to } = windowOf(viewMode, date, timeZone);
-			const read = (start: string) => workspaceGroups ? api.getMyAgenda(start, to, timeZone, requestedGroup, ['completed']) : api.getMyAgenda(start, to, timeZone, undefined, ['completed']);
+			const read = (start: string) => api.getMyAgenda(start, to, timeZone, requestScope, ['completed']);
 			let response = await read(from);
 			if (!current()) return;
 			// The rest was on screen before this reload: page on before publishing, so its rows never drop out.
 			for (let page = 0, next = resume && cursorIn(response.next_from, to); next && page < REST_PAGES; page++, next = cursorIn(response.next_from, to)) {
 				let rest: AgendaResponse;
 				// A page that fails leaves what was joined so far, and its next_from offers the rest again.
-				try { rest = await read(next); } catch { break; }
+				try { rest = await read(next); } catch (error) {
+					if (!current() || refusedSelection(error, requestedSelection)) return;
+					break;
+				}
 				if (!current()) return;
 				response = joinRest(response, rest);
 			}
@@ -440,8 +509,9 @@
 			return true;
 		} catch (error) {
 			if (!current()) return;
-			if ((error as { code?: string })?.code === 'not_found' && workspaceGroups?.some(group => group.id === requestedGroup && group.kind === 'named')) {
-				await refreshGroups(requestedGroup);
+			if (refusedSelection(error, requestedSelection)) return;
+			if (requestedSelection.kind === 'group' && (error as { code?: string })?.code === 'not_found' && workspaceGroups?.some(group => group.id === requestedSelection.id && group.kind === 'named')) {
+				await refreshGroups(requestedSelection.id);
 				return;
 			}
 			if (emptyGroup) { data = null; savedRefreshError = false; return true; }
@@ -453,9 +523,9 @@
 	$effect(() => {
 		const date = mode === 'month' ? `${month}-01` : day;
 		const timeZone = zone;
-		mode; authStore.user?.id; authStore.identityEpoch; groupKey;
-		const ready = groupsReady;
-		const focusScope = JSON.stringify([mode, timeZone, authStore.user?.id, authStore.identityEpoch, groupKey]);
+		mode; authStore.user?.id; authStore.identityEpoch; selectionKey;
+		const ready = groupsReady || selection.kind === 'workspace';
+		const focusScope = JSON.stringify([mode, timeZone, authStore.user?.id, authStore.identityEpoch, selectionKey]);
 		untrack(() => {
 			if (focusScope !== lastFocusScope) { monthGrid?.cancelFocus(); lastFocusScope = focusScope; }
 			openedDay = null;
@@ -485,13 +555,16 @@
 		const sameIdentity = authStore.identityFence();
 		const current = () => mine === ticket && sameIdentity();
 		const { to } = windowOf(mode, day, zone);
+		const requestedSelection = { ...selection };
+		const requestScope = requestedSelection.kind === 'workspace' || requestedSelection.id !== 'all' || workspaceGroups ? requestedSelection : undefined;
 		loadingRest = true; actionError = '';
 		try {
-			const rest = await (workspaceGroups ? api.getMyAgenda(from, to, zone, selectedGroup, ['completed']) : api.getMyAgenda(from, to, zone, undefined, ['completed']));
+			const rest = await api.getMyAgenda(from, to, zone, requestScope, ['completed']);
 			if (!current() || !data) return;
 			data = joinRest(data, rest);
-		} catch {
-			if (current()) actionError = 'Could not load the rest. Try again.';
+		} catch (error) {
+			if (!current() || refusedSelection(error, requestedSelection)) return;
+			actionError = 'Could not load the rest. Try again.';
 		} finally {
 			if (current()) loadingRest = false;
 		}
@@ -767,8 +840,10 @@
 
 <svelte:head><title>Agenda</title></svelte:head>
 <svelte:window onkeydown={event => { if (event.key === 'Escape') clearDrag(); }} />
-<AgendaToolbar {audience} {counts} onaudience={setAudience} {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selectedGroup} {workspaces} {showCompleted} bind:heading={periodHeading}
+{#key `${authStore.user?.id}:${authStore.identityEpoch}`}
+<AgendaToolbar {audience} {counts} onaudience={setAudience} {mode} period={periodLabel} {zone} {mobile} groups={workspaceGroups} {selection} workspaces={listedWorkspaces} {workspaceLabel} {workspacesLoading} {workspacesError} onretryworkspaces={loadWorkspaces} onretrygroups={() => refreshGroups()} onworkspace={setWorkspace} {showCompleted} bind:heading={periodHeading}
 	onmode={setMode} onmove={movePeriod} ontoday={goToday} ongroup={setGroup} onmanage={() => manageGroups = {}} onshowcompleted={setShowCompleted} />
+{/key}
 
 <div class="sr-only" role="status" aria-live="polite" aria-atomic="true">{status}</div>
 <div class="progress" class:busy={updating || loadingRest} aria-hidden="true"></div>
@@ -797,7 +872,7 @@
 				<span><b>Showing entries up to {longDay(nextDay, 'short')}.</b> This {mode} has more than the agenda can load at once.</span><span class="spacer"></span>
 				<Button size="sm" disabled={loadingRest} onclick={loadRest}>Load the rest</Button>
 			{:else if data?.window_complete === false || data?.truncated}
-				<span>Too much to load at once. Choose a smaller range or a workspace group.</span>
+				<span>Too much to load at once. Choose a smaller range, a workspace, or a workspace group.</span>
 			{:else}
 				<span>Some schedules could not be shown.</span>
 			{/if}
@@ -818,7 +893,7 @@
 
 {#if emptyGroup}
 	<EmptyState title="No workspaces in this group." message="Add a workspace to see its commitments here.">
-		{#snippet actions()}<Button variant="primary" onclick={() => manageGroups = { edit: selectedGroup }}>Add workspaces</Button>{/snippet}
+		{#snippet actions()}<Button variant="primary" onclick={() => manageGroups = { edit: selection.id }}>Add workspaces</Button>{/snippet}
 	</EmptyState>
 {:else if mode === 'month'}
 	{#if loadError && !savedRefreshError}{@render failed()}{/if}
@@ -845,7 +920,12 @@
 			{#if dayIncomplete(date)}<p class="incomplete-day">Not fully loaded</p>{/if}
 		{/snippet}
 	</MonthGrid>
-	{#if nothing}<p class="quiet-note">No entries this month.</p>{/if}
+	{#if nothing}
+		{#if selection.kind === 'workspace'}
+			<p class="quiet-note">No commitments or dated items in “{selectedScopeName}” this month.</p>
+			<Button onclick={() => setGroup('all')}>Show all workspaces</Button>
+		{:else}<p class="quiet-note">No entries this month.</p>{/if}
+	{/if}
 	<AgendaDayDialog {audience} {isAgent} day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} completed={openedDay ? monthCompleted.get(openedDay) ?? [] : []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
 	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} /></div>{/if}
@@ -882,9 +962,9 @@
 					{:else if nothing}
 						<div class="card">
 							<EmptyState icon="📅" title={`Nothing scheduled for ${mode === 'week' ? weekLabel(day) : longDay(day)}`}
-								message={`No commitments or dated items${selectedGroupName ? ` in “${selectedGroupName}”` : ''} this ${mode}.`}>
+								message={`No commitments or dated items${selectedScopeName ? ` in “${selectedScopeName}”` : ''} this ${mode}.`}>
 								{#snippet actions()}
-									{#if selectedGroupName}<Button onclick={() => setGroup('all')}>Show all workspaces</Button>{/if}
+									{#if selectedScopeName}<Button onclick={() => setGroup('all')}>Show all workspaces</Button>{/if}
 								{/snippet}
 							</EmptyState>
 						</div>

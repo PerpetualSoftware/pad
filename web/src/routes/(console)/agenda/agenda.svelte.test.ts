@@ -1971,6 +1971,15 @@ describe('agenda single workspace', () => {
   await fireEvent.click(screen.getByRole('menuitem', { name: /Choose a workspace/ })); expect(screen.getByText('Could not load workspaces.')).toBeTruthy();
   await fireEvent.click(screen.getByRole('menuitem', { name: 'Retry' })); expect(await screen.findByRole('menuitemradio', { name: /Roadmap/ })).toHaveAttribute('aria-checked', 'true');
  });
+ it('keeps My workspaces and the chooser usable when groups are unavailable', async () => {
+  localStorage.setItem(key, `workspace:${id}`); h.groups.mockRejectedValueOnce(new Error('offline'));
+  await mount(); await fireEvent.click(filter()); await fireEvent.click(groupItem('My workspaces'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'mine' }));
+  expect(filter()).toHaveTextContent('My workspaces');
+  await fireEvent.click(filter()); await fireEvent.click(groupItem('All workspaces'));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
+  await chooseWorkspace(); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual(selected));
+ });
  it('keeps an in-memory selection when storage throws', async () => {
   await mount(); vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('disabled'); });
   await chooseWorkspace(); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual(selected)); expect(filter()).toHaveTextContent('Roadmap');
@@ -2057,7 +2066,7 @@ describe('agenda single workspace', () => {
   h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockResolvedValue(response([]));
   render(Agenda); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(unavailable));
   expect(h.agenda).toHaveBeenCalledTimes(2);
-  groups.resolve({ groups: workspaceGroups }); await settle();
+  groups.resolve({ groups: workspaceGroups.map(group => group.kind === 'all' ? { ...group, workspace_ids: [id] } : group) }); await settle();
   expect(h.agenda).toHaveBeenCalledTimes(2); expect(localStorage.getItem(key)).toBe('all');
  });
  it('ignores old lists and refusals after an account switch', async () => {
