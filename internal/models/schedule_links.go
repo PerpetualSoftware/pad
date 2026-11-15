@@ -95,6 +95,7 @@ type CommitmentAccess struct {
 // LinkedMoveInput moves one date of ItemID's outstanding occurrence, and every
 // date linked below it.
 type LinkedMoveInput struct {
+	ConfirmPastDeadline    bool
 	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
 	ExpectedAssignee       *string                `json:"-"`
 	ItemID                 string
@@ -130,8 +131,10 @@ type LinkedDateChange struct {
 // LinkedMoveResult holds only what the caller can read. It carries no total,
 // count or flag that would show a hidden dependent.
 type LinkedMoveResult struct {
-	Revision string             `json:"revision"` // opaque, fixed length
-	Changes  []LinkedDateChange `json:"changes"`
+	// PastDeadline is the root target crossing, populated only by move and move-preview.
+	PastDeadline string             `json:"past_deadline,omitempty"`
+	Revision     string             `json:"revision"` // opaque, fixed length
+	Changes      []LinkedDateChange `json:"changes"`
 	// Violations names dates outside their own bounds, readable items only.
 	Violations []LinkedDateChange `json:"violations,omitempty"`
 	// LeftInPlace names finished (done or abandoned) dependents the link would

@@ -40,6 +40,13 @@ var (
 	ErrCommitmentPreviewRequired = errors.New("this linked change needs a commitment move preview before applying")
 )
 
+// ErrTargetAfterDeadline requires explicit consent to move a target past its own deadline.
+type ErrTargetAfterDeadline struct{ Deadline time.Time }
+
+func (e *ErrTargetAfterDeadline) Error() string {
+	return fmt.Sprintf("This moves the target past its hard deadline (%s). Confirm to move it anyway: send confirm_past_deadline: true.", e.Deadline.UTC().Format(time.RFC3339))
+}
+
 // ErrStaleOccurrence is the answer when the occurrence_at a caller names is not
 // the schedule's outstanding one (already resolved, moved on, the schedule
 // ended, or a floating one read in another zone). Schedule is the current
@@ -74,6 +81,7 @@ type ResolveComment struct {
 
 // ResolveInput is what a caller resolves: the occurrence it saw and what to do.
 type ResolveInput struct {
+	ConfirmPastDeadline    bool
 	undo                   *resolutionUndo
 	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
 	// ActorUserID identifies the human separately from the journal actor kind.
@@ -321,22 +329,8 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		moveChecksDeadline = true
 	}
 
-	captureAt := x
-	if (in.State == "done" || in.State == "skip") && !xRec.IsZero() {
-		captureAt = xRec
-	}
-	undo, err := s.captureResolutionUndoTx(tx, sc, in.State, in.Actor, in.ActorUserID, captureAt, nowT)
-	if err != nil {
-		return nil, err
-	}
-	in.undo = undo
-
-	if in.State == "skip" {
-		if err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs); err != nil {
-			return nil, err
-		}
-	}
 	res := &ResolveResult{}
+	var pastDeadline *ErrTargetAfterDeadline
 	if moveChecksDeadline {
 		// The deadline is read through the evaluator's own candidate, so a
 		// per-occurrence override counts. A move does not change it.
@@ -346,6 +340,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		}
 		if d != nil && in.Until.After(d.at) {
 			res.TargetAfterDeadline = true
+			pastDeadline = &ErrTargetAfterDeadline{Deadline: d.at}
 		}
 	}
 
@@ -365,6 +360,13 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if _, _, err := s.settleLinkedPlan(linked, budget, linkedOptions{actor: in.Actor, reason: reason, access: in.LinkAccess, resolve: true}); err != nil {
 			return nil, err
 		}
+	}
+	// Linked preview requirements take precedence, but refusal precedes lapse,
+	// undo capture and every resolution write.
+	if pastDeadline != nil && !in.ConfirmPastDeadline {
+		return nil, pastDeadline
+	}
+	if linked != nil {
 		if lapsed, err := s.lapseDueInPlanTx(tx, linked, nowT); err != nil {
 			return nil, err
 		} else if lapsed {
@@ -374,6 +376,22 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, ErrCommitmentChanged
 		}
 	}
+	captureAt := x
+	if (in.State == "done" || in.State == "skip") && !xRec.IsZero() {
+		captureAt = xRec
+	}
+	undo, err := s.captureResolutionUndoTx(tx, sc, in.State, in.Actor, in.ActorUserID, captureAt, nowT)
+	if err != nil {
+		return nil, err
+	}
+	in.undo = undo
+
+	if in.State == "skip" {
+		if err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs); err != nil {
+			return nil, err
+		}
+	}
+
 	before, err := s.scheduleSnapshotTx(tx, sc.ID)
 	if err != nil {
 		return nil, err

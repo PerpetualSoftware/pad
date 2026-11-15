@@ -769,7 +769,7 @@ func TestSkipBeforeAHardDeadlineNeedsAuthority(t *testing.T) {
 	}
 }
 
-// A move on a deadline row saves, and the response says the target is past the deadline.
+// A confirmed move saves and retains the target-after-deadline warning.
 func TestMoveTargetAfterTheDeadlineCarriesAWarning(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
@@ -780,7 +780,7 @@ func TestMoveTargetAfterTheDeadlineCarriesAWarning(t *testing.T) {
 	readCommitment(t, commitmentCall(f, "POST", b), 201)
 	p := commitmentPath(f) + "/resolve"
 	rr := f.as(f.token(f.owner, ""), "POST", p, map[string]any{
-		"occurrence_at": start.Format(time.RFC3339), "state": "move", "until": start.Add(4 * 24 * time.Hour).Format(time.RFC3339)})
+		"confirm_past_deadline": true, "occurrence_at": start.Format(time.RFC3339), "state": "move", "until": start.Add(4 * 24 * time.Hour).Format(time.RFC3339)})
 	if rr.Code != 200 {
 		t.Fatalf("move: %d %s", rr.Code, rr.Body.String())
 	}

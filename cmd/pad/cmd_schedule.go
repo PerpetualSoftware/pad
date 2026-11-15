@@ -282,7 +282,7 @@ const commentHelp = "comment recorded on the item; optional"
 
 func remindResolveCmd(v resolveVerb) *cobra.Command {
 	var comment, occurrence, until, at, role, to, closeItem string
-	var endSchedule bool
+	var endSchedule, pastDeadline bool
 	var linked linkedWriteFlags
 	needsUntil := v.state == "snooze" || v.state == "move"
 	use := v.use + " <ref>"
@@ -306,7 +306,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	case "snooze":
 		long += "\n\n--until is an RFC3339 instant, a wall time read in your zone (2026-11-10T09:00), or a duration from now (2h, 1d). A bare date is refused. The occurrence stays outstanding and re-fires once at --until."
 	case "move":
-		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A move changes the target only; a hard deadline on a native schedule keeps its own date and changes through renegotiate with a reason (pad remind renegotiate). A legacy hard deadline cannot be moved: PATCH .../commitment naming a role converts it to native roles first."
+		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A move past the hard deadline needs --past-deadline. A move changes the target only; a hard deadline on a native schedule keeps its own date and changes through renegotiate with a reason (pad remind renegotiate). A legacy hard deadline cannot be moved: PATCH .../commitment naming a role converts it to native roles first."
 	}
 	if v.state == "move" {
 		long += "\n\nUse --role target|earliest|deadline|occupied_until with --to WHEN to preview a linked cascade. Repeat with --apply --revision TOKEN to commit; --reason records why, and --ack-violations accepts previewed bound crossings. This form refuses --until and --occurrence."
@@ -324,7 +324,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if v.state == "move" {
 				if cmd.Flags().Changed("role") {
-					return runLinkedMove(cmd, args[0], role, to, linked)
+					return runLinkedMove(cmd, args[0], role, to, linked, pastDeadline)
 				}
 				for _, flag := range []string{"to", "apply", "revision", "ack-violations", "reason"} {
 					if cmd.Flags().Changed(flag) {
@@ -332,7 +332,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 					}
 				}
 			}
-			req := schedule.CommitmentResolve{State: v.state, Comment: comment, EndSchedule: endSchedule}
+			req := schedule.CommitmentResolve{State: v.state, Comment: comment, EndSchedule: endSchedule, ConfirmPastDeadline: pastDeadline}
 			wantClose := v.state == "done" && cmd.Flags().Changed("close-item")
 			if wantClose && endSchedule {
 				return fmt.Errorf("--close-item and --end-schedule cannot be combined: --close-item ends the schedule and closes the item, --end-schedule keeps the item open")
@@ -462,6 +462,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		c.Flags().StringVar(&role, "role", "", "preview or move a linked date: target | earliest | deadline | occupied_until")
 		c.Flags().StringVar(&to, "to", "", "linked move destination: RFC3339 or a wall time in your zone")
 		linked.addFlags(c)
+		c.Flags().BoolVar(&pastDeadline, "past-deadline", false, "confirm a move that puts the target after its hard deadline")
 	}
 	if v.state != "ack" {
 		c.Flags().StringVarP(&comment, "comment", "m", "", commentHelp)

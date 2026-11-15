@@ -384,10 +384,11 @@ func (s *Server) handleDeleteItemCommitment(w http.ResponseWriter, r *http.Reque
 // scheduleResolveBody is POST .../commitment/resolve. Every member is a pointer so
 // a missing one is told apart from an empty one.
 type scheduleResolveBody struct {
-	OccurrenceAt *string `json:"occurrence_at"`
-	State        *string `json:"state"`
-	Comment      *string `json:"comment"`
-	Until        *string `json:"until"`
+	ConfirmPastDeadline *bool   `json:"confirm_past_deadline"`
+	OccurrenceAt        *string `json:"occurrence_at"`
+	State               *string `json:"state"`
+	Comment             *string `json:"comment"`
+	Until               *string `json:"until"`
 	// EndSchedule consents to a done or skip that ends the schedule while the
 	// item stays open (TASK-4537).
 	EndSchedule *bool `json:"end_schedule"`
@@ -501,6 +502,13 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
+	}
+	if body.ConfirmPastDeadline != nil && *body.ConfirmPastDeadline {
+		if in.State != "move" {
+			writeResolveField(w, "confirm_past_deadline", "combination", "confirm_past_deadline is for move")
+			return
+		}
+		in.ConfirmPastDeadline = true
 	}
 	if body.EndSchedule != nil {
 		if in.State == "snooze" || in.State == "move" {

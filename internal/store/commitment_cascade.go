@@ -217,6 +217,22 @@ type linkedOptions struct {
 	rootAuthorized          bool // occurrence renegotiation already checked root authority
 }
 
+// rootPastDeadline reads either orientation of the root target/deadline violation.
+func (p *linkedPlan) rootPastDeadline() (time.Time, bool) {
+	for _, v := range p.impact.Violations {
+		if v.Node.Schedule != p.root {
+			continue
+		}
+		if v.Role == schedule.RoleTarget && v.Bound == schedule.RoleDeadline {
+			return v.BoundValue, true
+		}
+		if v.Role == schedule.RoleDeadline && v.Bound == schedule.RoleTarget {
+			return v.Value, true
+		}
+	}
+	return time.Time{}, false
+}
+
 // MoveLinkedDate moves one date of an item's outstanding occurrence and the
 // dates linked below it. See the file comment for the deadline rule.
 func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*models.LinkedMoveResult, error) {
@@ -270,9 +286,23 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	if err != nil {
 		return nil, err
 	}
+	deadline, crossing := p.rootPastDeadline()
+	crossing = crossing && role == schedule.RoleTarget
+	if crossing && !in.Preview && in.Revision == "" {
+		return nil, fieldErr("revision", "required", "this change needs the preview revision")
+	}
 	res, apply, err := s.settleLinkedPlan(p, budget, linkedOptions{actor: actor, reason: reason, revision: in.Revision, preview: in.Preview, acknowledge: in.AcknowledgeViolations, access: in.Access})
-	if err != nil || !apply {
+	if err != nil {
 		return res, err
+	}
+	if crossing {
+		res.PastDeadline = deadline.UTC().Format(time.RFC3339)
+		if !in.Preview && !in.ConfirmPastDeadline {
+			return nil, &ErrTargetAfterDeadline{Deadline: deadline}
+		}
+	}
+	if !apply {
+		return res, nil
 	}
 	nowT := s.linkNow().UTC().Truncate(time.Second)
 	if len(p.impact.Changes) > 0 {

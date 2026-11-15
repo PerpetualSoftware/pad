@@ -151,6 +151,9 @@ func mapScheduleResolve(state string) RouteMapper {
 		if e, _ := input["end_schedule"].(bool); e && (state == "done" || state == "skip") {
 			body.EndSchedule = true
 		}
+		if confirm, _ := input["confirm_past_deadline"].(bool); confirm && state == "move" {
+			body.ConfirmPastDeadline = true
+		}
 		raw, err := json.Marshal(body)
 		if err != nil {
 			return "", "", nil, err
@@ -297,7 +300,7 @@ func mapScheduleMove(input map[string]any) (string, string, []byte, error) {
 	path := itemSchedulePathTemplate + "/move-preview"
 	if apply, _ := input["apply"].(bool); apply {
 		path = itemSchedulePathTemplate + "/move"
-		for _, k := range []string{"revision", "acknowledge_violations"} {
+		for _, k := range []string{"revision", "acknowledge_violations", "confirm_past_deadline"} {
 			if v, ok := input[k]; ok {
 				body[k] = v
 			}

@@ -229,7 +229,7 @@ pad item unremind <reminder-id>
 pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays   # schedule (daily weekdays weekly biweekly monthly monthly-last quarterly yearly, or an RRULE)
 pad remind TASK-5 --start 2026-11-14 --deadline hard           # a due date (all-day) the item must not miss
 pad remind show TASK-5                                        # kind, rule, next occurrence, missed count
-pad remind done TASK-5 -m "shipped"                           # also skip; snooze/move take --until <RFC3339|2026-11-10T09:00|2h>
+pad remind done TASK-5 -m "shipped"                           # also skip; snooze/move take --until <RFC3339|2026-11-10T09:00|2h>; move past a hard deadline needs --past-deadline
 pad remind done TASK-5 --at 2026-11-08T17:30                       # done earlier than now: records when the work really finished (not future)
 pad remind done TASK-5 --close-item[=done]                    # last occurrence of an open item (409 item_still_open): end the schedule and close it; --end-schedule keeps it open in Outstanding, `pad remind dismiss TASK-5` clears that
 pad remind renegotiate TASK-5 --reason "why" --deadline <RFC3339>  # preview; add --apply to commit (--scope series: --deadline-offset-days/-secs, --behavior, --remove-deadline)

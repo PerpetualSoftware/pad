@@ -7,13 +7,15 @@
 	let { entry, preview, zone, titles, mobile, initialReason = '', pending, error, onclose, onsubmit }: {
 		entry: AgendaEntry; preview: CommitmentMoveResult; zone: string; titles: Record<string, string>; mobile: boolean;
 		initialReason?: string; pending: boolean; error: string; onclose: () => void;
-		onsubmit: (reason?: string, acknowledge?: boolean) => void;
+		onsubmit: (reason?: string, acknowledge?: boolean, confirmPastDeadline?: boolean) => void;
 	} = $props();
 	const id = $props.id();
 	let reason = $state('');
 	let accepted = $state(false);
 	let reasonError = $state('');
 	let boundsError = $state('');
+	let confirmedPastDeadline = $state(false);
+	let deadlineError = $state('');
 	const changes = $derived([...preview.changes.filter(change => change.root), ...preview.changes.filter(change => !change.root)]);
 	const violations = $derived(preview.violations?.length ?? 0);
 	const roleNames = { target: 'Target', deadline: 'Deadline', earliest: 'Available from', occupied_until: 'Until' };
@@ -26,13 +28,19 @@
 		const initial = initialReason;
 		untrack(() => { reason = initial; });
 	});
+	$effect(() => {
+		// A fresh preview needs fresh consent even if the dialog stays mounted.
+		void preview;
+		untrack(() => { confirmedPastDeadline = false; accepted = false; deadlineError = ''; boundsError = ''; });
+	});
 	function submit(event: SubmitEvent) {
 		event.preventDefault();
 		if (pending) return;
 		reasonError = preview.renegotiates_deadline && !reason.trim() ? 'Enter a reason.' : '';
 		boundsError = violations && !accepted ? 'Accept dates outside their bounds to move.' : '';
-		if (reasonError || boundsError) return;
-		onsubmit(reason.trim() || undefined, violations ? true : undefined);
+		deadlineError = preview.past_deadline && !confirmedPastDeadline ? 'Confirm moving past the deadline to continue.' : '';
+		if (reasonError || boundsError || deadlineError) return;
+		onsubmit(reason.trim() || undefined, violations ? true : undefined, preview.past_deadline ? true : undefined);
 	}
 </script>
 
@@ -49,6 +57,9 @@
 
 <DialogShell open {mobile} {pending} title="Review move" subject={[entry.item_title, entry.workspace_name].filter(Boolean).join(' · ')} subjectRef={entry.item_ref} maxWidth="560px" {onclose}>
 	<form id={`${id}-form`} onsubmit={submit} novalidate>
+		{#if preview.past_deadline}
+			<div class="callout">This puts the target after its hard deadline, {shortRoleDate(preview.past_deadline, zone)}.</div>
+		{/if}
 		{#if preview.renegotiates_deadline || violations}
 			<div class="callout">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4l9 16H3L12 4z" /><path d="M12 10v4M12 17v.5" /></svg>
@@ -75,6 +86,12 @@
 				{#if reasonError}<p id={`${id}-reason-error`} role="alert">{reasonError}</p>{/if}
 			</div>
 		{/if}
+		{#if preview.past_deadline}
+			<div class="field">
+				<label class="accept"><input type="checkbox" bind:checked={confirmedPastDeadline} disabled={pending} /> Move past the deadline</label>
+				{#if deadlineError}<p role="alert">{deadlineError}</p>{/if}
+			</div>
+		{/if}
 		{#if violations}
 			<div class="field">
 				<label class="accept"><input type="checkbox" bind:checked={accepted} disabled={pending} /> Accept dates outside their bounds</label>
@@ -92,7 +109,7 @@
 <style>
 	form { display: flex; flex-direction: column; gap: var(--space-4); min-width: 0; }
 	p { margin: 6px 0 0; font-size: 13px; }
-	.callout { display: flex; gap: var(--space-3); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent-red) 35%, transparent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-red) 10%, transparent); font-size: 13px; }
+	.callout { overflow-wrap: anywhere; min-width: 0; display: flex; gap: var(--space-3); padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--accent-red) 35%, transparent); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-red) 10%, transparent); font-size: 13px; }
 	.callout svg { flex: 0 0 auto; margin-top: 2px; color: var(--accent-red); }
 	h3, .lab { display: block; margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 	.list { list-style: none; margin: 0; padding: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }

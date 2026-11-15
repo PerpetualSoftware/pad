@@ -773,7 +773,7 @@
 		const stale = code === 'commitment_changed' || code === 'stale';
 		const forbidden = code === 'forbidden' || code === 'permission_denied' || code === 'link_edit_required';
 		const message = (error as { message?: unknown })?.message;
-		const serverMessage = ['deadline_approval_required', 'deadline_owner_required', 'schedule_linked'].includes(code ?? '') && typeof message === 'string' && message.trim();
+		const serverMessage = ['deadline_approval_required', 'deadline_owner_required', 'schedule_linked', 'target_after_deadline'].includes(code ?? '') && typeof message === 'string' && message.trim();
 		actionError = stale ? staleCopy : forbidden ? permissionCopy : serverMessage ? message as string : genericCopy;
 		if (stale || forbidden) { dialogEntry = null; review = null; await load(day, zone, true); }
 	}
@@ -782,13 +782,13 @@
 		const button = [...document.querySelectorAll<HTMLButtonElement>('button[data-agenda-actions]')].find(button => button.dataset.agendaActions === entry.item_ref && button.dataset.workspace === entry.workspace && button.dataset.owner === entry.owner_username);
 		(button && !button.disabled ? button : periodHeading)?.focus();
 	}
-	async function commitTarget(entry: AgendaEntry, to: string, preview: CommitmentMoveResult, sameIdentity: () => boolean, reason?: string, acknowledge?: boolean) {
+	async function commitTarget(entry: AgendaEntry, to: string, preview: CommitmentMoveResult, sameIdentity: () => boolean, reason?: string, acknowledge?: boolean, confirmPastDeadline?: boolean) {
 		if (!sameIdentity()) return;
 		const key = entryKey(entry);
 		const reviewed = review && entryKey(review.entry) === key;
 		if (reviewed) committing = true;
 		try {
-			const moved = await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}) });
+			const moved = await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}), ...(preview.past_deadline && confirmPastDeadline ? { confirm_past_deadline: true } : {}) });
 			if (!sameIdentity()) return;
 			saved = { ...saved, [key]: true };
 			if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null;
@@ -803,7 +803,18 @@
 			pending = { ...pending, [key]: false };
 			await focusMoved(entry);
 		} catch (error) {
-			if (sameIdentity()) await moveError(error);
+			if (sameIdentity()) {
+				await moveError(error);
+				if ((error as { code?: string })?.code === 'target_after_deadline') {
+					try {
+						const fresh = await api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}) });
+						if (!sameIdentity()) return;
+						dialogEntry = null;
+						review = { entry, to, preview: fresh, reason, sameIdentity };
+						void loadTitles(entry, fresh);
+					} catch (previewError) { if (sameIdentity()) await moveError(previewError); }
+				}
+			}
 		} finally {
 			if (sameIdentity()) { if (reviewed) committing = false; pending = { ...pending, [key]: false }; }
 		}
@@ -823,7 +834,7 @@
 			if (!root?.from || !unchanged(entry, root.from)) {
 				actionError = staleCopy; dialogEntry = null; await load(day, zone, true); return;
 			}
-			if (preview.renegotiates_deadline || preview.violations?.length) {
+			if (preview.renegotiates_deadline || preview.violations?.length || preview.past_deadline) {
 				if (openedDay) { openedDay = null; await tick(); if (!sameIdentity()) return; }
 				dialogEntry = null;
 				review = { entry, to, preview, reason, sameIdentity }; reviewing = true;
@@ -1014,8 +1025,8 @@
 	<WorkspaceGroupsDialog groups={workspaceGroups} {workspaces} {mobile} initialEdit={manageGroups.edit} onclose={() => manageGroups = null} onchanged={refreshGroups} />
 {/if}
 <ForecastDialog open={!!forecastEntry} entry={forecastEntry} {zone} {mobile} {permissionCopy}
- onclose={() => forecastEntry = null}
- onsaved={() => { forecastEntry = null; void load(day, zone, true); }} />
+	onclose={() => forecastEntry = null}
+	onsaved={() => { forecastEntry = null; void load(day, zone, true); }} />
 <ResolveOccurrenceDialog open={!!dialogEntry} mode={dialogMode} entry={dialogEntry} {zone} {mobile}
 	pending={dialogEntry ? !!pending[entryKey(dialogEntry)] : false} error={actionError}
 	onclose={() => dialogEntry = null}
@@ -1027,7 +1038,7 @@
 {#if review}
 	<MoveImpactDialog entry={review.entry} preview={review.preview} {zone} {mobile} titles={linkedTitles} initialReason={review.reason}
 		pending={committing} error={actionError} onclose={cancelReview}
-		onsubmit={(reason, acknowledge) => { if (review && !committing) void commitTarget(review.entry, review.to, review.preview, review.sameIdentity, reason, acknowledge); }} />
+		onsubmit={(reason, acknowledge, confirmPastDeadline) => { if (review && !committing) void commitTarget(review.entry, review.to, review.preview, review.sameIdentity, reason, acknowledge, confirmPastDeadline); }} />
 {/if}
 
 <style>
