@@ -983,7 +983,8 @@ jobs:
             a) args=(--test-list e2e-shards/desktop-a.txt) ;;
             b) args=(--test-list e2e-shards/desktop-b.txt) ;;
             rest)
-              cat e2e-shards/desktop-a.txt e2e-shards/desktop-b.txt > "$RUNNER_TEMP/desktop-listed.txt"
+              # The echo keeps A's last line apart from B's first if A lacks a final newline.
+              { cat e2e-shards/desktop-a.txt; echo; cat e2e-shards/desktop-b.txt; } > "$RUNNER_TEMP/desktop-listed.txt"
               args=(--test-list-invert "$RUNNER_TEMP/desktop-listed.txt")
               ;;
             all) args=() ;;
