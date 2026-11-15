@@ -61,8 +61,11 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 	if err != nil {
 		return nil, err
 	}
-	// Eligibility is exposed only by the commitment read and reopen POST.
-	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/commitment/reopen") {
+	// Eligibility is exposed only by the commitment read and reopen POST, and
+	// by create, so a GET still reproduces the create body. A new schedule has
+	// no checkpoint, so create always answers reopen_unavailable.
+	createCall := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/commitment")
+	if r.Method == http.MethodGet || createCall || strings.HasSuffix(r.URL.Path, "/commitment/reopen") {
 		editable, err := s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
 		if err != nil {
 			return nil, err
