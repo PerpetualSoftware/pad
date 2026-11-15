@@ -2,11 +2,12 @@
 	import { onMount } from 'svelte';
 	import { api } from '$lib/api/client';
 	import Button from '$lib/components/common/Button.svelte';
-	import Modal from '$lib/components/common/Modal.svelte';
+	import DialogShell from '$lib/components/common/DialogShell.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import type { CalendarFeed, CalendarFeedCreateResponse, CalendarFeedLayer, Workspace } from '$lib/types';
 
+	let { mobile = false }: { mobile?: boolean } = $props();
 	const id = $props.id();
 	let feeds = $state<CalendarFeed[]>([]);
 	let workspaces = $state<Workspace[]>([]);
@@ -24,6 +25,8 @@
 	// Retained only for the open dialog, never in a store or the list.
 	let createdFeed = $state<CalendarFeedCreateResponse | null>(null);
 	let copied = $state(false);
+	let confirmClose = $state(false);
+	const createdURL = $derived(createdFeed ? (createdFeed.url ?? `${window.location.origin}/api/v1/feeds/ics/${createdFeed.token}`) : '');
 	let feedToRevoke = $state<CalendarFeed | null>(null);
 	let revoking = $state(false);
 	let revokeError = $state('');
@@ -48,14 +51,24 @@
 		createdFeed = null;
 		createError = '';
 		copied = false;
+		confirmClose = false;
 		showCreate = true;
 	}
 
 	function closeCreate() {
 		// A late create response must not retain a secret in a closed dialog.
 		if (creating) return;
+		if (createdFeed && !copied) {
+			confirmClose = true;
+			return;
+		}
+		discardCreatedFeed();
+	}
+
+	function discardCreatedFeed() {
 		createdFeed = null;
 		copied = false;
+		confirmClose = false;
 		showCreate = false;
 	}
 
@@ -80,8 +93,9 @@
 
 	async function copyCreatedFeed() {
 		if (!createdFeed) return;
-		copied = await copyToClipboard(createdFeed.url ?? createdFeed.token);
-		if (!copied) toastStore.show('Could not copy. Select the link or token and copy it by hand.', 'error');
+		copied = await copyToClipboard(createdURL);
+		if (copied) confirmClose = false;
+		if (!copied) toastStore.show('Could not copy. Select the link and copy it by hand.', 'error');
 	}
 
 	function askRevoke(feed: CalendarFeed) {
@@ -140,7 +154,9 @@
 </script>
 
 <p class="description">Subscribe to your dates in a calendar app.</p>
-<Button variant="primary" onclick={openCreate} disabled={loading || !!loadError || atLimit} aria-describedby={atLimit ? `${id}-limit` : undefined}>New feed</Button>
+<div class="feed-create-row">
+	<Button variant="primary" onclick={openCreate} disabled={loading || !!loadError || atLimit} aria-describedby={atLimit ? `${id}-limit` : undefined}>New feed</Button>
+</div>
 {#if atLimit}
 	<p id="{id}-limit" class="description">You have 10 calendar feeds, the most allowed. Revoke one to create another.</p>
 {/if}
@@ -152,124 +168,155 @@
 {:else if feeds.length === 0}
 	<p class="description">No calendar feeds yet.</p>
 {:else}
-	<ul class="feeds" aria-label="Calendar feeds">
+	<div class="feed-list" role="list" aria-label="Calendar feeds">
 		{#each feeds as feed (feed.id)}
-			<li>
+			<div class="feed-row" role="listitem">
 				<div class="feed-info">
-					<strong>{feedLabel(feed)}</strong>
-					<span>{calendarLabel(feed)} · {workspaceLabel(feed.workspace_ids)}</span>
+					<span class="feed-name">{feedLabel(feed)}</span>
+					<span class="feed-details">{calendarLabel(feed)} · {workspaceLabel(feed.workspace_ids)}</span>
 					<span class="metadata">Created {formatDate(feed.created_at)} · Last used {feed.last_used_at ? formatDate(feed.last_used_at) : 'Never'}</span>
 				</div>
-				<Button variant="danger" size="sm" aria-label="Revoke {feedLabel(feed)}" onclick={() => askRevoke(feed)}>Revoke</Button>
-			</li>
+				<div class="feed-row-actions">
+					<Button variant="danger" size="sm" aria-label="Revoke {feedLabel(feed)}" onclick={() => askRevoke(feed)}>Revoke</Button>
+				</div>
+			</div>
 		{/each}
-	</ul>
+	</div>
 {/if}
 
-<Modal open={showCreate} onclose={closeCreate} labelledby="{id}-create-title" placement="center" maxWidth="540px">
-	<div class="dialog-content">
-		<h3 id="{id}-create-title">{createdFeed ? 'Calendar feed created' : 'Create calendar feed'}</h3>
-		{#if createdFeed}
-			<div class="secret-row">
-				<code>{createdFeed.url ?? createdFeed.token}</code>
-				<Button onclick={copyCreatedFeed}>{copied ? 'Copied' : 'Copy'}</Button>
-			</div>
-			{#if !createdFeed.url}
-				<p class="description">The server has no public base URL configured, so the full link can't be built. Copy the token now.</p>
-			{/if}
-			<p class="warning">This link is a secret. Your calendar provider (for example Google) stores it, and anyone who has it can see these titles. Revoke it if it leaks.</p>
-			<p class="warning">This link is shown only once. Closing this dialog loses it.</p>
-			<div class="actions"><Button variant="primary" onclick={closeCreate}>Done</Button></div>
-		{:else}
-			<form onsubmit={(event) => { event.preventDefault(); void createFeed(); }}>
-				<label for="{id}-name">Name (optional)</label>
-				<input id="{id}-name" type="text" maxlength="100" bind:value={name} disabled={creating} />
-				<fieldset disabled={creating}>
-					<legend>Calendar</legend>
-					<label class="option"><input type="radio" name="{id}-layer" value="mine" bind:group={layer} /> My calendar</label>
-					<label class="option"><input type="radio" name="{id}-layer" value="agent" bind:group={layer} /> Agent calendar</label>
-					<p class="description">An agent feed is a separate calendar, so your calendar app can hide it and colour it on its own.</p>
-				</fieldset>
-				<fieldset disabled={creating}>
-					<legend>Workspaces</legend>
-					<label class="option"><input type="radio" name="{id}-workspaces" value="all" bind:group={workspaceChoice} /> All workspaces</label>
-					<label class="option"><input type="radio" name="{id}-workspaces" value="specific" bind:group={workspaceChoice} /> Specific workspaces</label>
-					{#if workspaceChoice === 'specific'}
-						<div class="workspace-options">
-							{#each workspaces as workspace (workspace.id)}
-								<label class="option"><input type="checkbox" value={workspace.id} bind:group={workspaceIDs} /> {workspace.name}</label>
-							{:else}
-								<p class="description">No workspaces available.</p>
-							{/each}
-						</div>
-					{/if}
-				</fieldset>
-				{#if createError}<p class="error" role="alert">{createError}</p>{/if}
-				<div class="actions">
-					<Button onclick={closeCreate} disabled={creating}>Cancel</Button>
-					<Button variant="primary" type="submit" disabled={creating || atLimit || (workspaceChoice === 'specific' && workspaceIDs.length === 0)}>{creating ? 'Creating...' : 'Create feed'}</Button>
-				</div>
-			</form>
-		{/if}
-	</div>
-</Modal>
-
-<Modal open={!!feedToRevoke} onclose={closeRevoke} labelledby="{id}-revoke-title" placement="center" maxWidth="420px">
-	{#if feedToRevoke}
-		<div class="dialog-content">
-			<h3 id="{id}-revoke-title">Revoke the feed “{feedLabel(feedToRevoke)}”?</h3>
-			<p class="description">Calendar apps using this link lose access immediately.</p>
-			{#if revokeError}<p class="error" role="alert">{revokeError}</p>{/if}
-			<div class="actions">
-				<Button onclick={closeRevoke} disabled={revoking}>Cancel</Button>
-				<Button variant="danger" onclick={revokeFeed} disabled={revoking}>{revoking ? 'Revoking...' : 'Revoke feed'}</Button>
-			</div>
+<DialogShell open={showCreate} onclose={closeCreate} title={createdFeed ? 'Calendar feed created' : 'Create calendar feed'} {mobile} pending={creating} maxWidth="540px">
+	{#if createdFeed}
+		<div class="secret-row">
+			<code>{createdURL}</code>
+			<Button onclick={copyCreatedFeed}>{copied ? 'Copied' : 'Copy'}</Button>
 		</div>
+		{#if !createdFeed.url}
+			<p class="description">This link uses this computer's address, so only calendar apps that can reach it (for example Calendar on this computer) can subscribe. Google Calendar and other online services can't reach it.</p>
+		{/if}
+		<p class="warning">This link is a secret. Your calendar provider (for example Google) stores it, and anyone who has it can see these titles. Revoke it if it leaks.</p>
+		<p class="warning">This link is shown only once. Closing this dialog loses it.</p>
+		{#if confirmClose}
+			<div class="close-confirm">
+				<p role="status">You haven't copied this link. It won't be shown again.</p>
+				<div class="confirm-actions">
+					<Button variant="primary" onclick={() => { confirmClose = false; }}>Keep open</Button>
+					<Button variant="secondary" onclick={discardCreatedFeed}>Close anyway</Button>
+				</div>
+			</div>
+		{/if}
+	{:else}
+		<form id="{id}-create-form" onsubmit={(event) => { event.preventDefault(); void createFeed(); }}>
+			<label for="{id}-name">Name (optional)</label>
+			<input id="{id}-name" type="text" maxlength="100" bind:value={name} disabled={creating} />
+			<fieldset disabled={creating}>
+				<legend>Calendar</legend>
+				<label class="settings-choice"><input type="radio" name="{id}-layer" value="mine" bind:group={layer} /> My calendar</label>
+				<label class="settings-choice"><input type="radio" name="{id}-layer" value="agent" bind:group={layer} /> Agent calendar</label>
+				<p class="description">An agent feed is a separate calendar, so your calendar app can hide it and colour it on its own.</p>
+			</fieldset>
+			<fieldset disabled={creating}>
+				<legend>Workspaces</legend>
+				<label class="settings-choice"><input type="radio" name="{id}-workspaces" value="all" bind:group={workspaceChoice} /> All workspaces</label>
+				<label class="settings-choice"><input type="radio" name="{id}-workspaces" value="specific" bind:group={workspaceChoice} /> Specific workspaces</label>
+				{#if workspaceChoice === 'specific'}
+					<div class="workspace-options">
+						{#each workspaces as workspace (workspace.id)}
+							<label class="settings-choice"><input type="checkbox" value={workspace.id} bind:group={workspaceIDs} /> {workspace.name}</label>
+						{:else}
+							<p class="description">No workspaces available.</p>
+						{/each}
+					</div>
+				{/if}
+			</fieldset>
+			{#if createError}<p class="error" role="alert">{createError}</p>{/if}
+		</form>
 	{/if}
-</Modal>
+	{#snippet footer()}
+		{#if createdFeed}
+			<Button variant="primary" onclick={closeCreate}>Done</Button>
+		{:else}
+			<Button variant="secondary" onclick={closeCreate} disabled={creating}>Cancel</Button>
+			<Button variant="primary" type="submit" form="{id}-create-form" disabled={creating || atLimit || (workspaceChoice === 'specific' && workspaceIDs.length === 0)}>{creating ? 'Creating...' : 'Create feed'}</Button>
+		{/if}
+	{/snippet}
+</DialogShell>
+
+<DialogShell open={!!feedToRevoke} onclose={closeRevoke} title="Revoke this feed?" subject={feedToRevoke ? feedLabel(feedToRevoke) : ''} {mobile} pending={revoking} maxWidth="420px">
+	<p class="description">Calendar apps using this link lose access immediately.</p>
+	{#if revokeError}<p class="error" role="alert">{revokeError}</p>{/if}
+	{#snippet footer()}
+		<Button variant="secondary" onclick={closeRevoke} disabled={revoking}>Cancel</Button>
+		<Button variant="danger-solid" onclick={revokeFeed} disabled={revoking}>{revoking ? 'Revoking...' : 'Revoke feed'}</Button>
+	{/snippet}
+</DialogShell>
 
 <style>
+	/* Matches the settings page's card text (.plan-desc). */
 	.description {
 		color: var(--text-secondary);
+		font-size: 0.85rem;
+		line-height: 1.4;
 		margin: var(--space-3) 0;
 	}
 
-	.feeds {
-		list-style: none;
-		padding: 0;
-		margin: var(--space-4) 0 0;
+	.close-confirm {
+		margin-top: var(--space-4);
+		padding: var(--space-3) var(--space-4);
+		border: 1px solid var(--border);
+		border-left: 3px solid var(--accent-amber);
+		border-radius: var(--radius);
+		background: var(--bg-tertiary);
 	}
 
-	.feeds li {
+	.close-confirm p {
+		margin: 0;
+		font-weight: 600;
+	}
+
+	.feed-create-row, .feed-row-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+
+	.feed-list {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+	}
+
+	.feed-row {
 		display: flex;
 		align-items: center;
 		justify-content: space-between;
 		gap: var(--space-3);
-		padding: var(--space-3) 0;
-		border-top: 1px solid var(--border);
+		padding: var(--space-3) var(--space-4);
+		background: var(--bg-tertiary);
+		border-radius: var(--radius);
 	}
 
 	.feed-info {
 		display: flex;
 		flex-direction: column;
-		gap: var(--space-1);
+		gap: 2px;
+		flex: 1 1 auto;
 		min-width: 0;
 		overflow-wrap: anywhere;
 	}
 
+	.feed-name {
+		font-weight: 500;
+		font-size: 0.85rem;
+		color: var(--text-primary);
+	}
+
+	.feed-details {
+		font-size: 0.75rem;
+		color: var(--text-secondary);
+	}
+
 	.metadata {
-		font-size: 0.85em;
+		font-size: 0.75rem;
 		color: var(--text-muted);
-	}
-
-	.dialog-content {
-		padding: var(--space-5);
-		overflow-y: auto;
-	}
-
-	h3 {
-		margin: 0 0 var(--space-4);
-		font-size: 1.1rem;
 	}
 
 	input[type='text'] {
@@ -294,13 +341,6 @@
 	legend {
 		font-weight: 600;
 		margin-bottom: var(--space-2);
-	}
-
-	.option {
-		display: flex;
-		align-items: center;
-		gap: var(--space-2);
-		margin: var(--space-2) 0;
 	}
 
 	.workspace-options {
@@ -335,11 +375,11 @@
 		margin-top: var(--space-3);
 	}
 
-	.actions {
+	.confirm-actions {
 		display: flex;
 		justify-content: flex-end;
 		gap: var(--space-2);
-		margin-top: var(--space-4);
+		margin-top: var(--space-3);
 	}
 
 </style>

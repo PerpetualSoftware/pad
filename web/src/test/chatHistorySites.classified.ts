@@ -5,6 +5,7 @@
 import type { Site } from './chatHistoryScan';
 
 export const CLASSIFIED: Site[] = [
+	{ file: "lib/components/settings/CalendarFeedsSettings.svelte", text: "const createdURL = $derived(createdFeed ? (createdFeed.url ?? `${window.location.origin}/api/v1/feeds/ics/${createdFeed.token}`) : '');", n: 1, kind: "not-applicable", why: "The fallback calendar feed link reads only the origin, which is unchanged by Chat navigation, and never writes browser history." },
 	{ file: "lib/components/layout/BottomNav.svelte", text: "if (next) { if (workspace) phoneNav.sheet = 'workspace'; else void goto('/'); }", n: 1, kind: "not-applicable", why: "The picker fallback runs inside afterChat, which waits for closeThen to pop Chat entries before navigating home." },
 	{ file: "lib/components/home/DesktopHome.svelte", text: "void goto('/agenda');", n: 1, kind: "not-applicable", why: "The Home overview opens the full agenda with a push navigation to another route, so closing Chat with the navigation is intended." },
 	{ file: "routes/console/[...rest]/+page.svelte", text: "void goto(legacyConsoleTarget(pathname, search, hash), { replaceState: true });", n: 1, kind: "not-applicable", why: "The redirect replaces the legacy entry once at mount before Chat can be opened." },

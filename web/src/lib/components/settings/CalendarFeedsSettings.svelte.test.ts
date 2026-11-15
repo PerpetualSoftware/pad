@@ -5,11 +5,13 @@ type Feed = { id: string; layer: 'mine' | 'agent'; workspace_ids: string[]; name
 type CreateInput = { layer: Feed['layer']; workspace_ids: string[]; name?: string };
 const state = vi.hoisted(() => ({
 	feeds: [] as Feed[], creates: [] as CreateInput[], revokes: [] as string[], copied: [] as string[],
-	createError: null as Error | null, failRevoke: false, failLoad: false, failWorkspaces: false, includeURL: true
+	createError: null as Error | null, failRevoke: false, failLoad: false, failWorkspaces: false, includeURL: true, copySucceeds: true
 }));
 const token = 'padics_TEST_ONLY_CALENDAR_SECRET';
 const url = `https://calendar.example.test/api/v1/feeds/ics/${token}`;
 const warning = 'This link is a secret. Your calendar provider (for example Google) stores it, and anyone who has it can see these titles. Revoke it if it leaks.';
+const localNote = "This link uses this computer's address, so only calendar apps that can reach it (for example Calendar on this computer) can subscribe. Google Calendar and other online services can't reach it.";
+const closeWarning = "You haven't copied this link. It won't be shown again.";
 const limitReason = 'You have 10 calendar feeds, the most allowed. Revoke one to create another.';
 vi.mock('$lib/api/client', () => ({ api: {
 	calendarFeeds: {
@@ -36,7 +38,7 @@ vi.mock('$lib/api/client', () => ({ api: {
 		return [{ id: 'ws-design', name: 'Design' }, { id: 'ws-product', name: 'Product' }];
 	}) }
 } }));
-vi.mock('$lib/utils/clipboard', () => ({ copyToClipboard: vi.fn(async (text: string) => { state.copied.push(text); return true; }) }));
+vi.mock('$lib/utils/clipboard', () => ({ copyToClipboard: vi.fn(async (text: string) => { state.copied.push(text); return state.copySucceeds; }) }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: vi.fn() } }));
 const { default: CalendarFeedsSettings } = await import('./CalendarFeedsSettings.svelte');
 function feed(overrides: Partial<Feed> = {}): Feed {
@@ -44,7 +46,7 @@ function feed(overrides: Partial<Feed> = {}): Feed {
 }
 beforeEach(() => {
 	state.feeds = [feed()]; state.creates = []; state.revokes = []; state.copied = [];
-	state.createError = null; state.failRevoke = false; state.failLoad = false; state.failWorkspaces = false; state.includeURL = true;
+	state.createError = null; state.failRevoke = false; state.failLoad = false; state.failWorkspaces = false; state.includeURL = true; state.copySucceeds = true;
 });
 async function shown() {
 	render(CalendarFeedsSettings);
@@ -66,12 +68,14 @@ describe('CalendarFeedsSettings', () => {
 		await fireEvent.input(screen.getByLabelText('Name (optional)'), { target: { value: 'Phone calendar' } });
 		await submitCreate();
 		expect(within(dialog).getByText(url)).toBeInTheDocument();
+		expect(within(dialog).queryByText(localNote)).not.toBeInTheDocument();
 		expect(screen.getByRole('list', { name: 'Calendar feeds' })).not.toHaveTextContent(token);
 		await fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
 		expect(state.copied).toEqual([url]);
 		if (close === 'Done') await fireEvent.click(screen.getByRole('button', { name: 'Done' }));
 		else await fireEvent(dialog, new Event('cancel', { cancelable: true }));
 		await waitFor(() => expect(document.body).not.toHaveTextContent(token));
+		expect(screen.queryByText(closeWarning)).not.toBeInTheDocument();
 		expect(screen.getByText('Phone calendar')).toBeInTheDocument();
 		await fireEvent.click(screen.getByRole('button', { name: 'New feed' }));
 		expect(document.body).not.toHaveTextContent(token);
@@ -110,17 +114,69 @@ describe('CalendarFeedsSettings', () => {
 		await submitCreate();
 		expect(state.creates[0].workspace_ids).toEqual([]);
 	});
-	it('reveals the token and explains the missing public base URL, then clears the token on close', async () => {
+	it('builds and copies a local URL when no public URL is returned, then clears it on close', async () => {
 		state.includeURL = false;
 		const dialog = await openCreate();
 		await submitCreate();
-		expect(within(dialog).getByText(token)).toBeInTheDocument();
-		expect(within(dialog).getByText(/server has no public base URL configured.*full link can't be built/i)).toBeInTheDocument();
+		const localURL = `${window.location.origin}/api/v1/feeds/ics/${token}`;
+		expect(within(dialog).getByText(localURL)).toBeInTheDocument();
+		expect(within(dialog).queryByText(token, { exact: true })).not.toBeInTheDocument();
+		expect(within(dialog).getByText(localNote)).toBeInTheDocument();
 		expect(within(dialog).getByText(warning)).toBeInTheDocument();
 		await fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
-		expect(state.copied).toEqual([token]);
+		expect(state.copied).toEqual([localURL]);
 		await fireEvent.click(screen.getByRole('button', { name: 'Done' }));
 		expect(document.body).not.toHaveTextContent(token);
+	});
+	it.each(['Escape', 'Done', 'Close', 'backdrop'])('guards an uncopied secret on %s and supports keeping or discarding it', async (route) => {
+		const dialog = await openCreate();
+		await submitCreate();
+		async function close() {
+			if (route === 'Escape') await fireEvent(dialog, new Event('cancel', { cancelable: true }));
+			else if (route === 'backdrop') {
+				await fireEvent.pointerDown(dialog);
+				await fireEvent.pointerUp(dialog);
+				await fireEvent.click(dialog);
+			} else await fireEvent.click(screen.getByRole('button', { name: route, exact: true }));
+		}
+		await close();
+		expect(screen.getByRole('dialog')).toBe(dialog);
+		expect(within(dialog).getByText(closeWarning)).toBeInTheDocument();
+		expect(within(dialog).getByText(url)).toBeInTheDocument();
+		expect(screen.getByRole('button', { name: 'Keep open' })).toHaveClass('primary');
+		expect(screen.getByRole('button', { name: 'Close anyway' })).toHaveClass('secondary');
+		await fireEvent.click(screen.getByRole('button', { name: 'Keep open' }));
+		expect(screen.queryByText(closeWarning)).not.toBeInTheDocument();
+		expect(within(dialog).getByText(url)).toBeInTheDocument();
+		await close();
+		await fireEvent.click(screen.getByRole('button', { name: 'Close anyway' }));
+		expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+		expect(document.body).not.toHaveTextContent(token);
+	});
+	it('still guards the secret when copying fails', async () => {
+		state.copySucceeds = false;
+		await openCreate(); await submitCreate();
+		await fireEvent.click(screen.getByRole('button', { name: 'Copy' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Done' }));
+		expect(screen.getByText(closeWarning)).toBeInTheDocument();
+	});
+	it('puts Cancel and the primary create submit in the same footer', async () => {
+		const dialog = await openCreate();
+		const create = screen.getByRole('button', { name: 'Create feed' });
+		expect(create).toHaveClass('primary');
+		const footer = dialog.querySelector('footer');
+		expect(footer).not.toBeNull();
+		expect(footer).toContainElement(create);
+		expect(footer).toContainElement(screen.getByRole('button', { name: 'Cancel' }));
+		expect(create).toHaveAttribute('type', 'submit');
+		expect(create.getAttribute('form')).toBe(dialog.querySelector('form')!.id);
+	});
+	it('uses a solid danger action for the final revoke confirmation', async () => {
+		await shown();
+		await fireEvent.click(screen.getByRole('button', { name: 'Revoke Work dates' }));
+		expect(screen.getByRole('button', { name: 'Revoke feed' })).toHaveClass('danger-solid');
+		const dialog = screen.getByRole('dialog', { name: 'Revoke this feed?' });
+		expect(dialog.querySelector('.subject')).toHaveTextContent('Work dates');
 	});
 	it('shows calendar, workspace names, unavailable counts, dates and a fallback name without raw ids', async () => {
 		state.feeds = [feed(), feed({ id: 'f2', name: '', layer: 'agent', workspace_ids: ['ws-design', 'hidden-workspace-id'], last_used_at: '2026-11-02T00:00:00Z' })];

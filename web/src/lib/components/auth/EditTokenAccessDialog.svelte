@@ -4,11 +4,14 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { describeTokenScopes } from '$lib/settings/tokenScopes';
 	import type { APIToken, APITokenUpdate, StepUpStatus } from '$lib/types';
-	import Modal from '$lib/components/common/Modal.svelte';
+	import DialogShell from '$lib/components/common/DialogShell.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import StepUpPrompt from './StepUpPrompt.svelte';
 
-	let { token, onclose, onupdated }: { token: APIToken | null; onclose: () => void; onupdated: (token: APIToken) => void } = $props();
+	let { token, onclose, onupdated, mobile = false }: { token: APIToken | null; onclose: () => void; onupdated: (token: APIToken) => void; mobile?: boolean } = $props();
+	const id = $props.id();
+	let stepUpBusy = $state(false);
+	let canVerify = $state(false);
 	let name = $state('');
 	let access = $state<'read' | 'write' | null>(null);
 	let busy = $state(false);
@@ -24,7 +27,7 @@
 		name = target?.name ?? '';
 		const level = describeTokenScopes(target?.scopes).level;
 		access = level === 'none' ? null : level;
-		busy = false; error = ''; stepUp = null; pending = null;
+		busy = false; stepUpBusy = false; canVerify = false; error = ''; stepUp = null; pending = null;
 	});
 	function close() { generation++; onclose(); }
 	async function update(input: APITokenUpdate, allowPrompt: boolean) {
@@ -70,41 +73,42 @@
 	function verified() {
 		if (!pending) return;
 		const input = pending;
-		stepUp = null; pending = null;
+		stepUp = null; pending = null; stepUpBusy = false;
 		void update(input, false);
 	}
 </script>
 
-<Modal open={!!token} onclose={close} ariaLabel="Edit API key access">
-	<div class="content">
-		<h2>Edit API key access</h2>
+<DialogShell open={!!token} onclose={close} title="Edit API key access" subject={token?.name} {mobile} pending={busy || stepUpBusy}>
+	{#if stepUp}
+		<StepUpPrompt factor={stepUp.factor} onverified={verified} formId="{id}-verify" bind:busy={stepUpBusy} bind:canVerify />
+	{:else}
+		<form id="{id}-edit" onsubmit={save}>
+			<label for="edit-token-name">Key name</label>
+			<input id="edit-token-name" type="text" bind:value={name} disabled={busy} required />
+			<fieldset disabled={busy}>
+				<legend>Access</legend>
+				<label class="settings-choice"><input type="radio" name="edit-token-access" value="write" bind:group={access} />Read and write</label>
+				<label class="settings-choice"><input type="radio" name="edit-token-access" value="read" bind:group={access} />Read only</label>
+			</fieldset>
+			{#if error}<p role="alert" class="error">{error}</p>{/if}
+		</form>
+	{/if}
+	{#snippet footer()}
+		<Button variant="secondary" onclick={close} disabled={busy || stepUpBusy}>Cancel</Button>
 		{#if stepUp}
-			<StepUpPrompt factor={stepUp.factor} onverified={verified} />
+			{#if stepUp.factor !== 'unavailable'}
+				<Button variant="primary" type="submit" form="{id}-verify" disabled={!canVerify}>{stepUpBusy ? 'Verifying…' : 'Verify'}</Button>
+			{/if}
 		{:else}
-			<form onsubmit={save}>
-				<label for="edit-token-name">Key name</label>
-				<input id="edit-token-name" type="text" bind:value={name} disabled={busy} required />
-				<fieldset disabled={busy}>
-					<legend>Access</legend>
-					<label><input type="radio" name="edit-token-access" value="write" bind:group={access} />Read and write</label>
-					<label><input type="radio" name="edit-token-access" value="read" bind:group={access} />Read only</label>
-				</fieldset>
-				{#if error}<p role="alert" class="error">{error}</p>{/if}
-				<div class="actions"><Button type="submit" disabled={busy || !name.trim()}>{busy ? 'Saving…' : 'Save changes'}</Button></div>
-			</form>
+			<Button variant="primary" type="submit" form="{id}-edit" disabled={busy || !name.trim()}>{busy ? 'Saving…' : 'Save changes'}</Button>
 		{/if}
-		<div class="actions"><Button variant="secondary" onclick={close}>Cancel</Button></div>
-	</div>
-</Modal>
+	{/snippet}
+</DialogShell>
 
 <style>
-	.content { padding: 1.5rem; }
-	h2 { margin: 0 0 1rem; font-size: 1.2rem; }
-	label { display: block; margin: .6rem 0; }
+	label:not(.settings-choice) { display: block; margin: .6rem 0; }
 	input[type='text'] { width: 100%; box-sizing: border-box; padding: .6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg-primary); color: var(--text-primary); }
-	input[type='radio'] { margin-right: .5rem; }
 	fieldset { margin: 1rem 0; border: 0; padding: 0; }
 	legend { font-weight: 500; }
 	.error { color: var(--accent-red); }
-	.actions { display: flex; justify-content: flex-end; margin-top: 1rem; }
 </style>

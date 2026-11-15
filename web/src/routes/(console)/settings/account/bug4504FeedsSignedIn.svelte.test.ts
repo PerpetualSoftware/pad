@@ -9,6 +9,6 @@ it('BUG-4504: the calendar feeds section mounts only while signed in', () => {
 	const source = readFileSync('src/routes/(console)/settings/account/+page.svelte', 'utf8').replace(/<!--[\s\S]*?-->/g, '');
 	const card = source.match(/<section class="card" id="calendar-feeds">[\s\S]*?<\/section>/)?.[0] ?? '';
 	expect(card).toMatch(
-		/\{#if authStore\.authenticated\}\s*\{#key authStore\.identityEpoch\}\s*<CalendarFeedsSettings \/>\s*\{\/key\}\s*\{\/if\}/
+		/\{#if authStore\.authenticated\}\s*\{#key authStore\.identityEpoch\}\s*<CalendarFeedsSettings\b[^>]*\/>\s*\{\/key\}\s*\{\/if\}/
 	);
 });

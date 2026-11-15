@@ -124,13 +124,11 @@ it('an identity change clears the saving and error state of the previous identit
 });
 
 
-afterEach(() => Reflect.deleteProperty(window, 'matchMedia'));
+afterEach(() => vi.restoreAllMocks());
 
 it('shows the Enter-sends device preference in the Chat card on a coarse pointer', async () => {
-	Object.defineProperty(window, 'matchMedia', {
-		configurable: true,
-		value: () => ({ matches: false })
-	});
+	const media = window.matchMedia('(pointer: fine)');
+	vi.spyOn(window, 'matchMedia').mockReturnValue({ ...media, matches: false });
 	const { container } = render(AccountSettings);
 	const toggle = await screen.findByLabelText('Chat: Enter sends (for a hardware keyboard)');
 	expect(container.querySelector('section#chat')).toContainElement(toggle);

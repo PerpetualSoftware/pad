@@ -763,7 +763,6 @@ dialog.attachment-crop-modal::backdrop {
 	--accent-orange: #ea580c;
 	--accent-gray: #6b7280;
 	--accent-brown: #92400e;
-	--accent-red: #ef4444;
 	--status-blue: #2563eb;
 	--status-draft: #999999;
 	--status-active: #16a34a;
@@ -801,7 +800,6 @@ dialog.attachment-crop-modal::backdrop {
 		--accent-orange: #ea580c;
 		--accent-gray: #6b7280;
 		--accent-brown: #92400e;
-		--accent-red: #ef4444;
 		--status-blue: #2563eb;
 		--status-draft: #999999;
 		--status-active: #16a34a;
@@ -1171,3 +1169,18 @@ dialog.attachment-crop-modal::backdrop {
 	}
 }
 
+/* Shared radio and checkbox labels for settings dialogs. */
+.settings-choice {
+	display: flex;
+	align-items: center;
+	gap: var(--space-2);
+	margin: var(--space-2) 0;
+}
+
+.settings-choice input:is([type='radio'], [type='checkbox']) {
+	width: 16px;
+	height: 16px;
+	flex-shrink: 0;
+	margin: 0;
+	accent-color: var(--accent-primary);
+}
