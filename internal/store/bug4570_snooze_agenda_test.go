@@ -71,3 +71,20 @@ func TestBUG4570LinkedMoveNotSnoozed(t *testing.T) {
 		t.Fatalf("linked move: %+v", entries)
 	}
 }
+
+func TestBUG4570SnoozeEndsAtItsRefireInstant(t *testing.T) {
+	wall, override := "2030-03-10T09:00", "2030-03-12T14:30:00Z"
+	sc := &models.ItemSchedule{NextWall: &wall, NextOverrideAt: &override, LeadMinutes: 30}
+	until := rt("2030-03-12T14:00:00Z")
+	if got := ScheduleSnoozedUntil(sc, "", until.Add(-time.Second)); got == nil || !got.Equal(until) {
+		t.Fatalf("before the re-fire instant = %v, want %s", got, until)
+	}
+	for _, now := range []time.Time{until, until.Add(time.Second)} {
+		if got := ScheduleSnoozedUntil(sc, "", now); got != nil {
+			t.Fatalf("at %s the snooze has ended, got %s", now, got)
+		}
+	}
+	if got := ScheduleSnoozedUntil(sc, "moved", until.Add(-time.Hour)); got != nil {
+		t.Fatalf("a moved occurrence is not snoozed, got %s", got)
+	}
+}

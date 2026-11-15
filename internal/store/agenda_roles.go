@@ -116,7 +116,7 @@ func (s *Store) AgendaOutstanding(sc *models.ItemSchedule, view *time.Location, 
 	if err != nil {
 		return nil, err
 	}
-	e.SnoozedUntil, err = s.ReadScheduleSnoozedUntil(sc)
+	e.SnoozedUntil, err = s.ReadScheduleSnoozedUntil(sc, now)
 	if err != nil {
 		return nil, err
 	}

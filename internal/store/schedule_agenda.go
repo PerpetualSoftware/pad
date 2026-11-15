@@ -432,7 +432,7 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 	var effective *time.Time
 	outstanding := func(e *AgendaEntry, r agendaRow, have bool) {
 		e.State, e.Fired = "outstanding", sc.ReminderFired
-		e.SnoozedUntil = ScheduleSnoozedUntil(sc, r.state)
+		e.SnoozedUntil = ScheduleSnoozedUntil(sc, r.state, now)
 		due := e.At
 		if have && r.state == "moved" && sc.NextOverrideAt != nil {
 			if t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt); err == nil {

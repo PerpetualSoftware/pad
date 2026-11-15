@@ -76,7 +76,7 @@ func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *model
 	if ref == "" {
 		ref = item.Slug // a legacy item with no ref (see handleCreateItemReminder's resolver)
 	}
-	snoozedUntil, err := s.store.ReadScheduleSnoozedUntil(sc)
+	snoozedUntil, err := s.store.ReadScheduleSnoozedUntil(sc, time.Now())
 	if err != nil {
 		return scheduleView{}, err
 	}
