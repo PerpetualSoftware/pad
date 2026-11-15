@@ -9,7 +9,7 @@
 	import { agendaUndoContext, resolutionLabel, type AgendaUndo } from '$lib/calendar/undo';
 	import { toastStore, type ToastAction } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { completedPreferencePrefix, agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -36,7 +36,6 @@
 	const permissionCopy = 'You can no longer change this item.';
 	const genericCopy = 'Could not update this occurrence. Try again.';
 	const notFiredCopy = 'This occurrence has not fired yet, so there is nothing to acknowledge.';
-	const preferencePrefix = 'pad-agenda-completed:';
 	const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
 	let selectedDay = $state('');
 	const day = $derived(selectedDay || todayIn(zone));
@@ -338,7 +337,7 @@
 			let savedMode: 'week' | 'day' | 'month' = 'week';
 			if (userId) {
 				try {
-					value = localStorage.getItem(`${preferencePrefix}${userId}`) !== '0';
+					value = localStorage.getItem(`${completedPreferencePrefix}${userId}`) !== '0';
 					const stored = localStorage.getItem(`pad-agenda-mode:${userId}`);
 					savedMode = stored === 'day' || stored === 'month' ? stored : 'week';
 				} catch { /* Storage is optional. */ }
@@ -359,7 +358,7 @@
 		showCompleted = value;
 		const userId = authStore.user?.id;
 		if (!userId || userId !== preferenceUser) return;
-		try { localStorage.setItem(`${preferencePrefix}${userId}`, value ? '1' : '0'); } catch { /* Keep the in-memory choice. */ }
+		try { localStorage.setItem(`${completedPreferencePrefix}${userId}`, value ? '1' : '0'); } catch { /* Keep the in-memory choice. */ }
 	}
 	async function pickDay(date: string) {
 		if (mode === 'day') { clearDrag(); stripAnchor = stripStart; selectedDay = date; return; }

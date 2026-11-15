@@ -104,6 +104,18 @@ it.each(['home-first', 'bar-first'])('loads the overview once on phone arrival w
 	load.mockRestore();
 });
 
+it('shows today’s completed expander on phone and expands compact rows', async () => {
+	h.agenda.mockResolvedValue({ entries: [{ type: 'completed', at: '2026-11-13T12:00:00Z', day: '2026-11-13', item_ref: 'TASK-90', item_title: 'Finished on phone', collection: 'tasks', workspace: 'ws', owner_username: 'mara' }], priority_list: [], window_complete: true });
+	render(BottomNav);
+	render(Home);
+	const today = within(screen.getByRole('region', { name: 'Today' }));
+	const toggle = await today.findByRole('button', { name: '1 completed', expanded: false });
+	expect(today.queryByText('Finished on phone')).not.toBeInTheDocument();
+	await fireEvent.click(toggle);
+	expect(today.getByText('Finished on phone').closest('.agenda-row')).toHaveClass('compact');
+	expect(today.getByText('Nothing scheduled today.')).toBeInTheDocument();
+});
+
 it('refreshes the phone overview once per You-page arrival', async () => {
 	render(BottomNav);
 	const home = render(Home);
