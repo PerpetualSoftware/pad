@@ -65,13 +65,13 @@ describe('agenda workspace chooser', () => {
   if (extra.workspacesError) { expect(screen.getAllByRole('menuitemradio')).toHaveLength(30); await fireEvent.click(screen.getByRole('menuitem', { name: 'Retry' })); expect(p.onretryworkspaces).toHaveBeenCalledOnce(); }
   else expect(screen.queryAllByRole('menuitemradio')).toHaveLength(0);
  });
- it('shows full duplicate labels, identity text, and only the selected workspace checkmark', async () => {
-  const listed = [{ ...workspaces[0], name: 'Roadmap', slug: 'roadmap' }, { ...workspaces[1], name: 'Roadmap', slug: 'roadmap', owner_username: 'bob' }];
+ it.each(['roadmap', 'other-roadmap'])('shows duplicate labels with second slug %s, identity text, and only the selected workspace checkmark', async secondSlug => {
+  const listed = [{ ...workspaces[0], name: 'Roadmap', slug: 'roadmap' }, { ...workspaces[1], name: 'Roadmap', slug: secondSlug, owner_username: 'bob' }];
   render(AgendaToolbar, { props: props({ workspaces: listed, workspaceLabel: (ws: Workspace) => `${ws.name} · @${ws.owner_username}`, selection: { kind: 'workspace', id: listed[1].id } }) });
   expect(trigger()).toHaveTextContent('Roadmap · @bob'); await fireEvent.click(trigger());
   expect(screen.getAllByRole('menuitemradio').every(el => el.getAttribute('aria-checked') === 'false')).toBe(true);
   expect(chooser()).toHaveTextContent('Roadmap · @bob'); await fireEvent.click(chooser());
   const rows = screen.getAllByRole('menuitemradio'); expect(rows[0]).toHaveAttribute('aria-checked', 'false'); expect(rows[1]).toHaveAttribute('aria-checked', 'true');
-  expect(rows[1]).toHaveAttribute('title', 'Roadmap · @bob'); expect(rows[1]).toHaveTextContent('@bob/roadmap');
+  expect(rows[1]).toHaveAttribute('title', 'Roadmap · @bob'); expect(rows[1]).toHaveTextContent(`@bob/${secondSlug}`);
  });
 });

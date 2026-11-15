@@ -256,13 +256,13 @@ func TestMeAgendaWorkspaceContinuation(t *testing.T) {
 	}
 }
 
-func TestMeAgendaWorkspaceSameSlugScope(t *testing.T) {
+func TestMeAgendaWorkspaceSameNameScope(t *testing.T) {
 	t.Parallel()
 	w, _ := forecastWorld(t)
 	otherOwner := mustUser(t, w.srv, "other-owner@example.com", "otherowner", "")
 	other := meAgendaWorkspace(t, &agendaWorld{srv: w.srv, owner: otherOwner}, "Agenda")
-	meAgendaExec(t, w, `UPDATE workspaces SET slug = ? WHERE id = ?`, w.ws.Slug, other.ws.ID)
-	other.ws.Slug = w.ws.Slug
+	meAgendaExec(t, w, `UPDATE workspaces SET name = ? WHERE id = ?`, w.ws.Name, other.ws.ID)
+	other.ws.Name = w.ws.Name
 	if err := w.srv.store.AddWorkspaceMember(other.ws.ID, w.owner.ID, "editor"); err != nil {
 		t.Fatal(err)
 	}
