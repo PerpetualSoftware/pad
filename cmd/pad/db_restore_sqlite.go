@@ -154,7 +154,7 @@ func resolveDBFilePath(path string) (string, error) {
 		if err != nil {
 			return "", err
 		}
-		if !filepath.IsAbs(target) {
+		if target != "" && filepath.VolumeName(target) == "" && !os.IsPathSeparator(target[0]) {
 			separator := string(filepath.Separator)
 			target = strings.TrimRight(parent, separator) + separator + target
 		}

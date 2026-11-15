@@ -251,3 +251,33 @@ func TestPostgresBackupAtomicOutput(t *testing.T) {
 		}
 	})
 }
+
+func TestResolveDBFilePathWindowsRootRelative(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("root-relative drive paths are Windows-specific")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	linkDir := filepath.Join(dir, "links")
+	if err := os.Mkdir(linkDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "new.sql")
+	link := filepath.Join(linkDir, "current.sql")
+	rootRelative := strings.TrimPrefix(target, filepath.VolumeName(target))
+	if err := os.Symlink(rootRelative, link); err != nil {
+		t.Skipf("creating Windows symlinks requires permission: %v", err)
+	}
+	want, err := filepath.Abs(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveDBFilePath(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := filepath.Abs(resolved)
+	if err != nil || !strings.EqualFold(got, want) {
+		t.Fatalf("resolved destination = %q, error %v; want %q", got, err, want)
+	}
+}
