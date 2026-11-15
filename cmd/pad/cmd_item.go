@@ -4377,9 +4377,16 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 								if oc.HiddenBlockerCount > 0 {
 									fmt.Printf("      (+%d hidden blocker(s) you don't have access to)\n", oc.HiddenBlockerCount)
 								}
+								if oc.ScheduleActive != nil {
+									next := "not currently set"
+									if oc.ScheduleActive.NextAt != nil {
+										next = *oc.ScheduleActive.NextAt
+									}
+									fmt.Printf("      also has a recurring schedule (next occurrence: %s); --force stops its occurrences until it is reopened\n", next)
+								}
 							}
 							if apiErr.Code == "schedule_active" {
-								fmt.Printf("      recurring schedule active; rerun with --force to close it anyway\n")
+								fmt.Printf("      recurring schedule active (next occurrence: %s); rerun with --force to close it anyway\n", cli.ScheduleActiveNextAt(apiErr.Details))
 							}
 						}
 					}

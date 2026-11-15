@@ -3804,11 +3804,24 @@ func WriteScheduleActiveError(w io.Writer, apiErr *APIError) {
 	if data, err := json.Marshal(envelope); err == nil {
 		fmt.Fprintln(w, StructuredErrorMarker+string(data))
 	}
-	fmt.Fprintln(w, apiErr.Message)
+	// The server message ends in its own retry advice ("Retry with force"); the
+	// CLI states the same fact with its flag name instead of repeating both.
+	fmt.Fprintln(w, "This item has a recurring schedule. Closing it stops its occurrences until it is reopened.")
 	var details ScheduleActiveDetails
 	_ = json.Unmarshal(apiErr.Details, &details)
 	writeNextOccurrence(w, details.NextAt)
 	fmt.Fprintln(w, "Rerun with --force to close it anyway.")
+}
+
+// ScheduleActiveNextAt returns the next occurrence a schedule_active refusal
+// names, or "not currently set".
+func ScheduleActiveNextAt(raw json.RawMessage) string {
+	var details ScheduleActiveDetails
+	_ = json.Unmarshal(raw, &details)
+	if details.NextAt == nil {
+		return "not currently set"
+	}
+	return *details.NextAt
 }
 
 func writeNextOccurrence(w io.Writer, nextAt *string) {

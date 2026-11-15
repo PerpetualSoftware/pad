@@ -63,8 +63,8 @@ func TestBulkUpdateScheduleActiveKeepsBatchResult(t *testing.T) {
 				if res.Total != 1 || len(res.Failed) != 1 || res.Failed[0].Code != "schedule_active" {
 					t.Fatalf("want one schedule_active failure row, got %+v", res)
 				}
-			} else if !strings.Contains(stdout, "--force") {
-				t.Fatalf("text output should name --force: %q", stdout)
+			} else if !strings.Contains(stdout, "--force") || !strings.Contains(stdout, "next occurrence: 2099-01-01T09:00:00Z") {
+				t.Fatalf("text output should name --force and the next occurrence: %q", stdout)
 			}
 
 			cmd := bulkUpdateCmd()
