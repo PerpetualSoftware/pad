@@ -259,7 +259,8 @@
 			toastedError = message;
 		});
 	});
-	// The toast container is a polite live region, so a success is announced there and not in the page status as well.
+	// The toast's polite live region announces success without duplicating it in the page status.
+	// Resolve and move still toast alongside refresh or close-item failure messages because the write succeeded and the toast carries any Undo.
 	function succeed(message: string, action?: ToastAction) {
 		toastStore.show(message, 'success', undefined, undefined, action);
 	}
@@ -563,12 +564,13 @@
 				}
 				if (!sameIdentity()) return false;
 			}
-			const undo = !history && state !== 'ack' && !itemClosed
-				? await readUndo({ ...entry, occurrence_key: occurrenceKey }, sameIdentity, state) : undefined;
+			const [undo, refreshed] = await Promise.all([
+				!history && state !== 'ack' && !itemClosed
+					? readUndo({ ...entry, occurrence_key: occurrenceKey }, sameIdentity, state) : undefined,
+				load(day, zone, true)
+			]);
 			if (!sameIdentity()) return false;
 			const success = (message: string) => succeed(message, undo ? { ...undo, label: 'Undo' } : undefined);
-			const refreshed = await load(day, zone, true);
-			if (!sameIdentity()) return false;
 			if (closeError) actionError = closeError;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
 			if (end && !ended && !resolved?.commitment?.ended_at) {
@@ -715,10 +717,10 @@
 			saved = { ...saved, [key]: true };
 			if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null;
 			if (review && entryKey(review.entry) === key) review = null;
-			const undo = moved.changes.some(change => change.root)
-				? await readUndo(entry, sameIdentity, 'move') : undefined;
-			if (!sameIdentity()) return;
-			const refreshed = await load(day, zone, true);
+			const [undo, refreshed] = await Promise.all([
+				moved.changes.some(change => change.root) ? readUndo(entry, sameIdentity, 'move') : undefined,
+				load(day, zone, true)
+			]);
 			if (!sameIdentity()) return;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
 			succeed(`Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`, undo ? { ...undo, label: 'Undo' } : undefined);

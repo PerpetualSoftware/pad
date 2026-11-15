@@ -1757,6 +1757,27 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' });
   await said('Undone. The occurrence is open again.', 'success');
  });
+ it.each(['done', 'move'] as const)('refreshes after %s while eligibility is still pending, then toasts with Undo', async state => {
+  const eligibility = deferred<unknown>();
+  if (state === 'move') {
+   localStorage.setItem('pad-agenda-mode:user-a', 'week');
+   h.view.mockReturnValue(eligibility.promise);
+  } else {
+   h.resolve.mockImplementation(() => { h.view.mockClear(); h.view.mockReturnValue(eligibility.promise); return Promise.resolve({}); });
+  }
+  await mount();
+  if (state === 'move') await drop();
+  else await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await waitFor(() => expect(state === 'move' ? h.move : h.resolve).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(h.toast).not.toHaveBeenCalled();
+  eligibility.resolve({ last_resolution: eligible({ state }) });
+  await said(state === 'move' ? 'Occurrence moved to November 6, 2026, 09:00. Its reminder follows the target.' : 'Occurrence marked done.', 'success');
+  expect(successAction()).toEqual({ label: 'Undo', onAction: expect.any(Function) });
+  expect(h.view).toHaveBeenCalledTimes(1);
+  expect(h.agenda).toHaveBeenCalledTimes(2);
+ });
  it.each(['ineligible', 'different key', 'absent', 'missing id', 'GET rejects'])('keeps the success toast without Undo: %s', async kind => {
   h.resolve.mockImplementation(() => {
    h.view.mockClear();
