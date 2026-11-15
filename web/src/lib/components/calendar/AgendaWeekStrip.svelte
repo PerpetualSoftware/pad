@@ -39,9 +39,8 @@
 		if (entry.type === 'date') return entry.overdue ? 'bad' : 'quiet';
 		if (entry.state === 'lapsed' || entry.state === 'missed') return 'bad';
 		if (isOpenState(entry.state)) {
-			if (isSnoozed(entry, now)) return 'owed';
 			const deadline = entry.roles?.deadline;
-			return entry.overdue || (deadline && deadlineTone(deadline, zone, now) === 'passed') ? 'bad' : 'owed';
+			return (entry.overdue && !isSnoozed(entry, now)) || (deadline && deadlineTone(deadline, zone, now) === 'passed') ? 'bad' : 'owed';
 		}
 		return entry.state === 'done' ? 'done' : 'quiet';
 	}

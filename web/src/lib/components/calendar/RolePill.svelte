@@ -4,8 +4,6 @@
 
 	interface Props {
 		kind: 'deadline' | 'forecast';
-		/** Quiet deadline styling while its occurrence is snoozed. */
-		muted?: boolean;
 		/** The role value: a date-only `YYYY-MM-DD` or an instant. */
 		value: string;
 		/** The viewer's time zone. */
@@ -20,7 +18,7 @@
 		title?: string;
 	}
 
-	let { kind, muted = false, value, zone, behavior = null, deadline = null, now = new Date(), title }: Props = $props();
+	let { kind, value, zone, behavior = null, deadline = null, now = new Date(), title }: Props = $props();
 
 	const pill = $derived.by(() => {
 		if (kind === 'deadline') return deadlinePill(value, behavior, zone, now);
@@ -31,7 +29,7 @@
 	const prefix = $derived(kind === 'forecast' ? 'Forecast' : pill.tone === 'passed' ? '' : 'Deadline');
 </script>
 
-<span class="pill" class:muted data-kind={kind} data-tone={pill.tone} {title}>
+<span class="pill" data-kind={kind} data-tone={pill.tone} {title}>
 	{#if kind === 'deadline'}
 		<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 21V4h11l-2 4 2 4H5" /></svg>
 	{:else}
@@ -74,8 +72,6 @@
 	[data-tone='late'] {
 		--pill-c: var(--accent-red);
 	}
-
-	.pill.muted { --pill-c: var(--text-muted); color: var(--text-muted); background: transparent; }
 
 	/* A forecast is an estimate, so it is outlined and dashed rather than filled. */
 	[data-kind='forecast'] {

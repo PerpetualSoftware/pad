@@ -263,4 +263,11 @@ describe('BUG4570 snoozed Outstanding row', () => {
   expect(screen.getByText(/Wed 4/)).toBeTruthy();
   expect(container.querySelector('.when.passed')).toBeNull();
  });
+
+ it('keeps a passed deadline loud while snoozed: a snooze defers the reminder, not the deadline', () => {
+  const { container } = mount({ priority_list: [work({ reason: 'deadline_still_owed', snoozed_until: '2026-11-06T15:00:00Z', roles: { ...roles, target: '2026-11-03T09:00:00Z', deadline: '2026-11-04T10:00:00Z', deadline_behavior: 'stays_owed' } })] });
+  expect(screen.getByText('Snoozed until Nov 6, 3:00 PM')).toBeTruthy();
+  expect(container.querySelector('.when.passed')).toBeTruthy();
+  expect(screen.getByText('Still owed')).toBeTruthy();
+ });
 });

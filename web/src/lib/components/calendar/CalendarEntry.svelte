@@ -13,7 +13,7 @@
  let {audienceEntry, audience = 'mine', isAgent = false, row, zone, basePath = '', onopen, preview = false, keyboard = true}: {audienceEntry?: AgendaEntry; audience?: AudienceView; isAgent?: boolean; row:CalendarRow;zone:string;basePath?:string;onopen?:(row:CalendarRow)=>void;preview?:boolean;keyboard?:boolean} = $props();
  const snooze = $derived(snoozeLabel(row, zone));
  const overdue = $derived(isOverdue(row));
- const attention = $derived(!!row.attention && !snooze);
+ const attention = $derived(!!row.attention);
  const owner = $derived(audienceEntry && classify(audienceEntry) === 'agents' && audienceEntry.agent_role_name ? audienceEntry : null);
  let state = $derived(occurrenceState(row.state));
  let done = $derived((!!row.terminal && !row.abandoned) || row.state === 'done');

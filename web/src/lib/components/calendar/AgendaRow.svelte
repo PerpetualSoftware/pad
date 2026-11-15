@@ -10,7 +10,7 @@
 	import RolePill from './RolePill.svelte';
 	import StateMark from './StateMark.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
-	import { OCCURRENCE_STATES, isSnoozed, isOverdue, snoozeLabel, acknowledgedText, canMove, canResolve, isOpenState, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { OCCURRENCE_STATES, isOverdue, snoozeLabel, acknowledgedText, canMove, canResolve, isOpenState, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
@@ -40,7 +40,6 @@
 
 	let { audience = 'mine', isAgent = false, entry, zone, now = new Date(Date.now()), pending = false, saved = false, compact = false, movable = false, dragging = false, showDay = false, marker, onaction, ondragstart, ondragend }: Props = $props();
 
-	const snoozed = $derived(isSnoozed(entry, now));
 	const snooze = $derived(snoozeLabel(entry, zone, now));
 	const href = $derived(entryHref(entry));
 	const schedule = $derived(entry.type === 'schedule');
@@ -74,7 +73,7 @@
 {/snippet}
 {#snippet pills()}
 	<AudienceChip {entry} view={audience} {isAgent} />
-	{#if deadline}<RolePill muted={snoozed} kind="deadline" value={deadline} behavior={entry.roles?.deadline_behavior} {zone} {now} title={deadlineTitle} />{/if}
+	{#if deadline}<RolePill kind="deadline" value={deadline} behavior={entry.roles?.deadline_behavior} {zone} {now} title={deadlineTitle} />{/if}
 	{#if forecast}<RolePill kind="forecast" value={forecast.value} deadline={entry.roles?.deadline} {zone} {now} title={forecastText(forecast, zone)} />{/if}
 	<span class="chips">{#each chips as chip, index (index)}<Chip size="sm" color={chip.color}>{chip.text}</Chip>{/each}</span>
 {/snippet}
@@ -100,7 +99,7 @@
 	{:else}
 		{#if !compact}<div class="time">{#each times as line, index (index)}{#if index === 0}{line}{:else}<small>{line}</small>{/if}{/each}</div>{/if}
 		<span class="mark">
-			{#if schedule}<StateMark state={entry.state} overdue={isOverdue(entry, now) || (!snoozed && deadlinePassed)} />
+			{#if schedule}<StateMark state={entry.state} overdue={isOverdue(entry, now) || deadlinePassed} />
 			{:else if entry.type === 'date'}<StateMark overdue={!!entry.overdue} label={entryChips(entry)[0]?.text || 'Date'} />{/if}
 		</span>
 		<div class="body">

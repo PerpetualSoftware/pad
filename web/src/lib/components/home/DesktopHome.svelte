@@ -32,7 +32,7 @@
 	const todayEntries = $derived(entries.filter(e => e.day === today && (e.type === 'schedule' || e.type === 'date')));
 	const counts = $derived(audienceCounts(todayEntries));
 	const owed = $derived(todayEntries.filter(e => e.type === 'schedule' && isOpenState(e.state)).length);
-	const isPastDeadline = (entry: AgendaEntry) => !isSnoozed(entry) && !!(entry.overdue || (entry.roles?.deadline && deadlineTone(entry.roles.deadline, zone, new Date()) === 'passed'));
+	const isPastDeadline = (entry: AgendaEntry) => !!((entry.overdue && !isSnoozed(entry)) || (entry.roles?.deadline && deadlineTone(entry.roles.deadline, zone, new Date()) === 'passed'));
 	const attention = $derived.by(() => {
 		const rows = attentionEntries(entries, homeOverview.agenda?.priority_list ?? []).flatMap(row => {
 			const entry = row.inWindow ? row.entry as AgendaEntry : workOccurrence(row.entry as AgendaWorkEntry, zone);

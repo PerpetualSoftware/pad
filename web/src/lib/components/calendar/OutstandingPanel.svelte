@@ -79,15 +79,15 @@
 							<span class="when">Schedule ended{#if row.ended_at}{' '}{shortDay(roleDay(row.ended_at, zone), today)}{/if} · item still open</span>
 						{:else if tab !== 'none'}
 							{#if owed}
-								<span class="when" class:passed={!snooze}>Deadline passed{#if deadline}{' '}{shortDay(roleDay(deadline, zone), today)}{/if}</span>
+								<span class="when passed">Deadline passed{#if deadline}{' '}{shortDay(roleDay(deadline, zone), today)}{/if}</span>
 							{:else if row.roles?.target}
 								<span class="when">{shortRoleDate(row.roles.target, zone, now)}</span>
 							{/if}
 							<!-- A deadline still owed is already the row's own text, so its pill would only say it twice. -->
-							{#if deadline && !owed}<RolePill muted={!!snooze} kind="deadline" value={deadline} behavior={row.roles?.deadline_behavior} {zone} {now} title={`Deadline ${roleText(deadline, zone)}`} />{/if}
+							{#if deadline && !owed}<RolePill kind="deadline" value={deadline} behavior={row.roles?.deadline_behavior} {zone} {now} title={`Deadline ${roleText(deadline, zone)}`} />{/if}
 							{#if row.forecast}<RolePill kind="forecast" value={row.forecast.value} {deadline} {zone} {now} title={forecastText(row.forecast, zone)} />{/if}
 						{/if}
-						{#if owed}<Chip size="sm" color={snooze ? 'var(--text-muted)' : 'var(--accent-red)'}>Still owed</Chip>{/if}
+						{#if owed}<Chip size="sm" color="var(--accent-red)">Still owed</Chip>{/if}
 						{#if row.missed_count && row.missed_count > 0}<Chip size="sm" color="var(--accent-amber)">{row.missed_count} missed</Chip>{/if}
 						<SnoozeLabel label={snooze} />
 						{#if row.reason === 'blocked_needs_decision'}<Chip size="sm">Needs a decision</Chip>{/if}
