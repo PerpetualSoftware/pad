@@ -9,6 +9,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/usertz"
+	"github.com/google/uuid"
 )
 
 // handleMeAgenda serves the admitted, visible workspaces as one bounded agenda.
@@ -22,11 +23,9 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Sign in to see your agenda")
 		return
 	}
-	// A pinned token never names a group. The refusal is decided here, before
-	// any group is looked up or the parameter is read, so the answer is the same
-	// for its own group, an unknown id and the built-ins, and says nothing about
-	// which ids exist. Without the parameter it keeps the one workspace it has.
-	if pin := tokenPinFrom(r.Context()); pin != nil && r.URL.Query().Has("group") {
+	// Selector presence is refused before parsing or lookup, independently of
+	// the requested ID. Without selectors, the token retains its pinned scope.
+	if pin := tokenPinFrom(r.Context()); pin != nil && (r.URL.Query().Has("group") || r.URL.Query().Has("workspace")) {
 		writeTokenWorkspaceDeniedFor(w, pin)
 		return
 	}
@@ -59,6 +58,27 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		}
 		zone, note = usertz.Zone{Name: tz, Loc: loc, Set: true}, ""
 	}
+	workspaceID := ""
+	if query := r.URL.Query(); query.Has("workspace") {
+		if query.Has("group") {
+			writeAgendaParam(w, "workspace", "conflict", "`workspace` cannot be combined with `group`")
+			return
+		}
+		if len(query["workspace"]) != 1 {
+			writeAgendaParam(w, "workspace", "format", "`workspace` must be a single workspace UUID")
+			return
+		}
+		raw := strings.TrimSpace(query.Get("workspace"))
+		parsed, err := uuid.Parse(raw)
+		if len(raw) != 36 || err != nil {
+			writeAgendaParam(w, "workspace", "format", "`workspace` must be a workspace UUID")
+			return
+		}
+		workspaceID = parsed.String()
+	}
+	unavailable := func() {
+		writeError(w, http.StatusNotFound, "not_found", "Workspace not available")
+	}
 	run := s.newAgendaRead(from, to, zone, note)
 	run.response.Forecasts, run.response.ForecastsComplete = []agendaForecast{}, true
 	run.recipient, run.audience = user.ID, "human"
@@ -70,9 +90,24 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
-	admitted, ok = s.agendaGroupWorkspaces(w, r, user, admitted)
-	if !ok {
-		return
+	if workspaceID != "" {
+		var selected []models.Workspace
+		for _, ws := range admitted {
+			if ws.ID == workspaceID {
+				selected = []models.Workspace{ws}
+				break
+			}
+		}
+		if len(selected) == 0 {
+			unavailable()
+			return
+		}
+		admitted = selected
+	} else {
+		admitted, ok = s.agendaGroupWorkspaces(w, r, user, admitted)
+		if !ok {
+			return
+		}
 	}
 	sort.Slice(admitted, func(i, j int) bool {
 		if admitted[i].Slug != admitted[j].Slug {
@@ -101,6 +136,10 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if vis == nil {
+			if workspaceID != "" {
+				unavailable()
+				return
+			}
 			continue
 		}
 		scope := store.PendingReminderScope{}
@@ -110,6 +149,10 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 				scope.CollectionIDs = []string{}
 			}
 			if len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
+				if workspaceID != "" {
+					unavailable()
+					return
+				}
 				continue
 			}
 		}
