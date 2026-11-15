@@ -8,7 +8,7 @@ vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({ pendingInvitations: { count: 1, refresh: vi.fn() } }));
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { userId: 'u', user: { name: 'Mara Lindqvist', timezone: 'UTC' }, identityFence: () => () => true, onIdentityChange: () => () => {} } }));
 import Home from './+page.svelte';
-afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); });
 it('renders Home counts with one call per data source, independent of workspace count', async () => {
 	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
 	h.list.mockResolvedValue(Array.from({length: 5}, (_, i) => ({ id: String(i), slug: 'ws'+i, name: 'Workspace '+i, owner_username: 'mara', owner_id: 'u' })));
@@ -128,6 +128,13 @@ it('shows the completed truncation note and agenda link inside Today even withou
 	const note = today.getByText('Some completed items today may not be shown.', { exact: false });
 	expect(note).toHaveClass('empty');
 	expect(within(note).getByRole('link', { name: 'Open the full agenda →' })).toHaveAttribute('href', '/agenda');
+});
+
+it('hides the completed truncation note when the user hides completed work on the agenda', async () => {
+	localStorage.setItem('pad-agenda-completed:u', '0');
+	const today = await renderCompleted([completed()], true);
+	expect(today.queryByText('Some completed items today may not be shown.', { exact: false })).not.toBeInTheDocument();
+	expect(today.queryByRole('button', { name: /completed/ })).not.toBeInTheDocument();
 });
 
 // TASK-4545 review: Home runs the agenda page's occurrence guard, so Done never

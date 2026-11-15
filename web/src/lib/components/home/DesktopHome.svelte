@@ -21,7 +21,12 @@
 	import type { AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
-	let showCompleted = $state(true);
+	// The agenda's Show completed preference, per user: hidden there means hidden here.
+	const showCompleted = $derived.by(() => {
+		const userId = authStore.userId;
+		if (!userId) return true;
+		try { return localStorage.getItem(`${completedPreferencePrefix}${userId}`) !== '0'; } catch { return true; /* Storage is optional. */ }
+	});
 	let workspaceError = $state(false);
 	let invitationsOpen = $state(false);
 	let actionError = $state('');
@@ -60,10 +65,6 @@
 	// BottomNav owns overview refreshes on phone arrivals, including /.
 	// Keep the desktop loading policy unchanged (TASK-4559 is separate).
 	onMount(() => {
-		const userId = authStore.userId;
-		if (userId) {
-			try { showCompleted = localStorage.getItem(`${completedPreferencePrefix}${userId}`) !== '0'; } catch { /* Storage is optional. */ }
-		}
 		if (!viewport.isMobile) void homeOverview.load('/');
 		else void pendingInvitations.refresh();
 		void loadWorkspaces();
@@ -122,7 +123,7 @@
 			<h3>Today</h3><ul>{#each todayRows as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>
 			{#if !homeOverview.loading && !todayRows.length}<p class="empty">Nothing scheduled today.</p>{/if}
 			{#if showCompleted}<ul><AgendaCompleted {audience} completed={todayCompleted} {zone} compact={viewport.isMobile} onaction={action} /></ul>{/if}
-			{#if homeOverview.agenda?.events_truncated}<p class="empty">Some completed items today may not be shown. <a href="/agenda">Open the full agenda →</a></p>{/if}
+			{#if showCompleted && homeOverview.agenda?.events_truncated}<p class="empty">Some completed items today may not be shown. <a href="/agenda">Open the full agenda →</a></p>{/if}
 			<footer><span>Agents: {agents.length} reminders today, {agents.filter(e => isOpenState(e.state)).length} owed, {agents.filter(e => e.state === 'missed' || e.state === 'lapsed').length} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
 	</div>
