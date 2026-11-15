@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -57,6 +58,14 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
 		return nil, false, nil
 	}
+	// Most workspaces have no schedule; skip the large statement build and parse.
+	var exists int
+	if err := s.db.QueryRow(s.q(`SELECT 1 FROM item_schedules WHERE workspace_id = ? LIMIT 1`), workspaceID).Scan(&exists); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("list schedules for agenda: %w", err)
+	}
 	scopeSQL, scopeArgs := scopeClause("i", scope)
 	f := time.RFC3339
 	open, openArgs := s.nonTerminalFilter(workspaceID, "i")
@@ -76,11 +85,11 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 	args = append(args, historyArgs...)
 	args = append(args, workspaceID)
 	args = append(append(args, scopeArgs...), openArgs...)
-	// item_id IN (...), not a join: scheduleColumns names item_schedules.id.
+	// EXISTS looks up the item by key per schedule instead of rerunning the whole items filter.
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR `+historySQL+`) AND item_id IN (
-			SELECT i.id FROM items i JOIN collections c ON c.id = i.collection_id
-			WHERE i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)
+		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR `+historySQL+`) AND EXISTS (
+			SELECT 1 FROM items i JOIN collections c ON c.id = i.collection_id
+			WHERE i.id = item_schedules.item_id AND i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)
 		ORDER BY item_schedules.id LIMIT ?`), append(args, limit+1)...)
 	if err != nil {
 		return nil, false, fmt.Errorf("list schedules for agenda: %w", err)
