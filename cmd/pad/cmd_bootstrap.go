@@ -222,12 +222,13 @@ type bootstrapAgendaWorkRow struct {
 }
 
 type bootstrapAgendaRow struct {
-	Ref         string                 `json:"ref"`
-	Title       string                 `json:"title"`
-	At          string                 `json:"at"`
-	AllDay      bool                   `json:"all_day"`
-	Roles       models.CommitmentRoles `json:"roles"`
-	MissedCount int                    `json:"missed_count"`
+	SnoozedUntil string                 `json:"snoozed_until"`
+	Ref          string                 `json:"ref"`
+	Title        string                 `json:"title"`
+	At           string                 `json:"at"`
+	AllDay       bool                   `json:"all_day"`
+	Roles        models.CommitmentRoles `json:"roles"`
+	MissedCount  int                    `json:"missed_count"`
 }
 
 // printBootstrapAgenda renders rows, counts and incomplete sections.
@@ -251,6 +252,10 @@ func printBootstrapAgenda(a *bootstrapAgendaView) {
 		missed := ""
 		if r.MissedCount > 0 {
 			missed = fmt.Sprintf(", missed %d", r.MissedCount)
+		}
+		if r.SnoozedUntil != "" {
+			loc, _ := time.LoadLocation(a.Tz)
+			missed += ", snoozed until " + fmtInstant(r.SnoozedUntil, loc)
 		}
 		// A title is item data: one line, so it cannot open a line of its own.
 		fmt.Printf("- [%s] %s — %s (%s%s)\n", r.Ref, strings.Join(strings.Fields(r.Title), " "), at, schedule.CommitmentKind(r.Roles.Deadline != nil, r.Roles.OccupiedUntil != nil), missed)

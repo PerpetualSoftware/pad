@@ -255,3 +255,19 @@ describe('OutstandingPanel schedule_ended rows (TASK-4537)', () => {
 		expect(within(rowOf(c.item_ref)).queryByRole('button')).toBeNull();
 	});
 });
+
+describe('BUG4570 snoozed Outstanding row', () => {
+ it('keeps the original target with a snooze marker and no overdue color', () => {
+  const { container } = mount({ priority_list: [work({ roles: { ...roles, target: '2026-11-04T09:00:00Z' }, reason: 'target_passed', overdue: true, snoozed_until: '2026-11-06T15:00:00Z' })] });
+  expect(screen.getByText('Snoozed until Nov 6, 3:00 PM')).toBeTruthy();
+  expect(screen.getByText(/Wed 4/)).toBeTruthy();
+  expect(container.querySelector('.when.passed')).toBeNull();
+ });
+
+ it('keeps a passed deadline loud while snoozed: a snooze defers the reminder, not the deadline', () => {
+  const { container } = mount({ priority_list: [work({ reason: 'deadline_still_owed', snoozed_until: '2026-11-06T15:00:00Z', roles: { ...roles, target: '2026-11-03T09:00:00Z', deadline: '2026-11-04T10:00:00Z', deadline_behavior: 'stays_owed' } })] });
+  expect(screen.getByText('Snoozed until Nov 6, 3:00 PM')).toBeTruthy();
+  expect(container.querySelector('.when.passed')).toBeTruthy();
+  expect(screen.getByText('Still owed')).toBeTruthy();
+ });
+});

@@ -16,7 +16,7 @@
 	import AudienceToggle from '$lib/components/calendar/AudienceToggle.svelte';
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import { audienceCounts, filterAudience, type AudienceView } from '$lib/calendar/audience';
-	import { attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
@@ -32,7 +32,7 @@
 	const todayEntries = $derived(entries.filter(e => e.day === today && (e.type === 'schedule' || e.type === 'date')));
 	const counts = $derived(audienceCounts(todayEntries));
 	const owed = $derived(todayEntries.filter(e => e.type === 'schedule' && isOpenState(e.state)).length);
-	const isPastDeadline = (entry: AgendaEntry) => !!(entry.overdue || (entry.roles?.deadline && deadlineTone(entry.roles.deadline, zone, new Date()) === 'passed'));
+	const isPastDeadline = (entry: AgendaEntry) => !!((entry.overdue && !isSnoozed(entry)) || (entry.roles?.deadline && deadlineTone(entry.roles.deadline, zone, new Date()) === 'passed'));
 	const attention = $derived.by(() => {
 		const rows = attentionEntries(entries, homeOverview.agenda?.priority_list ?? []).flatMap(row => {
 			const entry = row.inWindow ? row.entry as AgendaEntry : workOccurrence(row.entry as AgendaWorkEntry, zone);

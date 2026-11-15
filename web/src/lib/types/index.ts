@@ -1971,6 +1971,7 @@ export interface CalendarItem {
 }
 
 export interface CalendarEntry {
+ snoozed_until?: string;
  forecast?: CommitmentForecastSummary;
 	type: 'schedule' | 'date';
 	at: string;
@@ -3852,6 +3853,7 @@ export interface AcknowledgedBy {
 }
 
 export interface AgendaEntry {
+ snoozed_until?: string;
  agent_role_name?: string;
  agent_role_slug?: string;
  forecast?: CommitmentForecastSummary;
@@ -4059,6 +4061,7 @@ export interface ItemCommitmentView {
  lead_minutes: number;
  next_occurrence?: { at: string; wall: string; state: 'outstanding' | 'acknowledged'; acknowledged_at?: string; acknowledged_by?: AcknowledgedBy };
  next_override_at?: string;
+ snoozed_until?: string;
  missed_count?: number;
  missed_truncated?: boolean;
  stale?: boolean;

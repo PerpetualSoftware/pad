@@ -29,6 +29,7 @@ const (
 )
 
 type agendaEntry struct {
+	SnoozedUntil   string                  `json:"snoozed_until,omitempty"`
 	Forecast       *models.ForecastSummary `json:"forecast,omitempty"`
 	Type           string                  `json:"type"` // schedule | date | created | completed
 	At             string                  `json:"at,omitempty"`
@@ -491,7 +492,8 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 		res.Truncated = res.Truncated || cut
 		for _, e := range es {
 			out := agendaEntry{
-				Type: "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
+				SnoozedUntil: agendaOptionalInstant(e.SnoozedUntil, loc),
+				Type:         "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
 				Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Floating: &sc.Floating, State: e.State, AcknowledgedAt: e.AcknowledgedAt, AcknowledgedBy: e.AcknowledgedBy,
 				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Audience: sc.Audience,
 				AgentRoleName: as.AgentRoleName, AgentRoleSlug: as.AgentRoleSlug,
@@ -521,4 +523,12 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 		}
 	}
 	return res, nil
+}
+
+// agendaOptionalInstant formats an optional instant in the response timezone.
+func agendaOptionalInstant(at *time.Time, loc *time.Location) string {
+	if at == nil {
+		return ""
+	}
+	return at.In(loc).Format(time.RFC3339)
 }

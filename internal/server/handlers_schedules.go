@@ -35,6 +35,7 @@ type scheduleOccurrenceView struct {
 // scheduleView is the API shape of a schedule. It is NOT models.ItemSchedule,
 // which carries workspace_id, item_id and the internal floating bound (next_at).
 type scheduleView struct {
+	SnoozedUntil   string                  `json:"snoozed_until,omitempty"`
 	ID             string                  `json:"id"`
 	ItemRef        string                  `json:"item_ref"`
 	Dtstart        string                  `json:"dtstart"`
@@ -70,13 +71,18 @@ type scheduleView struct {
 // any zone could give next_wall, which is never shown: next_occurrence.at is
 // the wall read in the CALLER's zone (the tick uses the recipient's). Once
 // fired, next_at is the exact instant and is what is shown.
-func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *models.ItemSchedule) scheduleView {
+func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *models.ItemSchedule) (scheduleView, error) {
 	ref := item.Ref
 	if ref == "" {
 		ref = item.Slug // a legacy item with no ref (see handleCreateItemReminder's resolver)
 	}
+	snoozedUntil, err := s.store.ReadScheduleSnoozedUntil(sc, time.Now())
+	if err != nil {
+		return scheduleView{}, err
+	}
 	v := scheduleView{
-		ID: sc.ID, ItemRef: ref, Dtstart: sc.Dtstart,
+		SnoozedUntil: agendaOptionalInstant(snoozedUntil, time.UTC),
+		ID:           sc.ID, ItemRef: ref, Dtstart: sc.Dtstart,
 		Tz: sc.Tz, Floating: sc.Floating, Rrule: sc.Rrule,
 		RDates: nonNilStrings(sc.RDates), ExDates: nonNilStrings(sc.ExDates),
 		Anchor: sc.Anchor, Audience: sc.Audience, LeadMinutes: sc.LeadMinutes,
@@ -103,7 +109,7 @@ func (s *Server) buildScheduleView(r *http.Request, item *models.Item, sc *model
 			v.MissedCount, v.MissedTruncated, v.Stale = n, truncated, n >= 2
 		}
 	}
-	return v
+	return v, nil
 }
 
 // firstMissedWarning reports whether this read is the first to see the missed

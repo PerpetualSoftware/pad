@@ -200,18 +200,33 @@ export function occurrenceState(state: string | null | undefined): OccurrenceSta
 	return state != null && Object.hasOwn(OCCURRENCE_STATES, state) ? OCCURRENCE_STATES[state as OccurrenceState] : undefined;
 }
 
-export function entryChips(entry: AgendaEntry): { text: string; color: string }[] {
+/** Snoozing changes reminder timing, never the occurrence's due facts. */
+export function isSnoozed(entry: { snoozed_until?: string }, now = new Date(Date.now())): boolean {
+ return !!entry.snoozed_until && Date.parse(entry.snoozed_until) > now.getTime();
+}
+
+export function snoozeLabel(entry: { snoozed_until?: string }, zone: string, now = new Date(Date.now())): string | null {
+ if (!isSnoozed(entry, now)) return null;
+ const instant = new Intl.DateTimeFormat('en-US', { timeZone: zone, month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }).format(new Date(entry.snoozed_until!));
+ return `Snoozed until ${instant}`;
+}
+
+export function isOverdue(entry: { overdue?: boolean; snoozed_until?: string }, now = new Date(Date.now())): boolean {
+ return !!entry.overdue && !isSnoozed(entry, now);
+}
+
+export function entryChips(entry: AgendaEntry, now = new Date(Date.now())): { text: string; color: string }[] {
 	const chip = (text: string, color = '--accent-gray') => ({ text, color: `var(${color})` });
 	if (entry.type === 'created') return [chip('Created')];
 	if (entry.type === 'completed') return [chip('Completed')];
 	if (entry.type === 'date') {
 		const label = entry.field === 'due_date' ? 'Due' : entry.field === 'end_date' ? 'Ends' : entry.field ?? '';
-		return [chip(label), ...(entry.overdue ? [chip('Overdue', '--accent-amber')] : [])];
+		return [chip(label), ...(isOverdue(entry, now) ? [chip('Overdue', '--accent-amber')] : [])];
 	}
 	const state = occurrenceState(entry.state);
 	const chips = entry.state ? [state ? chip(state.label, state.tone) : chip('Unknown')] : [];
 	if (isOpenState(entry.state)) {
-		if (entry.overdue) chips.push(chip('Overdue', '--accent-amber'));
+		if (isOverdue(entry, now)) chips.push(chip('Overdue', '--accent-amber'));
 		if (entry.missed_count && entry.missed_count > 0) chips.push(chip(`${entry.missed_count} missed occurrence${entry.missed_count === 1 ? '' : 's'}`, '--accent-amber'));
 		if (entry.stale) chips.push(chip('Stale', '--accent-amber'));
 	}
@@ -280,7 +295,7 @@ export function agendaRows(entries: AgendaEntry[]): CalendarRow[] {
   key: entryKey(entry), day: entry.day, ref: entry.item_ref, target: entry.item_ref, title: entry.item_title,
   href: entryHref(entry), workspaceName: entry.workspace_name, allDay: isAllDay(entry), at: entry.at,
   ...(entry.type === 'schedule'
-   ? { state: entry.state, overdue: entry.overdue, missedCount: entry.missed_count, stale: entry.stale, forecast: entry.forecast,
+   ? { state: entry.state, overdue: entry.overdue, snoozed_until: entry.snoozed_until, missedCount: entry.missed_count, stale: entry.stale, forecast: entry.forecast,
     ...(entry.state === 'acknowledged' ? { acknowledgedAt: entry.acknowledged_at, acknowledgedBy: entry.acknowledged_by } : {}) }
    : { label: entryChips(entry)[0]?.text, overdue: entry.overdue })
  })));
@@ -305,8 +320,8 @@ function attentionKey(entry: AgendaEntry | AgendaWorkEntry): string {
 }
 
 /**
- * What needs attention: priority-list rows whose target has passed or whose deadline passed
- * while still owed, plus window occurrences that lapsed, were missed or carry missed occurrences.
+ * What needs attention: priority-list rows whose target has passed (unless snoozed) or whose
+ * deadline passed while still owed, plus window occurrences that lapsed, were missed or carry missed occurrences.
  * Each occurrence is listed once, under its most severe reason.
  */
 export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWorkEntry[]): AttentionEntry[] {
@@ -320,7 +335,10 @@ export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWor
 	};
 	for (const row of priorityList) {
 		if (row.type !== 'schedule') continue;
-		if (row.reason === 'deadline_still_owed' || row.reason === 'target_passed') add(row.reason, row, false);
+		if (row.reason === 'deadline_still_owed') add(row.reason, row, false);
+		// A snoozed occurrence was deliberately deferred: its passed target is not attention until the
+		// snooze ends. A passed deadline still is, since a snooze does not move it.
+		else if (row.reason === 'target_passed' && !isSnoozed(row)) add(row.reason, row, false);
 	}
 	for (const entry of entries) {
 		if (entry.type !== 'schedule') continue;

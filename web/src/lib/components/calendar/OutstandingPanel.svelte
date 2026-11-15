@@ -1,11 +1,12 @@
 <script lang="ts">
+	import SnoozeLabel from './SnoozeLabel.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import RolePill from './RolePill.svelte';
 	import RowMenu from './RowMenu.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
-	import { ACKNOWLEDGE_HELP, acknowledgedText, canAcknowledge, canMove, endedKey, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { ACKNOWLEDGE_HELP, snoozeLabel, acknowledgedText, canAcknowledge, canMove, endedKey, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry } from '$lib/types';
 
 	interface Props {
@@ -63,6 +64,7 @@
 			{@const href = entryHref({ ...row, type: 'schedule', at: row.at ?? '', day: row.day ?? '' })}
 			{@const key = entry ? entryKey(entry) : ''}
 			{@const busy = !!entry && (!!pending[key] || !!saved[key])}
+			{@const snooze = snoozeLabel(row, zone, now)}
 			{@const owed = row.reason === 'deadline_still_owed'}
 			{@const ended = row.reason === 'schedule_ended'}
 			{@const deadline = row.roles?.deadline}
@@ -87,6 +89,7 @@
 						{/if}
 						{#if owed}<Chip size="sm" color="var(--accent-red)">Still owed</Chip>{/if}
 						{#if row.missed_count && row.missed_count > 0}<Chip size="sm" color="var(--accent-amber)">{row.missed_count} missed</Chip>{/if}
+						<SnoozeLabel label={snooze} />
 						{#if row.reason === 'blocked_needs_decision'}<Chip size="sm">Needs a decision</Chip>{/if}
 					</div>
 					{#if row.state === 'acknowledged'}<div class="ack">{acknowledgedText(row.acknowledged_at, row.acknowledged_by, zone, now)}</div>{/if}

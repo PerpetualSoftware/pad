@@ -30,6 +30,7 @@ type scheduleOccurrence struct {
 // scheduleView decodes the fields the table output reads. Anything else the
 // server adds stays in the raw body, which --format json prints untouched.
 type scheduleView struct {
+	SnoozedUntil     string                     `json:"snoozed_until"`
 	Forecast         *models.CommitmentForecast `json:"forecast"`
 	Milestone        models.CommitmentMilestone `json:"milestone"`
 	ItemRef          string                     `json:"item_ref"`
@@ -216,7 +217,9 @@ whether the schedule is active, ended or in error.`,
 			fmt.Fprintf(w, "Anchor:\t%s\n", v.Anchor)
 			fmt.Fprintf(w, "Audience:\t%s\n", v.Audience)
 			fmt.Fprintf(w, "Next:\t%s\n", v.next())
-			if v.NextOverrideAt != nil {
+			if v.SnoozedUntil != "" {
+				fmt.Fprintf(w, "Snoozed until:\t%s\n", fmtInstant(v.SnoozedUntil, nil))
+			} else if v.NextOverrideAt != nil {
 				fmt.Fprintf(w, "Deferred to:\t%s\n", fmtInstant(*v.NextOverrideAt, nil))
 			}
 			if v.MissedCount > 0 {
@@ -659,6 +662,7 @@ confirmation unless --yes is given.`,
 // ---- agenda ----
 
 type agendaEntry struct {
+	SnoozedUntil   string                  `json:"snoozed_until"`
 	Forecast       *models.ForecastSummary `json:"forecast"`
 	Type           string                  `json:"type"`
 	At             string                  `json:"at"`
@@ -961,6 +965,9 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 				state, kind = "dated", e.Field
 			}
 			var flags []string
+			if e.SnoozedUntil != "" {
+				flags = append(flags, "snoozed until "+fmtInstant(e.SnoozedUntil, loc))
+			}
 			if e.Forecast != nil {
 				flags = append(flags, "forecast="+e.Forecast.Value)
 			}

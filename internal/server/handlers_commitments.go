@@ -76,7 +76,10 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 	} else {
 		c.LastResolution = nil
 	}
-	v := s.buildScheduleView(r, item, sc)
+	v, err := s.buildScheduleView(r, item, sc)
+	if err != nil {
+		return nil, err
+	}
 	v.TimezoneNote = note
 	out := &commitmentView{Commitment: c, scheduleView: v, Links: []models.ScheduleLink{}, Gates: &models.ScheduleGateView{State: models.GateStateReleased, Gates: []models.ScheduleGate{}}}
 	if access.Readable[item.ID] {

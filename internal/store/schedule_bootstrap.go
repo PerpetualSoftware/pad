@@ -17,6 +17,7 @@ const BootstrapAgendaStaleAfter = 14 * 24 * time.Hour
 // BootstrapAgendaRow is one schedule's outstanding occurrence as the bootstrap
 // agenda shows it.
 type BootstrapAgendaRow struct {
+	SnoozedUntil *time.Time
 	AgendaSchedule
 	Due           time.Time // the instant it is due, the moved instant for a moved one
 	Wall          string    // the occurrence's wall, a date for an all-day one
@@ -152,7 +153,7 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	if err := s.fillAgendaItemFacts(found, "", nil); err != nil {
 		return nil, err
 	}
-	outstanding, incomplete := s.outstandingAgendaRows(found, loc)
+	outstanding, incomplete := s.outstandingAgendaRows(found, loc, p.Now)
 	set.Incomplete = incomplete
 	for _, row := range outstanding {
 		due := row.Due
@@ -195,7 +196,7 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 
 // outstandingAgendaRows reads each outstanding occurrence at its effective due
 // instant. A move defers the claim; a snooze only defers its next notification.
-func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location) ([]BootstrapAgendaRow, bool) {
+func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location, now time.Time) ([]BootstrapAgendaRow, bool) {
 	var out []BootstrapAgendaRow
 	incomplete := false
 	skip := func(as AgendaSchedule, err error) {
@@ -219,6 +220,11 @@ func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location
 		if e == nil {
 			continue
 		}
+		// The read above runs on a zero clock, so the snooze is judged on the
+		// caller's: a snooze whose re-fire instant has passed has ended.
+		if e.SnoozedUntil != nil && !e.SnoozedUntil.After(now) {
+			e.SnoozedUntil = nil
+		}
 		due := e.At
 		if e.Roles.Target != nil && len(*e.Roles.Target) == 10 {
 			due, err = agendaRoleInstant(*e.Roles.Target, loc)
@@ -227,7 +233,7 @@ func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location
 				continue
 			}
 		}
-		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, Due: due, Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Roles: e.Roles, OccurrenceKey: e.OccurrenceKey})
+		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, SnoozedUntil: e.SnoozedUntil, Due: due, Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Roles: e.Roles, OccurrenceKey: e.OccurrenceKey})
 	}
 	return out, incomplete
 }
