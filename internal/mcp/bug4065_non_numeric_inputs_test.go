@@ -653,6 +653,8 @@ func bug4065WalkBase(cmd string) map[string]any {
 	}
 	// The schedule routes read their own members; `to` is a string on agenda.
 	switch cmd {
+	case "item remind reopen":
+		base["resolution"] = "11111111-1111-4111-8111-111111111111"
 	case "item remind agenda":
 		base["from"], base["to"] = "2026-11-09T00:00:00Z", "2026-11-16T00:00:00Z"
 	case "item remind ack", "item remind done", "item remind skip", "item remind snooze", "item remind move":

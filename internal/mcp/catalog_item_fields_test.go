@@ -1723,7 +1723,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"actual_done_at": true, "reason": true, "scope": true, "deadline_days": true, "deadline_secs": true,
 		"deadline_behavior": true, "remove_deadline": true, "revision": true, "preview": true,
 		// schedule-resolve's consent to end an open item's schedule (TASK-4537).
-		"end_schedule": true,
+		"end_schedule": true, "resolution_id": true,
 
 		// Execution-lease coordination state (#1221) — holder/expiry live on
 		// dedicated columns, never in the item's fields blob.

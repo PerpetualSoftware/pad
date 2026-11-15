@@ -481,6 +481,7 @@ func init() {
 			pathTemplate: itemSchedulePathTemplate + "/dismiss-ended",
 		}.toRouteMapper(),
 		"item remind ack":         mapScheduleResolve("ack"),
+		"item remind reopen":      mapScheduleReopen,
 		"item remind done":        mapScheduleResolve("done"),
 		"item remind skip":        mapScheduleResolve("skip"),
 		"item remind snooze":      mapScheduleResolve("snooze"),

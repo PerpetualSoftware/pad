@@ -45,6 +45,11 @@ type ErrorCode string
 
 const (
 	ErrInvalidBody               ErrorCode = "invalid_body"
+	ErrReopenUnavailable         ErrorCode = "reopen_unavailable"
+	ErrReopenNotSupported        ErrorCode = "reopen_not_supported"
+	ErrReopenConflict            ErrorCode = "reopen_conflict"
+	ErrReopenDependency          ErrorCode = "reopen_dependency"
+	ErrReopenDeadlinePassed      ErrorCode = "reopen_deadline_passed"
 	ErrOccurrenceNotFired        ErrorCode = "not_fired"
 	ErrStaleOccurrence           ErrorCode = "stale"
 	ErrScheduleBroken            ErrorCode = "schedule_error"
@@ -541,7 +546,8 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"gate_duplicate":              {},
 	"commitment_preview_required": {},
 	"validation_error":            {},
-	"not_fired":                   {}, "stale": {}, "schedule_error": {}, "schedule_busy": {},
+	"reopen_unavailable":          {}, "reopen_not_supported": {}, "reopen_conflict": {}, "reopen_dependency": {}, "reopen_deadline_passed": {},
+	"not_fired": {}, "stale": {}, "schedule_error": {}, "schedule_busy": {},
 	"item_still_open": {}, "not_ended": {}, // TASK-4537
 
 	"hard_deadline":           {},
@@ -1906,7 +1912,7 @@ func commitmentGraphCode(code, route string) bool {
 	switch ErrorCode(code) {
 	case ErrInvalidBody:
 		return cli.IsCommitmentRoute(route)
-	case ErrOccurrenceNotFired, ErrStaleOccurrence, ErrScheduleBroken, ErrScheduleBusy, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired, ErrItemStillOpen, ErrNotEnded:
+	case ErrReopenUnavailable, ErrReopenNotSupported, ErrReopenConflict, ErrReopenDependency, ErrReopenDeadlinePassed, ErrOccurrenceNotFired, ErrStaleOccurrence, ErrScheduleBroken, ErrScheduleBusy, ErrScheduleLinked, ErrDeadlineApprovalRequired, ErrLinkViolationAck, ErrCommitmentChanged, ErrLinkBudget, ErrLinkEditRequired, ErrScheduleLinkNotFound, ErrLinkCycle, ErrLinkSelf, ErrLinkDuplicateIncoming, ErrLinkLimit, ErrLinkInvalid, ErrGateDuplicate, ErrCommitmentPreviewRequired, ErrItemStillOpen, ErrNotEnded:
 		return true
 	}
 	return false
@@ -1920,7 +1926,7 @@ func commitmentValidationDetails(raw json.RawMessage) bool {
 		return false
 	}
 	switch d.Field {
-	case "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule":
+	case "resolution_id", "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule":
 		return true
 	}
 	return false

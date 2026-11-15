@@ -2339,7 +2339,8 @@ const CmdhelpVersion = "0.1"
 // v0.117 — TASK-4538: update and bulk-update refuse closing a live recurring
 // schedule with schedule_active unless force is true. Behaviour bump: previously
 // successful closes now require consent; the parameter shape is unchanged.
-const ToolSurfaceVersion = "0.117"
+// v0.118 — TASK-4539: schedule-reopen reverses one exact local resolution.
+const ToolSurfaceVersion = "0.118"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

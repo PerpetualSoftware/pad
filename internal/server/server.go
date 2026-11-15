@@ -2486,6 +2486,7 @@ func (s *Server) setupRouter() {
 						r.Patch("/commitment", s.handleUpdateItemCommitment)
 						r.Delete("/commitment", s.handleDeleteItemCommitment)
 						r.Post("/commitment/resolve", s.handleResolveItemCommitment)
+						r.Post("/commitment/reopen", s.handleReopenItemCommitment)
 						r.Post("/commitment/dismiss-ended", s.handleDismissEndedCommitment)
 						r.Post("/commitment/renegotiate", s.handleRenegotiateItemCommitment)
 						r.Put("/commitment/forecast", s.handlePutCommitmentForecast)

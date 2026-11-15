@@ -145,6 +145,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-dismiss"}:     {"item", "remind", "dismiss"},
+		{"pad_item", "schedule-reopen"}:      {"item", "remind", "reopen"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
 		{"pad_item", "schedule-renegotiate"}: {"item", "remind", "renegotiate"},
 		{"pad_item", "schedule-link"}:        {"item", "remind", "link", "add"},
@@ -344,6 +345,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-dismiss"}:     {"item", "remind", "dismiss"},
+		{"pad_item", "schedule-reopen"}:      {"item", "remind", "reopen"},
 		{"pad_item", "schedule-resolve"}:     {"item", "remind", "done"},
 		{"pad_item", "schedule-renegotiate"}: {"item", "remind", "renegotiate"},
 		{"pad_item", "schedule-link"}:        {"item", "remind", "link", "add"},
@@ -412,6 +414,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		// resolves (TASK-4105).
 		"state":         "done",
 		"occurrence_at": "2026-11-09T09:00:00Z",
+		"resolution_id": "11111111-1111-4111-8111-111111111111",
 		// pad_item.schedule-renegotiate needs a reason (TASK-4356).
 		"reason": "slipped",
 		// pad_playbook.match needs a `text` positional (TASK-3120).
@@ -790,6 +793,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Flags:   map[string]cmdhelp.Flag{"workspace": {Type: "string"}, "yes": {Type: "bool"}},
 			},
 			"item remind dismiss": {Summary: "dismiss an ended schedule", Args: mkArgs("ref"), Flags: mkFlags("workspace")},
+			"item remind reopen":  {Summary: "reopen an occurrence", Args: mkArgs("ref"), Flags: mkFlags("workspace", "resolution")},
 			"item remind ack":     {Summary: "acknowledge", Args: mkArgs("ref"), Flags: mkFlags("workspace", "occurrence")},
 			"item remind done":    {Summary: "resolve done", Args: mkArgs("ref"), Flags: withEndSchedule(mkFlags("workspace", "comment", "occurrence", "at"))},
 			"item remind renegotiate": {Summary: "change a deadline", Args: mkArgs("ref"), Flags: func() map[string]cmdhelp.Flag {

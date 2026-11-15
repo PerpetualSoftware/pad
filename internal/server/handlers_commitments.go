@@ -61,6 +61,9 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 	if err != nil {
 		return nil, err
 	}
+	if c.LastResolution != nil && !access.Editable[item.ID] {
+		c.LastResolution.CanReopen = false
+	}
 	v := s.buildScheduleView(r, item, sc)
 	v.TimezoneNote = note
 	out := &commitmentView{Commitment: c, scheduleView: v, Links: []models.ScheduleLink{}, Gates: &models.ScheduleGateView{State: models.GateStateReleased, Gates: []models.ScheduleGate{}}}

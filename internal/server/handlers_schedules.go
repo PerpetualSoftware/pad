@@ -599,6 +599,10 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		"state":           in.State,
 		"missed_recorded": res.MissedRecorded,
 	}
+	if res.ResolutionID != "" {
+		resolution["resolution_id"] = res.ResolutionID
+		resolution["last_resolution"] = res.LastResolution
+	}
 	if res.Comment != nil {
 		resolution["comment_id"] = res.Comment.ID
 		s.touchUserWrite(r, writeKindComment)
