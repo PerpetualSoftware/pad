@@ -23,14 +23,20 @@
 	const getUndo = getContext<AgendaUndo | undefined>(agendaUndoContext);
 	const undoMenu = $derived(!!getUndo && hasUndoMenu(entry));
 	let undo = $state<ToastAction>();
+	let checkingUndo = $state(false);
 	let menuRead = 0;
 	async function opened() {
 		const mine = ++menuRead;
 		const requested = entry;
 		undo = undefined;
+		checkingUndo = false;
 		if (!undoMenu || !getUndo) return;
+		checkingUndo = true;
 		const action = await getUndo(requested);
-		if (mine === menuRead && entry === requested) undo = action;
+		if (mine === menuRead && entry === requested) {
+			undo = action;
+			checkingUndo = false;
+		}
 	}
 </script>
 
@@ -58,7 +64,11 @@
 						<MenuItem disabled><span class="hard-note">Legacy hard deadlines cannot be moved.</span></MenuItem>
 					{/if}
 				{/if}
-				{#if undo}<MenuItem disabled={pending || disabled} onclick={() => pick(undo!.onAction)}>{undo.label}</MenuItem>{/if}
+				{#if undo}
+					<MenuItem disabled={pending || disabled} onclick={() => pick(undo!.onAction)}>{undo.label}</MenuItem>
+				{:else if !resolvable}
+					<MenuItem disabled>{checkingUndo ? 'Checking…' : 'Nothing to undo'}</MenuItem>
+				{/if}
 			{/snippet}
 		</RowMenu>
 	{/if}

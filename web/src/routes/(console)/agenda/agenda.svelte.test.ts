@@ -1769,6 +1769,24 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   expect(h.view).toHaveBeenCalledTimes(1); expect(successAction()).toBeUndefined();
   expect(h.toast.mock.calls.filter(call => call[1] === 'error')).toHaveLength(0);
  });
+ it.each(['done', 'skip', 'snooze'] as const)('does not offer toast Undo after %s when the same occurrence has a newer move', async state => {
+  await mount();
+  h.resolve.mockImplementation(() => { h.view.mockClear(); h.view.mockResolvedValue({ last_resolution: eligible({ state: 'move' }) }); return Promise.resolve({}); });
+  if (state === 'done') await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  else if (state === 'skip') { await menu(); await fireEvent.click(screen.getByRole('menuitem', { name: 'Skip' })); }
+  else { const d = await dialog('Snooze'); await fillTime(d); await fireEvent.click(within(d).getByRole('button', { name: 'Snooze' })); }
+  await waitFor(() => expect(h.toast.mock.calls.some(call => call[1] === 'success')).toBe(true));
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(successAction()).toBeUndefined();
+ });
+ it('does not offer toast Undo after an applied move when the same occurrence has a newer snooze', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'week');
+  h.view.mockResolvedValue({ last_resolution: eligible({ state: 'snooze' }) });
+  await mount(); await drop();
+  await waitFor(() => expect(h.toast.mock.calls.some(call => call[1] === 'success')).toBe(true));
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(successAction()).toBeUndefined();
+ });
  it.each(['ack', 'history'] as const)('does no eligibility read and offers no Undo for %s', async kind => {
   h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: kind === 'history' ? 'lapsed' : 'outstanding', fired: true })]));
   h.resolve.mockImplementation(() => { h.view.mockClear(); return Promise.resolve({}); });
@@ -1831,23 +1849,49 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   await successAction().onAction();
   await said(state === 'snooze' ? 'Undone. The occurrence is back where it was.' : 'Undone. The occurrence is open again.', 'success');
  });
- it.each([['skipped', 'skip', 'Skip'], ['moved', 'move', 'Move'], ['outstanding', 'snooze', 'Snooze'], ['outstanding', 'move', 'Move']] as const)('offers the correct menu Undo for %s/%s', async (state, operation, label) => {
+ it.each([['done', 'done', 'Done'], ['skipped', 'skip', 'Skip'], ['moved', 'move', 'Move'], ['outstanding', 'snooze', 'Snooze'], ['outstanding', 'move', 'Move']] as const)('offers the correct menu Undo for %s/%s', async (state, operation, label) => {
   h.agenda.mockResolvedValue(response([row({ state, occurrence_key: key })]));
   h.view.mockResolvedValue({ last_resolution: eligible({ state: operation }) });
   await mount(); await menu(); expect(await screen.findByRole('menuitem', { name: `Undo ${label}` })).toBeTruthy();
   expect(h.view).toHaveBeenCalledTimes(1);
+  await fireEvent.click(screen.getByRole('menuitem', { name: `Undo ${label}` }));
+  await said(operation === 'snooze' || operation === 'move' ? 'Undone. The occurrence is back where it was.' : 'Undone. The occurrence is open again.', 'success');
  });
  it.each(['eligible', 'ineligible', 'different key', 'GET rejects'])('history menu reads once on open: %s', async kind => {
   h.agenda.mockResolvedValue(response([row({ state: 'done', occurrence_key: key })]));
-  if (kind === 'GET rejects') h.view.mockRejectedValue(new Error('offline'));
-  else h.view.mockResolvedValue({ last_resolution: eligible(kind === 'ineligible' ? { can_reopen: false } : kind === 'different key' ? { occurrence_key: 'other' } : {}) });
+  const pending = deferred<unknown>();
+  h.view.mockReturnValue(pending.promise);
   await mount(); expect(h.view).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Done EX-30' })).toBeNull();
-  await menu(); await settle(); expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
-  expect(screen.queryByRole('menuitem', { name: 'Skip' })).toBeNull();
+  await menu();
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(screen.getByRole('menuitem', { name: 'Checking…' })).toBeDisabled();
+  expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+  if (kind === 'GET rejects') pending.resolve(Promise.reject(new Error('offline')));
+  else pending.resolve({ last_resolution: eligible(kind === 'ineligible' ? { can_reopen: false } : kind === 'different key' ? { occurrence_key: 'other' } : {}) });
   if (kind === 'eligible') {
    await fireEvent.click(await screen.findByRole('menuitem', { name: 'Undo Done' }));
    await waitFor(() => expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' }));
-  } else expect(screen.queryByRole('menuitem', { name: 'Undo Done' })).toBeNull();
+   await said('Undone. The occurrence is open again.', 'success');
+   await menu();
+   // The server can still return the same checkpoint, but it has been consumed locally.
+   expect(await screen.findByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+   expect(h.view).toHaveBeenCalledTimes(2);
+  } else {
+   expect(await screen.findByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+   expect(h.view).toHaveBeenCalledTimes(1);
+  }
+  expect(screen.queryByRole('menuitem', { name: 'Checking…' })).toBeNull();
+  expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+ });
+ it('keeps resolvable menu items without placeholders while checking Undo', async () => {
+  const pending = deferred<unknown>();
+  h.view.mockReturnValue(pending.promise);
+  await mount(); await menu();
+  expect(screen.getByRole('menuitem', { name: 'Skip' })).toBeEnabled();
+  expect(screen.queryByRole('menuitem', { name: 'Checking…' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Nothing to undo' })).toBeNull();
+  pending.resolve({ last_resolution: eligible() });
+  expect(await screen.findByRole('menuitem', { name: 'Undo Done' })).toBeEnabled();
  });
 });

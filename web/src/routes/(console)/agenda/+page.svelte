@@ -276,7 +276,8 @@
 			if (!sameIdentity()) return;
 			const last = view.last_resolution;
 			if (last?.can_reopen !== true || !entry.occurrence_key || last.occurrence_key !== entry.occurrence_key || !last.resolution_id) return;
-			const operation = state ?? last.state ?? '';
+			if (state !== undefined && last.state !== state) return;
+			const operation = last.state ?? '';
 			const label = resolutionLabel(operation);
 			if (!label) return;
 			const resolutionId = last.resolution_id;
