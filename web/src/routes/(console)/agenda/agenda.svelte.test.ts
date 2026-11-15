@@ -3,9 +3,9 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
-const h = vi.hoisted(() => ({ toast: vi.fn(), agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+const h = vi.hoisted(() => ({ toast: vi.fn(), reopen: vi.fn(), agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
 vi.mock('$app/navigation', () => ({ afterNavigate: vi.fn(), goto: async (url: URL) => { window.history.replaceState({}, '', url); } }));
-vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
+vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, reopenCommitment: h.reopen, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/stores/auth.svelte', async () => {
@@ -217,7 +217,7 @@ describe('resolve identity and dialogs', () => {
   expect(within(d).getByLabelText('Reason (optional)').hasAttribute('required')).toBe(false);
   await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'revision-1' }));
-  expect(h.view).not.toHaveBeenCalled(); expect(h.resolve).not.toHaveBeenCalled();
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30'); expect(h.resolve).not.toHaveBeenCalled();
  });
  it('Move target sends a trimmed optional reason', async () => {
   await mount(); const d = await dialog('Move'); await fillTime(d);
@@ -1728,5 +1728,205 @@ describe('agenda audience views', () => {
   await fireEvent.click(screen.getByRole('button', { name: 'View options' }));
   await fireEvent.click(groupItem('Team'));
   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
+ });
+});
+
+
+describe('Undo the last schedule resolution (TASK-4539)', () => {
+ const key = '2026-11-05T09:00:00';
+ const eligible = (extra = {}) => ({ resolution_id: 'resolution-1', occurrence_key: key, state: 'done', can_reopen: true, ...extra });
+ const successAction = () => h.toast.mock.calls.find(call => call[1] === 'success')?.[4];
+ beforeEach(() => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'day');
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key })]));
+  h.view.mockResolvedValue({ occurrence_key: key, next_occurrence: { at: frozenAt, wall: row().wall }, last_resolution: eligible() });
+  h.reopen.mockResolvedValue({});
+ });
+ async function done() {
+  await mount();
+  // Count eligibility reads separately from the existing preflight read.
+  h.resolve.mockImplementation(() => { h.view.mockClear(); return Promise.resolve({}); });
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await said('Occurrence marked done.', 'success');
+ }
+ it('reads eligibility exactly once after Done and captures the id in the fifth toast argument', async () => {
+  await done();
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(h.toast).toHaveBeenCalledWith('Occurrence marked done.', 'success', undefined, undefined, { label: 'Undo', onAction: expect.any(Function) });
+  await successAction().onAction();
+  expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' });
+  await said('Undone. The occurrence is open again.', 'success');
+ });
+ it.each(['done', 'move'] as const)('refreshes after %s while eligibility is still pending, then toasts with Undo', async state => {
+  const eligibility = deferred<unknown>();
+  if (state === 'move') {
+   localStorage.setItem('pad-agenda-mode:user-a', 'week');
+   h.view.mockReturnValue(eligibility.promise);
+  } else {
+   h.resolve.mockImplementation(() => { h.view.mockClear(); h.view.mockReturnValue(eligibility.promise); return Promise.resolve({}); });
+  }
+  await mount();
+  if (state === 'move') await drop();
+  else await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await waitFor(() => expect(state === 'move' ? h.move : h.resolve).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(h.toast).not.toHaveBeenCalled();
+  eligibility.resolve({ last_resolution: eligible({ state }) });
+  await said(state === 'move' ? 'Occurrence moved to November 6, 2026, 09:00. Its reminder follows the target.' : 'Occurrence marked done.', 'success');
+  expect(successAction()).toEqual({ label: 'Undo', onAction: expect.any(Function) });
+  expect(h.view).toHaveBeenCalledTimes(1);
+  expect(h.agenda).toHaveBeenCalledTimes(2);
+ });
+ it.each(['ineligible', 'different key', 'absent', 'missing id', 'GET rejects'])('keeps the success toast without Undo: %s', async kind => {
+  h.resolve.mockImplementation(() => {
+   h.view.mockClear();
+   if (kind === 'GET rejects') h.view.mockRejectedValue(new Error('offline'));
+   else h.view.mockResolvedValue({ last_resolution: kind === 'absent' ? undefined : eligible(kind === 'ineligible' ? { can_reopen: false } : kind === 'different key' ? { occurrence_key: 'other' } : { resolution_id: undefined }) });
+   return Promise.resolve({});
+  });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await said('Occurrence marked done.', 'success');
+  expect(h.view).toHaveBeenCalledTimes(1); expect(successAction()).toBeUndefined();
+  expect(h.toast.mock.calls.filter(call => call[1] === 'error')).toHaveLength(0);
+ });
+ it.each(['done', 'skip', 'snooze'] as const)('does not offer toast Undo after %s when the same occurrence has a newer move', async state => {
+  await mount();
+  h.resolve.mockImplementation(() => { h.view.mockClear(); h.view.mockResolvedValue({ last_resolution: eligible({ state: 'move' }) }); return Promise.resolve({}); });
+  if (state === 'done') await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  else if (state === 'skip') { await menu(); await fireEvent.click(screen.getByRole('menuitem', { name: 'Skip' })); }
+  else { const d = await dialog('Snooze'); await fillTime(d); await fireEvent.click(within(d).getByRole('button', { name: 'Snooze' })); }
+  await waitFor(() => expect(h.toast.mock.calls.some(call => call[1] === 'success')).toBe(true));
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(successAction()).toBeUndefined();
+ });
+ it('does not offer toast Undo after an applied move when the same occurrence has a newer snooze', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'week');
+  h.view.mockResolvedValue({ last_resolution: eligible({ state: 'snooze' }) });
+  await mount(); await drop();
+  await waitFor(() => expect(h.toast.mock.calls.some(call => call[1] === 'success')).toBe(true));
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(successAction()).toBeUndefined();
+ });
+ it.each(['ack', 'history'] as const)('does no eligibility read and offers no Undo for %s', async kind => {
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: kind === 'history' ? 'lapsed' : 'outstanding', fired: true })]));
+  h.resolve.mockImplementation(() => { h.view.mockClear(); return Promise.resolve({}); });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: `${kind === 'history' ? 'Mark done' : 'Acknowledge'} EX-30` }));
+  await said(kind === 'history' ? 'Occurrence marked done.' : 'Acknowledged. The work stays outstanding.', 'success');
+  expect(h.view).not.toHaveBeenCalled(); expect(successAction()).toBeUndefined();
+ });
+ it.each([false, true])('close-item-too failure=%s controls Undo eligibility', async fails => {
+  h.resolve.mockRejectedValueOnce({ code: 'item_still_open', details: { state: 'done', done_field: 'status', close_options: ['done'] } })
+   .mockImplementation(() => { h.view.mockClear(); return Promise.resolve({ resolution: { item_still_open: true } }); });
+  if (fails) h.update.mockRejectedValue(new Error('Cannot close'));
+  else h.update.mockResolvedValue({});
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  const d = await screen.findByRole('dialog', { name: 'Last occurrence: the item is still open' });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Close item' }));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2)); await settle();
+  expect(h.view).toHaveBeenCalledTimes(fails ? 1 : 0);
+  if (fails) { expect(successAction()?.label).toBe('Undo'); expect(h.toast.mock.calls.some(call => call[1] === 'error' && call[0].includes('Cannot close'))).toBe(true); }
+  else expect(successAction()).toBeUndefined();
+ });
+ it('double clicks post once, and a conflict shows the server message and refreshes once without retry', async () => {
+  await done(); const action = successAction(); expect(action).toBeDefined();
+  const pending = deferred<unknown>(); h.reopen.mockReturnValue(pending.promise);
+  action.onAction(); action.onAction();
+  expect(h.reopen).toHaveBeenCalledTimes(1);
+  pending.resolve(Promise.reject({ status: 409, code: 'reopen_conflict', message: 'A newer edit prevents undo.' }));
+  await said('A newer edit prevents undo.'); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
+  action.onAction(); await settle(); expect(h.reopen).toHaveBeenCalledTimes(1); expect(h.view).toHaveBeenCalledTimes(1);
+ });
+ it('suppresses a captured Undo after identity changes', async () => {
+  await done(); const action = successAction(); expect(action).toBeDefined(); h.epoch++;
+  await action.onAction(); expect(h.reopen).not.toHaveBeenCalled(); expect(h.agenda).toHaveBeenCalledTimes(2);
+ });
+ it('ignores an eligibility result after identity changes', async () => {
+  const pending = deferred<unknown>();
+  h.resolve.mockImplementation(() => { h.view.mockReturnValue(pending.promise); return Promise.resolve({}); });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await waitFor(() => expect(h.view).toHaveBeenCalledTimes(2)); h.epoch++;
+  pending.resolve({ last_resolution: eligible() }); await settle(); expect(h.toast).not.toHaveBeenCalled();
+ });
+ it('a successful reopen with a failed refresh offers read-only recovery', async () => {
+  await done(); const action = successAction(); expect(action).toBeDefined(); h.agenda.mockRejectedValueOnce(new Error('offline'));
+  await action.onAction(); await screen.findByText('Saved. Could not refresh the view.');
+  await fireEvent.click(screen.getByRole('button', { name: 'Try again' })); await settle(); expect(h.reopen).toHaveBeenCalledTimes(1);
+ });
+ it('an applied target move reads eligibility once and offers the same Undo callback', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'week');
+  h.view.mockResolvedValue({ last_resolution: eligible({ state: 'move' }) });
+  await mount(); await drop();
+  await waitFor(() => expect(successAction()?.label).toBe('Undo')); expect(h.view).toHaveBeenCalledTimes(1);
+  await successAction().onAction(); expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' });
+  await said('Undone. The occurrence is back where it was.', 'success');
+ });
+ it.each(['skip', 'snooze'] as const)('offers Undo after %s and restores the appropriate state', async state => {
+  await mount();
+  h.resolve.mockImplementation(() => { h.view.mockClear(); h.view.mockResolvedValue({ last_resolution: eligible({ state }) }); return Promise.resolve({}); });
+  if (state === 'skip') { await menu(); await fireEvent.click(screen.getByRole('menuitem', { name: 'Skip' })); }
+  else { const d = await dialog('Snooze'); await fillTime(d); await fireEvent.click(within(d).getByRole('button', { name: 'Snooze' })); }
+  await waitFor(() => expect(successAction()?.label).toBe('Undo')); expect(h.view).toHaveBeenCalledTimes(1);
+  await successAction().onAction();
+  await said(state === 'snooze' ? 'Undone. The occurrence is back where it was.' : 'Undone. The occurrence is open again.', 'success');
+ });
+ it.each([['done', 'done', 'Done'], ['skipped', 'skip', 'Skip'], ['moved', 'move', 'Move'], ['outstanding', 'snooze', 'Snooze'], ['outstanding', 'move', 'Move']] as const)('offers the correct menu Undo for %s/%s', async (state, operation, label) => {
+  h.agenda.mockResolvedValue(response([row({ state, occurrence_key: key })]));
+  h.view.mockResolvedValue({ last_resolution: eligible({ state: operation }) });
+  await mount(); await menu(); expect(await screen.findByRole('menuitem', { name: `Undo ${label}` })).toBeTruthy();
+  expect(h.view).toHaveBeenCalledTimes(1);
+  await fireEvent.click(screen.getByRole('menuitem', { name: `Undo ${label}` }));
+  await said(operation === 'snooze' || operation === 'move' ? 'Undone. The occurrence is back where it was.' : 'Undone. The occurrence is open again.', 'success');
+ });
+ it.each(['eligible', 'ineligible', 'different key', 'GET rejects'])('history menu reads once on open: %s', async kind => {
+  h.agenda.mockResolvedValue(response([row({ state: 'done', occurrence_key: key })]));
+  const pending = deferred<unknown>();
+  h.view.mockReturnValue(pending.promise);
+  await mount(); expect(h.view).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Done EX-30' })).toBeNull();
+  await menu();
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(screen.getByRole('menuitem', { name: 'Checking…' })).toBeDisabled();
+  expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+  if (kind === 'GET rejects') pending.resolve(Promise.reject(new Error('offline')));
+  else pending.resolve({ last_resolution: eligible(kind === 'ineligible' ? { can_reopen: false } : kind === 'different key' ? { occurrence_key: 'other' } : {}) });
+  if (kind === 'eligible') {
+   await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Undo Done' })).toHaveFocus());
+   await fireEvent.click(await screen.findByRole('menuitem', { name: 'Undo Done' }));
+   await waitFor(() => expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' }));
+   await said('Undone. The occurrence is open again.', 'success');
+   await menu();
+   // The server can still return the same checkpoint, but it has been consumed locally.
+   expect(await screen.findByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+   expect(h.view).toHaveBeenCalledTimes(2);
+  } else {
+   expect(await screen.findByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+   expect(h.view).toHaveBeenCalledTimes(1);
+  }
+  expect(screen.queryByRole('menuitem', { name: 'Checking…' })).toBeNull();
+  expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+ });
+ it('closes a history menu with Escape when the read reports nothing to undo', async () => {
+  h.agenda.mockResolvedValue(response([row({ state: 'done', occurrence_key: key })]));
+  h.view.mockResolvedValue({});
+  await mount();
+  const trigger = screen.getByRole('button', { name: 'Actions EX-30' });
+  trigger.focus();
+  await menu();
+  expect(await screen.findByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+  await fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+  expect(screen.queryByRole('menu', { name: 'Actions EX-30' })).toBeNull();
+  expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  expect(trigger).toHaveFocus();
+ });
+ it('keeps resolvable menu items without placeholders while checking Undo', async () => {
+  const pending = deferred<unknown>();
+  h.view.mockReturnValue(pending.promise);
+  await mount(); await menu();
+  expect(screen.getByRole('menuitem', { name: 'Skip' })).toBeEnabled();
+  expect(screen.queryByRole('menuitem', { name: 'Checking…' })).toBeNull();
+  expect(screen.queryByRole('menuitem', { name: 'Nothing to undo' })).toBeNull();
+  pending.resolve({ last_resolution: eligible() });
+  expect(await screen.findByRole('menuitem', { name: 'Undo Done' })).toBeEnabled();
  });
 });

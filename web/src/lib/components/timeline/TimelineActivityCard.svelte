@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { resolutionLabel } from '$lib/calendar/undo';
 	import type { Activity } from '$lib/types';
 	import { relativeTime } from '$lib/utils/markdown';
 	import { parseFieldChanges } from '$lib/utils/activityChanges';
@@ -48,6 +49,13 @@
 	};
 
 	function getActionLabel(action: string): string {
+		if (action === 'schedule_reopened') {
+			const operation = resolutionLabel(metadata.state);
+			const original = metadata.original_actor;
+			const resolvedBy = typeof original === 'string' && original && original !== activity.actor
+				? ` (resolved by ${getActorLabel({ actor: original }, {})})` : '';
+			return `Reopened schedule occurrence${operation ? `: undid ${operation}` : ''}${resolvedBy}`;
+		}
 		return actionLabels[action] ?? action;
 	}
 
@@ -57,12 +65,12 @@
 		return '';
 	}
 
-	function getActorLabel(a: Activity): string {
+	function getActorLabel(a: Pick<Activity, 'actor'>, meta = metadata): string {
 		if (a.actor !== 'agent') return 'User';
 		// The agent's own name when it sent one. `actor_name` below stays the
 		// human whose credentials the write rode on — the two are rendered
 		// side by side rather than merged, because they are different facts.
-		return agentNameOf(metadata) ?? 'Agent';
+		return agentNameOf(meta) ?? 'Agent';
 	}
 
 	function getSourceLabel(source: string): string {

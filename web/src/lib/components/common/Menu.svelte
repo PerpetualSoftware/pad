@@ -100,8 +100,9 @@
 		coords = { top, left };
 	}
 
-	// Focus the first row on open (menus are keyboard surfaces); return
-	// focus to the trigger on close. Reads `open`/`panelEl`, writes neither.
+	// Focus the first row, or the panel when every row is disabled, so Escape
+	// still reaches onKeydown. Return focus to the trigger on close.
+	// Reads `open`/`panelEl`, writes neither.
 	//
 	// `focusKey` is read purely for dependency tracking: when a drill-down
 	// menu swaps its sub-view IN PLACE, `open` never changes, so without this
@@ -114,7 +115,7 @@
 		if (open && !useSheet) {
 			tick().then(() => {
 				if (mode === 'portal') place();
-				firstItem()?.focus();
+				(firstItem() ?? panelEl)?.focus();
 			});
 		}
 	});
