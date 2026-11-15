@@ -422,7 +422,8 @@
 		void loadWorkspaces();
 		try {
 			const response = await api.workspaceGroups.list();
-			if (!current() || restoring !== selectionSerial) return;
+			if (!current()) return;
+			// Keep the list even if the selection changed meanwhile; only the remembered-choice override below waits on it.
 			workspaceGroups = response.groups;
 			if (!workspacePreference && restoring === selectionSerial) {
 				setSelection({ kind: 'group', id: workspaceGroups.some(group => group.id === remembered) ? remembered : 'all' }, false);

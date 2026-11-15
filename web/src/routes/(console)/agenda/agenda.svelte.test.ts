@@ -2076,14 +2076,22 @@ describe('agenda single workspace', () => {
   await fireEvent.click(filter()); await fireEvent.click(groupItem('All workspaces')); await settle();
   expect(screen.getByText('First item')).toBeTruthy(); expect(h.agenda).toHaveBeenCalledTimes(2);
  });
- it('reloads All only once when groups arrive after a workspace refusal', async () => {
+ it('falls back to All once and keeps the groups that arrive after a workspace refusal', async () => {
   localStorage.setItem(key, `workspace:${id}`);
   const groups = deferred<{ groups: typeof workspaceGroups }>(); h.groups.mockReturnValueOnce(groups.promise);
   h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockResolvedValue(response([]));
   render(Agenda); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(unavailable));
   expect(h.agenda).toHaveBeenCalledTimes(2);
   groups.resolve({ groups: workspaceGroups.map(group => group.kind === 'all' ? { ...group, workspace_ids: [id] } : group) }); await settle();
-  expect(h.agenda).toHaveBeenCalledTimes(2); expect(localStorage.getItem(key)).toBe('all');
+  // One more read, because All's members are now known (the same rule as any group); the refusal itself is not retried.
+  expect(h.agenda).toHaveBeenCalledTimes(3); expect(localStorage.getItem(key)).toBe('all');
+  // Every read after the refusal is All: no selector (before groups load) or group=all.
+  for (const [, , , selection] of h.agenda.mock.calls.slice(1)) expect(selection === undefined || (selection.kind === 'group' && selection.id === 'all')).toBe(true);
+  // The groups list that arrived after the fallback is kept: named groups stay selectable.
+  await fireEvent.click(filter());
+  expect(screen.queryByText('Groups unavailable')).toBeNull();
+  expect(screen.getByRole('menuitemradio', { name: /Team/ })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Manage groups…' })).toBeTruthy();
  });
  it('ignores old lists and refusals after an account switch', async () => {
   localStorage.setItem(key, `workspace:${id}`);
