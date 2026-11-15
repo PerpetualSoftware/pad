@@ -1613,6 +1613,69 @@ describe('agenda audience views', () => {
   row({ item_ref: 'EX-32', schedule_id: 'missed-agent', audience: 'agent', state: 'missed', item_title: 'Missed agent' }),
   row({ item_ref: 'EX-33', schedule_id: 'missed-human', state: 'missed', item_title: 'Missed human' })
  ], { priority_list: [workRow({ item_title: 'Rail item' })], counts: [{ day: '2026-11-05', completed: 7, open: 4, burndown: 4 }] });
+ it('persists Agents per user and restores it after a reload without the URL parameter', async () => {
+  h.agenda.mockResolvedValue(mixed()); const view = render(Agenda);
+  await screen.findByText('Personal reminder'); await choose('Agents');
+  expect(localStorage.getItem('pad-agenda-audience:user-a')).toBe('agents');
+  view.unmount(); window.history.replaceState({}, '', '/agenda'); render(Agenda);
+  await screen.findByText('Agent reminder');
+  expect(screen.queryByText('Personal reminder')).toBeNull();
+  expect(within(screen.getByRole('group', { name: 'Audience' })).getByRole('button', { name: /^Agents / })).toHaveAttribute('aria-pressed', 'true');
+ });
+ it.each([['mine', 'Personal reminder', 'Agent reminder'], ['bogus', 'Agent reminder', 'Personal reminder']])('resolves URL audience %s against stored Agents without writing storage', async (value, shown, hidden) => {
+  localStorage.setItem('pad-agenda-audience:user-a', 'agents');
+  window.history.replaceState({}, '', `/agenda?audience=${value}`);
+  const set = vi.spyOn(localStorage, 'setItem');
+  h.agenda.mockResolvedValue(mixed()); render(Agenda);
+  await screen.findByText(shown); expect(screen.queryByText(hidden)).toBeNull();
+  expect(localStorage.getItem('pad-agenda-audience:user-a')).toBe('agents');
+  expect(set).not.toHaveBeenCalled();
+ });
+ it('defaults to Mine when the stored audience is garbage', async () => {
+  localStorage.setItem('pad-agenda-audience:user-a', 'bogus');
+  h.agenda.mockResolvedValue(mixed()); render(Agenda);
+  await screen.findByText('Personal reminder'); expect(screen.queryByText('Agent reminder')).toBeNull();
+  expect(within(screen.getByRole('group', { name: 'Audience' })).getByRole('button', { name: /^Mine / })).toHaveAttribute('aria-pressed', 'true');
+ });
+ it('stores Mine when chosen after stored Agents', async () => {
+  localStorage.setItem('pad-agenda-audience:user-a', 'agents');
+  h.agenda.mockResolvedValue(mixed()); render(Agenda);
+  await screen.findByText('Agent reminder'); await choose('Mine');
+  expect(localStorage.getItem('pad-agenda-audience:user-a')).toBe('mine');
+  expect(screen.getByText('Personal reminder')).toBeTruthy(); expect(screen.queryByText('Agent reminder')).toBeNull();
+  expect(window.location.search).toBe('');
+ });
+ it('does not inherit another user\'s stored audience on the mounted page', async () => {
+  localStorage.setItem('pad-agenda-audience:user-a', 'agents');
+  h.agenda.mockResolvedValue(mixed()); render(Agenda); await screen.findByText('Agent reminder');
+  h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1);
+  await screen.findByText('Personal reminder'); expect(screen.queryByText('Agent reminder')).toBeNull();
+  expect(within(screen.getByRole('group', { name: 'Audience' })).getByRole('button', { name: /^Mine / })).toHaveAttribute('aria-pressed', 'true');
+  expect(localStorage.getItem('pad-agenda-audience:user-b')).toBeNull();
+  expect(localStorage.getItem('pad-agenda-audience:user-a')).toBe('agents');
+ });
+ it('restores the stored audience when the user becomes known after mount', async () => {
+  localStorage.setItem('pad-agenda-audience:user-a', 'agents'); h.user = null;
+  h.agenda.mockResolvedValue(mixed()); render(Agenda); await settle();
+  h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch++; h.signal?.set('auth', 1);
+  await screen.findByText('Agent reminder'); expect(screen.queryByText('Personal reminder')).toBeNull();
+ });
+ it('keeps the default and click choice usable when storage throws', async () => {
+  vi.spyOn(localStorage, 'getItem').mockImplementation(() => { throw new Error('blocked'); });
+  vi.spyOn(localStorage, 'setItem').mockImplementation(() => { throw new Error('blocked'); });
+  h.agenda.mockResolvedValue(mixed()); render(Agenda); await screen.findByText('Personal reminder');
+  await choose('Agents'); expect(screen.getByText('Agent reminder')).toBeTruthy(); expect(screen.queryByText('Personal reminder')).toBeNull();
+  expect(new URL(window.location.href).searchParams.get('audience')).toBe('agents');
+ });
+ it('shows stored Agents selected in the phone header audience control', async () => {
+  vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
+  localStorage.setItem('pad-agenda-audience:user-a', 'agents');
+  h.agenda.mockResolvedValue(mixed()); render(Agenda); await screen.findByText('Agent reminder');
+  const audience = screen.getByRole('group', { name: 'Audience' });
+  expect(document.querySelector('.header-actions')?.contains(audience)).toBe(true);
+  expect(within(audience).getByRole('button', { name: /^Agents / })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.queryByText('Personal reminder')).toBeNull();
+ });
  it('filters the day and strip locally while attention, summary and Outstanding stay unchanged', async () => {
   h.agenda.mockResolvedValue(mixed()); render(Agenda);
   await screen.findByText('Personal reminder');
