@@ -4,12 +4,13 @@
 	import type { AudienceView } from '$lib/calendar/audience';
 	import AudienceChip from './AudienceChip.svelte';
 	import AgentOwner from './AgentOwner.svelte';
+	import SnoozeLabel from './SnoozeLabel.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import OccurrenceActions from './OccurrenceActions.svelte';
 	import RolePill from './RolePill.svelte';
 	import StateMark from './StateMark.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
-	import { OCCURRENCE_STATES, acknowledgedText, canMove, canResolve, isOpenState, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { OCCURRENCE_STATES, isSnoozed, isOverdue, snoozeLabel, acknowledgedText, canMove, canResolve, isOpenState, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
@@ -39,6 +40,8 @@
 
 	let { audience = 'mine', isAgent = false, entry, zone, now = new Date(Date.now()), pending = false, saved = false, compact = false, movable = false, dragging = false, showDay = false, marker, onaction, ondragstart, ondragend }: Props = $props();
 
+	const snoozed = $derived(isSnoozed(entry, now));
+	const snooze = $derived(snoozeLabel(entry, zone, now));
 	const href = $derived(entryHref(entry));
 	const schedule = $derived(entry.type === 'schedule');
 	const live = $derived(schedule && (isOpenState(entry.state) || entry.state === 'scheduled'));
@@ -50,7 +53,7 @@
 	const forecast = $derived(live ? entry.forecast : undefined);
 	const deadlinePassed = $derived(!!deadline && deadlineTone(deadline, zone, now) === 'passed');
 	// The mark already says outstanding or scheduled, and a passed-deadline pill already says overdue.
-	const chips = $derived(entryChips(entry).filter(chip =>
+	const chips = $derived(entryChips(entry, now).filter(chip =>
 		!(schedule && (chip.text === OCCURRENCE_STATES.outstanding.label || chip.text === OCCURRENCE_STATES.scheduled.label)) && !(deadlinePassed && chip.text === 'Overdue')));
 	const draggable = $derived(movable && !marker && canMove(entry) && !pending && !saved);
 	const clock = $derived(isAllDay(entry) ? 'All day' : localTime(entry.at, zone));
@@ -71,7 +74,7 @@
 {/snippet}
 {#snippet pills()}
 	<AudienceChip {entry} view={audience} {isAgent} />
-	{#if deadline}<RolePill kind="deadline" value={deadline} behavior={entry.roles?.deadline_behavior} {zone} {now} title={deadlineTitle} />{/if}
+	{#if deadline}<RolePill muted={snoozed} kind="deadline" value={deadline} behavior={entry.roles?.deadline_behavior} {zone} {now} title={deadlineTitle} />{/if}
 	{#if forecast}<RolePill kind="forecast" value={forecast.value} deadline={entry.roles?.deadline} {zone} {now} title={forecastText(forecast, zone)} />{/if}
 	<span class="chips">{#each chips as chip, index (index)}<Chip size="sm" color={chip.color}>{chip.text}</Chip>{/each}</span>
 {/snippet}
@@ -91,12 +94,13 @@
 				<span class="kind">{marker === 'deadline' ? 'Deadline' : 'Forecast'}</span>{@render title()}
 				<span class="inline-meta">{entry.workspace_name} · {entry.item_ref}<AgentOwner {entry} />{#if marker === 'forecast' && entry.forecast}{' '}· set by {forecastSetter(entry.forecast)}{/if}</span>
 				<AudienceChip {entry} view={audience} {isAgent} />
+				<SnoozeLabel label={snooze} />
 			</div>
 		</div>
 	{:else}
 		{#if !compact}<div class="time">{#each times as line, index (index)}{#if index === 0}{line}{:else}<small>{line}</small>{/if}{/each}</div>{/if}
 		<span class="mark">
-			{#if schedule}<StateMark state={entry.state} overdue={!!entry.overdue || deadlinePassed} />
+			{#if schedule}<StateMark state={entry.state} overdue={isOverdue(entry, now) || (!snoozed && deadlinePassed)} />
 			{:else if entry.type === 'date'}<StateMark overdue={!!entry.overdue} label={entryChips(entry)[0]?.text || 'Date'} />{/if}
 		</span>
 		<div class="body">
@@ -110,6 +114,7 @@
 					{#if entry.workspace_name}<WorkspaceTile name={entry.workspace_name} />{/if}
 					<span class="ref">{entry.item_ref}</span>
 					<AgentOwner {entry} />
+					<SnoozeLabel label={snooze} />
 					{#if acknowledged}<span class="ack">{#if !compact}<span aria-hidden="true">·</span>{/if}<span>{acknowledged}</span></span>{/if}
 					{#if compact}{@render pills()}{/if}
 				</div>

@@ -215,6 +215,7 @@ func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneAr
 // AgendaEntry contains one occurrence and all its effective roles. At is its
 // effective target; Wall and OccurrenceKey retain the immutable seed identity.
 type AgendaEntry struct {
+	SnoozedUntil   *time.Time
 	Roles          models.CommitmentRoles
 	OccurrenceKey  string
 	DeadlinePassed bool
@@ -431,6 +432,7 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 	var effective *time.Time
 	outstanding := func(e *AgendaEntry, r agendaRow, have bool) {
 		e.State, e.Fired = "outstanding", sc.ReminderFired
+		e.SnoozedUntil = ScheduleSnoozedUntil(sc, r.state)
 		due := e.At
 		if have && r.state == "moved" && sc.NextOverrideAt != nil {
 			if t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt); err == nil {

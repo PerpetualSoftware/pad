@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { AgendaEntry } from '$lib/types';
-import { weekWindow, weekLabel, targetOnDay, dayWindow, shiftDay, todayIn, wallToInstant, groupEntries, filterEntries, entryChips, canMove, entryHref, isAllDay, outstandingMatches } from './presentation';
+import { snoozeLabel, isOverdue, weekWindow, weekLabel, targetOnDay, dayWindow, shiftDay, todayIn, wallToInstant, groupEntries, filterEntries, entryChips, canMove, entryHref, isAllDay, outstandingMatches } from './presentation';
 
 const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-03-08T04:00:00Z', day: '2026-03-07', item_ref: 'EX-30', item_title: 'Example', collection: 'tasks', workspace: 'work', workspace_name: 'Work', owner_username: 'alice', state: 'outstanding', ...extra });
 
@@ -400,4 +400,23 @@ describe('outstandingMatches (TASK-4545)', () => {
 		expect(outstandingMatches({ wall: '2026-11-01T01:30' }, { ended_at: '2026-10-01T00:00:00Z', next_occurrence: next })).toBe(false);
 		expect(outstandingMatches({ wall: '2026-11-01T01:30' }, { next_occurrence: null })).toBe(false);
 	});
+});
+
+describe('BUG4570 snooze presentation', () => {
+ it('labels a future snooze and suppresses overdue styling without changing the due facts', () => {
+  const snoozed = { ...row(), overdue: true, snoozed_until: '2031-03-11T15:00:00Z' };
+  const now = new Date('2031-03-10T12:00:00Z');
+  expect(snoozeLabel(snoozed, 'America/New_York', now)).toBe('Snoozed until Mar 11, 11:00 AM');
+  expect(isOverdue(snoozed, now)).toBe(false);
+  expect(snoozed.overdue).toBe(true);
+ });
+ it('shows no snooze label once its time passes and restores overdue styling', () => {
+  const snoozed = { ...row(), overdue: true, snoozed_until: '2031-03-11T15:00:00Z' };
+  const now = new Date(snoozed.snoozed_until);
+  expect(snoozeLabel(snoozed, 'UTC', now)).toBeNull();
+  expect(isOverdue(snoozed, now)).toBe(true);
+ });
+ it('leaves an occurrence without a snooze unchanged', () => {
+  expect(snoozeLabel(row(), 'UTC')).toBeNull();
+ });
 });

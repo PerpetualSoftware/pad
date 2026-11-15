@@ -735,3 +735,5 @@ although the new boolean parameter and response member are additive.
 
 Schedule parameter descriptions were condensed without changing their rules to
 keep the existing MCP prompt budget.
+
+Agenda, schedule and bootstrap results pass through the optional `snoozed_until` reminder re-fire marker from the [REST contract](api.md); target placement and overdue facts are unchanged.

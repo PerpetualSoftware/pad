@@ -100,6 +100,7 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 					e.Roles, e.OccurrenceKey, e.ScheduleID = &current.Roles, current.OccurrenceKey, sc.ID
 					e.State, e.Fired = current.State, current.Fired
 					e.AcknowledgedAt, e.AcknowledgedBy = current.AcknowledgedAt, current.AcknowledgedBy
+					e.SnoozedUntil = agendaOptionalInstant(current.SnoozedUntil, run.loc)
 				}
 			}
 			e.Reason = gateState
@@ -151,6 +152,7 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 		e.Audience = sc.Audience
 		e.AgentRoleName, e.AgentRoleSlug = c.AgentRoleName, c.AgentRoleSlug
 		e.AcknowledgedAt, e.AcknowledgedBy = current.AcknowledgedAt, current.AcknowledgedBy
+		e.SnoozedUntil = agendaOptionalInstant(current.SnoozedUntil, run.loc)
 		e.Wall, e.Overdue, e.Rank = current.Wall.String(), current.Overdue, agendaPriority(c)
 		e.Reason = "outstanding"
 		if e.Overdue {

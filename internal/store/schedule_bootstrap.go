@@ -17,6 +17,7 @@ const BootstrapAgendaStaleAfter = 14 * 24 * time.Hour
 // BootstrapAgendaRow is one schedule's outstanding occurrence as the bootstrap
 // agenda shows it.
 type BootstrapAgendaRow struct {
+	SnoozedUntil *time.Time
 	AgendaSchedule
 	Due           time.Time // the instant it is due, the moved instant for a moved one
 	Wall          string    // the occurrence's wall, a date for an all-day one
@@ -227,7 +228,7 @@ func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location
 				continue
 			}
 		}
-		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, Due: due, Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Roles: e.Roles, OccurrenceKey: e.OccurrenceKey})
+		out = append(out, BootstrapAgendaRow{AgendaSchedule: as, SnoozedUntil: e.SnoozedUntil, Due: due, Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Roles: e.Roles, OccurrenceKey: e.OccurrenceKey})
 	}
 	return out, incomplete
 }

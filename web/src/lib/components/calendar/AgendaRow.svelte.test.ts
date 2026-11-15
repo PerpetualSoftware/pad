@@ -217,3 +217,12 @@ describe('agenda Undo menu layout (TASK-4539)', () => {
   expect(screen.queryByRole('menuitem', { name: 'Skip' })).toBeNull();
  });
 });
+
+describe('BUG4570 snoozed row', () => {
+ it.each([false, true])('renders a muted snooze marker with compact=%s', compact => {
+  const { container } = mount({ overdue: true, snoozed_until: '2031-03-11T15:00:00Z' }, { compact });
+  expect(screen.getByText('Snoozed until Mar 11, 3:00 PM')).toBeTruthy();
+  expect(screen.queryByText('Overdue')).toBeNull();
+  expect(container.querySelector('[data-mark="ring"][data-tone="red"]')).toBeNull();
+ });
+});

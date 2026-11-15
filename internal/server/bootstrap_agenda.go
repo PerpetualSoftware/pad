@@ -33,6 +33,7 @@ const (
 
 // BootstrapAgendaRow is one outstanding occurrence. It carries no item body.
 type BootstrapAgendaRow struct {
+	SnoozedUntil   string                 `json:"snoozed_until,omitempty"`
 	State          string                 `json:"state"`
 	Fired          bool                   `json:"fired,omitempty"`
 	AcknowledgedAt *string                `json:"acknowledged_at,omitempty"`
@@ -155,7 +156,8 @@ func bootstrapAgendaRows(rows []store.BootstrapAgendaRow, loc *time.Location, no
 	for _, r := range rows {
 		r.ReadMissed(loc, now)
 		out = append(out, BootstrapAgendaRow{
-			Ref: r.ItemRef, Title: r.ItemTitle, State: r.Schedule.OccurrenceState(), Fired: r.Schedule.ReminderFired, AcknowledgedAt: r.Schedule.AcknowledgedAt, AcknowledgedBy: r.Schedule.AcknowledgedBy, At: r.Due.In(loc).Format(time.RFC3339), AllDay: r.AllDay,
+			SnoozedUntil: agendaOptionalInstant(r.SnoozedUntil, loc),
+			Ref:          r.ItemRef, Title: r.ItemTitle, State: r.Schedule.OccurrenceState(), Fired: r.Schedule.ReminderFired, AcknowledgedAt: r.Schedule.AcknowledgedAt, AcknowledgedBy: r.Schedule.AcknowledgedBy, At: r.Due.In(loc).Format(time.RFC3339), AllDay: r.AllDay,
 			Roles: r.Roles, OccurrenceKey: r.OccurrenceKey, MissedCount: r.MissedCount, Stale: r.MissedCount >= 2, Resolve: bootstrapAgendaResolve,
 		})
 	}

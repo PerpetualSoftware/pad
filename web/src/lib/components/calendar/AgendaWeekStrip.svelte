@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { deadlineTone, isOpenState, longDay, roleDay } from '$lib/calendar/presentation';
+	import { isSnoozed, deadlineTone, isOpenState, longDay, roleDay } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
@@ -39,6 +39,7 @@
 		if (entry.type === 'date') return entry.overdue ? 'bad' : 'quiet';
 		if (entry.state === 'lapsed' || entry.state === 'missed') return 'bad';
 		if (isOpenState(entry.state)) {
+			if (isSnoozed(entry, now)) return 'owed';
 			const deadline = entry.roles?.deadline;
 			return entry.overdue || (deadline && deadlineTone(deadline, zone, now) === 'passed') ? 'bad' : 'owed';
 		}
