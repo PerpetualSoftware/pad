@@ -97,6 +97,29 @@ func TestBUG4570SnoozeReadSurfaces(t *testing.T) {
 				t.Fatalf("bootstrap due rows: %+v", a)
 			}
 			check("bootstrap", rows[0].(map[string]any))
+			if state == "snooze" {
+				// Past the re-fire instant the snooze has ended, so bootstrap omits it.
+				w.srv.agendaClock = func() time.Time { return until.Add(time.Second) }
+				ended := get("workspaces/" + w.ws.Slug + "/agent/bootstrap")["agenda"].(map[string]any)
+				seen := 0
+				for _, group := range []string{"due_today", "carried"} {
+					rows, _ := ended[group].([]any)
+					for _, r := range rows {
+						row := r.(map[string]any)
+						if row["ref"] != item.Ref {
+							continue
+						}
+						seen++
+						if v, ok := row["snoozed_until"]; ok {
+							t.Errorf("ended snooze still reported in %s: %v", group, v)
+						}
+					}
+				}
+				if seen == 0 {
+					t.Errorf("ended snooze: occurrence missing from bootstrap: %+v", ended)
+				}
+				w.srv.agendaClock = func() time.Time { return start.Add(3 * time.Hour) }
+			}
 		})
 	}
 }

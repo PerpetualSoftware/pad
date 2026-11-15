@@ -153,7 +153,7 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 	if err := s.fillAgendaItemFacts(found, "", nil); err != nil {
 		return nil, err
 	}
-	outstanding, incomplete := s.outstandingAgendaRows(found, loc)
+	outstanding, incomplete := s.outstandingAgendaRows(found, loc, p.Now)
 	set.Incomplete = incomplete
 	for _, row := range outstanding {
 		due := row.Due
@@ -196,7 +196,7 @@ func (s *Store) BootstrapAgenda(p BootstrapAgendaParams) (*BootstrapAgendaSet, e
 
 // outstandingAgendaRows reads each outstanding occurrence at its effective due
 // instant. A move defers the claim; a snooze only defers its next notification.
-func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location) ([]BootstrapAgendaRow, bool) {
+func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location, now time.Time) ([]BootstrapAgendaRow, bool) {
 	var out []BootstrapAgendaRow
 	incomplete := false
 	skip := func(as AgendaSchedule, err error) {
@@ -216,6 +216,11 @@ func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location
 		if err != nil {
 			skip(as, err)
 			continue
+		}
+		// The read above runs on a zero clock, so the snooze is judged on the
+		// caller's: a snooze whose re-fire instant has passed has ended.
+		if e.SnoozedUntil != nil && !e.SnoozedUntil.After(now) {
+			e.SnoozedUntil = nil
 		}
 		if e == nil {
 			continue
