@@ -495,7 +495,7 @@ func (s *Store) reopenOccurrenceAt(workspaceID, itemID string, in ReopenInput, n
 	result := &ReopenResult{ResolutionID: u.ID, ChangeID: newID(), OccurrenceKey: u.Key, PreviousState: u.Operation}
 	if u.CommentID != "" {
 		var exists bool
-		if err = tx.QueryRow(s.q(`SELECT EXISTS(SELECT 1 FROM comments WHERE id=?)`), u.CommentID).Scan(&exists); err != nil {
+		if err = tx.QueryRow(s.q(`SELECT EXISTS(SELECT 1 FROM comments WHERE id=? AND deleted_at IS NULL)`), u.CommentID).Scan(&exists); err != nil {
 			return nil, err
 		}
 		if exists {
