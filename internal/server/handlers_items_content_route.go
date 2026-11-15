@@ -518,6 +518,10 @@ func (s *Server) writeTypedItemRefusal(w http.ResponseWriter, item *models.Item,
 		writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 		return true
 	}
+	// TASK-4538: the recurring-schedule close guard runs in the same precheck.
+	if writeScheduleActiveError(w, err) {
+		return true
+	}
 	// BUG-3163: the full-fields reserved-metadata carry check, composed into
 	// the precheck every ordering here runs.
 	if writeReservedFieldsCarryError(w, err) {
