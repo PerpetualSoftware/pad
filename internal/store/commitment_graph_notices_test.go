@@ -59,13 +59,6 @@ func TestTASK4423_R11SkipAuthority(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			// TASK-4539 explicitly exposes only fixed dependency eligibility, never
-			// partner details. All other parent result fields stay identical.
-			if res.ResolutionID == "" || res.LastResolution == nil || res.LastResolution.CanReopen == linked ||
-				(linked && res.LastResolution.ReopenCode != "reopen_dependency") {
-				t.Fatalf("resolution availability: %+v", res.LastResolution)
-			}
-			res.ResolutionID, res.LastResolution = "", nil
 			res.Schedule.ID, res.Schedule.ItemID, res.Schedule.WorkspaceID, res.Schedule.CreatedAt = "", "", "", ""
 			b, err := json.Marshal(res)
 			if err != nil {

@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"encoding/json"
 	"net/http/httptest"
 	"reflect"
 	"regexp"
@@ -312,29 +311,7 @@ func TestTASK4423_R11SkipAuthority(t *testing.T) {
 					}
 				}
 				without := f.as(tok, "POST", f.path(f.item)+"/resolve", map[string]any{"state": "skip", "occurrence_at": f.dates[0], "end_schedule": true})
-				normalize := func(raw string, linked bool) string {
-					t.Helper()
-					var body map[string]any
-					if err := json.Unmarshal([]byte(raw), &body); err != nil {
-						t.Fatal(err)
-					}
-					for _, part := range []string{"commitment", "resolution"} {
-						row := body[part].(map[string]any)
-						last := row["last_resolution"].(map[string]any)
-						// TASK-4539 permits fixed dependency eligibility only.
-						if last["can_reopen"] == linked || (linked && last["reopen_code"] != "reopen_dependency") {
-							t.Fatalf("availability: %+v", last)
-						}
-						delete(row, "last_resolution")
-						delete(row, "resolution_id")
-					}
-					rawJSON, err := json.Marshal(body)
-					if err != nil {
-						t.Fatal(err)
-					}
-					return string(rawJSON)
-				}
-				if without.Code != rr.Code || normalize(without.Body.String(), false) != normalize(rr.Body.String(), true) {
+				if without.Code != rr.Code || without.Body.String() != rr.Body.String() {
 					t.Fatalf("hidden child changed response bytes:\n%s\n%s", rr.Body.String(), without.Body.String())
 				}
 

@@ -53,7 +53,7 @@ func TestCommitmentAckHTTPContract(t *testing.T) {
 	c := m["commitment"].(map[string]any)
 	next := c["next_occurrence"].(map[string]any)
 	by, _ := next["acknowledged_by"].(map[string]any)
-	if next["state"] != "acknowledged" || next["acknowledged_at"] == nil || by["user_id"] != editor.ID || by["actor"] != "user" || len(m["resolution"].(map[string]any)) != 5 {
+	if next["state"] != "acknowledged" || next["acknowledged_at"] == nil || by["user_id"] != editor.ID || by["actor"] != "user" || len(m["resolution"].(map[string]any)) != 3 {
 		t.Fatalf("body=%s", first)
 	}
 	rr = f.resolve(httpAckBody())

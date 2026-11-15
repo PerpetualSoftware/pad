@@ -301,11 +301,6 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 		if err := s.finishResolutionUndoTx(tx, p.nodes[p.root].sc, p.undo); err != nil {
 			return nil, err
 		}
-		res.ResolutionID = p.undo.ID
-		res.LastResolution, err = s.reopenAvailabilityQ(tx, p.nodes[p.root].sc, nowT)
-		if err != nil {
-			return nil, err
-		}
 	}
 	if err := budget.commit(tx); err != nil {
 		return nil, err

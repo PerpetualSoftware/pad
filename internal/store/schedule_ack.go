@@ -32,7 +32,6 @@ func (s *Store) ackOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveI
 	if err != nil {
 		return nil, err
 	}
-	res.ResolutionID = undo.ID
 	ts := now.UTC().Format(time.RFC3339)
 	actor := in.Actor
 	if actor != "agent" {

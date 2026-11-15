@@ -61,8 +61,17 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 	if err != nil {
 		return nil, err
 	}
-	if c.LastResolution != nil && !access.Editable[item.ID] {
-		c.LastResolution.CanReopen = false
+	// Eligibility is exposed only by the commitment read and reopen POST.
+	if r.Method == http.MethodGet || strings.HasSuffix(r.URL.Path, "/commitment/reopen") {
+		editable, err := s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
+		if err != nil {
+			return nil, err
+		}
+		if !editable || !appWriteAllows(r, item.CollectionID) || !tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPost, "") {
+			c.LastResolution = nil
+		}
+	} else {
+		c.LastResolution = nil
 	}
 	v := s.buildScheduleView(r, item, sc)
 	v.TimezoneNote = note

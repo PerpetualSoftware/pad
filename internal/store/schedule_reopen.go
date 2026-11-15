@@ -152,7 +152,7 @@ func (s *Store) invalidateScheduleReopenTx(tx *sql.Tx, id string) error {
 
 func (s *Store) reopenDependencyQ(q Queryer, sc *models.ItemSchedule) (bool, error) {
 	var n int
-	err := q.QueryRow(s.q(`SELECT (SELECT COUNT(*) FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?) + (SELECT COUNT(*) FROM schedule_gates WHERE blocked_item_id=? OR blocker_item_id=?)`), sc.ID, sc.ID, sc.ItemID, sc.ItemID).Scan(&n)
+	err := q.QueryRow(s.q(`SELECT (SELECT COUNT(*) FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?) + (SELECT COUNT(*) FROM schedule_gates WHERE blocked_item_id=? OR blocker_item_id=?) + (SELECT COUNT(*) FROM milestone_children WHERE schedule_id=? AND removed_at IS NULL)`), sc.ID, sc.ID, sc.ItemID, sc.ItemID, sc.ID).Scan(&n)
 	return n > 0, err
 }
 
@@ -171,7 +171,7 @@ func (s *Store) captureResolutionUndoTx(tx *sql.Tx, sc *models.ItemSchedule, ope
 	if dependency {
 		u.BlockedCode = "reopen_dependency"
 	}
-	if operation != "done" && operation != "skip" && operation != "snooze" && operation != "move" {
+	if !dependency && operation != "done" && operation != "skip" && operation != "snooze" && operation != "move" {
 		u.BlockedCode = "reopen_not_supported"
 	}
 	if u.BlockedCode == "" {
@@ -277,14 +277,10 @@ func (s *Store) reopenImageQ(q Queryer, sc *models.ItemSchedule, u *resolutionUn
 			return image, err
 		}
 	}
-	for name, query := range map[string]string{
-		"milestone": "SELECT m.*,i.seq AS child_seq FROM milestone_children m LEFT JOIN items i ON i.id=m.child_item_id WHERE m.schedule_id=? AND m.removed_at IS NULL ORDER BY m.id",
-		"forecast":  "SELECT * FROM schedule_forecasts WHERE schedule_id=?",
-	} {
-		image.Context[name], err = readReopenRows(q, s.q(query), sc.ID)
-		if err != nil {
-			return image, err
-		}
+	// Forecast belongs to this schedule; partner rows are never after-images.
+	image.Context["forecast"], err = readReopenRows(q, s.q("SELECT * FROM schedule_forecasts WHERE schedule_id=?"), sc.ID)
+	if err != nil {
+		return image, err
 	}
 	return image, nil
 }
@@ -320,14 +316,24 @@ func (s *Store) loadResolutionUndoQ(q Queryer, sc *models.ItemSchedule) (*resolu
 	var raw string
 	var blocked, consumed *string
 	var version int
-	err := q.QueryRow(s.q(`SELECT before_json,blocked_code,reopened_change_id,snapshot_version FROM schedule_reopen_checkpoints WHERE schedule_id=?`), sc.ID).Scan(&raw, &blocked, &consumed, &version)
+	var u resolutionUndo
+	err := q.QueryRow(s.q(`SELECT resolution_id,occurrence_key,operation,before_json,blocked_code,reopened_change_id,snapshot_version FROM schedule_reopen_checkpoints WHERE schedule_id=?`), sc.ID).Scan(&u.ID, &u.Key, &u.Operation, &raw, &blocked, &consumed, &version)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, &ReopenError{"reopen_unavailable"}
 	}
 	if err != nil {
 		return nil, err
 	}
-	var u resolutionUndo
+	// A checkpoint in any state proves this schedule was resolved locally.
+	// Dependencies use only its own relationship rows, never partner state.
+	dependency, err := s.reopenDependencyQ(q, sc)
+	if err != nil {
+		return nil, err
+	}
+	if dependency || derefStr(blocked) == "reopen_dependency" {
+		u.BlockedCode = "reopen_dependency"
+		return &u, nil
+	}
 	if version != 1 || json.Unmarshal([]byte(raw), &u) != nil {
 		return nil, &ReopenError{"reopen_conflict"}
 	}
@@ -340,15 +346,15 @@ func (s *Store) loadResolutionUndoQ(q Queryer, sc *models.ItemSchedule) (*resolu
 }
 
 func (s *Store) validateResolutionUndoQ(q Queryer, sc *models.ItemSchedule, u *resolutionUndo, now time.Time, lock bool) error {
-	if u.BlockedCode != "" {
-		return &ReopenError{u.BlockedCode}
-	}
 	dependency, err := s.reopenDependencyQ(q, sc)
 	if err != nil {
 		return err
 	}
-	if dependency {
+	if dependency || u.BlockedCode == "reopen_dependency" {
 		return &ReopenError{"reopen_dependency"}
+	}
+	if u.BlockedCode != "" {
+		return &ReopenError{u.BlockedCode}
 	}
 	var seq int64
 	if err = q.QueryRow(s.q(`SELECT seq FROM items WHERE id=?`), sc.ItemID).Scan(&seq); err != nil {
@@ -476,6 +482,9 @@ func (s *Store) reopenOccurrenceAt(workspaceID, itemID string, in ReopenInput, n
 	if err != nil {
 		return nil, err
 	}
+	if u.BlockedCode == "reopen_dependency" {
+		return nil, &ReopenError{"reopen_dependency"}
+	}
 	if in.ResolutionID != u.ID {
 		return nil, &ReopenError{"reopen_conflict"}
 	}
@@ -483,7 +492,16 @@ func (s *Store) reopenOccurrenceAt(workspaceID, itemID string, in ReopenInput, n
 		return nil, err
 	}
 	removed := map[string][]reopenRow{}
-	result := &ReopenResult{ResolutionID: u.ID, ChangeID: newID(), OccurrenceKey: u.Key, PreviousState: u.Operation, CommentID: u.CommentID}
+	result := &ReopenResult{ResolutionID: u.ID, ChangeID: newID(), OccurrenceKey: u.Key, PreviousState: u.Operation}
+	if u.CommentID != "" {
+		var exists bool
+		if err = tx.QueryRow(s.q(`SELECT EXISTS(SELECT 1 FROM comments WHERE id=?)`), u.CommentID).Scan(&exists); err != nil {
+			return nil, err
+		}
+		if exists {
+			result.CommentID = u.CommentID
+		}
+	}
 	for _, table := range []string{"schedule_occurrences", "schedule_occurrence_overrides", "milestone_completion_evidence", "item_reminders"} {
 		before := map[string]reopenRow{}
 		after := map[string]reopenRow{}

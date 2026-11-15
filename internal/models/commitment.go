@@ -2,10 +2,6 @@ package models
 
 import "encoding/json"
 
-// Commitment is the roles half of an item's schedule as the commitment
-// contract reads it (TASK-4351): the effective role values of the outstanding
-// occurrence, with that occurrence's overrides applied, and the journal rows
-// that carry the deadline's history.
 // ScheduleLastResolution names one exact action; eligibility is advisory.
 type ScheduleLastResolution struct {
 	ResolutionID  string `json:"resolution_id,omitempty"`
@@ -15,6 +11,10 @@ type ScheduleLastResolution struct {
 	ReopenCode    string `json:"reopen_code,omitempty"`
 }
 
+// Commitment is the roles half of an item's schedule as the commitment
+// contract reads it (TASK-4351): the effective role values of the outstanding
+// occurrence, with that occurrence's overrides applied, and the journal rows
+// that carry the deadline's history.
 type Commitment struct {
 	LastResolution *ScheduleLastResolution `json:"last_resolution,omitempty"`
 	ScheduleID     string                  `json:"schedule_id"`

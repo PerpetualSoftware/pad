@@ -24,11 +24,7 @@ func TestCommitmentReopenHTTP(t *testing.T) {
 	if rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
-	resolution := schedMap(t, rr)["resolution"].(map[string]any)
-	id, _ := resolution["resolution_id"].(string)
-	if id == "" {
-		t.Fatal("resolve missing exact ID")
-	}
+	id := readReopenID(t, f)
 	body := map[string]any{"resolution_id": id}
 	viewer := f.member("reopen-viewer@example.com", "viewer")
 	if rr = f.as(f.token(viewer, ""), "POST", path, body); rr.Code != 403 {
@@ -63,7 +59,7 @@ func TestCommitmentReopenHistoryAndSSE(t *testing.T) {
 	if rr.Code != 200 {
 		t.Fatal(rr.Body.String())
 	}
-	id := schedMap(t, rr)["resolution"].(map[string]any)["resolution_id"]
+	id := readReopenID(t, f)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	ch, _, _ := f.srv.events.Subscribe(ctx, f.ws.ID)

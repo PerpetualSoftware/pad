@@ -65,3 +65,13 @@ func TestRemindReopen(t *testing.T) {
 		t.Fatalf("missing candidate: %v %+v", err, calls)
 	}
 }
+
+func TestRemindReopenDeletedComment(t *testing.T) {
+	out, _, err, _ := runSched(t, okReply(`{"commitment":{},"reopen":{"previous_state":"done"}}`), "", "remind", "reopen", "TASK-5", "--resolution", "11111111-1111-4111-8111-111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(out, "comment was kept") {
+		t.Fatal(out)
+	}
+}

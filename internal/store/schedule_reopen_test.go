@@ -95,28 +95,29 @@ func TestReopenRestoresResolution(t *testing.T) {
 			}
 			if tc.ack {
 				f.fire(t, "2026-10-30T09:00:00Z")
-				f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "ack", Actor: "user"}, "2026-10-30T09:01:00Z")
+				f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "ack", Actor: "user"}, "2026-10-30T09:01:00Z")
 			}
 			before := reopenSnapshot(t, f.s, sc.ID)
 			rid := *sc.ReminderID
 			var id string
 			if tc.linked {
 				f.s.linkClock = func() time.Time { return rt(now) }
-				r, err := f.s.MoveLinkedDate(f.ws.ID, models.LinkedMoveInput{ItemID: item.ID, Role: "target", To: tc.until, Actor: "user", Access: models.CommitmentAccess{Readable: map[string]bool{item.ID: true}, Editable: map[string]bool{item.ID: true}}})
+				_, err := f.s.MoveLinkedDate(f.ws.ID, models.LinkedMoveInput{ItemID: item.ID, Role: "target", To: tc.until, Actor: "user", Access: models.CommitmentAccess{Readable: map[string]bool{item.ID: true}, Editable: map[string]bool{item.ID: true}}})
 				if err != nil {
 					t.Fatal(err)
 				}
-				id = r.ResolutionID
-				if r.LastResolution == nil || !r.LastResolution.CanReopen || r.LastResolution.ResolutionID != id {
-					t.Fatal("missing move availability")
+				view, err := f.s.GetCommitment(f.ws.ID, item.ID)
+				if err != nil {
+					t.Fatal(err)
 				}
+				id = view.LastResolution.ResolutionID
 			} else {
 				r := ResolveInput{OccurrenceAt: occurrence, State: tc.state, Actor: "user", EndSchedule: true}
 				if tc.until != "" {
 					v := rt(tc.until)
 					r.Until = &v
 				}
-				res := f.mustResolve(t, item, r, now)
+				res := f.resolveForReopenTest(t, item, r, now)
 				id = res.ResolutionID
 				if tc.name == "past move no next" && res.Schedule.EndedAt != nil {
 					t.Fatal("past move ended schedule")
@@ -166,13 +167,13 @@ func TestReopenRestoresOnlyOwnedEffects(t *testing.T) {
 	u := f.user(t, "reopen@example.com", "")
 	item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
 	until := rt("2026-10-30T12:00:00Z")
-	f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "move", Until: &until, Actor: "user"}, "2026-10-30T08:00:00Z")
+	f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "move", Until: &until, Actor: "user"}, "2026-10-30T08:00:00Z")
 	f.fire(t, "2026-10-30T12:00:00Z")
 	f.exec(t, `INSERT INTO schedule_occurrences(id,schedule_id,occurrence_at,occurrence_wall,state,actor,resolved_at) VALUES(?,?,?, ?,'missed','',?)`, newID(), sc.ID, "2026-10-31T09:00:00Z", "2026-10-31T09:00:00", "2026-11-01T10:00:00Z")
 	before := reopenSnapshot(t, f.s, sc.ID)
 	occurrences := renegotiateRows(t, f.s, "schedule_occurrences", "")
 	overrides := renegotiateRows(t, f.s, "schedule_occurrence_overrides", "")
-	res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", Comment: f.comment(item, u.ID, "Keep this comment")}, "2026-11-02T10:00:00Z")
+	res := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", Comment: f.comment(item, u.ID, "Keep this comment")}, "2026-11-02T10:00:00Z")
 	if res.MissedRecorded == 0 {
 		t.Fatal("fixture needs inserted misses")
 	}
@@ -200,13 +201,13 @@ func TestReopenRefusalsAreAtomic(t *testing.T) {
 			if name == "deadline passed" || name == "renegotiation" {
 				f.s.mustExec(t, `UPDATE item_schedules SET roles_origin='native',deadline_days=0,deadline_secs=7200,deadline_behavior='lapses' WHERE id=?`, sc.ID)
 			}
-			res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
+			res := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
 			id, code := res.ResolutionID, "reopen_conflict"
 			switch name {
 			case "old ID":
 				id = newID()
 			case "later resolution":
-				f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*res.Schedule.NextAt), State: "skip", Actor: "user"}, "2026-10-30T10:01:00Z")
+				f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*res.Schedule.NextAt), State: "skip", Actor: "user"}, "2026-10-30T10:01:00Z")
 			case "reminder fire":
 				f.fire(t, "2026-10-31T09:01:00Z")
 			case "item seq":
@@ -234,7 +235,7 @@ func TestReopenRefusalsAreAtomic(t *testing.T) {
 				f.s.mustExec(t, `UPDATE item_schedules SET next_at=NULL,next_wall=NULL,ended_at='2026-10-30T10:01:00Z',ended_dismissed_at='2026-10-30T10:01:00Z' WHERE id=?`, sc.ID)
 			case "unsupported ack":
 				f.fire(t, "2026-10-31T09:00:00Z")
-				r := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*res.Schedule.NextAt), State: "ack", Actor: "user"}, "2026-10-31T09:01:00Z")
+				r := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*res.Schedule.NextAt), State: "ack", Actor: "user"}, "2026-10-31T09:01:00Z")
 				id = r.ResolutionID
 				code = "reopen_not_supported"
 			case "link added", "dependency removed":
@@ -291,7 +292,7 @@ func TestReopenHistoryAndConsumption(t *testing.T) {
 	u := f.user(t, "original@example.com", "")
 	v := f.user(t, "reverser@example.com", "")
 	item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
-	res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", ActorUserID: u.ID, Comment: f.comment(item, u.ID, "Resolution's own comment")}, "2026-10-30T10:00:00Z")
+	res := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user", ActorUserID: u.ID, Comment: f.comment(item, u.ID, "Resolution's own comment")}, "2026-10-30T10:00:00Z")
 	got, err := f.s.reopenOccurrenceAt(f.ws.ID, item.ID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user", ActorUserID: v.ID}, rt("2026-10-30T10:01:00Z"))
 	if err != nil {
 		t.Fatal(err)
@@ -311,7 +312,7 @@ func TestReopenHistoryAndConsumption(t *testing.T) {
 	if !reflect.DeepEqual(before, reopenState(t, f.s)) {
 		t.Fatal("second reopen wrote")
 	}
-	res = f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user"}, "2026-10-30T10:03:00Z")
+	res = f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "skip", Actor: "user"}, "2026-10-30T10:03:00Z")
 	if _, err = f.s.reopenOccurrenceAt(f.ws.ID, item.ID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user"}, rt("2026-10-30T10:04:00Z")); err != nil {
 		t.Fatal(err)
 	}
@@ -320,7 +321,7 @@ func TestReopenHistoryAndConsumption(t *testing.T) {
 func TestReopenConcurrentDoubleReopen(t *testing.T) {
 	f := newSchedFixture(t)
 	item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
-	res := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
+	res := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
 	start := make(chan struct{})
 	errs := make(chan error, 2)
 	var wg sync.WaitGroup
@@ -365,7 +366,7 @@ func TestReopenPostgresSerializesWriters(t *testing.T) {
 			f := newSchedFixture(t)
 			item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
 			_, other := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
-			r := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
+			r := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
 			tx, err := f.s.db.Begin()
 			if err != nil {
 				t.Fatal(err)
@@ -462,7 +463,7 @@ func TestReopenDeadlineAndUnsupportedHistory(t *testing.T) {
 				t.Fatal(err)
 			}
 			actual := rt("2026-10-26T08:00:00Z")
-			result := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "done", Actor: "user", ActualDoneAt: &actual, EndSchedule: true}, lapseNow)
+			result := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "done", Actor: "user", ActualDoneAt: &actual, EndSchedule: true}, lapseNow)
 			before := reopenState(t, f.s)
 			_, err = f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: result.ResolutionID, Actor: "user"}, rt(lapseNow).Add(time.Minute))
 			if behavior == "lapses" {
@@ -529,19 +530,22 @@ func TestReopenMilestoneEvidence(t *testing.T) {
 	if err = tx.Commit(); err != nil {
 		t.Fatal(err)
 	}
-	original := renegotiateRows(t, m.s, "milestone_completion_evidence", "")
+
 	b := m.child(t, m.declared, "Also shipped")
 	m.sel(t, b)
 	m.setStatus(t, b, "shipped")
-	r := m.mustResolve(t, m.ms, ResolveInput{OccurrenceAt: rt(*m.sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
+	r := m.resolveForReopenTest(t, m.ms, ResolveInput{OccurrenceAt: rt(*m.sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
 	if m.count(t, `SELECT COUNT(*) FROM milestone_completion_evidence WHERE schedule_id=?`, m.sc.ID) != 2 {
 		t.Fatal("no evidence captured")
 	}
-	if _, err := m.s.reopenOccurrenceAt(m.ws.ID, m.ms.ID, ReopenInput{ResolutionID: r.ResolutionID, Actor: "user"}, rt("2026-10-30T10:01:00Z")); err != nil {
-		t.Fatal(err)
+	before := reopenState(t, m.s)
+	_, err = m.s.reopenOccurrenceAt(m.ws.ID, m.ms.ID, ReopenInput{ResolutionID: r.ResolutionID, Actor: "user"}, rt("2026-10-30T10:01:00Z"))
+	var refusal *ReopenError
+	if !errors.As(err, &refusal) || refusal.Code != "reopen_dependency" {
+		t.Fatalf("milestone: %v", err)
 	}
-	if renegotiateRows(t, m.s, "milestone_completion_evidence", "") != original {
-		t.Fatal("stale evidence survived")
+	if !reflect.DeepEqual(before, reopenState(t, m.s)) {
+		t.Fatal("milestone refusal changed evidence")
 	}
 	view, err := m.s.GetCommitmentFor(m.ws.ID, m.ms.ID, func(string) bool { return false })
 	if err != nil {
@@ -557,7 +561,7 @@ func TestReopenMilestoneEvidence(t *testing.T) {
 }
 
 func TestReopenGraphExclusionAndNoops(t *testing.T) {
-	for _, kind := range []string{"incoming", "outgoing", "blocked", "blocker"} {
+	for _, kind := range []string{"incoming", "outgoing", "blocked", "blocker", "milestone"} {
 		t.Run(kind, func(t *testing.T) {
 			f := newSchedFixture(t)
 			item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
@@ -568,6 +572,8 @@ func TestReopenGraphExclusionAndNoops(t *testing.T) {
 					parent, child = child, parent
 				}
 				f.exec(t, `INSERT INTO schedule_links(id,workspace_id,parent_schedule_id,parent_role,child_schedule_id,child_role,offset_mode,cancel_policy,created_at,updated_at) VALUES(?,?,?,'target',?,'target','elapsed','waiting_on','x','x')`, newID(), f.ws.ID, parent, child)
+			} else if kind == "milestone" {
+				f.exec(t, `INSERT INTO milestone_children(id,workspace_id,schedule_id,child_item_id,kind,added_at) VALUES(?,?,?,?,'child','x')`, newID(), f.ws.ID, sc.ID, other.ID)
 			} else {
 				blocked, blocker := item.ID, other.ID
 				if kind == "blocker" {
@@ -582,12 +588,13 @@ func TestReopenGraphExclusionAndNoops(t *testing.T) {
 				input.Until = &until
 				input.LinkAccess = models.CommitmentAccess{Readable: map[string]bool{item.ID: true, other.ID: true}, Editable: map[string]bool{item.ID: true, other.ID: true}}
 			}
-			r := f.mustResolve(t, item, input, "2026-10-30T10:00:00Z")
-			if r.LastResolution == nil || r.LastResolution.ReopenCode != "reopen_dependency" {
-				t.Fatalf("missing dependency availability: %+v", r.LastResolution)
+			r := f.resolveForReopenTest(t, item, input, "2026-10-30T10:00:00Z")
+			if r.ScheduleLastResolution == nil || r.ScheduleLastResolution.ReopenCode != "reopen_dependency" {
+				t.Fatalf("missing dependency availability: %+v", r.ScheduleLastResolution)
 			}
 			f.exec(t, `DELETE FROM schedule_links WHERE workspace_id=?`, f.ws.ID)
 			f.exec(t, `DELETE FROM schedule_gates WHERE workspace_id=?`, f.ws.ID)
+			f.exec(t, `UPDATE milestone_children SET removed_at='x' WHERE schedule_id=?`, sc.ID)
 			before := reopenState(t, f.s)
 			_, err := f.s.reopenOccurrenceAt(f.ws.ID, item.ID, ReopenInput{ResolutionID: r.ResolutionID}, rt("2026-10-30T10:01:00Z"))
 			var refusal *ReopenError
@@ -602,7 +609,7 @@ func TestReopenGraphExclusionAndNoops(t *testing.T) {
 	t.Run("no-op does not invalidate", func(t *testing.T) {
 		f := newSchedFixture(t)
 		item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
-		r := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
+		r := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T10:00:00Z")
 		if err := f.s.ClearForecast(f.ws.ID, item.ID, "", "user"); err != nil {
 			t.Fatal(err)
 		}
@@ -623,7 +630,7 @@ func TestReopenDateDeadlineAndRecipient(t *testing.T) {
 			in.Dtstart = "2026-10-30"
 			item, sc := f.mk(t, in, "2026-10-29T00:00:00Z")
 			f.exec(t, `UPDATE item_schedules SET roles_origin='native',deadline_days=0,deadline_secs=0,deadline_behavior='lapses' WHERE id=?`, sc.ID)
-			r := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T12:00:00Z")
+			r := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: "user"}, "2026-10-30T12:00:00Z")
 			before := reopenState(t, f.s)
 			_, err := f.s.reopenOccurrenceAt(f.ws.ID, item.ID, ReopenInput{ResolutionID: r.ResolutionID, Actor: "user"}, rt(at))
 			if at == "2026-10-30T23:59:59Z" {
@@ -646,7 +653,7 @@ func TestReopenDateDeadlineAndRecipient(t *testing.T) {
 		in.Tz = ""
 		item, sc := f.mk(t, in, "2026-10-29T00:00:00Z")
 		f.exec(t, `UPDATE items SET assigned_user_id=? WHERE id=?`, u.ID, item.ID)
-		r := f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "user", View: time.UTC}, "2026-10-30T10:00:00Z")
+		r := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt("2026-10-30T09:00:00Z"), State: "done", Actor: "user", View: time.UTC}, "2026-10-30T10:00:00Z")
 		f.exec(t, `UPDATE users SET timezone='America/New_York' WHERE id=?`, u.ID)
 		before := reopenState(t, f.s)
 		_, err := f.s.reopenOccurrenceAt(f.ws.ID, item.ID, ReopenInput{ResolutionID: r.ResolutionID}, rt("2026-10-30T10:01:00Z"))
@@ -655,4 +662,20 @@ func TestReopenDateDeadlineAndRecipient(t *testing.T) {
 			t.Fatalf("zone refusal: %v schedule=%s", err, sc.ID)
 		}
 	})
+}
+
+// Test callers obtain eligibility from a separate commitment read, as clients do.
+type resolvedForReopenTest struct {
+	*ResolveResult
+	*models.ScheduleLastResolution
+}
+
+func (f *schedFixture) resolveForReopenTest(t *testing.T, item *models.Item, in ResolveInput, now string) *resolvedForReopenTest {
+	t.Helper()
+	res := f.mustResolve(t, item, in, now)
+	view, err := f.s.GetCommitment(f.ws.ID, item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return &resolvedForReopenTest{res, view.LastResolution}
 }

@@ -108,8 +108,6 @@ type ResolveInput struct {
 
 // ResolveResult is the committed resolution.
 type ResolveResult struct {
-	ResolutionID   string
-	LastResolution *models.ScheduleLastResolution
 	Schedule       *models.ItemSchedule
 	Comment        *models.Comment
 	AckChanged     bool
@@ -338,7 +336,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, err
 		}
 	}
-	res := &ResolveResult{ResolutionID: undo.ID}
+	res := &ResolveResult{}
 	if moveChecksDeadline {
 		// The deadline is read through the evaluator's own candidate, so a
 		// per-occurrence override counts. A move does not change it.
@@ -423,10 +421,6 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 				}
 			}
 			if err := s.finishResolutionUndoTx(tx, sc, undo); err != nil {
-				return nil, err
-			}
-			res.LastResolution, err = s.reopenAvailabilityQ(tx, sc, nowT)
-			if err != nil {
 				return nil, err
 			}
 			if err := budget.commit(tx); err != nil {
@@ -544,7 +538,7 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 		return nil, err
 	}
 	undo.Key = OccurrenceKey(sc, at, wall)
-	res := &ResolveResult{ResolutionID: undo.ID}
+	res := &ResolveResult{}
 	commentID := ""
 	if in.Comment != nil {
 		in.Comment.Input.ActivityID, err = s.createActivityQ(tx, in.Comment.Activity)
@@ -913,20 +907,10 @@ func (s *Store) armManagedReminderTx(tx *sql.Tx, sc *models.ItemSchedule, remind
 }
 
 func (s *Store) commitResolve(tx *sql.Tx, workspaceID, itemID string, res *ResolveResult) (*ResolveResult, error) {
-	sc, err := s.getScheduleQ(tx, workspaceID, itemID, false)
-	if err != nil {
-		return nil, err
-	}
-	res.LastResolution, err = s.reopenAvailabilityQ(tx, sc, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	if res.LastResolution != nil {
-		res.ResolutionID = res.LastResolution.ResolutionID
-	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("resolve schedule: %w", err)
 	}
+	var err error
 	if res.Schedule, err = s.GetSchedule(workspaceID, itemID); err != nil {
 		return nil, err
 	}
