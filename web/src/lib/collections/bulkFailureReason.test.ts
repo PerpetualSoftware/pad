@@ -146,3 +146,9 @@ describe('bulkToastMessage — the thrown chunk keeps its own error', () => {
 		);
 	});
 });
+
+it('shows the server recovery message for an active recurring schedule', () => {
+ const message = 'This item has a recurring schedule. Closing it stops its occurrences until it is reopened. Retry with force to close it anyway.';
+ const summary = summarizeBulkFailures([{ref:'TASK-1',code:'schedule_active',error:message,details:{schedule_id:'s1',next_at:null}}],0);
+ expect(bulkToastMessage('Moved',0,summary)).toBe(`1 item could not be moved — ${message}`);
+});

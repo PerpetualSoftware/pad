@@ -371,7 +371,7 @@ var padItemSchemaParams = []ParamDef{
 	// force=true skips the guard and still records the transition.
 	// The same flag exists on `pad item update --force` so the CLI
 	// and MCP escape hatches are identical.
-	{Name: "force", Type: "bool", Description: "Override the open-children guard. For: update, bulk-update, move. On code=open_children, details.open_children lists the blocking child refs: ship them and retry, or set force=true to orphan them on purpose."},
+	{Name: "force", Type: "bool", Description: "Override open_children (update, bulk-update, move) or schedule_active (update, bulk-update). Resolve children or set force=true. Closing pauses recurrence until reopening; details.next_at names the next occurrence."},
 
 	// ── Optimistic concurrency ── (TASK-2022)
 	// update only. Round-trip the `updated_at` a prior get returned; the

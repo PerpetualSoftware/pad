@@ -20,7 +20,7 @@
 // force=true on confirmation. Returns the freshly-updated item on
 // success (so callers can mirror their normal success path), or
 // `null` when the user cancelled or the error was something else.
-// On non-open_children errors it re-throws so the caller's existing
+// On other errors it re-throws so the caller's existing
 // error handling (toast, etc.) still fires.
 //
 // The prompt itself is rendered by the singleton <OpenChildrenDialog />
@@ -28,22 +28,11 @@
 // `openChildrenDialog` store and awaits the user's response; call sites
 // remain dialog-free.
 
+import type { OpenChildrenDetails, ScheduleActiveDetails } from '$lib/types';
 import { PadApiError } from '$lib/api/client';
 import { openChildrenDialog } from '$lib/stores/openChildrenDialog.svelte';
 
-export interface OpenChildEntry {
-	ref: string;
-	title: string;
-	status: string;
-	collection_slug: string;
-}
-
-export interface OpenChildrenDetails {
-	open_children: OpenChildEntry[];
-	hidden_blocker_count: number;
-	done_field: string;
-	attempted_value: string;
-}
+export type { OpenChildEntry, OpenChildrenDetails } from '$lib/types';
 
 /**
  * Type-narrowing predicate. Returns true when `err` is a
@@ -56,7 +45,12 @@ export function isOpenChildrenError(
 	if (!(err instanceof PadApiError)) return false;
 	if (err.code !== 'open_children') return false;
 	const d = err.details as Partial<OpenChildrenDetails> | undefined;
-	return !!d && Array.isArray(d.open_children) && typeof d.hidden_blocker_count === 'number';
+	return (
+		!!d &&
+		Array.isArray(d.open_children) &&
+		typeof d.hidden_blocker_count === 'number' &&
+		(d.schedule_active === undefined || isScheduleActiveDetails(d.schedule_active))
+	);
 }
 
 /**
@@ -127,8 +121,32 @@ export async function confirmOpenChildrenOrThrow<T>(
 	 */
 	isLive?: () => boolean
 ): Promise<T | null> {
-	if (!isOpenChildrenError(err)) throw err;
+	if (!isOpenChildrenError(err) && !isScheduleActiveError(err)) throw err;
 	const proceed = await openChildrenDialog.request(parentRef, err.details, isLive);
 	if (!proceed) return null;
 	return await retryWithForce();
+}
+
+/** The recurring-close guard shares the confirmation queue and forced retry. */
+export function isScheduleActiveError(
+	err: unknown
+): err is PadApiError & { details: ScheduleActiveDetails } {
+	if (!(err instanceof PadApiError) || err.code !== 'schedule_active') return false;
+	return isScheduleActiveDetails(err.details);
+}
+
+function isScheduleActiveDetails(details: unknown): details is ScheduleActiveDetails {
+	const d = details as Partial<ScheduleActiveDetails> | undefined;
+	return (
+		!!d &&
+		typeof d.schedule_id === 'string' &&
+		d.schedule_id.length > 0 &&
+		(d.next_at === null ||
+			(typeof d.next_at === 'string' && Number.isFinite(Date.parse(d.next_at))))
+	);
+}
+
+export function formatScheduleActivePrompt(d: ScheduleActiveDetails): string {
+	const next = d.next_at ? new Date(d.next_at).toLocaleString() : 'not currently set';
+	return `This item has a recurring schedule (next: ${next}). Closing it stops its occurrences until you reopen it.`;
 }

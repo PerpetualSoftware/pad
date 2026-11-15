@@ -1959,14 +1959,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				// both false-fire and false-skip classifications.
 				txCtx := gctx
 				txCtx.currentFieldsJS = existing.Fields
-				details, derr := s.runOpenChildrenGuard(tx, txCtx)
-				if derr != nil {
-					return derr
-				}
-				if details != nil {
-					return &openChildrenGuardError{details: details}
-				}
-				return nil
+				return s.runItemClosingGuards(tx, txCtx)
 			}
 		}
 
@@ -2206,14 +2199,7 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				txCtx := gctx
 				txCtx.newFieldMap = merged
 				txCtx.currentFieldsJS = existing.Fields
-				details, derr := s.runOpenChildrenGuard(tx, txCtx)
-				if derr != nil {
-					return derr
-				}
-				if details != nil {
-					return &openChildrenGuardError{details: details}
-				}
-				return nil
+				return s.runItemClosingGuards(tx, txCtx)
 			}
 		}
 
@@ -2541,6 +2527,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 				writeOpenChildrenError(w, itemRefOrSlug(*item), details)
 				return
 			}
+			if writeScheduleActiveError(w, err) {
+				return
+			}
 			if writeReservedFieldsCarryError(w, err) {
 				return
 			}
@@ -2717,6 +2706,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 		// when the guard ran inside the store tx.
 		if details, ok := asOpenChildrenGuardError(err); ok {
 			writeOpenChildrenError(w, itemRefOrSlug(*item), details)
+			return
+		}
+		if writeScheduleActiveError(w, err) {
 			return
 		}
 		// BUG-3163: the full-fields reserved-metadata carry check.

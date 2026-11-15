@@ -532,7 +532,7 @@
             "type": "boolean"
           },
           "force": {
-            "description": "Override the open-children guard. For: update, bulk-update, move. On code=open_children, details.open_children lists the blocking child refs: ship them and retry, or set force=true to orphan them on purpose.",
+            "description": "Override open_children (update, bulk-update, move) or schedule_active (update, bulk-update). Resolve children or set force=true. Closing pauses recurrence until reopening; details.next_at names the next occurrence.",
             "type": "boolean"
           },
           "forecast": {

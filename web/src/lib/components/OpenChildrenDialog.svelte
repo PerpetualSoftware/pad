@@ -14,6 +14,7 @@
 	// pages — the whole point is helping the user see WHY the move was
 	// blocked and either resolve the children or force-override.
 
+	import { formatScheduleActivePrompt } from '$lib/items/openChildrenError';
 	import { page } from '$app/state';
 	import { openChildrenDialog } from '$lib/stores/openChildrenDialog.svelte';
 	import Modal from '$lib/components/common/Modal.svelte';
@@ -76,25 +77,27 @@
 
 <svelte:window onkeydown={onKeydown} />
 
-<Modal
-	open={!!active}
-	onclose={onCancel}
-	labelledby="open-children-title"
-	maxWidth="540px"
->
+<Modal open={!!active} onclose={onCancel} labelledby="open-children-title" maxWidth="540px">
 	{#if active}
 		<div class="modal-header">
-			<h2 id="open-children-title">Children still open</h2>
+			<h2 id="open-children-title">
+				{'schedule_id' in active.details
+					? 'Recurring schedule active'
+					: 'Children still open'}
+			</h2>
 			<button class="close-btn" type="button" onclick={onCancel} aria-label="Cancel"
 				>&#10005;</button
 			>
 		</div>
 
-			<div class="modal-body">
+		<div class="modal-body">
+			{#if 'schedule_id' in active.details}
+				<p class="lead">{formatScheduleActivePrompt(active.details)}</p>
+			{:else}
 				<p class="lead">
 					Cannot mark <strong>{active.parentRef}</strong>
-					<code>{active.details.attempted_value}</code> while child items are still in a
-					non-terminal state.
+					<code>{active.details.attempted_value}</code> while child items are still in a non-terminal
+					state.
 				</p>
 
 				{#if active.details.open_children.length > 0}
@@ -106,12 +109,17 @@
 						<ul class="child-list">
 							{#each active.details.open_children as child (child.ref)}
 								<!-- THIS WAS FILED AS UNFIXABLE CLIENT-SIDE, claiming the DTO
-								     carried no collection identifier. It carries
-								     `collection_slug` — the link two lines below is built from
-								     it. The claim was about a shape nobody had opened, in an
-								     item whose whole history is enumeration claims that were
-								     not checked (BUG-3067). -->
-								{@const childStatus = categoricalValueForSlug(collectionStore.collections, child.collection_slug, 'status', child.status)}
+									     carried no collection identifier. It carries
+									     `collection_slug` — the link two lines below is built from
+									     it. The claim was about a shape nobody had opened, in an
+									     item whose whole history is enumeration claims that were
+									     not checked (BUG-3067). -->
+								{@const childStatus = categoricalValueForSlug(
+									collectionStore.collections,
+									child.collection_slug,
+									'status',
+									child.status
+								)}
 								<li class="child-row">
 									{#if canLink}
 										<a
@@ -126,7 +134,8 @@
 										<span class="child-ref">{child.ref}</span>
 									{/if}
 									<span class="child-title">{child.title}</span>
-									{#if childStatus}<span class="child-status">{childStatus}</span>{/if}
+									{#if childStatus}<span class="child-status">{childStatus}</span
+										>{/if}
 								</li>
 							{/each}
 						</ul>
@@ -136,23 +145,29 @@
 				{#if active.details.hidden_blocker_count > 0}
 					<div class="hidden-note">
 						Plus <strong>{active.details.hidden_blocker_count}</strong> additional
-						{active.details.hidden_blocker_count === 1 ? 'child' : 'children'} you don't have access
-						to.
+						{active.details.hidden_blocker_count === 1 ? 'child' : 'children'} you don't have
+						access to.
 					</div>
+				{/if}
+
+				{#if active.details.schedule_active}
+					<p class="lead">{formatScheduleActivePrompt(active.details.schedule_active)}</p>
 				{/if}
 
 				<div class="explainer">
 					Close those items first, or override the guard to mark
 					<strong>{active.parentRef}</strong> terminal anyway.
 				</div>
-			</div>
+			{/if}
+		</div>
 
-			<div class="modal-footer">
-				<Button variant="secondary" autofocus onclick={onCancel}>Cancel</Button>
-				<Button variant="danger-solid" onclick={onConfirm}>
-					Override and mark {active.details.attempted_value}
-				</Button>
-			</div>
+		<div class="modal-footer">
+			<Button variant="secondary" autofocus onclick={onCancel}>Cancel</Button>
+			<Button variant="danger-solid" onclick={onConfirm}>
+				{#if 'schedule_id' in active.details}Close anyway{:else}Override and mark {active
+						.details.attempted_value}{/if}
+			</Button>
+		</div>
 	{/if}
 </Modal>
 

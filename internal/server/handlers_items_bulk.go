@@ -826,14 +826,7 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 			// in-tx snapshot the UPDATE will write.
 			txCtx := gctx
 			txCtx.currentFieldsJS = existing.Fields
-			details, derr := s.runOpenChildrenGuard(tx, txCtx)
-			if derr != nil {
-				return derr
-			}
-			if details != nil {
-				return &openChildrenGuardError{details: details}
-			}
-			return nil
+			return s.runItemClosingGuards(tx, txCtx)
 		}
 	}
 
@@ -859,6 +852,11 @@ func (s *Server) bulkFieldUpdate(r *http.Request, workspaceID string, item *mode
 				code:    "open_children",
 				details: raw,
 			}
+		}
+		var active *scheduleActiveError
+		if errors.As(err, &active) {
+			raw, _ := json.Marshal(active.details)
+			return nil, &bulkOpError{message: scheduleActiveMessage, code: "schedule_active", details: raw}
 		}
 		return nil, bulkStoreError(err)
 	}

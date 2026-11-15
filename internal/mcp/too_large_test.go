@@ -172,6 +172,9 @@ func TestEveryCLIMarkerCodeIsInTheStdioVocabulary(t *testing.T) {
 		return &cli.APIError{Code: code, Message: "m", Status: http.StatusBadRequest}
 	}
 	writers := map[string]func(*bytes.Buffer){
+		"WriteScheduleActiveError": func(w *bytes.Buffer) {
+			cli.WriteScheduleActiveError(w, api("schedule_active"))
+		},
 		"WriteOpenChildrenError": func(w *bytes.Buffer) {
 			cli.WriteOpenChildrenError(w, api("open_children"), &cli.OpenChildrenDetails{})
 		},

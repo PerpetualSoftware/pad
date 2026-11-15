@@ -1551,6 +1551,10 @@ A body write with neither prints a warning, and a future release refuses it
 				// the same structured payload MCP clients consume so
 				// the human and machine views agree.
 				if apiErr := cli.AsAPIError(err); apiErr != nil {
+					if apiErr.Code == "schedule_active" {
+						cli.WriteScheduleActiveError(os.Stderr, apiErr)
+						return fmt.Errorf("update rejected: recurring schedule active")
+					}
 					if oc := apiErr.AsOpenChildren(); oc != nil {
 						cli.WriteOpenChildrenError(os.Stderr, apiErr, oc)
 						// Return a bare error so cobra exits non-zero
@@ -1626,7 +1630,7 @@ A body write with neither prints a warning, and a future release refuses it
 	cmd.Flags().StringVar(&fieldsJSON, "fields-json", "", fieldsJSONFlagUsage)
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "set the item's sort_order key (lower appears first; a sort key, not a position: drag-reorder writes values far apart, TASK-3525)")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
-	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
+	cmd.Flags().BoolVar(&force, "force", false, "override the open-children and active recurring schedule guards")
 	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
 	cmd.Flags().BoolVar(&overwritePendingEdits, "overwrite-pending-edits", false, "with a version token and new content: replace unflushed edits a browser tab holds for this item instead of being refused with content_pending_flush (BUG-3133)")
 	cmd.Flags().BoolVar(&replaceBody, "replace", false, "with --content, --stdin or --clear-content: overwrite the body on purpose, whatever changed since you read it (no version token). A body write with neither this nor --expected-seq is warned about now and will be refused in a future release (PLAN-3555)")
@@ -4354,6 +4358,9 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 					// message.
 					row := updateFailure{Ref: slug, Error: err.Error()}
 					if apiErr := cli.AsAPIError(err); apiErr != nil && apiErr.Code != "" {
+						if apiErr.Code == "schedule_active" {
+							cli.WriteScheduleActiveError(os.Stderr, apiErr)
+						}
 						row.Code = apiErr.Code
 						if len(apiErr.Details) > 0 {
 							row.Details = apiErr.Details
@@ -4396,21 +4403,28 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 			// need to know which items succeeded vs failed can branch
 			// on the typed payload directly.
 			if formatFlag == "json" {
-				return cli.PrintJSON(map[string]any{
+				if err := cli.PrintJSON(map[string]any{
 					"updated": updated,
 					"failed":  failed,
 					"total":   total,
-				})
+				}); err != nil {
+					return err
+				}
+			} else {
+				fmt.Printf("\nUpdated %d of %d items\n", len(updated), total)
 			}
-
-			fmt.Printf("\nUpdated %d of %d items\n", len(updated), total)
+			for _, failure := range failed {
+				if failure.Code == "schedule_active" {
+					return fmt.Errorf("bulk update rejected: recurring schedule active; rerun with --force")
+				}
+			}
 			return nil
 		},
 	}
 
 	cmd.Flags().StringVar(&status, "status", "", "set status for all items")
 	cmd.Flags().StringVar(&priority, "priority", "", "set priority for all items")
-	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking items terminal even if children are non-terminal)")
+	cmd.Flags().BoolVar(&force, "force", false, "override the open-children and active recurring schedule guards")
 
 	return cmd
 }

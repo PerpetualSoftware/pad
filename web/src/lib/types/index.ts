@@ -1564,9 +1564,10 @@ export interface ItemUpdate {
 	source?: string;
 	comment?: string;
 	/**
-	 * When true, overrides the server-side open-children guard (IDEA-1494)
-	 * that otherwise rejects non-terminal → terminal done-field transitions
-	 * while the item still has non-terminal children. Mirror of the
+	 * When true, overrides the open-children guard (IDEA-1494) and the
+	 * recurring schedule guard (TASK-4538), which reject non-terminal → terminal
+	 * done-field transitions while the item has non-terminal children or a
+	 * live recurring schedule. Mirror of the
 	 * CLI's `--force` flag and `models.ItemUpdate.Force` server-side.
 	 * BUG-1538 / TASK-1539.
 	 */
@@ -1590,6 +1591,7 @@ export type BulkItemOp =
 // `BulkItemsRequest` is a discriminated union on `op` so each verb only
 // accepts (and requires) its own params. `ids` are item refs (TASK-5) or
 // UUIDs. `force` overrides the open-children guard on status-bearing moves
+// (status updates also skip the schedule_active guard)
 // (mirrors ItemUpdate.force). `move` requires status and/or collection
 // (target slug) — kept both-optional here; the server validates the
 // at-least-one rule.
@@ -2538,6 +2540,27 @@ export interface PlaybookLibraryResponse {
 	categories: PlaybookCategory[];
 }
 
+export interface OpenChildEntry {
+	ref: string;
+	title: string;
+	status: string;
+	collection_slug: string;
+}
+
+export interface OpenChildrenDetails {
+	open_children: OpenChildEntry[];
+	hidden_blocker_count: number;
+	done_field: string;
+	attempted_value: string;
+	schedule_active?: ScheduleActiveDetails;
+}
+
+export interface ScheduleActiveDetails {
+	schedule_id: string;
+	next_at: string | null;
+	rule_summary?: string;
+}
+
 // ─── API Error ───────────────────────────────────────────────────────────────
 
 export interface ApiError {
@@ -2548,6 +2571,7 @@ export interface ApiError {
 	 * carry recovery information. Shape varies by code — e.g.
 	 * `open_children` (IDEA-1494) returns
 	 * `{ open_children: [...], hidden_blocker_count: N, done_field, attempted_value }`.
+	 * `schedule_active` returns `ScheduleActiveDetails`.
 	 * Consumers branching on `code` cast this to the matching shape.
 	 */
 	details?: Record<string, unknown>;

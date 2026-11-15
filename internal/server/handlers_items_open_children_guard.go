@@ -121,10 +121,11 @@ type openChildEntry struct {
 // would also need to clear (or be force-overridden) but that the
 // caller can't see.
 type openChildrenDetails struct {
-	OpenChildren       []openChildEntry `json:"open_children"`
-	HiddenBlockerCount int              `json:"hidden_blocker_count"`
-	DoneField          string           `json:"done_field"`
-	AttemptedValue     string           `json:"attempted_value"`
+	OpenChildren       []openChildEntry       `json:"open_children"`
+	HiddenBlockerCount int                    `json:"hidden_blocker_count"`
+	DoneField          string                 `json:"done_field"`
+	AttemptedValue     string                 `json:"attempted_value"`
+	ScheduleActive     *scheduleActiveDetails `json:"schedule_active,omitempty"`
 }
 
 // openChildrenGuardContext bundles the read-only inputs the precheck

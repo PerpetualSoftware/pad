@@ -114,8 +114,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	saveTitle: { reviewed: '16e6668ada3f', why: 'gen against loadGeneration on both arms, and again after the tick that resizes a reopened editor (BUG-3115)' + SETTLE_NOTE, may: ['saves.settle'] },
 	// TASK-3537: re-reviewed; this unit's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	updateField: {
-		reviewed: 'f9ec11bf3427',
-		why: 'stillCurrent() on every arm, the OCC refetch and the open-children confirm' + SETTLE_NOTE,
+		reviewed: 'cc6d2d7ba1d2',
+		why: 'stillCurrent() on every arm, the OCC refetch and the closing-guard confirm; TASK-4538 adds schedule_active to that same fenced branch' + SETTLE_NOTE,
 		may: ['saves.settle'],
 		callbacks: {
 			'submitOrderedOCC({send})': {

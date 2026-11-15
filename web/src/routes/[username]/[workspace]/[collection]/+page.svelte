@@ -2374,7 +2374,7 @@
 			// children. Branch on the error shape so a USER cancel of
 			// the modal doesn't get logged as an "update failure" and
 			// the toast/log noise matches user intent.
-			if (isOpenChildrenError(e)) {
+			if (isOpenChildrenError(e) || (e instanceof PadApiError && e.code === 'schedule_active')) {
 				let forced;
 				try {
 					// Still worth asking if it waits in the queue (BUG-3046). This

@@ -549,6 +549,7 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	"commitment_changed":      {},
 	"agent_name_required":     {}, // TASK-4042: remote chat needs declared clientInfo.name.
 	"open_children":           {}, // IDEA-1494
+	"schedule_active":         {}, // TASK-4538
 	"plan_limit_exceeded":     {}, // TASK-788
 	// BUG-3098. No catalog action reaches an invitation accept today; the
 	// entry keeps a future one from collapsing it to permission_denied.
