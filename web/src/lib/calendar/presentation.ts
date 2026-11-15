@@ -320,8 +320,8 @@ function attentionKey(entry: AgendaEntry | AgendaWorkEntry): string {
 }
 
 /**
- * What needs attention: priority-list rows whose target has passed or whose deadline passed
- * while still owed, plus window occurrences that lapsed, were missed or carry missed occurrences.
+ * What needs attention: priority-list rows whose target has passed (unless snoozed) or whose
+ * deadline passed while still owed, plus window occurrences that lapsed, were missed or carry missed occurrences.
  * Each occurrence is listed once, under its most severe reason.
  */
 export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWorkEntry[]): AttentionEntry[] {
@@ -335,7 +335,10 @@ export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWor
 	};
 	for (const row of priorityList) {
 		if (row.type !== 'schedule') continue;
-		if (row.reason === 'deadline_still_owed' || row.reason === 'target_passed') add(row.reason, row, false);
+		if (row.reason === 'deadline_still_owed') add(row.reason, row, false);
+		// A snoozed occurrence was deliberately deferred: its passed target is not attention until the
+		// snooze ends. A passed deadline still is, since a snooze does not move it.
+		else if (row.reason === 'target_passed' && !isSnoozed(row)) add(row.reason, row, false);
 	}
 	for (const entry of entries) {
 		if (entry.type !== 'schedule') continue;

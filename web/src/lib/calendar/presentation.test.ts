@@ -181,6 +181,18 @@ describe('attentionEntries', () => {
    ['EX-21', 'deadline_still_owed'], ['EX-20', 'target_passed'], ['EX-10', 'lapsed'], ['EX-11', 'missed'], ['EX-16', 'missed']
   ]);
  });
+ it('leaves out a snoozed passed target until the snooze ends, but keeps a snoozed passed deadline (BUG-4570)', () => {
+  const future = new Date(Date.now() + 86400000).toISOString();
+  const past = new Date(Date.now() - 86400000).toISOString();
+  const priority = [
+   work({ item_ref: 'EX-40', schedule_id: 'q1', occurrence_key: 'o1', reason: 'target_passed', snoozed_until: future }),
+   work({ item_ref: 'EX-41', schedule_id: 'q2', occurrence_key: 'o2', reason: 'deadline_still_owed', snoozed_until: future }),
+   work({ item_ref: 'EX-42', schedule_id: 'q3', occurrence_key: 'o3', reason: 'target_passed', snoozed_until: past })
+  ];
+  expect(attentionEntries([], priority).map(a => [a.entry.item_ref, a.reason])).toEqual([
+   ['EX-41', 'deadline_still_owed'], ['EX-42', 'target_passed']
+  ]);
+ });
  it('lists an occurrence once when it is in both the priority list and the window, keeping the window entry', () => {
   const inWindow = row({ item_ref: 'EX-30', schedule_id: 's1', occurrence_key: 'k1', missed_count: 1, overdue: true });
   const other = row({ item_ref: 'EX-30', schedule_id: 's1', occurrence_key: 'k0', state: 'lapsed', at: '2026-03-07T04:00:00Z' });
