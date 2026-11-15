@@ -13,6 +13,8 @@ import type {
  CommitmentRenegotiationResult,
 	ItemCommitmentView,
 	CommitmentResolveRequest,
+ CommitmentReopenRequest,
+ CommitmentReopenResult,
 	CommitmentResolveResult,
 	BuiltinListEntry,
 	CatchUpResponse,
@@ -3795,6 +3797,8 @@ export const api = {
   request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/forecast`, {method: 'PUT', body: JSON.stringify(body)}),
  clearCommitmentForecast: (ws: string, ref: string) =>
   request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/forecast`, {method: 'DELETE'}),
+	reopenCommitment: (ws: string, ref: string, body: CommitmentReopenRequest) =>
+ request<CommitmentReopenResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/reopen`, { method: 'POST', body: JSON.stringify(body) }),
 	resolveCommitment: (ws: string, ref: string, body: CommitmentResolveRequest) =>
 		request<CommitmentResolveResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/resolve`, {
 			method: 'POST', body: JSON.stringify(body)

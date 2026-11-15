@@ -38,3 +38,19 @@ it.each([
 ] as const)('derives a label from deadline=%s and occupied_until=%s', (deadline, occupied_until, expected) => {
  expect(commitmentKind({ deadline, occupied_until })).toBe(expected);
 });
+
+it('reopens the exact resolution through encoded path components', async () => {
+ const body = { resolution_id: '11111111-1111-4111-8111-111111111111' };
+ const result = { commitment: {}, reopen: { ...body, change_id: 'new', occurrence_key: 'wall', previous_state: 'done', missed_removed: 2, comment_id: 'kept' } };
+ const fetch = answer(200, result);
+ expect(await api.reopenCommitment('a/b', 'TASK/5', body)).toEqual(result);
+ expect(fetch.mock.calls[0][0]).toBe('/api/v1/workspaces/a%2Fb/items/TASK%2F5/commitment/reopen');
+ expect(fetch.mock.calls[0][1]).toMatchObject({ method: 'POST', body: JSON.stringify(body) });
+});
+it.each(['reopen_unavailable', 'reopen_not_supported', 'reopen_conflict', 'reopen_dependency', 'reopen_deadline_passed'])('preserves %s without replaying', async code => {
+ const fetch = answer(409, { error: { code, message: 'Refused' } });
+ const error = await api.reopenCommitment('work', 'TASK-5', { resolution_id: 'exact' }).catch(e => e);
+ expect(error).toBeInstanceOf(PadApiError);
+ expect(error).toMatchObject({ code });
+ expect(fetch).toHaveBeenCalledTimes(1);
+});
