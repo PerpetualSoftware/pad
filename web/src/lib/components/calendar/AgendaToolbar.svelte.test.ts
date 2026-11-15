@@ -18,6 +18,23 @@ beforeEach(() => { viewport.isMobile = false; });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
 describe('agenda workspace chooser', () => {
+ it('shows a bottom scroll cue only while more workspace rows lie below', async () => {
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('workspace-list') ? 900 : 0; });
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockImplementation(function (this: HTMLElement) { return this.classList.contains('workspace-list') ? 300 : 0; });
+  render(AgendaToolbar, { props: props() }); await fireEvent.click(trigger()); await fireEvent.click(chooser());
+  const list = document.querySelector<HTMLElement>('.workspace-list')!;
+  expect(list).toHaveAttribute('data-scroll-more');
+  list.scrollTop = 600; await fireEvent.scroll(list);
+  expect(list).not.toHaveAttribute('data-scroll-more');
+  list.scrollTop = 100; await fireEvent.scroll(list);
+  expect(list).toHaveAttribute('data-scroll-more');
+ });
+ it('does not show a bottom scroll cue for a short workspace list', async () => {
+  vi.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockReturnValue(100);
+  vi.spyOn(HTMLElement.prototype, 'clientHeight', 'get').mockReturnValue(100);
+  render(AgendaToolbar, { props: props({ workspaces: workspaces.slice(0, 1) }) }); await fireEvent.click(trigger()); await fireEvent.click(chooser());
+  expect(document.querySelector('.workspace-list')).not.toHaveAttribute('data-scroll-more');
+ });
  it('keeps 30 workspaces out of the root, sorts the full list, and selects by ID in two activations', async () => {
   const p = props(); render(AgendaToolbar, { props: p }); await fireEvent.click(trigger());
   expect(screen.getAllByRole('menuitemradio').map(el => el.querySelector('.mi-label')?.textContent)).toEqual(['All workspaces', 'My workspaces', 'Team']);

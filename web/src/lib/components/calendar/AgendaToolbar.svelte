@@ -48,6 +48,8 @@
 	let trigger = $state<HTMLElement>();
 	const rangeLabel = $derived(RANGES.find(range => range.value === mode)!.label);
 	let workspaceView = $state<'root' | 'workspaces'>('root');
+	let workspaceList = $state<HTMLDivElement>();
+	let moreWorkspacesBelow = $state(false);
 	const builtins: WorkspaceGroup[] = [
 		{ id: 'all', kind: 'all', name: 'All', workspace_ids: [] },
 		{ id: 'mine', kind: 'mine', name: 'Mine', workspace_ids: [] }
@@ -61,6 +63,18 @@
 	const listed = $derived([...(workspaces ?? [])].sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }) || (a.owner_username ?? '').localeCompare(b.owner_username ?? '') || a.id.localeCompare(b.id)));
 
 	$effect(() => { if (!open) workspaceView = 'root'; });
+	$effect(() => {
+		// Recheck after list content changes as well as container resizes.
+		listed; workspacesLoading; workspacesError;
+		if (!workspaceList) return;
+		updateWorkspaceScroll();
+		const observer = new ResizeObserver(updateWorkspaceScroll);
+		observer.observe(workspaceList);
+		return () => observer.disconnect();
+	});
+	function updateWorkspaceScroll() {
+		moreWorkspacesBelow = !!workspaceList && workspaceList.scrollHeight - workspaceList.clientHeight - workspaceList.scrollTop > 1;
+	}
 
 	function groupLabel(group: WorkspaceGroup) { return group.kind === 'all' ? 'All workspaces' : group.kind === 'mine' ? 'My workspaces' : group.name; }
 	function groupSize(group: WorkspaceGroup): string | undefined {
@@ -84,7 +98,7 @@
 	{#if workspaceView === 'workspaces'}
 		<div class="workspace-picker" class:phone={mobile}>
 			<MenuItem onclick={() => workspaceView = 'root'}>Back</MenuItem>
-			<div class="workspace-list">
+			<div class="workspace-list" bind:this={workspaceList} onscroll={updateWorkspaceScroll} data-scroll-more={moreWorkspacesBelow || undefined}>
 				{#if workspacesLoading}<p role="status">Loading workspaces…</p>{/if}
 				{#if workspacesError}
 					<p role="status">Could not load workspaces.</p>
@@ -179,7 +193,9 @@
 
 <style>
 	.workspace-chooser :global(.mi-hint) { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.workspace-picker { display: flex; flex-direction: column; min-height: 0; }
+	.workspace-picker { position: relative; display: flex; flex-direction: column; min-height: 0; --scroll-cue-bg: var(--bg-raised, var(--bg-tertiary)); }
+	.workspace-picker:has(.workspace-list[data-scroll-more])::after { content: ''; position: absolute; inset: auto 0 0; height: 24px; pointer-events: none; background: linear-gradient(transparent, var(--scroll-cue-bg)); }
+	.workspace-picker.phone { --scroll-cue-bg: var(--bg-secondary); }
 	.workspace-picker > :global(.mi) { flex-shrink: 0; }
 	.workspace-list { min-height: 0; overflow-y: scroll; scrollbar-gutter: stable; border-top: 1px solid var(--border); }
 	.workspace-picker.phone .workspace-list { max-height: 50dvh; }
