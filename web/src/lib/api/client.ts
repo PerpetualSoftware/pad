@@ -147,6 +147,7 @@ import type {
 	NeedsListParams,
 	NeedsResponse,
 	AgendaResponse,
+	AgendaCountsResponse,
 	AgendaWorkspaceSelection,
 	NeedsSnooze,
 	NeedsSnoozeRequest
@@ -3831,12 +3832,21 @@ export const api = {
  renegotiateCommitment: (ws: string, ref: string, body: CommitmentRenegotiateRequest) =>
   request<ItemCommitmentView | CommitmentRenegotiationResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/renegotiate`, { method: 'POST', body: JSON.stringify(body) }),
 
-	getMyAgenda: (from: string, to: string, tz?: string, selection?: AgendaWorkspaceSelection, include?: string[]) => {
+	getMyAgenda: (from: string, to: string, tz?: string, selection?: AgendaWorkspaceSelection, include?: string[], counts?: 'include' | 'omit') => {
 		const query = new URLSearchParams({ from, to });
 		if (tz !== undefined) query.set('tz', tz);
 		if (selection !== undefined) query.set(selection.kind, selection.id);
 		if (include !== undefined) query.set('include', include.join(','));
+		if (counts !== undefined) query.set('counts', counts);
 		return request<AgendaResponse>(`/me/agenda?${query}`);
+	},
+
+	getMyAgendaCounts: (from: string, to: string, tz?: string, selection?: AgendaWorkspaceSelection) => {
+		const query = new URLSearchParams({ from, to });
+		if (tz !== undefined) query.set('tz', tz);
+		if (selection !== undefined) query.set(selection.kind, selection.id);
+		query.set('counts', 'only');
+		return request<AgendaCountsResponse>(`/me/agenda?${query}`);
 	},
 
 	needs: {

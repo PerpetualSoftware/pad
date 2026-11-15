@@ -3,9 +3,9 @@ import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-li
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
-const h = vi.hoisted(() => ({ toast: vi.fn(), reopen: vi.fn(), agenda: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+const h = vi.hoisted(() => ({ toast: vi.fn(), reopen: vi.fn(), agenda: vi.fn(), counts: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
 vi.mock('$app/navigation', () => ({ afterNavigate: vi.fn(), goto: async (url: URL) => { window.history.replaceState({}, '', url); } }));
-vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, reopenCommitment: h.reopen, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
+vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getMyAgendaCounts: h.counts, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, reopenCommitment: h.reopen, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/stores/auth.svelte', async () => {
@@ -62,6 +62,7 @@ beforeEach(() => {
  vi.resetAllMocks(); localStorage.clear(); h.user = { id: 'user-a', timezone: 'America/New_York' }; h.epoch = 0; h.browserZone = 'Europe/London'; h.signal?.set('auth', 0);
  vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2026-11-05T12:00:00Z'));
  h.agenda.mockResolvedValue(response());
+ h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts: [] });
  h.groups.mockResolvedValue({ groups: workspaceGroups }); h.workspaces.mockResolvedValue([workspace]);
  h.createGroup.mockResolvedValue({}); h.updateGroup.mockResolvedValue({}); h.removeGroup.mockResolvedValue({});
  h.view.mockResolvedValue({ item_ref: 'EX-30', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, floating: true, next_occurrence: { at: frozenAt, wall: row().wall } });
@@ -100,7 +101,7 @@ describe('agenda Day page', () => {
   await mount(); await toggleCompleted();
   h.user = { id: 'user-a', timezone: 'Asia/Tokyo' }; h.signal?.set('auth', 1);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', { kind: 'group', id: 'all' }, ['completed']]);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', { kind: 'group', id: 'all' }, ['completed'], 'omit']);
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 2);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
   expect(await completedShown()).toBe(true);
@@ -342,7 +343,7 @@ describe('agenda Week and priority', () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-30T16:00:00Z'));
   h.agenda.mockResolvedValue(response([])); render(Agenda);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
-  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
+  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit']);
   expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
   expect(stripDays().map(day => day.dataset.stripDay)).toEqual(['2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']);
   expect(stripDays().filter(day => day.getAttribute('aria-current') === 'date')).toEqual([stripDay('2026-10-30')]);
@@ -350,7 +351,7 @@ describe('agenda Week and priority', () => {
   expect(screen.getByText('Nothing scheduled for 30 October – 5 November 2026')).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit']);
   expect(screen.getByRole('heading', { name: '6–12 November 2026' })).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Previous week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
@@ -569,7 +570,8 @@ describe('agenda Week and priority', () => {
   expect(screen.queryByText(/Showing entries up to|Too much to load|could not be shown/)).toBeNull();
  });
  it('puts the summary first in the rail and the outstanding list under it, in Week', async () => {
-  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); await mount();
+  h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] });
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()] })); await mount();
   const rail = document.querySelector('aside.rail') as HTMLElement;
   expect(within(rail).getAllByRole('region').map(el => el.getAttribute('aria-labelledby') && document.getElementById(el.getAttribute('aria-labelledby')!)?.textContent)).toEqual(['This week', 'Outstanding']);
   expect(rail.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1'); expect(rail.querySelector('[data-stat="completed"] b')?.textContent).toBe('1');
@@ -642,7 +644,8 @@ describe('agenda Week and priority', () => {
  it('switches between Schedule and Outstanding in place at mobile widths without fetching', async () => {
   vi.spyOn(window, 'matchMedia').mockImplementation(query => ({ matches: query === '(max-width: 768px)', media: query, addEventListener: vi.fn(), removeEventListener: vi.fn() }) as unknown as MediaQueryList);
   vi.spyOn(window, 'scrollTo').mockImplementation(() => {});
-  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow({ item_ref: 'EX-40', item_title: 'Owed item' }), workRow({ item_ref: 'EX-41', item_title: 'Other owed' })], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] }));
+  h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] });
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow({ item_ref: 'EX-40', item_title: 'Owed item' }), workRow({ item_ref: 'EX-41', item_title: 'Other owed' })] }));
   await mount();
   const tabs = within(screen.getByRole('tablist', { name: 'Show' })).getAllByRole('tab');
   expect(tabs.map(el => el.textContent?.replace(/\s+/g, ' ').trim())).toEqual(['Schedule', 'Outstanding 2']);
@@ -792,7 +795,7 @@ describe('week strip, attention band and states', () => {
   expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy(); expect(within(daySection('2026-11-09')).queryByText('Nothing scheduled.')).toBeNull();
   await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' }));
   await screen.findByText('Later item');
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit']);
   expect(screen.getAllByText('First item')).toHaveLength(2); expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
   expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(within(screen.getByRole('region', { name: 'Outstanding' })).getByText('First item')).toBeTruthy();
@@ -858,7 +861,7 @@ describe('week strip, attention band and states', () => {
   // Nothing is published between the two pages, so the second page never flickers out.
   await settle(); expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
   second.resolve(response([later])); await said('Occurrence marked done.', 'success');
-  expect(h.agenda.mock.calls[3]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
+  expect(h.agenda.mock.calls[3]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit']);
   expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.getAllByText('First item').length).toBeGreaterThan(0);
   expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
@@ -1052,11 +1055,12 @@ describe('workspace groups and daily counts', () => {
  it('loads the original agenda without a group when the groups list fails', async () => {
   h.groups.mockRejectedValue(new Error('Unavailable')); await mount();
   expect(screen.queryByRole('button', { name: /^Workspaces: / })).toBeNull();
-  expect(h.agenda.mock.calls[0].slice(3)).toEqual([undefined, ['completed']]); expect(screen.queryByRole('alert')).toBeNull(); expect(h.toast).not.toHaveBeenCalled();
+  expect(h.agenda.mock.calls[0].slice(3)).toEqual([undefined, ['completed'], 'omit']); expect(screen.queryByRole('alert')).toBeNull(); expect(h.toast).not.toHaveBeenCalled();
  });
  it.each([{ ids: [] }, { ids: ['gone'] }])('renders an empty named group with no accessible workspaces: %j', async ({ ids }) => {
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ids }] });
-  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] }));
+  h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] });
+  h.agenda.mockResolvedValue(response([], {  }));
   render(Agenda); await screen.findByRole('button', { name: /^Workspaces: / }); await choose('Team');
   await screen.findByText('No workspaces in this group.');
   expect(screen.queryByText(/Could not load/)).toBeNull(); expect(document.querySelector('.layout')).toBeNull(); expect(stripDays()).toHaveLength(0);
@@ -1163,14 +1167,16 @@ describe('workspace groups and daily counts', () => {
   expect(screen.queryByRole('dialog', { name: 'Workspace groups' })).toBeNull();
  });
  it('shows the counts-unavailable sentence for a truncated window, with the list numbers kept', async () => {
-  h.agenda.mockResolvedValue(response([], { counts_truncated: true, priority_list: [workRow()] })); render(Agenda);
+  h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts_truncated: true });
+  h.agenda.mockResolvedValue(response([], { priority_list: [workRow()] })); render(Agenda);
   await screen.findByText('Counts unavailable for this window: too much activity to count.');
   expect(screen.queryByRole('table', { name: 'Daily counts' })).toBeNull();
   expect(document.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1'); expect(document.querySelector('[data-stat="completed"]')).toBeNull();
  });
  it.each([['week', 'This week'], ['day', 'This day'], ['month', 'This month']])('summarises the counts in %s mode', async (mode, title) => {
   localStorage.setItem('pad-agenda-mode:user-a', mode);
-  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }, { day: '2026-11-06', completed: 4, open: 2, burndown: 2 }] })); render(Agenda);
+  h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }, { day: '2026-11-06', completed: 4, open: 2, burndown: 2 }] });
+  h.agenda.mockResolvedValue(response([], {  })); render(Agenda);
   const summary = await screen.findByRole('region', { name: title });
   // Tomorrow has no bar and adds nothing to the completed figure.
   expect(summary.querySelectorAll('svg rect[data-day]')).toHaveLength(1); expect(summary.querySelector('[data-stat="completed"] b')?.textContent).toBe('1');
@@ -1245,7 +1251,7 @@ describe('agenda Month page', () => {
   localStorage.setItem('pad-agenda-mode:user-a', 'week'); await mount();
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'false');
   await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit'));
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
   expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('month');
  });
@@ -1253,7 +1259,7 @@ describe('agenda Month page', () => {
   h.agenda.mockResolvedValue(response(Array.from({ length: 4 }, (_, i) => row({ item_ref: `EX-${30+i}`, schedule_id: `s${i}`, item_title: `Month item ${i}` }))));
   render(Agenda); const grid = await screen.findByRole('grid', { name: 'November 2026' });
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
-  expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']);
+  expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit');
   const cell = cellOf('2026-11-05');
   expect(within(grid).getByRole('link', { name: /Month item 0/ })).toHaveAttribute('href', '/alice/work/tasks/EX-30');
   expect(cell.querySelector('.count')).toHaveTextContent('4 · 4 owed');
@@ -1336,13 +1342,13 @@ describe('agenda Month page', () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-03-31T12:00:00Z'));
   h.agenda.mockResolvedValue(response([row({ day: '2026-03-31' })]));
   await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Previous month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit'));
   expect(dateButton('2026-02-28')).toHaveAttribute('tabindex', '0');
   await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-28T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-28T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit'));
   await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Next month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed'], 'omit'));
   expect(dateButton('2026-03-28')).toHaveAttribute('tabindex', '0');
   await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
   expect(dateButton('2026-03-31')).toHaveAttribute('tabindex', '0');
@@ -1376,7 +1382,8 @@ describe('agenda Month page', () => {
   expect(within(screen.getByRole('dialog')).getAllByText('First item')).toHaveLength(2);
  });
  it('shows the summary below the grid, named for the month, and no outstanding list', async () => {
-  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()], counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] })); await mount();
+  h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts: [{ day: '2026-11-05', completed: 1, open: 2, burndown: 2 }] });
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow()] })); await mount();
   const summary = screen.getByRole('region', { name: 'This month' });
   expect(screen.getByRole('grid').compareDocumentPosition(summary) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   expect(summary.closest('aside')).toBeNull(); expect(summary.querySelector('[data-stat="outstanding"] b')?.textContent).toBe('1');
@@ -2044,7 +2051,8 @@ describe('agenda single workspace', () => {
  });
  it.each(['day', 'week', 'month'])('keeps an empty readable workspace and its counts in %s', async mode => {
   localStorage.setItem(key, `workspace:${id}`); localStorage.setItem('pad-agenda-mode:user-a', mode);
-  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 0, open: 3, burndown: 2 }], no_date: [workRow({ item_title: 'Undated work' })] }));
+  h.counts.mockResolvedValue({ from: '', to: '', tz: 'UTC', counts: [{ day: '2026-11-05', completed: 0, open: 3, burndown: 2 }] });
+  h.agenda.mockResolvedValue(response([], { no_date: [workRow({ item_title: 'Undated work' })] }));
   render(Agenda); await waitFor(() => expect(filter()).toHaveTextContent('Roadmap')); await settle();
   expect(localStorage.getItem(key)).toBe(`workspace:${id}`); expect(screen.queryByText('No workspaces in this group.')).toBeNull();
   expect(screen.getByRole('button', { name: 'Show all workspaces' })).toBeTruthy(); expect(screen.getByText(/No commitments or dated items in “Roadmap”/)).toBeTruthy();
@@ -2125,5 +2133,51 @@ describe('agenda single workspace', () => {
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1); await screen.findByText('First item');
   fail({ code: 'not_found' }); list.resolve([other]); await settle();
   expect(localStorage.getItem('pad-agenda-group:user-b')).toBeNull(); expect(filter()).toHaveTextContent('All workspaces'); expect(h.agenda).toHaveBeenCalledTimes(2);
+ });
+});
+
+
+describe('independent agenda counts (TASK-4587)', () => {
+ it('starts both reads and renders the list while counts are pending', async () => {
+  const list = deferred<AgendaResponse>(); const counts = deferred<AgendaResponse>();
+  h.agenda.mockReturnValueOnce(list.promise); h.counts.mockReturnValueOnce(counts.promise);
+  render(Agenda);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  expect(h.counts).toHaveBeenCalledTimes(1);
+  expect(h.agenda.mock.calls[0].slice(4)).toEqual([['completed'], 'omit']);
+  expect(h.counts.mock.calls[0]).toEqual(h.agenda.mock.calls[0].slice(0, 4));
+  list.resolve(response());
+  expect(await screen.findByText('First item')).toBeTruthy();
+  expect(screen.getByText('Loading counts').closest('[aria-busy]')).toHaveAttribute('aria-busy', 'true');
+  counts.resolve(response([], { counts: [{ day: '2026-11-05', completed: 3, open: 4, burndown: 4 }] }));
+  expect(await screen.findByRole('table', { name: 'Daily counts' })).toBeTruthy();
+ });
+ it('keeps the list visible when counts fail', async () => {
+  h.counts.mockRejectedValueOnce(new Error('counts failed'));
+  await mount();
+  expect(await screen.findByText('Counts unavailable')).toHaveAttribute('role', 'status');
+  expect(screen.getByText('First item')).toBeTruthy();
+  expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+ });
+ it('ignores counts from an older window', async () => {
+  const old = deferred<AgendaResponse>(); h.counts.mockReturnValueOnce(old.promise);
+  await mount();
+  await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
+  await waitFor(() => expect(h.counts).toHaveBeenCalledTimes(2));
+  old.resolve(response([], { counts: [{ day: '2026-11-05', completed: 99, open: 99, burndown: 99 }] }));
+  await settle();
+  expect(screen.queryByRole('table', { name: 'Daily counts' })).toBeNull();
+ });
+ it('keeps shown counts during a quiet refresh', async () => {
+  h.counts.mockResolvedValueOnce(response([], { counts: [{ day: '2026-11-05', completed: 3, open: 4, burndown: 4 }] }));
+  await mount();
+  expect(await screen.findByRole('table', { name: 'Daily counts' })).toBeTruthy();
+  const next = deferred<AgendaResponse>(); h.counts.mockReturnValueOnce(next.promise);
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await waitFor(() => expect(h.counts).toHaveBeenCalledTimes(2));
+  expect(screen.getByRole('table', { name: 'Daily counts' })).toBeTruthy();
+  expect(screen.queryByText('Loading counts')).toBeNull();
+  next.resolve(response([], { counts_truncated: true }));
+  expect(await screen.findByText('Counts unavailable for this window: too much activity to count.')).toBeTruthy();
  });
 });

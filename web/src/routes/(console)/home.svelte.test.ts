@@ -23,6 +23,7 @@ it('renders Home counts with one call per data source, independent of workspace 
 	expect(document.querySelectorAll('[data-strip-day]')).toHaveLength(7);
 	expect(screen.getByRole('group', { name: 'Audience' })).toBeTruthy();
 	expect(document.querySelector('.today-panel .agenda-row')?.getAttribute('data-ref')).toBe('TASK-4');
+	expect(h.agenda).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'UTC', undefined, undefined, 'omit');
 	expect(h.needs).toHaveBeenCalledTimes(1); expect(h.agenda).toHaveBeenCalledTimes(1); expect(h.list).toHaveBeenCalledTimes(1);
 	expect(screen.getAllByRole('button', { name: 'Dismiss' })).toHaveLength(4);
 	expect(screen.getAllByRole('button', { name: 'Defer' })).toHaveLength(4);

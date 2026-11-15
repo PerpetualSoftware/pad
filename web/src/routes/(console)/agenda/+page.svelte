@@ -30,7 +30,7 @@
 	import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
 	import ScheduleEndDialog, { type ScheduleEndChoice } from '$lib/components/calendar/ScheduleEndDialog.svelte';
 	import WeekSummary from '$lib/components/calendar/WeekSummary.svelte';
-	import type { AgendaEntry, AgendaForecast, AgendaResponse, AgendaWorkspaceSelection, AgendaWorkEntry, ItemStillOpenDetails, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
+	import type { AgendaEntry, AgendaForecast, AgendaResponse, AgendaCountsResponse, AgendaWorkspaceSelection, AgendaWorkEntry, ItemStillOpenDetails, ScheduleResolveState, CommitmentMoveResult, WorkspaceGroup, Workspace } from '$lib/types';
 
 	const staleCopy = 'This occurrence changed. Review the updated entry and try again.';
 	const permissionCopy = 'You can no longer change this item.';
@@ -95,6 +95,7 @@
 	const REST_PAGES = 10;
 	let showCompleted = $state(true);
 	let data = $state<AgendaResponse | null>(null);
+	let countsState = $state<Pick<AgendaCountsResponse, 'counts' | 'counts_truncated'> & { status: 'loading' | 'ready' | 'error' }>({ status: 'loading' });
 	let loading = $state(true);
 	let updating = $state(false);
 	let loadError = $state(false);
@@ -487,11 +488,16 @@
 		}
 		if (!userId) { data = null; loading = false; updating = false; return; }
 		loading = !quiet; updating = quiet; loadError = false; loadingRest = false;
-		if (!quiet) { data = null; savedRefreshError = false; announcement = ''; }
+		if (!quiet) { countsState = { status: 'loading' }; data = null; savedRefreshError = false; announcement = ''; }
 		else if (announcement === lastAnnouncedMonth) announcement = '';
 		try {
 			const { from, to } = windowOf(viewMode, date, timeZone);
-			const read = (start: string) => api.getMyAgenda(start, to, timeZone, requestScope, ['completed']);
+			const read = (start: string) => api.getMyAgenda(start, to, timeZone, requestScope, ['completed'], 'omit');
+			void api.getMyAgendaCounts(from, to, timeZone, requestScope).then(result => {
+				if (current()) countsState = { status: 'ready', counts: result.counts, counts_truncated: result.counts_truncated };
+			}, () => {
+				if (current()) countsState = { status: 'error' };
+			});
 			let response = await read(from);
 			if (!current()) return;
 			// The rest was on screen before this reload: page on before publishing, so its rows never drop out.
@@ -562,7 +568,7 @@
 		const requestScope = requestedSelection.kind === 'workspace' || requestedSelection.id !== 'all' || workspaceGroups ? requestedSelection : undefined;
 		loadingRest = true; actionError = '';
 		try {
-			const rest = await api.getMyAgenda(from, to, zone, requestScope, ['completed']);
+			const rest = await api.getMyAgenda(from, to, zone, requestScope, ['completed'], 'omit');
 			if (!current() || !data) return;
 			data = joinRest(data, rest);
 		} catch (error) {
@@ -942,7 +948,7 @@
 	{/if}
 	<AgendaDayDialog {audience} {isAgent} day={openedDay} today={todayIn(zone)} entries={openedDay ? monthDays.get(openedDay) ?? [] : []} completed={openedDay ? monthCompleted.get(openedDay) ?? [] : []} {zone} {now} {mobile}
 		incomplete={!!openedDay && dayIncomplete(openedDay)} error={actionError} {pending} {saved} onclose={() => openedDay = null} onaction={dayAction} />
-	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} /></div>{/if}
+	{#if data && !(loadError && !savedRefreshError)}<div class="card below"><WeekSummary range="month" {data} {today} counts={countsState} /></div>{/if}
 {:else}
 	{@const switching = mobile && mode === 'week'}
 	{@const schedule = !switching || surface === 'agenda'}
@@ -1013,7 +1019,7 @@
 					{:else if loadError && !savedRefreshError}
 						<div class="card rail-note">Not loaded.</div>
 					{:else if data}
-						<div class="card"><WeekSummary range={mode} {data} {today} /></div>
+						<div class="card"><WeekSummary range={mode} {data} {today} counts={countsState} /></div>
 						{#if mode === 'week'}<div class="card"><OutstandingPanel {data} {zone} {now} {pending} {saved} compact={mobile} onaction={action} ondismiss={dismissEnded} /></div>{/if}
 					{/if}
 				</aside>

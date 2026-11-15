@@ -24,7 +24,7 @@ const answer = (extra: Partial<AgendaResponse> = {}): AgendaResponse => ({
 	from: '', to: '', tz: 'UTC', entries: [], window_complete: true,
 	priority_list: [], priority_list_complete: true, waiting_on: [], waiting_on_complete: true, no_date: [], no_date_complete: true, ...extra
 });
-const mount = (extra: Partial<AgendaResponse> = {}, props: Record<string, unknown> = {}) => render(WeekSummary, { range: 'week', data: answer(extra), today, ...props });
+const mount = (extra: Partial<AgendaResponse> = {}, props: Record<string, unknown> = {}) => render(WeekSummary, { range: 'week', data: answer({ ...extra, counts: undefined, counts_truncated: undefined }), counts: { status: 'ready', counts: extra.counts, counts_truncated: extra.counts_truncated }, today, ...props });
 const stat = (name: string) => document.querySelector<HTMLElement>(`[data-stat="${name}"]`);
 const figure = (name: string) => stat(name)?.querySelector('b')?.textContent;
 const bars = () => [...document.querySelectorAll<SVGRectElement>('svg rect[data-day]')];
@@ -121,4 +121,24 @@ describe('WeekSummary without counts', () => {
 		expect(container.querySelector('svg')).toBeNull(); expect(screen.queryByRole('table')).toBeNull();
 		expect(screen.queryByText(/Counts unavailable/)).toBeNull();
 	});
+});
+
+
+describe('independent counts (TASK-4587)', () => {
+ it('reserves the same chart container while loading and when ready', async () => {
+  const { container, rerender } = mount({}, { counts: { status: 'loading' } });
+  const space = container.querySelector('.counts-space');
+  expect(space).toBeTruthy();
+  expect(space?.querySelector('[aria-busy="true"]')).toHaveTextContent('Loading counts');
+  expect(space?.querySelector('svg')).toHaveAttribute('height', '44');
+  await rerender({ range: 'week', data: answer(), today, counts: { status: 'ready', counts: week } });
+  expect(container.querySelector('.counts-space')).toBe(space);
+  expect(space?.querySelector('svg')).toHaveAttribute('height', '44');
+  expect(container.querySelector('[aria-busy="true"]')).toBeNull();
+ });
+ it('shows a quiet error in the reserved chart space', () => {
+  const { container } = mount({}, { counts: { status: 'error' } });
+  expect(screen.getByRole('status')).toHaveTextContent('Counts unavailable');
+  expect(container.querySelector('.counts-space')).toContainElement(screen.getByRole('status'));
+ });
 });
