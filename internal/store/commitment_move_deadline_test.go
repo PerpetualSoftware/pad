@@ -60,7 +60,9 @@ func TestMoveOnNativeDeadlineRowLeavesTheDeadlineAlone(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			f := newSchedFixture(t)
 			sc := f.weeklyDeadline(t, "stays_owed")
-			res := f.mustResolve(t, f.item, moveInput(sc, target), tueNoon)
+			in := moveInput(sc, target)
+			in.ConfirmPastDeadline = true
+			res := f.mustResolve(t, f.item, in, tueNoon)
 			if want := strings.HasPrefix(name, "after"); res.TargetAfterDeadline != want {
 				t.Fatalf("TargetAfterDeadline=%v, want %v", res.TargetAfterDeadline, want)
 			}
@@ -106,7 +108,9 @@ func TestMoveAfterARecordedMissKeepsTheMiss(t *testing.T) {
 		t.Fatalf("first: %+v", got)
 	}
 	before := f.missEvidence(t)
-	f.mustResolve(t, f.item, moveInput(sc, "2026-10-31T12:00:00Z"), wedNoon)
+	in := moveInput(sc, "2026-10-31T12:00:00Z")
+	in.ConfirmPastDeadline = true
+	f.mustResolve(t, f.item, in, wedNoon)
 	if got := f.eval(t, "2026-10-29T12:00:00Z", 0); got.Missed != 0 {
 		t.Fatalf("re-recorded: %+v", got)
 	}

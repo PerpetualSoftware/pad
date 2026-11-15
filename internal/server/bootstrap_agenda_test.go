@@ -373,7 +373,7 @@ func TestBootstrapAgendaRoleWindowCountsOnceAfterMove(t *testing.T) {
 		t.Fatalf("target day: %+v", b.Agenda)
 	}
 	until := base.AddDate(0, 0, 3)
-	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, store.ResolveInput{OccurrenceAt: rtServer(*sc.NextAt), State: "move", Until: &until, Actor: "user"}); err != nil {
+	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, store.ResolveInput{ConfirmPastDeadline: true, OccurrenceAt: rtServer(*sc.NextAt), State: "move", Until: &until, Actor: "user"}); err != nil {
 		t.Fatal(err)
 	}
 	w.srv.agendaClock = func() time.Time { return base.AddDate(0, 0, 2).Add(3 * time.Hour) }

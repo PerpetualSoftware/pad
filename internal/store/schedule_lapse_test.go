@@ -718,7 +718,7 @@ func TestLapseTerminalAfterDeadlinePage(t *testing.T) {
 			sc := lapseSchedule(t, f, recurring)
 			if recurring {
 				until := rt("2026-10-27T15:00:00Z")
-				if _, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "move", Until: &until, Actor: "user"}, rt("2026-10-26T09:30:00Z")); err != nil {
+				if _, err := f.s.resolveOccurrenceAt(f.ws.ID, sc.ItemID, ResolveInput{ConfirmPastDeadline: true, OccurrenceAt: rt(deadlineOccAt), State: "move", Until: &until, Actor: "user"}, rt("2026-10-26T09:30:00Z")); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -805,6 +805,7 @@ func TestLapseLinkedCascadeRefusesEveryDate(t *testing.T) {
 			apply := func() error {
 				_, err := f.move(0, "target", "2030-03-10T09:00:00Z", func(in *models.LinkedMoveInput) {
 					in.Revision, in.Reason, in.AcknowledgeViolations = p.Revision, "Changed plans", true
+					in.ConfirmPastDeadline = true
 				})
 				return err
 			}

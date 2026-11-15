@@ -73,6 +73,7 @@ type commitmentMovePreviewBody struct {
 	Reason string  `json:"reason"`
 }
 type commitmentMoveBody struct {
+	ConfirmPastDeadline   bool    `json:"confirm_past_deadline"`
 	Role                  *string `json:"role"`
 	To                    *string `json:"to"`
 	Reason                string  `json:"reason"`
@@ -437,7 +438,7 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 	actor, _ := actorFromRequest(r)
-	in := models.LinkedMoveInput{ItemID: item.ID, Role: *b.Role, To: *b.To, Actor: actor, ActorUserID: currentUserID(r), Reason: b.Reason, Preview: preview, Revision: b.Revision, AcknowledgeViolations: b.AcknowledgeViolations, Access: access, CommitmentAccessLoader: loader}
+	in := models.LinkedMoveInput{ConfirmPastDeadline: b.ConfirmPastDeadline, ItemID: item.ID, Role: *b.Role, To: *b.To, Actor: actor, ActorUserID: currentUserID(r), Reason: b.Reason, Preview: preview, Revision: b.Revision, AcknowledgeViolations: b.AcknowledgeViolations, Access: access, CommitmentAccessLoader: loader}
 	if in.Role == "deadline" {
 		allowed, err := s.canRenegotiateCommitment(r, ws, item)
 		if s.writeGraphError(w, r, err) {

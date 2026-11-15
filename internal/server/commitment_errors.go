@@ -3,6 +3,7 @@ package server
 import (
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -17,7 +18,11 @@ const commitmentPreviewMessage = "This linked change needs a commitment move pre
 func (s *Server) writeCommitmentGraphError(w http.ResponseWriter, r *http.Request, err error) bool {
 	status, code, message := http.StatusConflict, "", ""
 	var refused *store.LinkRefusedError
+	var past *store.ErrTargetAfterDeadline
 	switch {
+	case errors.As(err, &past):
+		writeError2(w, http.StatusConflict, "target_after_deadline", past.Error(), map[string]interface{}{"deadline": past.Deadline.UTC().Format(time.RFC3339)})
+		return true
 	case errors.Is(err, store.ErrScheduleLinked):
 		code, message = "schedule_linked", hiddenCommitmentPartnerMessage
 		if s.store != nil && r != nil {
