@@ -5,14 +5,21 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import type { StepUpStatus, StepUpProof } from '$lib/types';
 
-	let { factor, onverified }: { factor: StepUpStatus['factor']; onverified: () => void } = $props();
+	let { factor, onverified, formId, busy = $bindable(false), canVerify = $bindable(false) }: {
+		factor: StepUpStatus['factor'];
+		onverified: () => void;
+		/** A hosting dialog supplies its own submit button for this form. */
+		formId?: string;
+		busy?: boolean;
+		canVerify?: boolean;
+	} = $props();
 	const uid = $props.id();
 	const headingId = `${uid}-heading`;
 	const errorId = `${uid}-error`;
 	let code = $state('');
 	let password = $state('');
 	let recovery = $state(false);
-	let busy = $state(false);
+	$effect(() => { canVerify = factor !== 'unavailable' && !busy && !!(factor === 'password' ? password : code.trim()); });
 	let sent = $state(false);
 	let error = $state('');
 	let headingEl = $state<HTMLHeadingElement>();
@@ -91,7 +98,7 @@
 	{#if factor === 'unavailable'}
 		<p>Turn on two-factor authentication to change key access.</p>
 	{:else}
-		<form onsubmit={verify} aria-labelledby={headingId}>
+		<form id={formId} onsubmit={verify} aria-labelledby={headingId}>
 			<p>Verify your identity to increase this key’s access. Verification lasts 10 minutes in this session.</p>
 			{#if factor === 'password'}
 				<label for="step-up-password">Password</label>
@@ -113,7 +120,9 @@
 				{/if}
 			{/if}
 			{#if error}<p id={errorId} role="alert" class="error">{error}</p>{/if}
-			<div class="actions"><Button type="submit" disabled={busy || !(factor === 'password' ? password : code.trim())}>{busy ? 'Verifying…' : 'Verify'}</Button></div>
+			{#if !formId}
+				<div class="actions"><Button variant="primary" type="submit" disabled={!canVerify}>{busy ? 'Verifying…' : 'Verify'}</Button></div>
+			{/if}
 		</form>
 	{/if}
 </div>

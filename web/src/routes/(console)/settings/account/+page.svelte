@@ -326,7 +326,12 @@
 		deleteNeedsReauth = false;
 	}
 
+	let mobile = $state(false);
 	onMount(() => {
+		const query = window.matchMedia('(max-width: 768px)');
+		mobile = query.matches;
+		const update = (event: MediaQueryListEvent) => { mobile = event.matches; };
+		query.addEventListener('change', update);
 		readOAuthQueryStatus();
 		// The listener runs after the epoch bump, so this reload is for the identity signed in now.
 		const stopListening = authStore.onIdentityChange((previousUserId) => {
@@ -347,7 +352,10 @@
 			if (authStore.userId) void loadProfile();
 		});
 		void loadProfile();
-		return stopListening;
+		return () => {
+			query.removeEventListener('change', update);
+			stopListening();
+		};
 	});
 
 	async function saveProfile() {
@@ -933,7 +941,7 @@
 				     would take the 401 redirect over the delete flow's own navigation. -->
 				{#if authStore.authenticated}
 					{#key authStore.identityEpoch}
-						<CalendarFeedsSettings />
+						<CalendarFeedsSettings {mobile} />
 					{/key}
 				{/if}
 			</div>
@@ -1433,7 +1441,7 @@
 </nav>
 </div>
 
-<EditTokenAccessDialog token={tokenToEdit} onclose={() => { tokenToEdit = null; }} onupdated={(updated) => { tokens = tokens.map((t) => t.id === updated.id ? updated : t); }} />
+<EditTokenAccessDialog {mobile} token={tokenToEdit} onclose={() => { tokenToEdit = null; }} onupdated={(updated) => { tokens = tokens.map((t) => t.id === updated.id ? updated : t); }} />
 
 <Modal
 	open={!!tokenToDelete}
