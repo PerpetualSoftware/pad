@@ -4358,9 +4358,6 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 					// message.
 					row := updateFailure{Ref: slug, Error: err.Error()}
 					if apiErr := cli.AsAPIError(err); apiErr != nil && apiErr.Code != "" {
-						if apiErr.Code == "schedule_active" {
-							cli.WriteScheduleActiveError(os.Stderr, apiErr)
-						}
 						row.Code = apiErr.Code
 						if len(apiErr.Details) > 0 {
 							row.Details = apiErr.Details
@@ -4380,6 +4377,9 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 								if oc.HiddenBlockerCount > 0 {
 									fmt.Printf("      (+%d hidden blocker(s) you don't have access to)\n", oc.HiddenBlockerCount)
 								}
+							}
+							if apiErr.Code == "schedule_active" {
+								fmt.Printf("      recurring schedule active; rerun with --force to close it anyway\n")
 							}
 						}
 					}
@@ -4403,21 +4403,14 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 			// need to know which items succeeded vs failed can branch
 			// on the typed payload directly.
 			if formatFlag == "json" {
-				if err := cli.PrintJSON(map[string]any{
+				return cli.PrintJSON(map[string]any{
 					"updated": updated,
 					"failed":  failed,
 					"total":   total,
-				}); err != nil {
-					return err
-				}
-			} else {
-				fmt.Printf("\nUpdated %d of %d items\n", len(updated), total)
+				})
 			}
-			for _, failure := range failed {
-				if failure.Code == "schedule_active" {
-					return fmt.Errorf("bulk update rejected: recurring schedule active; rerun with --force")
-				}
-			}
+
+			fmt.Printf("\nUpdated %d of %d items\n", len(updated), total)
 			return nil
 		},
 	}

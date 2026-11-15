@@ -2558,7 +2558,6 @@ export interface OpenChildrenDetails {
 export interface ScheduleActiveDetails {
 	schedule_id: string;
 	next_at: string | null;
-	rule_summary?: string;
 }
 
 // ─── API Error ───────────────────────────────────────────────────────────────
