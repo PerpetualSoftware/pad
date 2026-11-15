@@ -1870,6 +1870,7 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   if (kind === 'GET rejects') pending.resolve(Promise.reject(new Error('offline')));
   else pending.resolve({ last_resolution: eligible(kind === 'ineligible' ? { can_reopen: false } : kind === 'different key' ? { occurrence_key: 'other' } : {}) });
   if (kind === 'eligible') {
+   await waitFor(() => expect(screen.getByRole('menuitem', { name: 'Undo Done' })).toHaveFocus());
    await fireEvent.click(await screen.findByRole('menuitem', { name: 'Undo Done' }));
    await waitFor(() => expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' }));
    await said('Undone. The occurrence is open again.', 'success');
@@ -1883,6 +1884,19 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   }
   expect(screen.queryByRole('menuitem', { name: 'Checking…' })).toBeNull();
   expect(screen.getAllByRole('menuitem')).toHaveLength(1);
+ });
+ it('closes a history menu with Escape when the read reports nothing to undo', async () => {
+  h.agenda.mockResolvedValue(response([row({ state: 'done', occurrence_key: key })]));
+  h.view.mockResolvedValue({});
+  await mount();
+  const trigger = screen.getByRole('button', { name: 'Actions EX-30' });
+  trigger.focus();
+  await menu();
+  expect(await screen.findByRole('menuitem', { name: 'Nothing to undo' })).toBeDisabled();
+  await fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+  expect(screen.queryByRole('menu', { name: 'Actions EX-30' })).toBeNull();
+  expect(trigger).toHaveAttribute('aria-expanded', 'false');
+  expect(trigger).toHaveFocus();
  });
  it('keeps resolvable menu items without placeholders while checking Undo', async () => {
   const pending = deferred<unknown>();
