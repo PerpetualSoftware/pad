@@ -129,6 +129,21 @@ func TestBundleV2_RoundTripNativeCommitment(t *testing.T) {
 	if len(rep.DroppedSchedules) != 0 {
 		t.Fatal(rep)
 	}
+	imported := out.Schedules[0]
+	if f.count(t, `SELECT COUNT(*) FROM schedule_reopen_checkpoints WHERE schedule_id=?`, imported.ID) != 0 {
+		t.Fatal("import carried an executable checkpoint")
+	}
+	var importedWS string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT workspace_id FROM item_schedules WHERE id=?`), imported.ID).Scan(&importedWS); err != nil {
+		t.Fatal(err)
+	}
+	view, err := f.s.GetCommitment(importedWS, imported.ItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if view.LastResolution == nil || view.LastResolution.CanReopen {
+		t.Fatal("imported history is reopenable")
+	}
 	dm := bundleObject(t, out)
 	dx := dm["schedules"].([]any)[0].(map[string]any)
 	delete(sx, "id")

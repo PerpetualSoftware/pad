@@ -271,6 +271,12 @@ func TestAHiddenCrossedBoundChangesNoResponse(t *testing.T) {
 					if r != nil {
 						c := *r
 						c.Revision = ""
+						if c.LastResolution != nil {
+							if c.ResolutionID == "" || c.LastResolution.ResolutionID != c.ResolutionID || c.LastResolution.CanReopen || c.LastResolution.ReopenCode != "reopen_dependency" {
+								t.Fatalf("graph move availability: %+v", c.LastResolution)
+							}
+							c.ResolutionID, c.LastResolution = "", nil
+						}
 						res = c
 					}
 				case *models.ScheduleLinkResult:

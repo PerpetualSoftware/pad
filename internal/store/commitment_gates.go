@@ -206,6 +206,9 @@ func (s *Store) CreateScheduleGate(workspaceID, blockedItemID, blockerItemID str
 		}
 		return nil, fmt.Errorf("insert schedule gate: %w", err)
 	}
+	if err := s.invalidateItemReopenDependencyTx(tx, blockedItemID, blockerItemID); err != nil {
+		return nil, err
+	}
 	if err := s.openGatesForBlockerTx(tx, workspaceID, blockerItemID); err != nil {
 		return nil, err
 	}
@@ -315,6 +318,9 @@ func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.Com
 		return err
 	}
 	if _, err = reloadGraphAccess(tx, access, loaders, blocked, blocker); err != nil {
+		return err
+	}
+	if err := s.invalidateItemReopenDependencyTx(tx, blocked, blocker); err != nil {
 		return err
 	}
 	res, err := tx.Exec(s.q(`DELETE FROM schedule_gates WHERE id=? AND workspace_id=?`), gateID, workspaceID)

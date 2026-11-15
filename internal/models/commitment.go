@@ -6,10 +6,20 @@ import "encoding/json"
 // contract reads it (TASK-4351): the effective role values of the outstanding
 // occurrence, with that occurrence's overrides applied, and the journal rows
 // that carry the deadline's history.
+// ScheduleLastResolution names one exact action; eligibility is advisory.
+type ScheduleLastResolution struct {
+	ResolutionID  string `json:"resolution_id,omitempty"`
+	OccurrenceKey string `json:"occurrence_key,omitempty"`
+	State         string `json:"state,omitempty"`
+	CanReopen     bool   `json:"can_reopen"`
+	ReopenCode    string `json:"reopen_code,omitempty"`
+}
+
 type Commitment struct {
-	ScheduleID string          `json:"schedule_id"`
-	ItemID     string          `json:"item_id"`
-	Roles      CommitmentRoles `json:"roles"`
+	LastResolution *ScheduleLastResolution `json:"last_resolution,omitempty"`
+	ScheduleID     string                  `json:"schedule_id"`
+	ItemID         string                  `json:"item_id"`
+	Roles          CommitmentRoles         `json:"roles"`
 	// OccurrenceKey names the outstanding occurrence; empty once the schedule
 	// ended.
 	OccurrenceKey string                   `json:"occurrence_key,omitempty"`
@@ -144,6 +154,7 @@ type CommitmentRoles struct {
 // assignee change or occurrence acknowledgement.
 // A correction names the miss it answers in ParentChangeID and shares its root.
 type CommitmentChange struct {
+	ReversedBy     string  `json:"reversed_by,omitempty"`
 	ID             string  `json:"id"`
 	ChangeType     string  `json:"change_type"` // missed_recorded | done | move | update (deadline or assignee) | ack
 	OccurrenceKey  *string `json:"occurrence_key,omitempty"`

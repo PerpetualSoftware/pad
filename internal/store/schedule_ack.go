@@ -28,6 +28,11 @@ func (s *Store) ackOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveI
 	if sc.ReminderAckedAt != nil {
 		return s.commitResolve(tx, sc.WorkspaceID, sc.ItemID, res)
 	}
+	undo, err := s.captureResolutionUndoTx(tx, sc, "ack", in.Actor, in.ActorUserID, occurrence, now)
+	if err != nil {
+		return nil, err
+	}
+	res.ResolutionID = undo.ID
 	ts := now.UTC().Format(time.RFC3339)
 	actor := in.Actor
 	if actor != "agent" {
@@ -43,13 +48,16 @@ func (s *Store) ackOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveI
 	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET updated_at=? WHERE id=?`), ts, sc.ID); err != nil {
 		return nil, err
 	}
-	if err := s.journalScheduleChangeReasonTx(tx, sc.ID, "ack", OccurrenceKey(sc, evidence.OccurrenceAt, *sc.NextWall), "", string(before), string(after), actor, "", "user"); err != nil {
+	if err := s.journalResolutionTx(tx, undo, sc.ID, "ack", OccurrenceKey(sc, evidence.OccurrenceAt, *sc.NextWall), "", string(before), string(after), actor, "", "user"); err != nil {
 		return nil, err
 	}
 	prefix := "reminder:" + *sc.ReminderID + ":" + evidence.OccurrenceAt + ":"
 	if _, err := tx.Exec(s.q(`UPDATE user_notifications SET push_state='skipped',skip_reason='occurrence_acknowledged',claim_token='',claimed_at=NULL
  WHERE workspace_id=? AND item_id=? AND kind='reminder' AND push_state='pending' AND substr(dedupe_key,1,?)=?`), sc.WorkspaceID, sc.ItemID, len(prefix), prefix); err != nil {
 		return nil, fmt.Errorf("cancel acknowledged occurrence pushes: %w", err)
+	}
+	if err := s.finishResolutionUndoTx(tx, sc, undo); err != nil {
+		return nil, err
 	}
 	res.AckChanged = true
 	return s.commitResolve(tx, sc.WorkspaceID, sc.ItemID, res)

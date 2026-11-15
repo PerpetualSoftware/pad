@@ -130,8 +130,10 @@ type LinkedDateChange struct {
 // LinkedMoveResult holds only what the caller can read. It carries no total,
 // count or flag that would show a hidden dependent.
 type LinkedMoveResult struct {
-	Revision string             `json:"revision"` // opaque, fixed length
-	Changes  []LinkedDateChange `json:"changes"`
+	ResolutionID   string                  `json:"resolution_id,omitempty"`
+	LastResolution *ScheduleLastResolution `json:"last_resolution,omitempty"`
+	Revision       string                  `json:"revision"` // opaque, fixed length
+	Changes        []LinkedDateChange      `json:"changes"`
 	// Violations names dates outside their own bounds, readable items only.
 	Violations []LinkedDateChange `json:"violations,omitempty"`
 	// LeftInPlace names finished (done or abandoned) dependents the link would

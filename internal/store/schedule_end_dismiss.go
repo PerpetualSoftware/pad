@@ -36,6 +36,9 @@ func (s *Store) DismissEndedSchedule(workspaceID, itemID string) (bool, error) {
 	if sc.EndedDismissedAt != nil {
 		return false, nil
 	}
+	if err := s.invalidateScheduleReopenTx(tx, sc.ID); err != nil {
+		return false, err
+	}
 	ts := now()
 	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET ended_dismissed_at = ?, updated_at = ?
 		WHERE id = ? AND ended_at IS NOT NULL AND ended_dismissed_at IS NULL`), ts, ts, sc.ID); err != nil {
