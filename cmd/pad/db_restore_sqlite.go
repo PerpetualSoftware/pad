@@ -60,7 +60,7 @@ func restoreSQLite(inputPath, dstPath string) error {
 	if err != nil {
 		return fmt.Errorf("open staged database: %w", err)
 	}
-	err = errors.Join(preserveSQLiteRestoreOwnership(f, dstInfo), f.Chmod(mode), f.Sync(), f.Close())
+	err = errors.Join(preserveDBFileOwnership(f, dstInfo), f.Chmod(mode), f.Sync(), f.Close())
 	if err != nil {
 		return fmt.Errorf("sync staged database: %w", err)
 	}

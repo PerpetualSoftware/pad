@@ -10,7 +10,8 @@ import (
 	"testing"
 )
 
-func TestPostgresBackupAtomicOutput(t *testing.T) {
+func setupFakePostgresDump(t *testing.T) {
+	t.Helper()
 	if runtime.GOOS == "windows" {
 		t.Skip("fake pg_dump uses a POSIX shell")
 	}
@@ -37,7 +38,10 @@ exit "$FAKE_DUMP_STATUS"
 	t.Setenv("PAD_DATABASE_URL", "postgres://user@localhost/test")
 	t.Setenv("PGSERVICE", "")
 	t.Setenv("FAKE_BLOCK_TARGET", "")
+}
 
+func TestPostgresBackupAtomicOutput(t *testing.T) {
+	setupFakePostgresDump(t)
 	for _, tc := range []struct {
 		name, initial, dump, status string
 		exists, fail                bool
@@ -153,6 +157,32 @@ exit "$FAKE_DUMP_STATUS"
 		}
 		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
 			t.Errorf("directory entries = %v, error %v", entries, err)
+		}
+	})
+
+	t.Run("resolve symlink before parent traversal", func(t *testing.T) {
+		dir := t.TempDir()
+		actual := filepath.Join(dir, "actual")
+		subdir := filepath.Join(actual, "subdir")
+		if err := os.MkdirAll(subdir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		snapshots := filepath.Join(actual, "snapshots")
+		if err := os.Mkdir(snapshots, 0700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "link")
+		if err := os.Symlink(subdir, link); err != nil {
+			t.Fatal(err)
+		}
+		cmd := dbBackupCmd()
+		cmd.SetArgs([]string{"--output", link + "/../snapshots/backup.sql"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(snapshots, "backup.sql"))
+		if err != nil || string(got) != "complete SQL\n" {
+			t.Fatalf("backup = %q, error %v", got, err)
 		}
 	})
 

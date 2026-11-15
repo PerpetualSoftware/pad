@@ -2,6 +2,7 @@ package main
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -128,8 +129,16 @@ func backupPostgres(dbURL, outPath string) error {
 		return fmt.Errorf("backup destination must be a regular file: %s", outPath)
 	}
 
-	// Keep the staged dump private and on the destination filesystem until pg_dump finishes.
-	stageDir, err := os.MkdirTemp(filepath.Dir(outPath), ".pad-backup-*")
+	// Resolve the parent before staging so a symlink followed by ".." lands on the right filesystem.
+	dir, _ := filepath.Split(outPath)
+	if dir == "" {
+		dir = "."
+	}
+	dir, err = filepath.EvalSymlinks(dir)
+	if err != nil {
+		return fmt.Errorf("resolve backup directory: %w", err)
+	}
+	stageDir, err := os.MkdirTemp(dir, ".pad-backup-*")
 	if err != nil {
 		return fmt.Errorf("stage PostgreSQL backup: %w", err)
 	}
@@ -139,8 +148,13 @@ func backupPostgres(dbURL, outPath string) error {
 		return err
 	}
 	if info != nil {
-		if err := os.Chmod(stagePath, info.Mode().Perm()); err != nil {
-			return fmt.Errorf("preserve backup file mode: %w", err)
+		file, err := os.OpenFile(stagePath, os.O_RDWR, 0)
+		if err != nil {
+			return fmt.Errorf("open staged backup: %w", err)
+		}
+		err = errors.Join(preserveDBFileOwnership(file, info), file.Chmod(info.Mode().Perm()), file.Sync(), file.Close())
+		if err != nil {
+			return fmt.Errorf("prepare staged backup: %w", err)
 		}
 	}
 	if err := os.Rename(stagePath, outPath); err != nil {
