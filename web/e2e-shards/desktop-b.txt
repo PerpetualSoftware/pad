@@ -1,0 +1,25 @@
+# Desktop 2/3: duration-balanced spec list B; the rest runs in desktop 3/3.
+# Refresh recipe: see the e2e strategy comment in .github/workflows/ci.yml.
+attachment-viewer-modal.spec.ts
+bug-3050-stale-body-renders.spec.ts
+bug-3165-list-scroll-after-expand.spec.ts
+bug-3197-view-keeps-dialect.spec.ts
+bug-3230-content-outcome-notice.spec.ts
+bug-3240-collab-seed.spec.ts
+bug-3542-applier-unconfirmed-edits.spec.ts
+bug-3850-draft-trailing-newline.spec.ts
+chat-url-writes.spec.ts
+copy-dialog.spec.ts
+pane-async-race.spec.ts
+pane-content-link-anchors.spec.ts
+pane-controller.spec.ts
+pane-full-page-host.spec.ts
+permission-walk-items.spec.ts
+permission-walk-workspace.spec.ts
+soft-line-break.spec.ts
+task-2224-sse-request-budget.spec.ts
+task-2236-share-password-gate.spec.ts
+task-3548-overwrite-lands.spec.ts
+task-3607-anchored-restore.spec.ts
+version-restore-collab.spec.ts
+workspace-tabs.spec.ts

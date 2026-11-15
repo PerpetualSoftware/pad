@@ -813,31 +813,41 @@ jobs:
     # IDEA-3189's tripwire fired on 2026-10-05: the median of the last 10
     # green E2E jobs was 16.5m (13.7-19.3m) against its 14m threshold, and a
     # green-on-rerun job (#1811) was cancelled at the 20m cap with no failing
-    # test. So the suite is split across jobs, each building for itself.
+    # test. The suite is split across jobs, each building for itself.
     #
-    # The cut is per PROJECT, then desktop in halves. A bare `--shard=N/2`
-    # does not balance: Playwright cuts the ordered test list by COUNT and the
-    # projects run in sequence, so with both projects the same size each half
-    # was exactly one project (measured on this unit's first run: shard 2/2
-    # ran mobile-chromium alone, 63 passed and 553 skipped, in 1.9m). And the
-    # projects are lopsided: desktop-chromium carried 1222s of the 1359s of
-    # test time (572 of 635 passing tests). Desktop is therefore sharded in
-    # two and mobile runs whole. The "CI result" job below checks the combined E2E matrix result.
+    # With fullyParallel, --shard cuts by test COUNT in file order, not time;
+    # slow specs sit early. Across projects it once put mobile alone in 2/2
+    # (63 passed, 553 skipped, 1.9m), while desktop carried 1222s of 1359s.
+    # BUG-4582: last 6 green main runs: desktop 1/2 13.6-18.5m vs 2/2 8.2-11.9m;
+    # even a perfect two-way split averages 13.2m and reaches 15.1m, past the 14m tripwire.
+    # Desktop now uses measured-duration file lists A (~819s), B (~820s),
+    # and the rest in 3/3 via --test-list-invert, so new specs always run.
+    # Mobile runs whole; "CI result" checks the combined E2E matrix result.
+    #
+    # Refresh when any desktop shard's green time passes 14m: download the
+    # two desktop shard job logs of a green main run, sum the (Ns) durations
+    # per spec file from list-reporter lines, then greedily assign files
+    # largest first to A or B up to a third of total test time each. Leave
+    # the rest in shard 3; never maintain a third list.
     strategy:
       fail-fast: false
       matrix:
         include:
-          - label: desktop 1/2
+          - label: desktop 1/3
             project: desktop-chromium
-            shard: 1/2
+            select: a
             artifact: desktop-1
-          - label: desktop 2/2
+          - label: desktop 2/3
             project: desktop-chromium
-            shard: 2/2
+            select: b
             artifact: desktop-2
+          - label: desktop 3/3
+            project: desktop-chromium
+            select: rest
+            artifact: desktop-3
           - label: mobile
             project: mobile-chromium
-            shard: 1/1
+            select: all
             artifact: mobile
     # Build the binary + UI once and reuse across Playwright projects.
     # The cap is a runaway sanity check, not a perf budget. It covers
@@ -939,12 +949,48 @@ jobs:
         # that without re-downloading the browser binary itself.
         run: npx playwright install-deps chromium
 
+      - name: Validate desktop shard lists
+        if: matrix.project == 'desktop-chromium'
+        working-directory: web
+        shell: bash
+        run: |
+          set -euo pipefail
+          declare -A seen=()
+          for list in e2e-shards/desktop-a.txt e2e-shards/desktop-b.txt; do
+            while read -r spec || [[ -n "$spec" ]]; do
+              [[ -z "$spec" || "$spec" == \#* ]] && continue
+              if [[ ! -f "e2e/$spec" ]]; then
+                echo "Desktop shard list $list names a missing spec: e2e/$spec" >&2
+                exit 1
+              fi
+              if [[ -n "${seen[$spec]+present}" ]]; then
+                echo "Duplicate desktop spec $spec in $list (already listed in ${seen[$spec]})" >&2
+                exit 1
+              fi
+              seen[$spec]="$list"
+            done < "$list"
+          done
+          echo "Desktop shard lists are valid (${#seen[@]} unique spec files)."
+
       - name: Run Playwright
         working-directory: web
         env:
           CI: "1"
           PAD_E2E_BINARY: ${{ github.workspace }}/pad-e2etest
-        run: npx playwright test --project=${{ matrix.project }} --shard=${{ matrix.shard }}
+        run: |
+          set -euo pipefail
+          case "${{ matrix.select }}" in
+            a) args=(--test-list e2e-shards/desktop-a.txt) ;;
+            b) args=(--test-list e2e-shards/desktop-b.txt) ;;
+            rest)
+              # The echo keeps A's last line apart from B's first if A lacks a final newline.
+              { cat e2e-shards/desktop-a.txt; echo; cat e2e-shards/desktop-b.txt; } > "$RUNNER_TEMP/desktop-listed.txt"
+              args=(--test-list-invert "$RUNNER_TEMP/desktop-listed.txt")
+              ;;
+            all) args=() ;;
+            *) echo "Unknown E2E selection: ${{ matrix.select }}" >&2; exit 1 ;;
+          esac
+          npx playwright test --project=${{ matrix.project }} "${args[@]}"
 
       - name: Upload Playwright report on failure
         if: failure()
