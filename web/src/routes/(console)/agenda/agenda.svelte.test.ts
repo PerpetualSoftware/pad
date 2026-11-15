@@ -334,7 +334,7 @@ describe('agenda Week and priority', () => {
  it('an incomplete week never says a day is empty', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false, truncated: true }));
   render(Agenda);
-  await screen.findByText('Too much to load at once. Choose a smaller range or a workspace group.');
+  await screen.findByText('Too much to load at once. Choose a smaller range, a workspace, or a workspace group.');
   expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(stripDays()).toHaveLength(7); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
  });
@@ -575,7 +575,7 @@ describe('agenda Week and priority', () => {
  });
  it('renders complete empty groups and keeps window incompleteness independent', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false })); render(Agenda);
-  for (const text of ['Nothing outstanding.', 'Too much to load at once. Choose a smaller range or a workspace group.']) expect(await screen.findByText(text)).toBeTruthy();
+  for (const text of ['Nothing outstanding.', 'Too much to load at once. Choose a smaller range, a workspace, or a workspace group.']) expect(await screen.findByText(text)).toBeTruthy();
   await fireEvent.click(screen.getByRole('tab', { name: 'Waiting 0' })); expect(screen.getByText('Nothing waiting.')).toBeTruthy();
   await fireEvent.click(screen.getByRole('tab', { name: 'No date 0' })); expect(screen.getByText('No undated work.')).toBeTruthy();
  });
@@ -784,7 +784,7 @@ describe('week strip, attention band and states', () => {
  it('offers no Load the rest when next_from is the end of the window', async () => {
   h.agenda.mockResolvedValue(response([row()], { truncated: true, next_from: '2026-11-12T05:00:00Z', unexpanded: [{ schedule_id: 's9', item_ref: 'EX-90', item_title: 'Dense', collection: 'tasks', reason: 'scan_limit' }] }));
   await mount();
-  expect(screen.getByText('Too much to load at once. Choose a smaller range or a workspace group.')).toBeTruthy();
+  expect(screen.getByText('Too much to load at once. Choose a smaller range, a workspace, or a workspace group.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
   expect(h.agenda).toHaveBeenCalledTimes(1);
   cleanup(); h.agenda.mockResolvedValue(response([row()], { next_from: '2026-11-12T00:00:00-05:00' }));
@@ -1969,7 +1969,7 @@ describe('agenda single workspace', () => {
   await fireEvent.click(screen.getByRole('menuitem', { name: 'Retry groups' })); await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2));
   expect(h.agenda.mock.calls.every(call => call[3]?.kind === 'workspace')).toBe(true);
   await fireEvent.click(screen.getByRole('menuitem', { name: /Choose a workspace/ })); expect(screen.getByText('Could not load workspaces.')).toBeTruthy();
-  await fireEvent.click(screen.getByRole('menuitem', { name: 'Retry' })); await screen.findByText('Roadmap');
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Retry' })); expect(await screen.findByRole('menuitemradio', { name: /Roadmap/ })).toHaveAttribute('aria-checked', 'true');
  });
  it('keeps an in-memory selection when storage throws', async () => {
   await mount(); vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('disabled'); });
@@ -2042,6 +2042,23 @@ describe('agenda single workspace', () => {
   await fireEvent.click(within(d).getByRole('button', { name: 'Done' }));
   h.agenda.mockRejectedValueOnce(new Error('offline')); await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
   await screen.findByText('Could not load this week'); expect(localStorage.getItem(key)).toBe(`workspace:${id}`); expect(filter()).toHaveTextContent('Roadmap');
+ });
+ it('keeps loaded rows when the active workspace or All is selected again', async () => {
+  localStorage.setItem(key, `workspace:${id}`); await mount();
+  await chooseWorkspace(); await settle();
+  expect(screen.getByText('First item')).toBeTruthy(); expect(h.agenda).toHaveBeenCalledTimes(1);
+  await fireEvent.click(filter()); await fireEvent.click(groupItem('All workspaces')); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  await fireEvent.click(filter()); await fireEvent.click(groupItem('All workspaces')); await settle();
+  expect(screen.getByText('First item')).toBeTruthy(); expect(h.agenda).toHaveBeenCalledTimes(2);
+ });
+ it('reloads All only once when groups arrive after a workspace refusal', async () => {
+  localStorage.setItem(key, `workspace:${id}`);
+  const groups = deferred<{ groups: typeof workspaceGroups }>(); h.groups.mockReturnValueOnce(groups.promise);
+  h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockResolvedValue(response([]));
+  render(Agenda); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(unavailable));
+  expect(h.agenda).toHaveBeenCalledTimes(2);
+  groups.resolve({ groups: workspaceGroups }); await settle();
+  expect(h.agenda).toHaveBeenCalledTimes(2); expect(localStorage.getItem(key)).toBe('all');
  });
  it('ignores old lists and refusals after an account switch', async () => {
   localStorage.setItem(key, `workspace:${id}`);
