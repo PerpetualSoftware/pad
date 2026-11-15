@@ -34,3 +34,48 @@ func TestDBRestorePreservesServiceOwnership(t *testing.T) {
 	}
 	assertRestoreSQLiteValue(t, live, "restored row")
 }
+
+func TestPostgresBackupPreservesGroup(t *testing.T) {
+	setupFakePostgresDump(t)
+	t.Setenv("FAKE_DUMP_CONTENT", "complete SQL\n")
+	t.Setenv("FAKE_DUMP_STATUS", "0")
+	path := filepath.Join(t.TempDir(), "backup.sql")
+	if err := os.WriteFile(path, []byte("previous SQL\n"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	initial, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	baseline := initial.Sys().(*syscall.Stat_t)
+	groups, err := os.Getgroups()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if os.Geteuid() == 0 {
+		groups = append(groups, int(baseline.Gid)+1)
+	}
+	group := int(baseline.Gid)
+	for _, candidate := range groups {
+		if candidate != group && os.Chown(path, -1, candidate) == nil {
+			group = candidate
+			break
+		}
+	}
+	if group == int(baseline.Gid) {
+		t.Skip("no alternate group available for the backup fixture")
+	}
+	cmd := dbBackupCmd()
+	cmd.SetArgs([]string{"--output", path})
+	if err := cmd.Execute(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := info.Sys().(*syscall.Stat_t)
+	if got.Uid != baseline.Uid || int(got.Gid) != group || info.Mode().Perm() != initial.Mode().Perm() {
+		t.Fatalf("owner/group/mode = %d/%d/%o, want %d/%d/%o", got.Uid, got.Gid, info.Mode().Perm(), baseline.Uid, group, initial.Mode().Perm())
+	}
+}

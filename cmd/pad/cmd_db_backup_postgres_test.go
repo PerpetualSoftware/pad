@@ -1,0 +1,283 @@
+package main
+
+import (
+	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+)
+
+func setupFakePostgresDump(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pg_dump uses a POSIX shell")
+	}
+	bin := t.TempDir()
+	script := `#!/bin/sh
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = "--file" ]; then shift; file=$1; fi
+  shift
+done
+[ -n "$file" ] || exit 90
+if [ "$file" = - ]; then
+  printf '%s' "$FAKE_DUMP_CONTENT" || exit 91
+else
+  printf '%s' "$FAKE_DUMP_CONTENT" > "$file" || exit 91
+fi
+if [ -n "$FAKE_BLOCK_TARGET" ]; then mkdir "$FAKE_BLOCK_TARGET" || exit 92; fi
+if [ -n "$FAKE_SWITCH_LINK" ]; then ln -sfn "$FAKE_SWITCH_TO" "$FAKE_SWITCH_LINK" || exit 93; fi
+exit "$FAKE_DUMP_STATUS"
+`
+	if err := os.WriteFile(filepath.Join(bin, "pg_dump"), []byte(script), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PAD_DB_DRIVER", "postgres")
+	t.Setenv("PAD_DATABASE_URL", "postgres://user@localhost/test")
+	t.Setenv("PGSERVICE", "")
+	t.Setenv("FAKE_BLOCK_TARGET", "")
+	t.Setenv("FAKE_SWITCH_LINK", "")
+}
+
+func TestPostgresBackupAtomicOutput(t *testing.T) {
+	setupFakePostgresDump(t)
+	for _, tc := range []struct {
+		name, initial, dump, status string
+		exists, fail, symlink       bool
+	}{
+		{name: "failure preserves existing", initial: "previous complete backup\n", dump: "partial", status: "23", exists: true, fail: true},
+		{name: "failure leaves absent", dump: "partial", status: "23", fail: true},
+		{name: "success replaces existing", initial: "previous complete backup\n", dump: "complete SQL\n", status: "0", exists: true},
+		{name: "success creates absent", dump: "complete SQL\n", status: "0"},
+		{name: "failure leaves dangling target absent", dump: "partial", status: "23", fail: true, symlink: true},
+		{name: "success creates dangling target", dump: "complete SQL\n", status: "0", symlink: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			output := filepath.Join(dir, "backup with spaces.sql")
+			target := output
+			if tc.symlink {
+				target = filepath.Join(dir, "target.sql")
+				if err := os.Symlink("target.sql", output); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.exists {
+				if err := os.WriteFile(output, []byte(tc.initial), 0640); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Chmod(output, 0640); err != nil {
+					t.Fatal(err)
+				}
+			}
+			t.Setenv("FAKE_DUMP_CONTENT", tc.dump)
+			t.Setenv("FAKE_DUMP_STATUS", tc.status)
+			cmd := dbBackupCmd()
+			cmd.SetArgs([]string{"--output", output})
+			err := cmd.Execute()
+			if tc.fail {
+				var exitErr *exec.ExitError
+				if !errors.As(err, &exitErr) || exitErr.ExitCode() != 23 || !strings.Contains(err.Error(), "pg_dump failed") {
+					t.Errorf("expected wrapped pg_dump exit 23, got %v", err)
+				}
+			} else if err != nil {
+				t.Fatalf("backup failed: %v", err)
+			}
+			got, readErr := os.ReadFile(target)
+			if tc.fail && !tc.exists {
+				if !os.IsNotExist(readErr) {
+					t.Errorf("output should be absent: contents %q, error %v", got, readErr)
+				}
+			} else {
+				want := tc.dump
+				if tc.fail {
+					want = tc.initial
+				}
+				if readErr != nil || string(got) != want {
+					t.Errorf("output = %q, error %v; want %q", got, readErr, want)
+				}
+			}
+			if tc.exists {
+				info, statErr := os.Stat(output)
+				if statErr != nil || info.Mode().Perm() != 0640 {
+					t.Errorf("output permissions: info %v, error %v; want 0640", info, statErr)
+				}
+			}
+			entries, readDirErr := os.ReadDir(dir)
+			if readDirErr != nil {
+				t.Fatal(readDirErr)
+			}
+			wantEntries := 1
+			if tc.fail && !tc.exists {
+				wantEntries = 0
+			}
+			if tc.symlink {
+				wantEntries++
+				if got, err := os.Readlink(output); err != nil || got != "target.sql" {
+					t.Errorf("symlink = %q, error %v", got, err)
+				}
+			}
+			if len(entries) != wantEntries {
+				t.Errorf("unexpected files after backup: %v", entries)
+			}
+		})
+	}
+
+	t.Setenv("FAKE_DUMP_CONTENT", "complete SQL\n")
+	t.Setenv("FAKE_DUMP_STATUS", "0")
+
+	t.Run("symlink remains and target is replaced", func(t *testing.T) {
+		dir := t.TempDir()
+		target, link := filepath.Join(dir, "target.sql"), filepath.Join(dir, "backup.sql")
+		if err := os.WriteFile(target, []byte("old"), 0640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(target, 0640); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink("target.sql", link); err != nil {
+			t.Fatal(err)
+		}
+		cmd := dbBackupCmd()
+		cmd.SetArgs([]string{"--output", link})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		if got, err := os.Readlink(link); err != nil || got != "target.sql" {
+			t.Errorf("symlink = %q, error %v", got, err)
+		}
+		if got, err := os.ReadFile(target); err != nil || string(got) != "complete SQL\n" {
+			t.Errorf("target = %q, error %v", got, err)
+		}
+		if info, err := os.Stat(target); err != nil || info.Mode().Perm() != 0640 {
+			t.Errorf("target permissions: info %v, error %v", info, err)
+		}
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 2 {
+			t.Errorf("directory entries = %v, error %v", entries, err)
+		}
+	})
+
+	t.Run("publish failure cleans staging file", func(t *testing.T) {
+		dir := t.TempDir()
+		output := filepath.Join(dir, "backup.sql")
+		t.Setenv("FAKE_BLOCK_TARGET", output)
+		cmd := dbBackupCmd()
+		cmd.SetArgs([]string{"--output", output})
+		if err := cmd.Execute(); err == nil || !strings.Contains(err.Error(), "publish PostgreSQL backup") {
+			t.Errorf("expected publication failure, got %v", err)
+		}
+		if info, err := os.Stat(output); err != nil || !info.IsDir() {
+			t.Errorf("blocking directory: info %v, error %v", info, err)
+		}
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 1 {
+			t.Errorf("directory entries = %v, error %v", entries, err)
+		}
+	})
+
+	t.Run("resolve symlink before parent traversal", func(t *testing.T) {
+		dir := t.TempDir()
+		actual := filepath.Join(dir, "actual")
+		subdir := filepath.Join(actual, "subdir")
+		if err := os.MkdirAll(subdir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		snapshots := filepath.Join(actual, "snapshots")
+		if err := os.Mkdir(snapshots, 0700); err != nil {
+			t.Fatal(err)
+		}
+		link := filepath.Join(dir, "link")
+		if err := os.Symlink(subdir, link); err != nil {
+			t.Fatal(err)
+		}
+		cmd := dbBackupCmd()
+		cmd.SetArgs([]string{"--output", link + "/../snapshots/backup.sql"})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(filepath.Join(snapshots, "backup.sql"))
+		if err != nil || string(got) != "complete SQL\n" {
+			t.Fatalf("backup = %q, error %v", got, err)
+		}
+	})
+
+	t.Run("dash streams to stdout", func(t *testing.T) {
+		dir := t.TempDir()
+		t.Chdir(dir)
+		cmd := dbBackupCmd()
+		cmd.SetArgs([]string{"--output", "-"})
+		var err error
+		got := captureStdout(t, func() {
+			err = cmd.Execute()
+		})
+		if err != nil || got != "complete SQL\n" {
+			t.Fatalf("stdout = %q, error %v", got, err)
+		}
+		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
+			t.Errorf("directory entries = %v, error %v", entries, err)
+		}
+	})
+
+	t.Run("parent symlink rotation keeps the original destination", func(t *testing.T) {
+		dir := t.TempDir()
+		original := filepath.Join(dir, "original")
+		rotated := filepath.Join(dir, "rotated")
+		for _, parent := range []string{original, rotated} {
+			if err := os.Mkdir(parent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(parent, "backup.sql"), []byte("previous SQL\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		link := filepath.Join(dir, "current")
+		if err := os.Symlink(original, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("FAKE_SWITCH_LINK", link)
+		t.Setenv("FAKE_SWITCH_TO", rotated)
+		cmd := dbBackupCmd()
+		cmd.SetArgs([]string{"--output", filepath.Join(link, "backup.sql")})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		for parent, want := range map[string]string{original: "complete SQL\n", rotated: "previous SQL\n"} {
+			got, err := os.ReadFile(filepath.Join(parent, "backup.sql"))
+			if err != nil || string(got) != want {
+				t.Errorf("backup in %s = %q, error %v; want %q", parent, got, err, want)
+			}
+		}
+	})
+}
+
+func TestResolveDBFilePathWindowsRootRelative(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("root-relative drive paths are Windows-specific")
+	}
+	dir := t.TempDir()
+	t.Chdir(dir)
+	linkDir := filepath.Join(dir, "links")
+	if err := os.Mkdir(linkDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(dir, "new.sql")
+	link := filepath.Join(linkDir, "current.sql")
+	rootRelative := strings.TrimPrefix(target, filepath.VolumeName(target))
+	if err := os.Symlink(rootRelative, link); err != nil {
+		t.Skipf("creating Windows symlinks requires permission: %v", err)
+	}
+	want, err := filepath.Abs(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := resolveDBFilePath(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := filepath.Abs(resolved)
+	if err != nil || !strings.EqualFold(got, want) {
+		t.Fatalf("resolved destination = %q, error %v; want %q", got, err, want)
+	}
+}

@@ -4,6 +4,6 @@ package main
 
 import "os"
 
-func preserveSQLiteRestoreOwnership(_ *os.File, _ os.FileInfo) error {
+func preserveDBFileOwnership(_ *os.File, _ os.FileInfo) error {
 	return nil
 }
