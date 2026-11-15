@@ -1,7 +1,10 @@
 <script lang="ts">
+	import { getContext } from 'svelte';
+	import { agendaUndoContext, hasUndoMenu, type AgendaUndo } from '$lib/calendar/undo';
+	import type { ToastAction } from '$lib/stores/toast.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
-	import { ACKNOWLEDGE_HELP, canAcknowledge, canMove, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { ACKNOWLEDGE_HELP, canAcknowledge, canMove, canResolve, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 	import RowMenu from './RowMenu.svelte';
 
@@ -13,31 +16,49 @@
 	} = $props();
 	// A lapsed occurrence can still be recorded as done; nothing else applies to it.
 	const lapsed = $derived(entry.state === 'lapsed');
+	const resolvable = $derived(canResolve(entry) || lapsed);
 	const done = $derived(lapsed ? 'Mark done' : 'Done');
 	// Only a fired alert can be acknowledged; an acknowledged one shows its status instead.
 	const ack = $derived(canAcknowledge(entry));
+	const getUndo = getContext<AgendaUndo | undefined>(agendaUndoContext);
+	const undoMenu = $derived(!!getUndo && hasUndoMenu(entry));
+	let undo = $state<ToastAction>();
+	let menuRead = 0;
+	async function opened() {
+		const mine = ++menuRead;
+		const requested = entry;
+		undo = undefined;
+		if (!undoMenu || !getUndo) return;
+		const action = await getUndo(requested);
+		if (mine === menuRead && entry === requested) undo = action;
+	}
 </script>
 
 <div class="actions">
-	{#if ack && !compact}
-		<Button size="sm" variant="ghost" aria-label={`Acknowledge ${entry.item_ref}`} title={ACKNOWLEDGE_HELP} disabled={pending || disabled} onclick={() => onaction(entry, 'ack')}>Acknowledge</Button>
+	{#if resolvable}
+		{#if ack && !compact}
+			<Button size="sm" variant="ghost" aria-label={`Acknowledge ${entry.item_ref}`} title={ACKNOWLEDGE_HELP} disabled={pending || disabled} onclick={() => onaction(entry, 'ack')}>Acknowledge</Button>
+		{/if}
+		<Button size="sm" class="done" aria-label={`${done} ${entry.item_ref}`} disabled={pending || disabled} onclick={() => onaction(entry, 'done')}>
+			{#if pending}<span class="spinner" aria-hidden="true"></span>{/if}{done}
+		</Button>
 	{/if}
-	<Button size="sm" class="done" aria-label={`${done} ${entry.item_ref}`} disabled={pending || disabled} onclick={() => onaction(entry, 'done')}>
-		{#if pending}<span class="spinner" aria-hidden="true"></span>{/if}{done}
-	</Button>
-	{#if !lapsed}
-		<RowMenu label={`Actions ${entry.item_ref}`} title={entry.item_title} disabled={pending || disabled} data-agenda-actions={entry.item_ref} data-workspace={entry.workspace} data-owner={entry.owner_username}>
+	{#if (resolvable && !lapsed) || undoMenu}
+		<RowMenu onopen={opened} focusKey={resolvable ? undefined : undo?.label} label={`Actions ${entry.item_ref}`} title={entry.item_title} disabled={pending || disabled} data-agenda-actions={entry.item_ref} data-workspace={entry.workspace} data-owner={entry.owner_username}>
 			{#snippet children(pick)}
-				{#if ack && compact}<MenuItem title={ACKNOWLEDGE_HELP} disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'ack'))}>Acknowledge</MenuItem>{/if}
-				<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'forecast'))}>{entry.forecast ? 'Forecast…' : 'Set forecast…'}</MenuItem>
-				<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'skip'))}>Skip</MenuItem>
-				<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'snooze'))}>Snooze…</MenuItem>
-				{#if canMove(entry)}
-					<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'move'))}>Move target…</MenuItem>
-					{#if entry.day !== todayIn(zone)}<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'today'))}>Bring to today</MenuItem>{/if}
-				{:else}
-					<MenuItem disabled><span class="hard-note">Legacy hard deadlines cannot be moved.</span></MenuItem>
+				{#if resolvable}
+					{#if ack && compact}<MenuItem title={ACKNOWLEDGE_HELP} disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'ack'))}>Acknowledge</MenuItem>{/if}
+					<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'forecast'))}>{entry.forecast ? 'Forecast…' : 'Set forecast…'}</MenuItem>
+					<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'skip'))}>Skip</MenuItem>
+					<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'snooze'))}>Snooze…</MenuItem>
+					{#if canMove(entry)}
+						<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'move'))}>Move target…</MenuItem>
+						{#if entry.day !== todayIn(zone)}<MenuItem disabled={pending || disabled} onclick={() => pick(() => onaction(entry, 'today'))}>Bring to today</MenuItem>{/if}
+					{:else}
+						<MenuItem disabled><span class="hard-note">Legacy hard deadlines cannot be moved.</span></MenuItem>
+					{/if}
 				{/if}
+				{#if undo}<MenuItem disabled={pending || disabled} onclick={() => pick(undo!.onAction)}>{undo.label}</MenuItem>{/if}
 			{/snippet}
 		</RowMenu>
 	{/if}

@@ -1,12 +1,13 @@
 <script lang="ts">
-	import { onMount, tick, untrack } from 'svelte';
+	import { onMount, tick, untrack, setContext } from 'svelte';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { currentHref, currentSearch } from '$lib/utils/pageLocation';
 	import { audienceCounts, defaultAudience, filterAudience, parseAudience, splitAudience, type AudienceView } from '$lib/calendar/audience';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { toastStore } from '$lib/stores/toast.svelte';
+	import { agendaUndoContext, resolutionLabel, type AgendaUndo } from '$lib/calendar/undo';
+	import { toastStore, type ToastAction } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
 	import { agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
@@ -259,8 +260,52 @@
 		});
 	});
 	// The toast container is a polite live region, so a success is announced there and not in the page status as well.
-	function succeed(message: string) {
-		toastStore.show(message, 'success');
+	function succeed(message: string, action?: ToastAction) {
+		toastStore.show(message, 'success', undefined, undefined, action);
+	}
+	// One attempt per captured checkpoint, shared by toast and entry menus. A refusal
+	// consumes the offer too: another GET must never silently substitute a newer ID.
+	const attemptedReopens = new Set<string>();
+	setContext<AgendaUndo>(agendaUndoContext, entry => readUndo(entry, authStore.identityFence()));
+	async function readUndo(entry: AgendaEntry, sameIdentity: () => boolean, state?: string): Promise<ToastAction | undefined> {
+		const workspace = entry.workspace;
+		const ref = entry.item_ref;
+		if (!workspace || !sameIdentity()) return;
+		try {
+			const view = await api.getCommitment(workspace, ref);
+			if (!sameIdentity()) return;
+			const last = view.last_resolution;
+			if (last?.can_reopen !== true || !entry.occurrence_key || last.occurrence_key !== entry.occurrence_key || !last.resolution_id) return;
+			const operation = state ?? last.state ?? '';
+			const label = resolutionLabel(operation);
+			if (!label) return;
+			const resolutionId = last.resolution_id;
+			const attempt = JSON.stringify([workspace, ref, resolutionId]);
+			if (attemptedReopens.has(attempt)) return;
+			const key = entryKey(entry);
+			return { label: `Undo ${label}`, onAction: () => reopen(workspace, ref, resolutionId, operation, key, attempt, sameIdentity) };
+		} catch { /* Eligibility is optional; the successful write stays successful. */ }
+	}
+	async function reopen(workspace: string, ref: string, resolutionId: string, operation: string, key: string, attempt: string, sameIdentity: () => boolean) {
+		if (!sameIdentity() || attemptedReopens.has(attempt)) return;
+		attemptedReopens.add(attempt);
+		pending = { ...pending, [key]: true };
+		try {
+			await api.reopenCommitment(workspace, ref, { resolution_id: resolutionId });
+			if (!sameIdentity()) return;
+			saved = { ...saved, [key]: true };
+			const refreshed = await load(day, zone, true);
+			if (!sameIdentity()) return;
+			if (refreshed === false) { savedRefreshError = true; loadError = false; }
+			succeed(operation === 'snooze' || operation === 'move' ? 'Undone. The occurrence is back where it was.' : 'Undone. The occurrence is open again.');
+		} catch (error) {
+			if (!sameIdentity()) return;
+			const message = (error as { message?: unknown })?.message;
+			toastStore.show(typeof message === 'string' && message ? message : 'Could not undo this occurrence.', 'error');
+			await load(day, zone, true);
+		} finally {
+			if (sameIdentity()) pending = { ...pending, [key]: false };
+		}
 	}
 	$effect(() => {
 		const userId = authStore.user?.id;
@@ -479,6 +524,7 @@
 		try {
 			// The outstanding occurrence is named by the instant the schedule holds now; a lapsed one by its own.
 			let occurrenceAt = entry.at;
+			let occurrenceKey = entry.occurrence_key;
 			if (!history) {
 				const view = await api.getCommitment(entry.workspace!, entry.item_ref);
 				if (!sameIdentity()) return false;
@@ -488,6 +534,7 @@
 					return false;
 				}
 				occurrenceAt = view.next_occurrence.at;
+				occurrenceKey = view.occurrence_key ?? occurrenceKey;
 			}
 			viewing = false;
 			const resolved = await api.resolveCommitment(entry.workspace!, entry.item_ref, {
@@ -515,25 +562,26 @@
 				}
 				if (!sameIdentity()) return false;
 			}
+			const undo = !history && state !== 'ack' && !itemClosed
+				? await readUndo({ ...entry, occurrence_key: occurrenceKey }, sameIdentity, state) : undefined;
+			if (!sameIdentity()) return false;
+			const success = (message: string) => succeed(message, undo ? { ...undo, label: 'Undo' } : undefined);
 			const refreshed = await load(day, zone, true);
 			if (!sameIdentity()) return false;
-			if (closeError) {
-				actionError = closeError;
-			} else if (refreshed === false) {
-				savedRefreshError = true;
-				loadError = false;
-			} else if (end && !ended && !resolved?.commitment?.ended_at) {
+			if (closeError) actionError = closeError;
+			if (refreshed === false) { savedRefreshError = true; loadError = false; }
+			if (end && !ended && !resolved?.commitment?.ended_at) {
 				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
-				succeed(end.closeAs !== undefined ? `${verb}. The schedule continues, so the item was not closed.` : `${verb}. The schedule continues.`);
+				success(end.closeAs !== undefined ? `${verb}. The schedule continues, so the item was not closed.` : `${verb}. The schedule continues.`);
 			} else if (end && !ended) {
 				// The schedule ended, but not with the item open: it was closed concurrently,
 				// or its collection can no longer close it.
-				succeed(`${state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done'}; the schedule has ended.`);
+				success(`${state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done'}; the schedule has ended.`);
 			} else if (end) {
 				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
-				succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
+				success(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
 			} else {
-				succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
+				success({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
 			}
 			return true;
 		} catch (error) {
@@ -661,15 +709,18 @@
 		const reviewed = review && entryKey(review.entry) === key;
 		if (reviewed) committing = true;
 		try {
-			await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}) });
+			const moved = await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}) });
 			if (!sameIdentity()) return;
 			saved = { ...saved, [key]: true };
 			if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null;
 			if (review && entryKey(review.entry) === key) review = null;
+			const undo = moved.changes.some(change => change.root)
+				? await readUndo(entry, sameIdentity, 'move') : undefined;
+			if (!sameIdentity()) return;
 			const refreshed = await load(day, zone, true);
 			if (!sameIdentity()) return;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
-			else succeed(`Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`);
+			succeed(`Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`, undo ? { ...undo, label: 'Undo' } : undefined);
 			pending = { ...pending, [key]: false };
 			await focusMoved(entry);
 		} catch (error) {

@@ -122,7 +122,7 @@ describe('TimelineActivityCard agent name', () => {
 
 
 describe('schedule reopen activity (TASK-4539)', () => {
- it.each([['done', 'Done'], ['skip', 'Skip'], ['snooze', 'Snooze'], ['move', 'Move'], ['unknown', '']])('names the undone %s operation and original actor', (state, label) => {
+ it.each([['done', 'Done'], ['skip', 'Skip'], ['snooze', 'Snooze'], ['move', 'Move'], ['unknown', ''], ['toString', '']])('names the undone %s operation and original actor', (state, label) => {
   const { container } = render(TimelineActivityCard, { activity: activity({ action: 'schedule_reopened', actor: 'agent', actor_name: 'Dave', metadata: JSON.stringify({ state, original_actor: 'user', agent: 'wren' }) }) });
   expect(container.querySelector('.action-label')?.textContent).toBe(`Reopened schedule occurrence${label ? `: undid ${label}` : ''} (resolved by User)`);
   expect(container.querySelector('.actor-label')?.textContent).toBe('wren');

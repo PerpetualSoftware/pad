@@ -217,7 +217,7 @@ describe('resolve identity and dialogs', () => {
   expect(within(d).getByLabelText('Reason (optional)').hasAttribute('required')).toBe(false);
   await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'revision-1' }));
-  expect(h.view).not.toHaveBeenCalled(); expect(h.resolve).not.toHaveBeenCalled();
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30'); expect(h.resolve).not.toHaveBeenCalled();
  });
  it('Move target sends a trimmed optional reason', async () => {
   await mount(); const d = await dialog('Move'); await fillTime(d);

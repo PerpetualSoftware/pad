@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { getContext } from 'svelte';
+	import { agendaUndoContext, hasUndoMenu, type AgendaUndo } from '$lib/calendar/undo';
 	import type { AudienceView } from '$lib/calendar/audience';
 	import AudienceChip from './AudienceChip.svelte';
 	import AgentOwner from './AgentOwner.svelte';
@@ -40,6 +42,8 @@
 	const href = $derived(entryHref(entry));
 	const schedule = $derived(entry.type === 'schedule');
 	const live = $derived(schedule && (isOpenState(entry.state) || entry.state === 'scheduled'));
+	const getUndo = getContext<AgendaUndo | undefined>(agendaUndoContext);
+	const undoMenu = $derived(!!getUndo && hasUndoMenu(entry));
 	const actionable = $derived(canResolve(entry) || (schedule && entry.state === 'lapsed'));
 	const density = $derived(marker ? 'marker' : actionable || entry.type === 'date' || (schedule && entry.state === 'missed') ? 'full' : 'quiet');
 	const deadline = $derived(live ? entry.roles?.deadline ?? null : null);
@@ -119,7 +123,7 @@
 						<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></svg>
 					</span>
 				{/if}
-				{#if actionable}<OccurrenceActions {entry} {zone} {pending} {compact} disabled={saved} {onaction} />{/if}
+				{#if actionable || undoMenu}<OccurrenceActions {entry} {zone} {pending} {compact} disabled={saved} {onaction} />{/if}
 			</div>
 		</div>
 	{/if}
