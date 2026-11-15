@@ -597,7 +597,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 					openFilters[c.workspace] = filter
 				}
 				var open bool
-				if err := s.db.QueryRow(s.q(`SELECT `+filter.clause+` FROM items i WHERE i.id = ?`), append(filter.args, c.item)...).Scan(&open); err != nil {
+				if err := s.db.QueryRow(s.q(`SELECT `+filter.clause+` FROM items i WHERE i.id = ?`), append(append([]any{}, filter.args...), c.item)...).Scan(&open); err != nil {
 					slog.Error("reminder scan: terminal item read failed", "reminder", c.id, "error", err)
 					continue
 				}
