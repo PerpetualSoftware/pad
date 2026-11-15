@@ -251,9 +251,26 @@
 </DialogShell>
 
 <style>
+	/* Matches the settings page's card text (.plan-desc). */
 	.description {
 		color: var(--text-secondary);
+		font-size: 0.85rem;
+		line-height: 1.4;
 		margin: var(--space-3) 0;
+	}
+
+	.close-confirm {
+		margin-top: var(--space-4);
+		padding: var(--space-3) var(--space-4);
+		border: 1px solid var(--border);
+		border-left: 3px solid var(--accent-amber);
+		border-radius: var(--radius);
+		background: var(--bg-tertiary);
+	}
+
+	.close-confirm p {
+		margin: 0;
+		font-weight: 600;
 	}
 
 	.feed-create-row, .feed-row-actions {
@@ -362,7 +379,7 @@
 		display: flex;
 		justify-content: flex-end;
 		gap: var(--space-2);
-		margin-top: var(--space-4);
+		margin-top: var(--space-3);
 	}
 
 </style>
