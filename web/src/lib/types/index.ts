@@ -399,6 +399,8 @@ export interface InvitationAccepted extends InvitationAcceptedFields {
 	accepted: boolean;
 }
 
+export type AgendaWorkspaceSelection = { kind: 'group'; id: string } | { kind: 'workspace'; id: string };
+
 export interface WorkspaceGroup {
 	id: string;
 	name: string;

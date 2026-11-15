@@ -100,7 +100,7 @@ describe('agenda Day page', () => {
   await mount(); await toggleCompleted();
   h.user = { id: 'user-a', timezone: 'Asia/Tokyo' }; h.signal?.set('auth', 1);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', 'all', ['completed']]);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-04T15:00:00.000Z', '2026-11-05T15:00:00.000Z', 'Asia/Tokyo', { kind: 'group', id: 'all' }, ['completed']]);
   h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 2);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
   expect(await completedShown()).toBe(true);
@@ -334,7 +334,7 @@ describe('agenda Week and priority', () => {
  it('an incomplete week never says a day is empty', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false, truncated: true }));
   render(Agenda);
-  await screen.findByText('Too much to load at once. Choose a smaller range or a workspace group.');
+  await screen.findByText('Too much to load at once. Choose a smaller range, a workspace, or a workspace group.');
   expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(stripDays()).toHaveLength(7); expect(screen.queryByText(/Nothing scheduled/)).toBeNull();
  });
@@ -342,7 +342,7 @@ describe('agenda Week and priority', () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-10-30T16:00:00Z'));
   h.agenda.mockResolvedValue(response([])); render(Agenda);
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
-  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
+  expect(h.agenda.mock.calls[0]).toEqual(['2026-10-30T04:00:00.000Z', '2026-11-06T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
   expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true');
   expect(stripDays().map(day => day.dataset.stripDay)).toEqual(['2026-10-30', '2026-10-31', '2026-11-01', '2026-11-02', '2026-11-03', '2026-11-04', '2026-11-05']);
   expect(stripDays().filter(day => day.getAttribute('aria-current') === 'date')).toEqual([stripDay('2026-10-30')]);
@@ -350,7 +350,7 @@ describe('agenda Week and priority', () => {
   expect(screen.getByText('Nothing scheduled for 30 October – 5 November 2026')).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Next week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-06T05:00:00.000Z', '2026-11-13T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
   expect(screen.getByRole('heading', { name: '6–12 November 2026' })).toBeTruthy();
   await fireEvent.click(screen.getByRole('button', { name: 'Previous week' }));
   await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
@@ -575,7 +575,7 @@ describe('agenda Week and priority', () => {
  });
  it('renders complete empty groups and keeps window incompleteness independent', async () => {
   h.agenda.mockResolvedValue(response([], { window_complete: false })); render(Agenda);
-  for (const text of ['Nothing outstanding.', 'Too much to load at once. Choose a smaller range or a workspace group.']) expect(await screen.findByText(text)).toBeTruthy();
+  for (const text of ['Nothing outstanding.', 'Too much to load at once. Choose a smaller range, a workspace, or a workspace group.']) expect(await screen.findByText(text)).toBeTruthy();
   await fireEvent.click(screen.getByRole('tab', { name: 'Waiting 0' })); expect(screen.getByText('Nothing waiting.')).toBeTruthy();
   await fireEvent.click(screen.getByRole('tab', { name: 'No date 0' })); expect(screen.getByText('No undated work.')).toBeTruthy();
  });
@@ -768,7 +768,7 @@ describe('week strip, attention band and states', () => {
   expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy(); expect(within(daySection('2026-11-09')).queryByText('Nothing scheduled.')).toBeNull();
   await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' }));
   await screen.findByText('Later item');
-  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
+  expect(h.agenda.mock.calls[1]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
   expect(screen.getAllByText('First item')).toHaveLength(2); expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
   expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(within(screen.getByRole('region', { name: 'Outstanding' })).getByText('First item')).toBeTruthy();
@@ -784,7 +784,7 @@ describe('week strip, attention band and states', () => {
  it('offers no Load the rest when next_from is the end of the window', async () => {
   h.agenda.mockResolvedValue(response([row()], { truncated: true, next_from: '2026-11-12T05:00:00Z', unexpanded: [{ schedule_id: 's9', item_ref: 'EX-90', item_title: 'Dense', collection: 'tasks', reason: 'scan_limit' }] }));
   await mount();
-  expect(screen.getByText('Too much to load at once. Choose a smaller range or a workspace group.')).toBeTruthy();
+  expect(screen.getByText('Too much to load at once. Choose a smaller range, a workspace, or a workspace group.')).toBeTruthy();
   expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
   expect(h.agenda).toHaveBeenCalledTimes(1);
   cleanup(); h.agenda.mockResolvedValue(response([row()], { next_from: '2026-11-12T00:00:00-05:00' }));
@@ -834,7 +834,7 @@ describe('week strip, attention band and states', () => {
   // Nothing is published between the two pages, so the second page never flickers out.
   await settle(); expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.queryByText(/Showing entries up to/)).toBeNull();
   second.resolve(response([later])); await said('Occurrence marked done.', 'success');
-  expect(h.agenda.mock.calls[3]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', 'all', ['completed']]);
+  expect(h.agenda.mock.calls[3]).toEqual(['2026-11-08T17:00:00Z', '2026-11-12T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']]);
   expect(screen.getByText('Later item')).toBeTruthy(); expect(screen.getAllByText('First item').length).toBeGreaterThan(0);
   expect(screen.queryByText(/Showing entries up to/)).toBeNull(); expect(screen.queryByRole('button', { name: 'Load the rest' })).toBeNull();
   expect(document.querySelectorAll('section[data-day] li[data-ref="EX-30"]')).toHaveLength(1);
@@ -1003,7 +1003,7 @@ describe('workspace groups and daily counts', () => {
   expect(filter()).toHaveTextContent('All workspaces');
   expect(await listed()).toEqual(['All workspaces', 'My workspaces', 'Team', 'Another']);
   await choose('Team');
-  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'group-1' }));
   expect(filter()).toHaveTextContent('Team'); expect(screen.queryByRole('menu')).toBeNull();
   await fireEvent.click(filter()); expect(groupItem('Team')).toHaveAttribute('aria-checked', 'true'); expect(groupItem('All workspaces')).toHaveAttribute('aria-checked', 'false');
   expect(localStorage.getItem('pad-agenda-group:user-a')).toBe('group-1');
@@ -1011,7 +1011,7 @@ describe('workspace groups and daily counts', () => {
  it.each(['group-1', 'deleted'])('restores a saved group or falls back to all: %s', async saved => {
   localStorage.setItem('pad-agenda-group:user-a', saved); await mount();
   expect(filter()).toHaveTextContent(saved === 'deleted' ? 'All workspaces' : 'Team');
-  expect(h.agenda.mock.calls[0][3]).toBe(saved === 'deleted' ? 'all' : saved);
+  expect(h.agenda.mock.calls[0][3]).toEqual({ kind: 'group', id: saved === 'deleted' ? 'all' : saved });
   if (saved === 'deleted') {
    await choose('My workspaces'); expect(localStorage.getItem('pad-agenda-group:user-a')).toBe('mine');
   }
@@ -1021,7 +1021,7 @@ describe('workspace groups and daily counts', () => {
   h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockResolvedValue(response());
   h.groups.mockResolvedValueOnce({ groups: workspaceGroups }).mockResolvedValue({ groups: workspaceGroups.slice(0, 2) });
   await mount();
-  expect(h.agenda.mock.calls.map(call => call[3])).toEqual(['group-1', 'all']);
+  expect(h.agenda.mock.calls.map(call => call[3])).toEqual([{ kind: 'group', id: 'group-1' }, { kind: 'group', id: 'all' }]);
   expect(h.groups).toHaveBeenCalledTimes(2); expect(filter()).toHaveTextContent('All workspaces');
   expect(screen.queryByText(/Could not load/)).toBeNull();
  });
@@ -1044,10 +1044,10 @@ describe('workspace groups and daily counts', () => {
  it('renders normal surfaces for a populated group with no entries', async () => {
   h.agenda.mockResolvedValue(response([])); render(Agenda);
   await screen.findByRole('button', { name: /^Workspaces: / }); await choose('Team');
-  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'group-1' }));
   expect(screen.queryByText('No workspaces in this group.')).toBeNull(); expect(document.querySelector('.layout')).toBeTruthy();
   expect(await screen.findByText('Nothing scheduled for 5–11 November 2026')).toBeTruthy(); expect(screen.getByText('No commitments or dated items in “Team” this week.')).toBeTruthy();
-  await fireEvent.click(screen.getByRole('button', { name: 'Show all workspaces' })); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('all'));
+  await fireEvent.click(screen.getByRole('button', { name: 'Show all workspaces' })); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'all' }));
   expect(screen.queryByRole('button', { name: 'Show all workspaces' })).toBeNull(); expect(screen.getByText('No commitments or dated items this week.')).toBeTruthy();
  });
  it('skips the empty-group check when workspaces fail to load', async () => {
@@ -1090,7 +1090,7 @@ describe('workspace groups and daily counts', () => {
   h.groups.mockResolvedValue({ groups: workspaceGroups.slice(0, 2) });
   confirmDialog.confirm();
   await waitFor(() => expect(h.removeGroup).toHaveBeenCalledWith('group-1'));
-  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('all'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'all' }));
   expect(filter()).toHaveTextContent('All workspaces'); expect(h.groups).toHaveBeenCalledTimes(2);
  });
  it.each([{ message: 'Name is already used.' }, {}])('shows save failures inside the open dialog: %j', async error => {
@@ -1165,7 +1165,7 @@ describe('workspace groups and daily counts', () => {
  });
  it('reloads the agenda when the selected group changes its workspaces', async () => {
   await mount(); await choose('Team');
-  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1')); const calls = h.agenda.mock.calls.length;
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'group-1' })); const calls = h.agenda.mock.calls.length;
   h.workspaces.mockResolvedValue([workspace, { ...workspace, id: 'ws-2', name: 'Second' }]);
   h.groups.mockResolvedValue({ groups: [...workspaceGroups.slice(0, 2), { ...workspaceGroups[2], workspace_ids: ['ws-1', 'ws-2'] }] });
   const d = await manage(); await fireEvent.click(within(d).getByRole('button', { name: 'Edit Team' }));
@@ -1221,7 +1221,7 @@ describe('agenda Month page', () => {
   localStorage.setItem('pad-agenda-mode:user-a', 'week'); await mount();
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'false');
   await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
   expect(localStorage.getItem('pad-agenda-mode:user-a')).toBe('month');
  });
@@ -1229,7 +1229,7 @@ describe('agenda Month page', () => {
   h.agenda.mockResolvedValue(response(Array.from({ length: 4 }, (_, i) => row({ item_ref: `EX-${30+i}`, schedule_id: `s${i}`, item_title: `Month item ${i}` }))));
   render(Agenda); const grid = await screen.findByRole('grid', { name: 'November 2026' });
   expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
-  expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']);
+  expect(h.agenda).toHaveBeenLastCalledWith('2026-11-01T04:00:00.000Z', '2026-12-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']);
   const cell = cellOf('2026-11-05');
   expect(within(grid).getByRole('link', { name: /Month item 0/ })).toHaveAttribute('href', '/alice/work/tasks/EX-30');
   expect(cell.querySelector('.count')).toHaveTextContent('4 · 4 owed');
@@ -1312,13 +1312,13 @@ describe('agenda Month page', () => {
   vi.mocked(Date.now).mockReturnValue(Date.parse('2026-03-31T12:00:00Z'));
   h.agenda.mockResolvedValue(response([row({ day: '2026-03-31' })]));
   await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Previous month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-01T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
   expect(dateButton('2026-02-28')).toHaveAttribute('tabindex', '0');
   await fireEvent.click(screen.getByRole('button', { name: 'Day' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-28T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', 'all', ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-02-28T05:00:00.000Z', '2026-03-01T05:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
   await fireEvent.click(screen.getByRole('button', { name: 'Month' }));
   await fireEvent.click(screen.getByRole('button', { name: 'Next month' }));
-  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', 'all', ['completed']));
+  await waitFor(() => expect(h.agenda).toHaveBeenLastCalledWith('2026-03-01T05:00:00.000Z', '2026-04-01T04:00:00.000Z', 'America/New_York', { kind: 'group', id: 'all' }, ['completed']));
   expect(dateButton('2026-03-28')).toHaveAttribute('tabindex', '0');
   await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
   expect(dateButton('2026-03-31')).toHaveAttribute('tabindex', '0');
@@ -1727,7 +1727,7 @@ describe('agenda audience views', () => {
   expect(document.querySelector('.header-actions')?.contains(screen.getByRole('group', { name: 'Audience' }))).toBe(true);
   await fireEvent.click(screen.getByRole('button', { name: 'View options' }));
   await fireEvent.click(groupItem('Team'));
-  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toBe('group-1'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'group-1' }));
  });
 });
 
@@ -1928,5 +1928,178 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   expect(screen.queryByRole('menuitem', { name: 'Nothing to undo' })).toBeNull();
   pending.resolve({ last_resolution: eligible() });
   expect(await screen.findByRole('menuitem', { name: 'Undo Done' })).toBeEnabled();
+ });
+});
+
+describe('agenda single workspace', () => {
+ const id = 'aabbccdd-0000-4000-8000-000000000001';
+ const secondID = 'aabbccdd-0000-4000-8000-000000000002';
+ const selected = { kind: 'workspace', id };
+ const all = { kind: 'group', id: 'all' };
+ const key = 'pad-agenda-group:user-a';
+ const unavailable = 'That workspace is no longer available. Showing all workspaces.';
+ const chosen = { ...workspace, id, name: 'Roadmap', slug: 'roadmap' };
+ const other = { ...chosen, id: secondID, owner_username: 'bob' };
+ const chooseWorkspace = async (name = 'Roadmap') => {
+  await fireEvent.click(filter()); await fireEvent.click(screen.getByRole('menuitem', { name: /Choose a workspace/ }));
+  await fireEvent.click(screen.getByRole('menuitemradio', { name: new RegExp(name) }));
+ };
+ beforeEach(() => { h.workspaces.mockResolvedValue([chosen]); });
+ it('selects and persists a UUID, restores it without waiting for either list, and uses metadata only for labels', async () => {
+  await mount(); await chooseWorkspace(); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual(selected));
+  expect(localStorage.getItem(key)).toBe(`workspace:${id}`); cleanup(); h.agenda.mockClear();
+  const list = deferred<typeof chosen[]>(); h.workspaces.mockReturnValueOnce(list.promise); h.groups.mockReturnValueOnce(new Promise(() => {}));
+  render(Agenda); await screen.findByText('First item'); expect(h.agenda.mock.calls[0][3]).toEqual(selected); expect(filter()).toHaveTextContent('Selected workspace');
+  list.resolve([chosen]); await waitFor(() => expect(filter()).toHaveTextContent('Roadmap')); expect(h.agenda).toHaveBeenCalledTimes(1);
+ });
+ it.each(['workspace:bad', 'workspace:', `workspace:${id.replaceAll('-', '')}`])('falls back for malformed storage %s', async value => {
+  localStorage.setItem(key, value); await mount(); expect(h.agenda.mock.calls[0][3]).toEqual(all); expect(localStorage.getItem(key)).toBe('all');
+ });
+ it('canonicalizes remembered uppercase UUIDs and falls back on successful list omission', async () => {
+  localStorage.setItem(key, `workspace:${id.toUpperCase()}`);
+  const list = deferred<typeof chosen[]>(); h.workspaces.mockReturnValueOnce(list.promise); await mount();
+  expect(h.agenda.mock.calls[0][3]).toEqual(selected); list.resolve([]);
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual(all)); expect(localStorage.getItem(key)).toBe('all');
+  expect(screen.getByRole('status')).toHaveTextContent(unavailable);
+ });
+ it('keeps remembered scope on failed workspace and group lists and retries them independently', async () => {
+  localStorage.setItem(key, `workspace:${id}`); h.workspaces.mockRejectedValueOnce(new Error('offline')); h.groups.mockRejectedValueOnce(new Error('offline'));
+  await mount(); expect(h.agenda.mock.calls[0][3]).toEqual(selected); expect(localStorage.getItem(key)).toBe(`workspace:${id}`);
+  await fireEvent.click(filter()); expect(screen.getByText('Groups unavailable')).toBeTruthy();
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Retry groups' })); await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2));
+  expect(h.agenda.mock.calls.every(call => call[3]?.kind === 'workspace')).toBe(true);
+  await fireEvent.click(screen.getByRole('menuitem', { name: /Choose a workspace/ })); expect(screen.getByText('Could not load workspaces.')).toBeTruthy();
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Retry' })); expect(await screen.findByRole('menuitemradio', { name: /Roadmap/ })).toHaveAttribute('aria-checked', 'true');
+ });
+ it('keeps My workspaces and the chooser usable when groups are unavailable', async () => {
+  localStorage.setItem(key, `workspace:${id}`); h.groups.mockRejectedValueOnce(new Error('offline'));
+  await mount(); await fireEvent.click(filter()); await fireEvent.click(groupItem('My workspaces'));
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'group', id: 'mine' }));
+  expect(filter()).toHaveTextContent('My workspaces');
+  await fireEvent.click(filter()); await fireEvent.click(groupItem('All workspaces'));
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
+  await chooseWorkspace(); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual(selected));
+ });
+ it('keeps an in-memory selection when storage throws', async () => {
+  await mount(); vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('disabled'); });
+  await chooseWorkspace(); await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual(selected)); expect(filter()).toHaveTextContent('Roadmap');
+ });
+ it.each(['day', 'week', 'month'])('keeps workspace and audience in %s and on refresh', async mode => {
+  localStorage.setItem(key, `workspace:${id}`); localStorage.setItem('pad-agenda-mode:user-a', mode); localStorage.setItem('pad-agenda-audience:user-a', 'agents');
+  render(Agenda); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  await fireEvent.click(screen.getByRole('button', { name: 'Today' })); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  expect(h.agenda.mock.calls.every(call => JSON.stringify(call[3]) === JSON.stringify(selected) && JSON.stringify(call[4]) === '["completed"]')).toBe(true);
+  expect(localStorage.getItem('pad-agenda-audience:user-a')).toBe('agents');
+ });
+ it('keeps the selector on Load the rest, quiet refresh and automatic continuation', async () => {
+  localStorage.setItem(key, `workspace:${id}`);
+  const first = response([row()], { truncated: true, window_complete: false, next_from: '2026-11-08T17:00:00Z' });
+  h.agenda.mockResolvedValueOnce(first).mockResolvedValueOnce(response()).mockResolvedValueOnce(first).mockResolvedValue(response());
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' })); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' })); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(4));
+  expect(h.agenda.mock.calls.map(call => call[3])).toEqual([selected, selected, selected, selected]);
+  expect(h.agenda.mock.calls[3][0]).toBe('2026-11-08T17:00:00Z');
+ });
+ it.each(['initial', 'quiet', 'rest', 'automatic'])('clears revoked rows and falls back once on %s 404', async path => {
+  localStorage.setItem(key, `workspace:${id}`);
+  const first = response([row()], { truncated: true, window_complete: false, next_from: '2026-11-08T17:00:00Z' });
+  const allRead = deferred<AgendaResponse>();
+  if (path === 'initial') h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockReturnValueOnce(allRead.promise);
+  else h.agenda.mockResolvedValueOnce(first);
+  if (path === 'initial') render(Agenda);
+  else {
+   await mount();
+   if (path === 'automatic') { h.agenda.mockResolvedValueOnce(response()); await fireEvent.click(screen.getByRole('button', { name: 'Load the rest' })); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2)); h.agenda.mockResolvedValueOnce(first); }
+   h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockReturnValueOnce(allRead.promise);
+   await fireEvent.click(screen.getByRole('button', { name: path === 'rest' ? 'Load the rest' : 'Done EX-30' }));
+  }
+  await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual(all));
+  expect(screen.queryByText('First item')).toBeNull(); expect(localStorage.getItem(key)).toBe('all');
+  allRead.resolve(response([])); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(unavailable));
+  expect(h.agenda.mock.calls.filter(call => call[3]?.id === 'all')).toHaveLength(1);
+ });
+ it.each(['day', 'week', 'month'])('keeps an empty readable workspace and its counts in %s', async mode => {
+  localStorage.setItem(key, `workspace:${id}`); localStorage.setItem('pad-agenda-mode:user-a', mode);
+  h.agenda.mockResolvedValue(response([], { counts: [{ day: '2026-11-05', completed: 0, open: 3, burndown: 2 }], no_date: [workRow({ item_title: 'Undated work' })] }));
+  render(Agenda); await waitFor(() => expect(filter()).toHaveTextContent('Roadmap')); await settle();
+  expect(localStorage.getItem(key)).toBe(`workspace:${id}`); expect(screen.queryByText('No workspaces in this group.')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Show all workspaces' })).toBeTruthy(); expect(screen.getByText(/No commitments or dated items in “Roadmap”/)).toBeTruthy();
+  expect(screen.getByRole('table', { name: 'Daily counts' })).toBeTruthy();
+ });
+ it.each(['shots', undefined])('distinguishes same-name workspaces with the same owner %s after selecting each', async owner => {
+  const listed = [{ ...chosen, owner_username: owner }, { ...chosen, id: secondID, slug: 'roadmap-2', owner_username: owner }];
+  h.workspaces.mockResolvedValue(listed);
+  await mount();
+  const labels: string[] = [];
+  for (const workspace of listed) {
+   await fireEvent.click(filter()); await fireEvent.click(screen.getByRole('menuitem', { name: /Choose a workspace/ }));
+   const row = screen.getAllByRole('menuitemradio').find(row => row.querySelector('.workspace-identity')?.textContent === `${owner ? `@${owner}/` : ''}${workspace.slug}`)!;
+   await fireEvent.click(row);
+   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'workspace', id: workspace.id }));
+   labels.push(filter().getAttribute('aria-label')!);
+  }
+  expect(labels[0]).not.toBe(labels[1]);
+  expect(labels).toEqual(listed.map(workspace => `Workspaces: Roadmap · ${owner ? `@${owner}/` : ''}${workspace.slug}`));
+  expect(labels.join(' ')).not.toContain('undefined');
+ });
+ it('qualifies duplicate slugs and names across the full list, including missing owners', async () => {
+  h.workspaces.mockResolvedValue([chosen, other, { ...chosen, id: 'aabbccdd-0000-4000-8000-000000000003', owner_username: undefined }]);
+  await mount(); await chooseWorkspace('Roadmap · @bob'); await waitFor(() => expect(filter()).toHaveTextContent('Roadmap · @bob'));
+  expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'workspace', id: secondID });
+  await fireEvent.click(filter()); await fireEvent.click(screen.getByRole('menuitem', { name: /Choose a workspace/ }));
+  expect(screen.getAllByRole('menuitemradio')).toHaveLength(3); expect(screen.getByRole('menu')).not.toHaveTextContent('undefined');
+ });
+ it.each(['success', 'not_found'])('ignores an old workspace %s after choosing another scope', async result => {
+  let finish!: (value: AgendaResponse) => void; let fail!: (error: unknown) => void;
+  const old = new Promise<AgendaResponse>((resolve, reject) => { finish = resolve; fail = reject; });
+  await mount(); h.agenda.mockReturnValueOnce(old); await chooseWorkspace(); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  await fireEvent.click(filter()); await fireEvent.click(groupItem('My workspaces')); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
+  if (result === 'success') finish(response([row({ item_title: 'Old private item' })])); else fail({ code: 'not_found' });
+  await settle(); expect(localStorage.getItem(key)).toBe('mine'); expect(h.agenda).toHaveBeenCalledTimes(3); expect(screen.queryByText('Old private item')).toBeNull();
+ });
+ it('keeps workspace selection through group management and a generic read failure', async () => {
+  localStorage.setItem(key, `workspace:${id}`); await mount();
+  await fireEvent.click(filter()); await fireEvent.click(screen.getByRole('menuitem', { name: 'Manage groups…' }));
+  const d = screen.getByRole('dialog', { name: 'Workspace groups' });
+  await fireEvent.click(within(d).getByRole('button', { name: 'Edit Team' }));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Save group' })); await waitFor(() => expect(h.groups).toHaveBeenCalledTimes(2));
+  expect(localStorage.getItem(key)).toBe(`workspace:${id}`); expect(h.agenda.mock.calls.every(call => call[3]?.kind === 'workspace')).toBe(true);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Done' }));
+  h.agenda.mockRejectedValueOnce(new Error('offline')); await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+  await screen.findByText('Could not load this week'); expect(localStorage.getItem(key)).toBe(`workspace:${id}`); expect(filter()).toHaveTextContent('Roadmap');
+ });
+ it('keeps loaded rows when the active workspace or All is selected again', async () => {
+  localStorage.setItem(key, `workspace:${id}`); await mount();
+  await chooseWorkspace(); await settle();
+  expect(screen.getByText('First item')).toBeTruthy(); expect(h.agenda).toHaveBeenCalledTimes(1);
+  await fireEvent.click(filter()); await fireEvent.click(groupItem('All workspaces')); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  await fireEvent.click(filter()); await fireEvent.click(groupItem('All workspaces')); await settle();
+  expect(screen.getByText('First item')).toBeTruthy(); expect(h.agenda).toHaveBeenCalledTimes(2);
+ });
+ it('falls back to All once and keeps the groups that arrive after a workspace refusal', async () => {
+  localStorage.setItem(key, `workspace:${id}`);
+  const groups = deferred<{ groups: typeof workspaceGroups }>(); h.groups.mockReturnValueOnce(groups.promise);
+  h.agenda.mockRejectedValueOnce({ code: 'not_found' }).mockResolvedValue(response([]));
+  render(Agenda); await waitFor(() => expect(screen.getByRole('status')).toHaveTextContent(unavailable));
+  expect(h.agenda).toHaveBeenCalledTimes(2);
+  groups.resolve({ groups: workspaceGroups.map(group => group.kind === 'all' ? { ...group, workspace_ids: [id] } : group) }); await settle();
+  // One more read, because All's members are now known (the same rule as any group); the refusal itself is not retried.
+  expect(h.agenda).toHaveBeenCalledTimes(3); expect(localStorage.getItem(key)).toBe('all');
+  // Every read after the refusal is All: no selector (before groups load) or group=all.
+  for (const [, , , selection] of h.agenda.mock.calls.slice(1)) expect(selection === undefined || (selection.kind === 'group' && selection.id === 'all')).toBe(true);
+  // The groups list that arrived after the fallback is kept: named groups stay selectable.
+  await fireEvent.click(filter());
+  expect(screen.queryByText('Groups unavailable')).toBeNull();
+  expect(screen.getByRole('menuitemradio', { name: /Team/ })).toBeTruthy();
+  expect(screen.getByRole('menuitem', { name: 'Manage groups…' })).toBeTruthy();
+ });
+ it('ignores old lists and refusals after an account switch', async () => {
+  localStorage.setItem(key, `workspace:${id}`);
+  let fail!: (error: unknown) => void; h.agenda.mockReturnValueOnce(new Promise((_resolve, reject) => { fail = reject; }));
+  const list = deferred<typeof chosen[]>(); h.workspaces.mockReturnValueOnce(list.promise);
+  render(Agenda); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  h.user = { id: 'user-b', timezone: 'UTC' }; h.epoch++; h.signal?.set('auth', 1); await screen.findByText('First item');
+  fail({ code: 'not_found' }); list.resolve([other]); await settle();
+  expect(localStorage.getItem('pad-agenda-group:user-b')).toBeNull(); expect(filter()).toHaveTextContent('All workspaces'); expect(h.agenda).toHaveBeenCalledTimes(2);
  });
 });

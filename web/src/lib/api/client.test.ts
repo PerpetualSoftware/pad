@@ -616,7 +616,7 @@ describe('getMyAgenda include query', () => {
 		{ include: [], expected: '' },
 	])('serializes include=$expected', async ({ include, expected }) => {
 		mockFetchOnce(200, {});
-		await api.getMyAgenda('2031-03-10T00:00:00Z', '2031-03-11T00:00:00Z', 'UTC', 'mine', include);
+		await api.getMyAgenda('2031-03-10T00:00:00Z', '2031-03-11T00:00:00Z', 'UTC', { kind: 'group', id: 'mine' }, include);
 		const query = new URL(vi.mocked(fetch).mock.calls[0][0] as string, 'https://example.test').searchParams;
 		expect(query.get('from')).toBe('2031-03-10T00:00:00Z');
 		expect(query.get('to')).toBe('2031-03-11T00:00:00Z');
@@ -624,4 +624,18 @@ describe('getMyAgenda include query', () => {
 		expect(query.get('group')).toBe('mine');
 		expect(query.get('include')).toBe(expected);
 	});
+});
+
+
+describe('getMyAgenda workspace selection wire shape', () => {
+ afterEach(() => vi.unstubAllGlobals());
+ it.each([
+  { selection: undefined, suffix: '' },
+  { selection: { kind: 'group' as const, id: 'mine' }, suffix: '&group=mine' },
+  { selection: { kind: 'workspace' as const, id: '00000000-0000-4000-8000-000000000001' }, suffix: '&workspace=00000000-0000-4000-8000-000000000001' },
+ ])('serializes exactly one selector: $suffix', async ({ selection, suffix }) => {
+  mockFetchOnce(200, {});
+  await api.getMyAgenda('from', 'to', 'UTC', selection, []);
+  expect(vi.mocked(fetch).mock.calls[0][0]).toBe('/api/v1/me/agenda?from=from&to=to&tz=UTC' + suffix + '&include=');
+ });
 });
