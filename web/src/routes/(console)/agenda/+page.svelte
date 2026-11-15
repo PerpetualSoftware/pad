@@ -152,6 +152,8 @@
 	function workspaceLabel(workspace: Workspace): string {
 		const duplicate = workspaces?.some(other => other.id !== workspace.id && (other.name === workspace.name || other.slug === workspace.slug));
 		if (!duplicate) return workspace.name;
+		const sameOwner = workspaces?.some(other => other.id !== workspace.id && other.name === workspace.name && (other.owner_username || '') === (workspace.owner_username || ''));
+		if (sameOwner) return `${workspace.name} · ${workspace.owner_username ? `@${workspace.owner_username}/` : ''}${workspace.slug}`;
 		if (workspace.owner_username) return `${workspace.name} · @${workspace.owner_username}`;
 		let length = 6;
 		while (length < workspace.id.length && workspaces?.some(other => other.id !== workspace.id && other.id.endsWith(workspace.id.slice(-length)))) length++;

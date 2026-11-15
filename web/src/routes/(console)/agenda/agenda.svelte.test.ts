@@ -2026,6 +2026,22 @@ describe('agenda single workspace', () => {
   expect(screen.getByRole('button', { name: 'Show all workspaces' })).toBeTruthy(); expect(screen.getByText(/No commitments or dated items in “Roadmap”/)).toBeTruthy();
   expect(screen.getByRole('table', { name: 'Daily counts' })).toBeTruthy();
  });
+ it.each(['shots', undefined])('distinguishes same-name workspaces with the same owner %s after selecting each', async owner => {
+  const listed = [{ ...chosen, owner_username: owner }, { ...chosen, id: secondID, slug: 'roadmap-2', owner_username: owner }];
+  h.workspaces.mockResolvedValue(listed);
+  await mount();
+  const labels: string[] = [];
+  for (const workspace of listed) {
+   await fireEvent.click(filter()); await fireEvent.click(screen.getByRole('menuitem', { name: /Choose a workspace/ }));
+   const row = screen.getAllByRole('menuitemradio').find(row => row.querySelector('.workspace-identity')?.textContent === `${owner ? `@${owner}/` : ''}${workspace.slug}`)!;
+   await fireEvent.click(row);
+   await waitFor(() => expect(h.agenda.mock.calls.at(-1)?.[3]).toEqual({ kind: 'workspace', id: workspace.id }));
+   labels.push(filter().getAttribute('aria-label')!);
+  }
+  expect(labels[0]).not.toBe(labels[1]);
+  expect(labels).toEqual(listed.map(workspace => `Workspaces: Roadmap · ${owner ? `@${owner}/` : ''}${workspace.slug}`));
+  expect(labels.join(' ')).not.toContain('undefined');
+ });
  it('qualifies duplicate slugs and names across the full list, including missing owners', async () => {
   h.workspaces.mockResolvedValue([chosen, other, { ...chosen, id: 'aabbccdd-0000-4000-8000-000000000003', owner_username: undefined }]);
   await mount(); await chooseWorkspace('Roadmap · @bob'); await waitFor(() => expect(filter()).toHaveTextContent('Roadmap · @bob'));
