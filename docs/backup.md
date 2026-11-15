@@ -112,6 +112,9 @@ Requires:
 - `pg_dump` installed
 - `PAD_DATABASE_URL` environment variable set
 
+When writing to a file, Pad replaces the destination only after `pg_dump`
+finishes successfully. A failed backup leaves the previous dump intact.
+
 ### Automated Backups (Cron)
 
 ```bash

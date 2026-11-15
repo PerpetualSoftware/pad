@@ -94,6 +94,61 @@ func backupSQLite(srcPath, outPath string) error {
 	return nil
 }
 
+func dumpPostgres(dbURL, path string) error {
+	pgCmd, err := postgresClient("pg_dump", dbURL,
+		"--format", "plain", "--clean", "--if-exists", "--file", path)
+	if err != nil {
+		return err
+	}
+	pgCmd.Stdout = os.Stdout
+	pgCmd.Stderr = os.Stderr
+	if err := pgCmd.Run(); err != nil {
+		return fmt.Errorf("pg_dump failed: %w", err)
+	}
+	return nil
+}
+
+func backupPostgres(dbURL, outPath string) error {
+	if outPath == "-" {
+		return dumpPostgres(dbURL, outPath)
+	}
+
+	info, err := os.Lstat(outPath)
+	if err == nil && info.Mode()&os.ModeSymlink != 0 {
+		outPath, err = filepath.EvalSymlinks(outPath)
+		if err != nil {
+			return fmt.Errorf("resolve backup destination: %w", err)
+		}
+		info, err = os.Stat(outPath)
+	}
+	if err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("inspect backup destination: %w", err)
+	}
+	if info != nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("backup destination must be a regular file: %s", outPath)
+	}
+
+	// Keep the staged dump private and on the destination filesystem until pg_dump finishes.
+	stageDir, err := os.MkdirTemp(filepath.Dir(outPath), ".pad-backup-*")
+	if err != nil {
+		return fmt.Errorf("stage PostgreSQL backup: %w", err)
+	}
+	defer os.RemoveAll(stageDir)
+	stagePath := filepath.Join(stageDir, "dump.sql")
+	if err := dumpPostgres(dbURL, stagePath); err != nil {
+		return err
+	}
+	if info != nil {
+		if err := os.Chmod(stagePath, info.Mode().Perm()); err != nil {
+			return fmt.Errorf("preserve backup file mode: %w", err)
+		}
+	}
+	if err := os.Rename(stagePath, outPath); err != nil {
+		return fmt.Errorf("publish PostgreSQL backup: %w", err)
+	}
+	return nil
+}
+
 func dbBackupCmd() *cobra.Command {
 	var output string
 	var cronMode bool
@@ -122,30 +177,19 @@ the server resolves it (PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db).`,
 					output = fmt.Sprintf("pad-backup-%s.sql", time.Now().Format("20060102-150405"))
 				}
 
-				pgArgs := []string{
-					"--format", "plain",
-					"--clean",
-					"--if-exists",
-					"--file", output,
-				}
-
-				pgCmd, err := postgresClient("pg_dump", dbURL, pgArgs...)
-				if err != nil {
-					return err
-				}
-				pgCmd.Stdout = os.Stdout
-				pgCmd.Stderr = os.Stderr
-
 				dbname := pgDbnameFromURL(dbURL)
 				if !cronMode {
 					fmt.Fprintf(os.Stderr, "Backing up PostgreSQL database %s to %s...\n", dbname, output)
 				}
 
-				if err := pgCmd.Run(); err != nil {
+				if err := backupPostgres(dbURL, output); err != nil {
 					if cronMode {
 						slog.Error("backup failed", "error", err, "output", output)
 					}
-					return fmt.Errorf("pg_dump failed: %w", err)
+					return err
+				}
+				if output == "-" {
+					return nil
 				}
 
 				if info, err := os.Stat(output); err == nil {
