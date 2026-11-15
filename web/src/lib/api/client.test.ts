@@ -639,3 +639,20 @@ describe('getMyAgenda workspace selection wire shape', () => {
   expect(vi.mocked(fetch).mock.calls[0][0]).toBe('/api/v1/me/agenda?from=from&to=to&tz=UTC' + suffix + '&include=');
  });
 });
+
+
+describe('agenda counts query (TASK-4587)', () => {
+ afterEach(() => vi.unstubAllGlobals());
+ it.each([undefined, 'include', 'omit'] as const)('list counts=%s', async counts => {
+  mockFetchOnce(200, {});
+  await api.getMyAgenda('from', 'to', undefined, undefined, undefined, counts);
+  const query = new URL(vi.mocked(fetch).mock.calls[0][0] as string, 'https://example.test').searchParams;
+  expect(query.get('counts')).toBe(counts ?? null);
+ });
+ it.each([{ kind: 'workspace' as const, id: 'ws-id' }, { kind: 'group' as const, id: 'mine' }])('reads only counts with $kind selection', async selection => {
+  mockFetchOnce(200, { from: 'from', to: 'to', tz: 'UTC', counts: [] });
+  expect(await api.getMyAgendaCounts('from', 'to', 'UTC', selection)).toEqual({ from: 'from', to: 'to', tz: 'UTC', counts: [] });
+  const query = new URL(vi.mocked(fetch).mock.calls[0][0] as string, 'https://example.test').searchParams;
+  expect(Object.fromEntries(query)).toEqual({ from: 'from', to: 'to', tz: 'UTC', [selection.kind]: selection.id, counts: 'only' });
+ });
+});

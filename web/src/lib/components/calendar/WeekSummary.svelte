@@ -1,15 +1,16 @@
 <script lang="ts">
-	import type { AgendaResponse } from '$lib/types';
+	import type { AgendaCountsResponse, AgendaResponse } from '$lib/types';
 
 	interface Props {
 		/** The range on screen, which names the card. */
 		range: 'week' | 'day' | 'month';
 		data: AgendaResponse;
+		counts: Pick<AgendaCountsResponse, 'counts' | 'counts_truncated'> & { status: 'loading' | 'ready' | 'error' };
 		/** Today in the viewer's zone, as `YYYY-MM-DD`. A day after it has not happened yet. */
 		today: string;
 	}
 
-	let { range, data, today }: Props = $props();
+	let { range, data, today, counts: countsState }: Props = $props();
 
 	const id = $props.id();
 	const WIDTH = 298;
@@ -29,7 +30,7 @@
 	});
 	const outstanding = $derived(`${data.priority_list.length}${data.priority_list_complete ? '' : '+'}`);
 
-	const counts = $derived(data.counts_truncated ? [] : data.counts ?? []);
+	const counts = $derived(countsState.status !== 'ready' || countsState.counts_truncated ? [] : countsState.counts ?? []);
 	const elapsed = $derived(counts.filter(item => item.day <= today));
 	const completed = $derived(elapsed.reduce((sum, item) => sum + item.completed, 0));
 	const top = $derived(Math.max(1, ...elapsed.map(item => item.completed)));
@@ -57,33 +58,47 @@
 		<div class="stat" data-stat="outstanding"><b>{outstanding}</b><span>outstanding</span></div>
 		{#if counts.length}<div class="stat" data-stat="completed"><b>{completed}</b><span>completed</span></div>{/if}
 	</div>
-	{#if data.counts_truncated}
-		<p class="note">Counts unavailable for this window: too much activity to count.</p>
-	{:else if counts.length}
-		<div class="spark">
-			<div class="legend">
-				<span><i aria-hidden="true"></i>Completed per day</span>
-				{#if last}<span>{last.open} open · burn-down {counts[0].burndown} → {last.burndown}</span>{/if}
+	<div class="counts-space" class:day={range === 'day'}>
+		{#if countsState.status === 'loading'}
+			<div class="spark placeholder" aria-busy="true">
+				<span class="sr-only">Loading counts</span>
+				<div class="legend" aria-hidden="true"><span>Completed per day</span></div>
+				<svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" height={HEIGHT} preserveAspectRatio="none" aria-hidden="true">
+					{#each [12, 20, 16, 28, 22, 32, 18] as height, index (index)}
+						<rect x={index * 44} y={HEIGHT - height} width="34" {height} rx="3" />
+					{/each}
+				</svg>
 			</div>
-			<svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" height={HEIGHT} preserveAspectRatio="none" aria-hidden="true">
-				{#each bars as bar, index (index)}
-					{#if !bar.future}
-						<rect data-day={bar.day} data-empty={bar.empty} x={bar.x} y={HEIGHT - bar.height} width={slot} height={bar.height} rx={bar.empty ? 1.5 : Math.min(3, slot / 2)} />
-					{/if}
-				{/each}
-			</svg>
-			{#if caption.length}<div class="cap" class:each={range === 'week'} aria-hidden="true">{#each caption as text, index (index)}<span>{text}</span>{/each}</div>{/if}
-		</div>
-		<table class="sr-only">
-			<caption>Daily counts</caption>
-			<thead><tr><th scope="col">Day</th><th scope="col">Completed</th><th scope="col">Open at day end</th><th scope="col">Burn-down</th></tr></thead>
-			<tbody>
-				{#each counts as item, index (index)}
-					<tr><th scope="row"><time datetime={item.day}>{rowDay.format(at(item.day))}</time></th><td>{item.completed}</td><td>{item.open}</td><td>{item.burndown}</td></tr>
-				{/each}
-			</tbody>
-		</table>
-	{/if}
+		{:else if countsState.status === 'error'}
+			<p class="note" role="status">Counts unavailable</p>
+		{:else if countsState.counts_truncated}
+			<p class="note">Counts unavailable for this window: too much activity to count.</p>
+		{:else if counts.length}
+			<div class="spark">
+				<div class="legend">
+					<span><i aria-hidden="true"></i>Completed per day</span>
+					{#if last}<span>{last.open} open · burn-down {counts[0].burndown} → {last.burndown}</span>{/if}
+				</div>
+				<svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} width="100%" height={HEIGHT} preserveAspectRatio="none" aria-hidden="true">
+					{#each bars as bar, index (index)}
+						{#if !bar.future}
+							<rect data-day={bar.day} data-empty={bar.empty} x={bar.x} y={HEIGHT - bar.height} width={slot} height={bar.height} rx={bar.empty ? 1.5 : Math.min(3, slot / 2)} />
+						{/if}
+					{/each}
+				</svg>
+				{#if caption.length}<div class="cap" class:each={range === 'week'} aria-hidden="true">{#each caption as text, index (index)}<span>{text}</span>{/each}</div>{/if}
+			</div>
+			<table class="sr-only">
+				<caption>Daily counts</caption>
+				<thead><tr><th scope="col">Day</th><th scope="col">Completed</th><th scope="col">Open at day end</th><th scope="col">Burn-down</th></tr></thead>
+				<tbody>
+					{#each counts as item, index (index)}
+						<tr><th scope="row"><time datetime={item.day}>{rowDay.format(at(item.day))}</time></th><td>{item.completed}</td><td>{item.open}</td><td>{item.burndown}</td></tr>
+					{/each}
+				</tbody>
+			</table>
+		{/if}
+	</div>
 </section>
 
 <style>
@@ -93,6 +108,10 @@
 	.stat b { display: block; font-size: 22px; font-weight: 700; line-height: 1.15; font-variant-numeric: tabular-nums; color: var(--text-primary); }
 	.stat span { font-size: 12px; color: var(--text-muted); }
 	.stat.warn b { color: var(--accent-red); }
+	/* Reserve the legend's two possible lines, chart and range captions in every state. */
+	.counts-space { display: flow-root; min-height: calc(var(--space-3) + 112px); }
+	.counts-space.day { min-height: calc(var(--space-3) + 92px); }
+	.placeholder rect { fill: var(--border); }
 	.spark { margin-top: var(--space-3); }
 	.legend { display: flex; flex-wrap: wrap; gap: 2px var(--space-3); margin-bottom: 6px; font-size: 11px; color: var(--text-muted); }
 	.legend i { display: inline-block; width: 8px; height: 8px; margin-right: 4px; border-radius: 2px; background: var(--accent-primary); }

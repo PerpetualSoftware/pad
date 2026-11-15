@@ -3907,6 +3907,15 @@ export type AgendaWorkEntry = Omit<AgendaEntry, 'type' | 'at' | 'day'> & {
  ended_at?: string;
 };
 
+export interface AgendaCountsResponse {
+	from: string;
+	to: string;
+	tz: string;
+	timezone_note?: string;
+	counts?: AgendaDayCount[];
+	counts_truncated?: boolean;
+}
+
 export interface AgendaResponse {
  forecasts?: AgendaForecast[];
  forecasts_complete?: boolean;

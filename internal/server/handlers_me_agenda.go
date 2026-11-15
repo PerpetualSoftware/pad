@@ -12,6 +12,16 @@ import (
 	"github.com/google/uuid"
 )
 
+// agendaCountsResponse deliberately has no empty list fields: this is only a series.
+type agendaCountsResponse struct {
+	From            string        `json:"from"`
+	To              string        `json:"to"`
+	Tz              string        `json:"tz"`
+	TimezoneNote    string        `json:"timezone_note,omitempty"`
+	Counts          []agendaCount `json:"counts,omitempty"`
+	CountsTruncated bool          `json:"counts_truncated,omitempty"`
+}
+
 // handleMeAgenda serves the admitted, visible workspaces as one bounded agenda.
 func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	if appContextFrom(r) != nil {
@@ -45,6 +55,14 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 				}
 				include[kind] = true
 			}
+		}
+	}
+	countsMode := "include"
+	if query := r.URL.Query(); query.Has("counts") {
+		countsMode = strings.TrimSpace(query.Get("counts"))
+		if len(query["counts"]) != 1 || (countsMode != "include" && countsMode != "omit" && countsMode != "only") {
+			writeAgendaParam(w, "counts", "format", "`counts` must be include, omit or only")
+			return
 		}
 	}
 	zone := usertz.Resolve(user.Timezone)
@@ -115,10 +133,70 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		}
 		return admitted[i].ID < admitted[j].ID
 	})
-	days, _ := store.AgendaCountDays(from, to, zone.Loc)
-	counts := make([]agendaCount, len(days))
-	for i, d := range days {
-		counts[i].Day = d
+	var counts []agendaCount
+	if countsMode != "omit" {
+		days, _ := store.AgendaCountDays(from, to, zone.Loc)
+		counts = make([]agendaCount, len(days))
+		for i, d := range days {
+			counts[i].Day = d
+		}
+	}
+	countRows, countsCut := 0, false
+	appendCounts := func(wsID string, scope store.PendingReminderScope) error {
+		if countsMode == "omit" || countsCut {
+			return nil
+		}
+		budget := agendaMaxCountRows
+		if s.agendaCountsLimit > 0 {
+			budget = min(budget, s.agendaCountsLimit)
+		}
+		series, rows, cut, err := s.store.AgendaCounts(wsID, scope, from, to, zone.Loc, budget-countRows)
+		if err != nil {
+			return err
+		}
+		countRows += rows
+		if cut {
+			countsCut = true
+		} else {
+			for i := range counts {
+				counts[i].Completed += series[i].Completed
+				counts[i].Open += series[i].Open
+				counts[i].Burndown += series[i].Burndown
+			}
+		}
+		return nil
+	}
+	if countsMode == "only" {
+		for _, ws := range admitted {
+			scope, visible, err := s.meAgendaScope(ws.ID, user.ID)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			if !visible {
+				if workspaceID != "" {
+					unavailable()
+					return
+				}
+				continue
+			}
+			if s.agendaExpired(run) {
+				countsCut = true
+				break
+			}
+			if err := appendCounts(ws.ID, scope); err != nil {
+				writeInternalError(w, err)
+				return
+			}
+		}
+		if countsCut {
+			counts = nil
+		}
+		writeJSON(w, http.StatusOK, agendaCountsResponse{
+			From: run.response.From, To: run.response.To, Tz: run.response.Tz, TimezoneNote: run.response.TimezoneNote,
+			Counts: counts, CountsTruncated: countsCut,
+		})
+		return
 	}
 	// Save the admitted scope and owner once for the later group pass.
 	type groupWorkspace struct {
@@ -127,60 +205,27 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 		owner     string
 	}
 	var groupWorkspaces []groupWorkspace
-	countRows, countsCut := 0, false
 	for _, ws := range admitted {
-		elig := &needsEligibility{s: s, wsID: ws.ID, cache: map[string]*needsVisibility{}}
-		vis := elig.visibility(user.ID)
-		if elig.err != nil {
-			writeInternalError(w, elig.err)
+		scope, visible, err := s.meAgendaScope(ws.ID, user.ID)
+		if err != nil {
+			writeInternalError(w, err)
 			return
 		}
-		if vis == nil {
+		if !visible {
 			if workspaceID != "" {
 				unavailable()
 				return
 			}
 			continue
 		}
-		scope := store.PendingReminderScope{}
-		if !vis.unrestricted {
-			scope = store.PendingReminderScope{CollectionIDs: vis.collectionIDs, ItemIDs: vis.itemIDs}
-			if scope.CollectionIDs == nil {
-				scope.CollectionIDs = []string{}
-			}
-			if len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
-				if workspaceID != "" {
-					unavailable()
-					return
-				}
-				continue
-			}
-		}
 		if s.agendaExpired(run) {
 			run.response.ForecastsComplete = false
 			countsCut = true
 			break
 		}
-		if !countsCut {
-			budget := agendaMaxCountRows
-			if s.agendaCountsLimit > 0 {
-				budget = min(budget, s.agendaCountsLimit)
-			}
-			series, rows, cut, err := s.store.AgendaCounts(ws.ID, scope, from, to, zone.Loc, budget-countRows)
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
-			countRows += rows
-			if cut {
-				countsCut = true
-			} else {
-				for i := range counts {
-					counts[i].Completed += series[i].Completed
-					counts[i].Open += series[i].Open
-					counts[i].Burndown += series[i].Burndown
-				}
-			}
+		if err := appendCounts(ws.ID, scope); err != nil {
+			writeInternalError(w, err)
+			return
 		}
 		entryStart, unavailableStart, unexpandedStart := len(run.response.Entries), len(run.response.Unavailable), len(run.response.Unexpanded)
 		if err := s.appendWorkspaceAgenda(run, ws.ID, scope); err != nil {
@@ -232,14 +277,39 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	if countsCut {
-		// A partial series would read as a total: send none, and say why.
-		run.response.CountsTruncated = true
-	} else {
-		run.response.Counts = counts
+	if countsMode != "omit" {
+		if countsCut {
+			// A partial series would read as a total: send none, and say why.
+			run.response.CountsTruncated = true
+		} else {
+			run.response.Counts = counts
+		}
 	}
 	run.finish()
 	writeJSON(w, http.StatusOK, run.response)
+}
+
+// meAgendaScope applies the same visibility and empty-scope rules to list and counts reads.
+func (s *Server) meAgendaScope(workspaceID, userID string) (store.PendingReminderScope, bool, error) {
+	elig := &needsEligibility{s: s, wsID: workspaceID, cache: map[string]*needsVisibility{}}
+	vis := elig.visibility(userID)
+	scope := store.PendingReminderScope{}
+	if elig.err != nil {
+		return scope, false, elig.err
+	}
+	if vis == nil {
+		return scope, false, nil
+	}
+	if !vis.unrestricted {
+		scope = store.PendingReminderScope{CollectionIDs: vis.collectionIDs, ItemIDs: vis.itemIDs}
+		if scope.CollectionIDs == nil {
+			scope.CollectionIDs = []string{}
+		}
+		if len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
+			return scope, false, nil
+		}
+	}
+	return scope, true, nil
 }
 
 // agendaGroupWorkspaces narrows the admitted workspaces to the requested
