@@ -51,6 +51,8 @@ var lifecycleSites = map[string]string{
 	"internal/store/items.go::nonTerminalFilter::buildChildrenDoneExpr":                   "keep: as above",
 	"internal/store/items.go::listItemsQ::nonTerminalFilter":                              "keep: `pad item list` / MCP list's default open filter, a list's own items (ListItems delegates here; ListItemsQ refuses NonTerminal, BUG-3659)",
 	"internal/store/items.go::listItemsFTS::nonTerminalFilter":                            "keep: the same filter on the search-backed list",
+	"internal/store/reminders.go::dueReminderCandidates::nonTerminalFilter":               "keep: a closed item's managed reminder is skipped so it takes no batch slot; a schedule on a reference item is deliberate (TASK-4585)",
+	"internal/store/reminders.go::fireOneReminder::nonTerminalFilter":                     "keep: the fire UPDATE rechecks the terminal rule the scan used, so a closed item's managed reminder never fires; a schedule on a reference item is deliberate (TASK-4585)",
 	"internal/store/schedule_deadline_eval.go::openDeadlineCandidates::nonTerminalFilter": "keep: skips terminal items so a done item shows no overdue work; a deadline on a reference item is deliberate, like its schedule (TASK-4351)",
 	"internal/store/schedule_deadline_eval.go::evaluateDeadline::nonTerminalFilter":       "keep: rechecks under the pin the terminal rule the scan page used, so a done item is neither missed nor lapsed; a deadline on a reference item is deliberate, like its schedule (TASK-4413)",
 	"internal/store/schedule_agenda.go::listAgendaSchedules::nonTerminalFilter":           "keep: lists the time triggers someone attached to an item, not open work; a schedule on a reference item is deliberate (TASK-4104)",
