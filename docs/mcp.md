@@ -685,3 +685,26 @@ outstanding/scheduled agenda entries. One-shots, ended schedules and
 terminal-to-terminal edits are not refused by this guard. Move/copy keep their
 existing schedule handling. CLI update and bulk-update print the next occurrence
 and the `--force` retry to stderr and exit non-zero on `schedule_active`.
+
+## Reopen a schedule resolution (v0.118)
+
+`pad_item` adds the mutating `schedule-reopen` action with required `ref` and
+`resolution_id` (the exact journal UUID from an editor’s GET commitment
+`last_resolution`).
+Stdio runs `pad item remind reopen REF --resolution ID`; HTTP posts
+`{"resolution_id":"ID"}` to `/workspaces/{ws}/items/{ref}/commitment/reopen`.
+Both transports preserve the full `{commitment,reopen}` result. Schedule-resolve
+and schedule-move results (applied or preview) contain neither `last_resolution`
+nor `resolution_id`, including nested commitment views. ChatGPT defers
+this schedule action to v2, consistent with the other schedule mutations.
+
+The command is also available as `pad remind reopen REF`. Without `--resolution`,
+the CLI reads the commitment once and freezes its latest ID before posting once.
+A refusal never causes a retry with a newer ID. There is no confirmation or force
+option. Resolution comments remain. See [the REST contract](api.md#reopen-the-last-schedule-resolution-task-4539)
+for restoration and dependency limits.
+
+Both MCP transports preserve `reopen_unavailable`, `reopen_not_supported`,
+`reopen_conflict`, `reopen_dependency`, `reopen_deadline_passed`, and structured
+`validation_error` details for `resolution_id` (`required` or `format`). Existing
+visibility, edit, archived, schedule-error and busy contracts still apply.

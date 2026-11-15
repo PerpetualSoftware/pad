@@ -331,13 +331,13 @@ func mustExec(t *testing.T, db *sql.DB, query string, args ...any) {
 // scan per protected column — and quotes the number. A figure in prose that
 // nothing checks is a figure that silently stops being true the next time a
 // column joins the list, which in this cluster has happened in almost every
-// round. If this fails, update the comment rather than the numbers here: the
-// list is the source and the comment is the copy.
+// round. If this fails, update the comment and its copied figures below:
+// the list is the source.
 func TestScanCostFiguresMatchTheList(t *testing.T) {
 	t.Parallel()
 	const (
-		wantTotal = 185
-		wantJSON  = 30
+		wantTotal = 190
+		wantJSON  = 32
 	)
 
 	cols := NULProtectedColumns()

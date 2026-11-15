@@ -4019,7 +4019,20 @@ export interface CommitmentMilestone {
  history: {item_ref: string; kind: 'child' | 'waiver'; reason?: string; added_by: string; added_at: string; removed_by: string; removed_at: string}[];
 }
 
+export interface ScheduleLastResolution {
+ resolution_id?: string;
+ occurrence_key?: string;
+ state?: string;
+ can_reopen: boolean;
+ reopen_code?: 'reopen_unavailable' | 'reopen_not_supported' | 'reopen_conflict' | 'reopen_dependency' | 'reopen_deadline_passed' | 'schedule_error';
+}
+export interface CommitmentReopenRequest { resolution_id: string }
+export interface CommitmentReopenResult {
+ commitment: ItemCommitmentView;
+ reopen: { resolution_id: string; change_id: string; occurrence_key: string; previous_state: string; missed_removed: number; comment_id?: string };
+}
 export interface ItemCommitmentView {
+ last_resolution?: ScheduleLastResolution;
  forecast: CommitmentForecast | null;
  milestone: CommitmentMilestone;
  links: CommitmentLink[];
@@ -4057,6 +4070,7 @@ export interface ItemCommitmentView {
 }
 
 export interface CommitmentChange {
+ reversed_by?: string;
  id: string;
  change_type: string;
  occurrence_key?: string;
@@ -4072,7 +4086,7 @@ export interface CommitmentChange {
 }
 
 export interface CommitmentResolveResult {
-	commitment: ItemCommitmentView;
+	commitment: Omit<ItemCommitmentView, 'last_resolution'>;
 	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline'; item_still_open?: boolean };
 }
 

@@ -841,6 +841,11 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reload fired reminder %s: %w", id, err)
 	}
+	if r.ScheduleID != nil {
+		if err := s.invalidateScheduleReopenTx(tx, *r.ScheduleID); err != nil {
+			return nil, err
+		}
+	}
 	// One stamp per won fire, carried by the event payload and the dedupe key.
 	r.FireStamp = ptr(nowNano())
 

@@ -155,3 +155,9 @@ func (c *Client) AddCommitmentGate(ws, ref, blocker string) (json.RawMessage, er
 func (c *Client) RemoveCommitmentGate(ws, id string) (json.RawMessage, error) {
 	return nil, c.delete(commitmentGraphPath(ws, "gates", id))
 }
+
+// ReopenItemCommitment posts one exact action identity and never retargets it.
+func (c *Client) ReopenItemCommitment(wsSlug, ref, resolutionID string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.post(commitmentBase(wsSlug, ref)+"/reopen", map[string]string{"resolution_id": resolutionID}, &result)
+}

@@ -1007,7 +1007,7 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 }
 
 func addRemindSubcommands(cmd *cobra.Command) {
-	cmd.AddCommand(remindShowCmd(), remindForecastCmd())
+	cmd.AddCommand(remindShowCmd(), remindForecastCmd(), remindReopenCmd())
 	for _, v := range resolveVerbs {
 		cmd.AddCommand(remindResolveCmd(v))
 	}
@@ -1033,4 +1033,57 @@ func acknowledgementLine(at *string, by *models.AcknowledgedBy, loc *time.Locati
 		stamp = fmtInstant(*at, loc)
 	}
 	return "acknowledged by " + name + agent + " at " + stamp
+}
+
+func remindReopenCmd() *cobra.Command {
+	var resolution string
+	c := &cobra.Command{Use: "reopen <ref>", Example: "  pad remind reopen TASK-5", Short: "Reopen the last resolved schedule occurrence", Args: cobra.ExactArgs(1), RunE: func(cmd *cobra.Command, args []string) error {
+		client, _ := getClient()
+		ws := getWorkspace()
+		id := resolution
+		if !cmd.Flags().Changed("resolution") {
+			raw, err := client.GetItemCommitment(ws, args[0])
+			if err != nil {
+				return err
+			}
+			var view struct {
+				LastResolution *models.ScheduleLastResolution `json:"last_resolution"`
+			}
+			if err = json.Unmarshal(raw, &view); err != nil {
+				return err
+			}
+			if view.LastResolution == nil || view.LastResolution.ResolutionID == "" {
+				return &cli.APIError{Code: "reopen_unavailable", Message: "No saved resolution is available to reopen."}
+			}
+			id = view.LastResolution.ResolutionID
+		}
+		raw, err := client.ReopenItemCommitment(ws, args[0], id)
+		if err != nil {
+			return err
+		}
+		if formatFlag == "json" {
+			return cli.PrintJSON(raw)
+		}
+		var result struct {
+			Reopen struct {
+				State     string `json:"previous_state"`
+				CommentID string `json:"comment_id"`
+			} `json:"reopen"`
+		}
+		if err = json.Unmarshal(raw, &result); err != nil {
+			return err
+		}
+		if result.Reopen.State == "snooze" || result.Reopen.State == "move" {
+			fmt.Printf("Undid the last %s on %s.", result.Reopen.State, args[0])
+		} else {
+			fmt.Printf("Reopened %s’s occurrence; undid %s.", args[0], result.Reopen.State)
+		}
+		if result.Reopen.CommentID != "" {
+			fmt.Print(" The resolution comment was kept.")
+		}
+		fmt.Println()
+		return nil
+	}}
+	c.Flags().StringVar(&resolution, "resolution", "", "exact resolution ID (otherwise read the latest once)")
+	return c
 }

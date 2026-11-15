@@ -305,3 +305,16 @@ func mapScheduleMove(input map[string]any) (string, string, []byte, error) {
 	}
 	return marshalScheduleRequest(http.MethodPost, path, input, body)
 }
+
+func mapScheduleReopen(input map[string]any) (string, string, []byte, error) {
+	path, err := expandPath(strings.TrimSuffix(itemScheduleResolvePath, "/resolve")+"/reopen", input)
+	if err != nil {
+		return "", "", nil, err
+	}
+	id, _ := input["resolution"].(string)
+	if id == "" {
+		return "", "", nil, fmt.Errorf("resolution_id is required")
+	}
+	body, err := json.Marshal(map[string]string{"resolution_id": id})
+	return http.MethodPost, path, body, err
+}

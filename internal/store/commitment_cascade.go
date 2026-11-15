@@ -192,6 +192,7 @@ func (s *Store) upsertLinkOverrideTx(tx *sql.Tx, linkID, key string, off *models
 
 // linkedPlan is the cascade as computed under the locks.
 type linkedPlan struct {
+	undo     *resolutionUndo
 	c        *commitmentComponent
 	nodes    map[string]*linkNode
 	impact   schedule.Impact
@@ -274,6 +275,17 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 		return res, err
 	}
 	nowT := s.linkNow().UTC().Truncate(time.Second)
+	if len(p.impact.Changes) > 0 {
+		n := p.nodes[p.root]
+		operation := "move"
+		if role != schedule.RoleTarget {
+			operation = "role_move"
+		}
+		p.undo, err = s.captureResolutionUndoTx(tx, n.sc, operation, actor, in.ActorUserID, n.x, nowT)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if lapsed, err := s.lapseDueInPlanTx(tx, p, nowT); err != nil {
 		return nil, err
 	} else if lapsed {
@@ -284,6 +296,11 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	}
 	if err := s.applyLinkedPlanTx(tx, p, actor, linkNoticeActor(actor, in.ActorUserID), reason, "Moved with a linked date", nowT, budget); err != nil {
 		return nil, err
+	}
+	if p.undo != nil {
+		if err := s.finishResolutionUndoTx(tx, p.nodes[p.root].sc, p.undo); err != nil {
+			return nil, err
+		}
 	}
 	if err := budget.commit(tx); err != nil {
 		return nil, err
@@ -566,6 +583,9 @@ func (s *Store) linkedResult(p *linkedPlan, acc models.CommitmentAccess, renegot
 func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, noticeActor, reason, why string, nowT time.Time, budget *linkBudget) error {
 	ts := nowT.Format(time.RFC3339)
 	rootChange := newID()
+	if p.undo != nil {
+		rootChange = p.undo.ID
+	}
 	if p.incoming != nil && len(p.impact.Changes) > 0 {
 		// A child dragged away from its parent keeps the link at the new offset.
 		if err := s.keepLinkAtNewOffsetTx(tx, p); err != nil {
@@ -612,6 +632,9 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, noticeActor,
 		root := rootChange
 		if err := s.journalScheduleChangeRowTx(tx, id, n.sc.ID, "move", n.key, name, before, after, actor, why, source, parent, root); err != nil {
 			return err
+		}
+		if p.undo != nil {
+			p.undo.JournalIDs = append(p.undo.JournalIDs, id)
 		}
 	}
 	return s.enqueueLinkedMoveNoticesTx(tx, p, rootChange, noticeActor)

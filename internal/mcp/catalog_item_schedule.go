@@ -637,3 +637,22 @@ func actionItemScheduleForecast(ctx context.Context, input map[string]any, env A
 	}
 	return env.Dispatch(ctx, []string{"item", "remind", "forecast", verb}, out)
 }
+
+// Reopen requires an explicit identity on both transports; no implicit GET.
+func actionItemScheduleReopen(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	raw, present := input["resolution_id"]
+	id, ok := raw.(string)
+	if present && !ok {
+		return NewErrorResult(ErrorPayload{Code: ErrInvalidBody, Message: "resolution_id must be a string"}), nil
+	}
+	if strings.TrimSpace(id) == "" {
+		return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: "resolution_id is required", Details: json.RawMessage(`{"field":"resolution_id","code":"required"}`)}), nil
+	}
+	out := map[string]any{"resolution": id}
+	for _, key := range []string{"workspace", "ref"} {
+		if v, ok := input[key]; ok {
+			out[key] = v
+		}
+	}
+	return env.Dispatch(ctx, []string{"item", "remind", "reopen"}, out)
+}

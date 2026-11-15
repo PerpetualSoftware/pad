@@ -97,9 +97,13 @@ type scheduleDateSnapshot struct {
 }
 
 func (s *Store) scheduleSnapshotTx(tx *sql.Tx, id string) (string, error) {
+	return s.scheduleSnapshotQ(tx, id)
+}
+
+func (s *Store) scheduleSnapshotQ(q Queryer, id string) (string, error) {
 	var v scheduleDateSnapshot
 	r := &v.Roles
-	err := tx.QueryRow(s.q(`SELECT tz,floating,kind,dtstart,dtend,target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,next_override_at,anchor_wall,ended_at,ended_dismissed_at,error_code,
+	err := q.QueryRow(s.q(`SELECT tz,floating,kind,dtstart,dtend,target_days,target_secs,earliest_days,earliest_secs,deadline_days,deadline_secs,deadline_behavior,occupied_days,occupied_secs,outcome,roles_origin,rrule,rdates,exdates,anchor,audience,lead_minutes,next_at,next_wall,next_override_at,anchor_wall,ended_at,ended_dismissed_at,error_code,
  (SELECT r.remind_at FROM item_reminders r WHERE r.schedule_id=item_schedules.id),
  (SELECT r.fired_at FROM item_reminders r WHERE r.schedule_id=item_schedules.id),
  (SELECT r.acked_at FROM item_reminders r WHERE r.schedule_id=item_schedules.id) FROM item_schedules WHERE id=?`), id).Scan(&v.Tz, &v.Floating, &v.Kind, &v.Dtstart, &v.Dtend, &r.TargetDays, &r.TargetSecs, &r.EarliestDays, &r.EarliestSecs, &r.DeadlineDays, &r.DeadlineSecs, &r.DeadlineBehavior, &r.OccupiedDays, &r.OccupiedSecs, &r.Outcome, &r.Origin, &v.Rrule, &v.RDates, &v.ExDates, &v.Anchor, &v.Audience, &v.LeadMinutes, &v.NextAt, &v.NextWall, &v.NextOverrideAt, &v.AnchorWall, &v.EndedAt, &v.EndedDismissedAt, &v.ErrorCode, &v.ReminderRemindAt, &v.ReminderFiredAt, &v.ReminderAckedAt)
@@ -136,6 +140,9 @@ func (s *Store) journalScheduleChangeLineageTx(tx *sql.Tx, id, change, key, role
 // journalScheduleChangeRowTx is the lineage writer with the row id chosen by
 // the caller, so a cascade can name its first row as the root of the rest.
 func (s *Store) journalScheduleChangeRowTx(tx *sql.Tx, changeID, id, change, key, role, before, after, actor, reason, source, parentID, rootID string) error {
+	if err := s.invalidateScheduleReopenTx(tx, id); err != nil {
+		return err
+	}
 	if rootID == "" {
 		rootID = changeID
 	}

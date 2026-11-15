@@ -680,3 +680,59 @@ version 1 and algorithm `ed25519`, and verifies the signature before showing
 endpoint is absent or verification fails, the command still succeeds, omits the
 fingerprint, and reports `Server identity could not be verified` through
 `connection.identity_error` and the table.
+
+### Reopen the last schedule resolution (TASK-4539)
+
+`POST /api/v1/workspaces/{ws}/items/{ref}/commitment/reopen` accepts the strict
+object `{"resolution_id":"<journal UUID>"}`. An item editor can reverse another
+editor's latest done, skip, snooze or target move. There is one local checkpoint
+per schedule, no undo stack, and no fallback to an earlier action. Missing and
+hidden items use the same 404; visibility and edit permission are checked first.
+
+Success returns `{commitment, reopen:{resolution_id, change_id, occurrence_key,
+previous_state, missed_removed, comment_id?}}`. Only GET commitment (for editors)
+and this reopen POST expose eligibility as
+`last_resolution:{resolution_id?, occurrence_key?, state?, can_reopen,
+reopen_code?}`. A caller without the reopen POST's edit rights receives no
+`last_resolution` field. Resolve and move responses, including previews and
+nested commitment views, contain neither `last_resolution` nor `resolution_id`.
+Previews and moves with no changes create no checkpoint.
+Availability is advisory; POST validates the exact ID again under the schedule
+pin, before any restoration writes.
+
+The occurrence, anchor, previous move/override and managed reminder identity,
+fire and acknowledgement state return together, including an ended one-shot.
+Ordinary overdue work becomes carried. Passed-over misses inserted by the
+resolution are removed; pre-existing rows remain. Comments,
+comment edits, delivered notifications and genuine deadline-miss facts remain.
+Reopen appends journal lineage and a transactional `schedule_reopened` activity,
+with the reversing actor and original actor metadata, then publishes one item
+refresh. Supporting corrections remain in history with `reversed_by` identifying
+the reopening journal row. No reversal reminder or comment notification is sent.
+
+| HTTP | Code | Meaning |
+| --- | --- | --- |
+| 400 | `invalid_body` | Unknown/repeated member, wrong type, NUL or non-object |
+| 400 | `validation_error` | `{field:"resolution_id",code:"required"\|"format"}` |
+| 404 | `not_found` | Item or schedule unavailable |
+| 409 | `archived` | Item archived |
+| 409 | `reopen_unavailable` | No local checkpoint, including imported or pre-migration history |
+| 409 | `reopen_not_supported` | Ack, automatic lapse, lapsed-history done or non-target role move |
+| 409 | `reopen_conflict` | Wrong, superseded or consumed ID; later schedule/reminder/item change |
+| 409 | `reopen_dependency` | This schedule has a link, gate or live milestone child now or at resolution |
+| 409 | `reopen_deadline_passed` | Restoring would immediately lapse or generate a new deadline miss |
+| 409 | `schedule_error` | Restored rule cannot be interpreted safely |
+| 503 | `database_busy` / `schedule_busy` | Existing retry conventions apply |
+| 500 | `internal_error` | Sanitized storage failure |
+
+Dependency refusals always say `This resolution cannot be reopened because of
+schedule dependencies.` The refusal reveals only that this schedule has a link,
+gate or milestone child, with no partner ID, title, count, visibility, deletion
+state, status or sequence. Dependency takes precedence over consumed, conflict,
+unsupported, item-sequence, after-image and deadline checks whenever a checkpoint
+exists in any state. Without a checkpoint the answer is `reopen_unavailable`.
+Dependencies recorded at resolution remain blocked after their removal. Opened
+gates and linked or milestone children are never reversed. A deleted resolution
+comment is omitted from `reopen.comment_id`. A separate item close or any item
+sequence change invalidates the checkpoint. Copies, carries and bundle imports receive no active
+checkpoint; exported/imported reopen journal history remains historical evidence.

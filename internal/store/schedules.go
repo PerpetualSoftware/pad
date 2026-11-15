@@ -601,6 +601,9 @@ func (s *Store) requireLiveItemTx(tx *sql.Tx, workspaceID, itemID string) error 
 // the schedule row first.
 
 func (s *Store) insertManagedReminderTx(tx *sql.Tx, workspaceID, itemID, scheduleID, remindAt string) error {
+	if err := s.invalidateScheduleReopenTx(tx, scheduleID); err != nil {
+		return err
+	}
 	ts := now()
 	if _, err := tx.Exec(s.q(`
 		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, schedule_id, created_at, updated_at)
@@ -621,12 +624,21 @@ func (s *Store) rearmManagedReminderTx(tx *sql.Tx, scheduleID, remindAt string) 
 		return false, fmt.Errorf("rearm managed reminder: %w", err)
 	}
 	n, err := res.RowsAffected()
+	if err == nil && n > 0 {
+		err = s.invalidateScheduleReopenTx(tx, scheduleID)
+	}
 	return n > 0, err
 }
 
 func (s *Store) deleteManagedReminderTx(tx *sql.Tx, scheduleID string) error {
-	if _, err := tx.Exec(s.q(`DELETE FROM item_reminders WHERE schedule_id = ?`), scheduleID); err != nil {
+	res, err := tx.Exec(s.q(`DELETE FROM item_reminders WHERE schedule_id = ?`), scheduleID)
+	if err != nil {
 		return fmt.Errorf("delete managed reminder: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n > 0 {
+		return s.invalidateScheduleReopenTx(tx, scheduleID)
 	}
 	return nil
 }
@@ -1045,10 +1057,16 @@ func storedFireInstant(cur *models.ItemSchedule, lead int) (time.Time, error) {
 // armed. It returns nil on 0 rows (fired or absent): a fired row's occurrence
 // has already gone out and is left alone.
 func (s *Store) retimeArmedReminderTx(tx *sql.Tx, scheduleID, remindAt string) error {
-	if _, err := tx.Exec(s.q(`
+	res, err := tx.Exec(s.q(`
 		UPDATE item_reminders SET remind_at = ?, updated_at = ?
-		WHERE schedule_id = ? AND fired_at IS NULL`), remindAt, now(), scheduleID); err != nil {
+		WHERE schedule_id = ? AND fired_at IS NULL`), remindAt, now(), scheduleID)
+	if err != nil {
 		return fmt.Errorf("retime managed reminder: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n > 0 {
+		return s.invalidateScheduleReopenTx(tx, scheduleID)
 	}
 	return nil
 }

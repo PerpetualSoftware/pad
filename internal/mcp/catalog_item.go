@@ -110,6 +110,7 @@ var padItemTool = ToolDef{
 		"schedule-delete":      actionItemScheduleDelete,
 		"schedule-dismiss":     passThrough([]string{"item", "remind", "dismiss"}),
 		"schedule-resolve":     actionItemScheduleResolve,
+		"schedule-reopen":      actionItemScheduleReopen,
 		"schedule-renegotiate": actionItemScheduleRenegotiate,
 		"schedule-link":        actionItemScheduleGraph("schedule-link"),
 		"schedule-unlink":      actionItemScheduleGraph("schedule-unlink"),
@@ -228,15 +229,16 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "clear_forecast", Type: "bool", Description: "schedule-forecast: true clears; excludes forecast."},
 	{Name: "forecast_source", Type: "string", Description: "With forecast only; max 280 characters."},
 	{Name: "deadline", Type: "string", Description: "hard makes a deadline; soft or omit for no deadline. schedule-edit: soft and none clear it and keep any window. Not with window. schedule-renegotiate: the new deadline, an RFC3339 instant."},
-	{Name: "window", Type: "string", Description: "Span from start: a duration (90m, 2h, 3d) or an end wall (2026-11-09T17:00). Not with deadline."},
-	{Name: "anchor", Type: "string", Description: "calendar (default) | completion: the next one falls an interval after you mark it done."},
+	{Name: "window", Type: "string", Description: "Duration (90m, 2h, 3d) from start or end wall (2026-11-09T17:00). Excludes deadline."},
+	{Name: "anchor", Type: "string", Description: "calendar (default) | completion (next interval starts when done)."},
 	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
-	{Name: "tz", Type: "string", Description: "IANA zone the wall is read in (default: your account zone); for agenda, the zone shown. Not with floating."},
-	{Name: "floating", Type: "bool", Description: "Read the wall in the zone of whoever it fires for. Not with tz."},
+	{Name: "tz", Type: "string", Description: "IANA wall/display zone (default: account zone). Excludes floating."},
+	{Name: "floating", Type: "bool", Description: "Use recipient wall zone. Excludes tz."},
 	{Name: "state", Type: "string", Description: "done | skip | snooze | move | ack (fired only; still owed, no comment). Required: schedule-resolve."},
 	{Name: "until", Type: "string", Description: "RFC3339 instant to re-fire (snooze) or become due (move). Required: snooze, move."},
-	{Name: "occurrence_at", Type: "string", Description: "RFC3339 instant of the outstanding occurrence, from action=schedule (next_occurrence.at). Required: schedule-resolve."},
-	{Name: "actual_done_at", Type: "string", Description: "RFC3339 instant the work really finished. For: schedule-resolve, done only."},
+	{Name: "resolution_id", Type: "string", Description: "Exact last_resolution ID; required for schedule-reopen."},
+	{Name: "occurrence_at", Type: "string", Description: "Required for schedule-resolve: RFC3339 next_occurrence.at from schedule."},
+	{Name: "actual_done_at", Type: "string", Description: "Actual completion (RFC3339). schedule-resolve done only."},
 	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
 	{Name: "reason", Type: "string", Description: "Why dates change; required for schedule-renegotiate and graph changes moving hard deadlines."},
 	{Name: "scope", Type: "string", Description: "occurrence (default) | series. For: schedule-renegotiate."},
@@ -360,7 +362,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "message", Type: "string", Description: "Comment body. Required: comment, edit-comment."},
 	{Name: "comment_id", Type: "string", Description: "ID of a comment on `ref` (from list-comments). Required: edit-comment, delete-comment."},
 	{Name: "reply_to", Type: "string", Description: "Parent comment ID for threading replies. For: comment."},
-	{Name: "comment", Type: "string", Description: "Audit comment explaining the change. Optional for: update, schedule-resolve."},
+	{Name: "comment", Type: "string", Description: "Optional audit comment: update, schedule-resolve."},
 
 	// ── Guard override ── (IDEA-1494)
 	// update/bulk-update reject non-terminal → terminal done-field
@@ -463,6 +465,7 @@ Actions:
     or window; optional every, deadline, window, anchor, audience, tz, floating.
   schedule — Read the item's schedule. Required: ref.
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
+  schedule-reopen — Undo one resolution. Required: ref, resolution_id. Keeps its comment.
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
     snooze and move also need until. Optional: comment, actual_done_at (done only), end_schedule.
   schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
@@ -519,7 +522,7 @@ Actions:
     Required: artifact (full export text). Returns {ref,slug,warnings}; review/activate
     afterward. Mutating, not destructive (creates item).
 
-ALWAYS prefer issue refs (TASK-5, IDEA-12) over slugs.
+Prefer issue refs (TASK-5) over slugs.
 When updating status, include comment="why" so the audit trail records WHY, not just THAT it changed.
 Cross-item FTS: pad_search.action=query; pad_item.list only filters.`
 

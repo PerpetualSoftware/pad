@@ -13,7 +13,7 @@ import (
 )
 
 var commitmentRoles = []string{"target", "earliest", "deadline", "occupied_until"}
-var scheduleChangeTypes = []string{"create", "update", "delete", "move", "snooze", "done", "skip", "missed_recorded", "end", "import", "carry", "ack"}
+var scheduleChangeTypes = []string{"create", "update", "delete", "move", "snooze", "done", "skip", "missed_recorded", "end", "import", "carry", "ack", "reopen"}
 
 func validateCarriedRoles(r *models.ScheduleRolesExport) error {
 	if r == nil {
@@ -310,6 +310,13 @@ func (s *Store) restoreScheduleChangesTx(tx *sql.Tx, workspaceID string, changes
 			if c.Actor != "user" && c.Actor != "agent" {
 				c.Actor = "user"
 			}
+		}
+		if c.ChangeType == "reopen" && c.AfterJSON != nil {
+			after, err := importedReopenAudit(*c.AfterJSON, changeMap, items)
+			if err != nil {
+				return nil, err
+			}
+			c.AfterJSON = &after
 		}
 		_, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,occurrence_key,change_type,role,before_json,after_json,actor,reason,reason_source,root_change_id,parent_change_id,recorded_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`), changeMap[c.ID], workspaceID, items[c.ItemID], schedules[c.ScheduleID], c.OccurrenceKey, c.ChangeType, c.Role, c.BeforeJSON, c.AfterJSON, c.Actor, c.Reason, c.ReasonSource, root, parent, c.RecordedAt)
 		if err != nil {

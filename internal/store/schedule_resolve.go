@@ -74,6 +74,7 @@ type ResolveComment struct {
 
 // ResolveInput is what a caller resolves: the occurrence it saw and what to do.
 type ResolveInput struct {
+	undo                   *resolutionUndo
 	CommitmentAccessLoader CommitmentAccessLoader `json:"-"`
 	// ActorUserID identifies the human separately from the journal actor kind.
 	// It excludes their own move notice and records acknowledgement provenance.
@@ -320,6 +321,16 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		moveChecksDeadline = true
 	}
 
+	captureAt := x
+	if (in.State == "done" || in.State == "skip") && !xRec.IsZero() {
+		captureAt = xRec
+	}
+	undo, err := s.captureResolutionUndoTx(tx, sc, in.State, in.Actor, in.ActorUserID, captureAt, nowT)
+	if err != nil {
+		return nil, err
+	}
+	in.undo = undo
+
 	if in.State == "skip" {
 		if err := s.skipDeadlineGuardTx(tx, itemID, sc, in, nowT, openFilter, openArgs); err != nil {
 			return nil, err
@@ -381,6 +392,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, err
 		}
 	}
+	undo.CommentID = commentID
 	xAt, xWall := x.Format(time.RFC3339), *sc.NextWall
 
 	if in.State == "snooze" || in.State == "move" {
@@ -396,6 +408,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 					noticeActor = in.Comment.UserID
 				}
 			}
+			linked.undo = undo
 			if err := s.applyLinkedPlanTx(tx, linked, in.Actor, noticeActor, reason, "Moved with a linked date", nowT, budget); err != nil {
 				return nil, err
 			}
@@ -406,6 +419,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 				if err := s.upsertOccurrenceTx(tx, sc.ID, at, xWall, "moved", commentID, in.Actor, ts); err != nil {
 					return nil, err
 				}
+			}
+			if err := s.finishResolutionUndoTx(tx, sc, undo); err != nil {
+				return nil, err
 			}
 			if err := budget.commit(tx); err != nil {
 				return nil, err
@@ -442,7 +458,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			}
 		}
 		if in.State == "move" && !until.After(nowT) {
-			n, err := s.armAfterPastMoveTx(tx, sc, rec, x, nowT, ts)
+			n, err := s.armAfterPastMoveTx(tx, sc, rec, x, nowT, ts, undo)
 			if err != nil {
 				return nil, err
 			}
@@ -462,10 +478,13 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			if err != nil {
 				return nil, err
 			}
-			if err := s.journalScheduleChangeReasonTx(tx, sc.ID, in.State, key, role, before, after, in.Actor, reason, source); err != nil {
+			if err := s.journalResolutionTx(tx, undo, sc.ID, in.State, key, role, before, after, in.Actor, reason, source); err != nil {
 				return nil, err
 			}
-		} else if err := s.journalScheduleChangeTx(tx, sc.ID, in.State, key, "", "", "", in.Actor); err != nil {
+		} else if err := s.journalResolutionTx(tx, undo, sc.ID, in.State, key, "", "", "", in.Actor, "", "system"); err != nil {
+			return nil, err
+		}
+		if err := s.finishResolutionUndoTx(tx, sc, undo); err != nil {
 			return nil, err
 		}
 		return s.commitResolve(tx, workspaceID, itemID, res)
@@ -487,6 +506,9 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		if err := s.markChildrenNoLongerNeededTx(tx, sc, in.Actor, nowT, openFilter, openArgs, in.LinkAccess); err != nil {
 			return nil, err
 		}
+	}
+	if err := s.finishResolutionUndoTx(tx, sc, undo); err != nil {
+		return nil, err
 	}
 	return s.commitResolve(tx, workspaceID, itemID, res)
 }
@@ -511,6 +533,11 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 	if err != nil {
 		return nil, err
 	}
+	undo, err := s.captureResolutionUndoTx(tx, sc, "history_done", in.Actor, in.ActorUserID, want, nowT)
+	if err != nil {
+		return nil, err
+	}
+	undo.Key = OccurrenceKey(sc, at, wall)
 	res := &ResolveResult{}
 	commentID := ""
 	if in.Comment != nil {
@@ -542,11 +569,14 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 		// one-off whose current next_wall is now NULL.
 		history := *sc
 		history.NextAt, history.NextWall = &at, &wall
-		if err := s.recordOnTimeCorrectionTx(tx, &history, key, actual); err != nil {
+		if err := s.recordOnTimeCorrectionTx(tx, &history, key, actual, undo); err != nil {
 			return nil, err
 		}
 	}
-	if err := s.journalScheduleChangeTx(tx, sc.ID, "done", key, "", "", "", in.Actor); err != nil {
+	if err := s.journalResolutionTx(tx, undo, sc.ID, "done", key, "", "", "", in.Actor, "", "system"); err != nil {
+		return nil, err
+	}
+	if err := s.finishResolutionUndoTx(tx, sc, undo); err != nil {
 		return nil, err
 	}
 	return s.commitResolve(tx, sc.WorkspaceID, sc.ItemID, res)
@@ -555,6 +585,13 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 // closeOccurrenceTx is the shared done, skip and lapse advance path. The caller
 // holds the schedule pin and commits the occurrence, schedule and reminder together.
 func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveInput, rec *time.Location, x, nowT, actual time.Time, actualSource, commentID, before string) (*ResolveResult, error) {
+	if in.undo == nil {
+		var err error
+		in.undo, err = s.captureResolutionUndoTx(tx, sc, in.State, in.Actor, in.ActorUserID, x, nowT)
+		if err != nil {
+			return nil, err
+		}
+	}
 	xAt, xWall := x.Format(time.RFC3339), *sc.NextWall
 	ts := nowT.Format(time.RFC3339)
 	res := &ResolveResult{}
@@ -626,7 +663,7 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 			return nil, err
 		}
 		for _, m := range missed {
-			n, err := s.insertMissedTx(tx, sc.ID, m, ts)
+			n, err := s.insertMissedTx(tx, sc.ID, m, ts, in.undo)
 			if err != nil {
 				return nil, err
 			}
@@ -658,7 +695,7 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 			return nil, err
 		}
 		if in.ActualDoneAt != nil {
-			if err := s.recordOnTimeCorrectionTx(tx, sc, OccurrenceKey(sc, xAt, xWall), actual); err != nil {
+			if err := s.recordOnTimeCorrectionTx(tx, sc, OccurrenceKey(sc, xAt, xWall), actual, in.undo); err != nil {
 				return nil, err
 			}
 		}
@@ -702,14 +739,23 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		if err != nil {
 			return nil, err
 		}
-		if err := s.journalScheduleChangeReasonTx(tx, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, after, in.Actor, "ended_item_open", "system"); err != nil {
+		if err := s.journalResolutionTx(tx, in.undo, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, after, in.Actor, "ended_item_open", "system"); err != nil {
 			return nil, err
 		}
 		res.EndedItemOpen = true
 		return res, nil
 	}
-	if err := s.journalScheduleAfterTx(tx, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, in.Actor); err != nil {
+	after, err := s.scheduleSnapshotTx(tx, sc.ID)
+	if err != nil {
 		return nil, err
+	}
+	if err := s.journalResolutionTx(tx, in.undo, sc.ID, change, OccurrenceKey(sc, xAt, xWall), "", before, after, in.Actor, "", "system"); err != nil {
+		return nil, err
+	}
+	if in.State == "lapsed" {
+		if err := s.finishResolutionUndoTx(tx, sc, in.undo); err != nil {
+			return nil, err
+		}
 	}
 	return res, nil
 }
@@ -717,8 +763,12 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 // itemDoneFilterTx resolves the collection of the pinned item using the same
 // rules as nonTerminalFilter, without reading through the connection pool.
 func (s *Store) itemDoneFilterTx(tx *sql.Tx, itemID string) (collectionDoneFilter, error) {
+	return s.itemDoneFilterQ(tx, itemID)
+}
+
+func (s *Store) itemDoneFilterQ(q Queryer, itemID string) (collectionDoneFilter, error) {
 	var id, schemaJSON, settingsJSON string
-	if err := tx.QueryRow(s.q(`SELECT c.id, c.schema, c.settings FROM collections c JOIN items i ON i.collection_id=c.id WHERE i.id=?`), itemID).Scan(&id, &schemaJSON, &settingsJSON); err != nil {
+	if err := q.QueryRow(s.q(`SELECT c.id, c.schema, c.settings FROM collections c JOIN items i ON i.collection_id=c.id WHERE i.id=?`), itemID).Scan(&id, &schemaJSON, &settingsJSON); err != nil {
 		return collectionDoneFilter{}, fmt.Errorf("item done filter: %w", err)
 	}
 	return resolveCollectionDoneFilter(id, schemaJSON, settingsJSON), nil
@@ -776,14 +826,14 @@ func (s *Store) skipDeadlineGuardTx(tx *sql.Tx, itemID string, sc *models.ItemSc
 
 // armAfterPastMoveTx leaves the moved target in history, records the instances
 // the move passed over like a done or skip does, and arms the next future one.
-func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *time.Location, x, nowT time.Time, ts string) (int, error) {
+func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *time.Location, x, nowT time.Time, ts string, undo *resolutionUndo) (int, error) {
 	missed, _, err := missedOccurrences(sc, rec, nowT)
 	if err != nil {
 		return 0, err
 	}
 	recorded := 0
 	for _, m := range missed {
-		n, err := s.insertMissedTx(tx, sc.ID, m, ts)
+		n, err := s.insertMissedTx(tx, sc.ID, m, ts, undo)
 		if err != nil {
 			return 0, err
 		}
@@ -1080,7 +1130,7 @@ func (s *Store) upsertOccurrenceTx(tx *sql.Tx, scheduleID, at, wall, state, comm
 // insertMissedTx records one passed-over instance; ON CONFLICT DO NOTHING covers
 // both unique indexes, so a row already there is left alone. It reports whether
 // a row was written.
-func (s *Store) insertMissedTx(tx *sql.Tx, scheduleID string, o schedule.Occurrence, ts string) (int, error) {
+func (s *Store) insertMissedTx(tx *sql.Tx, scheduleID string, o schedule.Occurrence, ts string, undo ...*resolutionUndo) (int, error) {
 	res, err := tx.Exec(s.q(`
 		INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at)
 		VALUES (?, ?, ?, ?, 'missed', NULL, '', ?)
@@ -1099,7 +1149,11 @@ func (s *Store) insertMissedTx(tx *sql.Tx, scheduleID string, o schedule.Occurre
 			return 0, err
 		}
 		sc := &models.ItemSchedule{Floating: floating}
-		if err := s.journalScheduleChangeTx(tx, scheduleID, "missed_recorded", OccurrenceKey(sc, NormalizeInstant(o.At), o.Wall.String()), "", "", "", "system"); err != nil {
+		id := newID()
+		if len(undo) > 0 && undo[0] != nil {
+			undo[0].JournalIDs = append(undo[0].JournalIDs, id)
+		}
+		if err := s.journalScheduleChangeRowTx(tx, id, scheduleID, "missed_recorded", OccurrenceKey(sc, NormalizeInstant(o.At), o.Wall.String()), "", "", "", "system", "", "system", "", ""); err != nil {
 			return 0, err
 		}
 	}

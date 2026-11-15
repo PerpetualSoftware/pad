@@ -708,7 +708,7 @@ func (s *Store) insertLinkTx(tx *sql.Tx, workspaceID string, l linkRow) error {
 	if err != nil {
 		return fmt.Errorf("insert schedule link: %w", err)
 	}
-	return nil
+	return s.invalidateReopenDependencyTx(tx, l.ParentSchedule, l.ChildSchedule)
 }
 
 // linkEndsOf reads a link by id (unlocked) so a writer can name its root item.
@@ -837,6 +837,9 @@ func (s *Store) UpdateScheduleLink(workspaceID, linkID string, upd models.Schedu
 	if next.Offset.AllDay {
 		allDay = 1
 	}
+	if err := s.invalidateReopenDependencyTx(tx, next.ParentSchedule, next.ChildSchedule); err != nil {
+		return nil, err
+	}
 	next.UpdatedAt = nowNano()
 	res, err := tx.Exec(s.q(`UPDATE schedule_links SET offset_mode=?,offset_elapsed=?,offset_days=?,offset_clock=?,offset_all_day=?,offset_zone=?,cancel_policy=?,updated_at=? WHERE id=?`),
 		next.Offset.Mode, next.Offset.ElapsedSecs, next.Offset.Days, next.Offset.ClockSecs, allDay, next.Offset.Zone, next.CancelPolicy, next.UpdatedAt, linkID)
@@ -887,6 +890,9 @@ func (s *Store) DeleteScheduleLink(workspaceID, linkID string, access models.Com
 		return err
 	}
 	if _, err = reloadGraphAccess(tx, access, loaders, parentItem, childItem); err != nil {
+		return err
+	}
+	if err := s.invalidateItemReopenDependencyTx(tx, parentItem, childItem); err != nil {
 		return err
 	}
 	res, err := tx.Exec(s.q(`DELETE FROM schedule_links WHERE id=? AND workspace_id=?`), linkID, workspaceID)

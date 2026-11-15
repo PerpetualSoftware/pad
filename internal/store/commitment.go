@@ -2,6 +2,7 @@ package store
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math"
@@ -169,6 +170,10 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 		return nil, err
 	}
 	out := &models.Commitment{ScheduleID: sc.ID, ItemID: itemID, Journal: []models.CommitmentChange{}}
+	out.LastResolution, err = s.reopenAvailabilityQ(s.db, sc, time.Now())
+	if err != nil {
+		return nil, err
+	}
 	out.Roles = models.CommitmentRoles{DeadlineBehavior: roles.DeadlineBehavior, Outcome: roles.Outcome, RolesOrigin: roles.Origin}
 	if sc.EndedAt == nil && sc.NextWall != nil {
 		loc, err := s.scheduleViewZone(s.db, sc)
@@ -216,6 +221,20 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 	if err != nil {
 		return nil, err
 	}
+	reversed := map[string]string{}
+	for _, c := range changes {
+		if c.ChangeType != "reopen" || c.AfterJSON == nil {
+			continue
+		}
+		var audit struct {
+			IDs []string `json:"reversed_change_ids"`
+		}
+		if json.Unmarshal([]byte(*c.AfterJSON), &audit) == nil {
+			for _, id := range audit.IDs {
+				reversed[id] = c.ID
+			}
+		}
+	}
 	for _, c := range changes {
 		// Role decides: an occurrence the schedule passed over is also journaled
 		// missed_recorded, with no role, and is not the deadline's history.
@@ -225,7 +244,7 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 		assignee := c.ChangeType == "update" && c.Role == nil && c.BeforeJSON == nil &&
 			c.ReasonSource == "system" && strings.HasPrefix(c.Reason, "Assignee changed from ") && strings.Contains(c.Reason, " to ")
 		dateMove := c.ChangeType == "move" && c.Role != nil && linkRole(*c.Role) != "" && (c.BeforeJSON != nil || c.AfterJSON != nil)
-		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !renegotiation && !assignee && !dateMove && c.ChangeType != "ack" {
+		if !(c.ChangeType == "missed_recorded" && deadlineRow) && !correction && !renegotiation && !assignee && !dateMove && c.ChangeType != "ack" && c.ChangeType != "reopen" {
 			continue
 		}
 		if canRead != nil {
@@ -251,7 +270,14 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 				c.Actor = "system"
 			}
 		}
-		out.Journal = append(out.Journal, models.CommitmentChange{ID: c.ID, ChangeType: c.ChangeType, OccurrenceKey: c.OccurrenceKey, Role: c.Role,
+		if c.ChangeType == "reopen" && c.AfterJSON != nil && milestoneRead != nil {
+			filtered, err := reopenAuditForRead(*c.AfterJSON, milestoneRead)
+			if err != nil {
+				return nil, err
+			}
+			c.AfterJSON = &filtered
+		}
+		out.Journal = append(out.Journal, models.CommitmentChange{ID: c.ID, ReversedBy: reversed[c.ID], ChangeType: c.ChangeType, OccurrenceKey: c.OccurrenceKey, Role: c.Role,
 			BeforeJSON: c.BeforeJSON, AfterJSON: c.AfterJSON, Actor: c.Actor, Reason: c.Reason, ReasonSource: c.ReasonSource, RootChangeID: c.RootChangeID,
 			ParentChangeID: c.ParentChangeID, RecordedAt: c.RecordedAt})
 	}
@@ -559,7 +585,7 @@ func (s *Store) renegotiateDeadlineAt(workspaceID, itemID, actor string, until t
 // The miss row stays. A schedule with no recorded miss for the key, or whose
 // deadline the report missed, writes nothing. The correction is journal-only:
 // resolution reads the occurrence rows, never these.
-func (s *Store) recordOnTimeCorrectionTx(tx *sql.Tx, sc *models.ItemSchedule, key string, reported time.Time) error {
+func (s *Store) recordOnTimeCorrectionTx(tx *sql.Tx, sc *models.ItemSchedule, key string, reported time.Time, undo ...*resolutionUndo) error {
 	rows, err := tx.Query(s.q(`SELECT id,root_change_id,recorded_at FROM schedule_changes WHERE schedule_id=? AND occurrence_key=? AND change_type='missed_recorded' AND role='deadline'`), sc.ID, key)
 	if err != nil {
 		return fmt.Errorf("read recorded misses: %w", err)
@@ -611,7 +637,11 @@ func (s *Store) recordOnTimeCorrectionTx(tx *sql.Tx, sc *models.ItemSchedule, ke
 	if !deadline.metBy(reported) {
 		return nil
 	}
-	return s.journalScheduleChangeLineageTx(tx, sc.ID, "done", key, "deadline", "", "", "system", correctionReason, "system", missID, rootID)
+	id := newID()
+	if len(undo) > 0 && undo[0] != nil {
+		undo[0].JournalIDs = append(undo[0].JournalIDs, id)
+	}
+	return s.journalScheduleChangeRowTx(tx, id, sc.ID, "done", key, "deadline", "", "", "system", correctionReason, "system", missID, rootID)
 }
 
 // journalAssigneeChangeTx writes the journal step for an assignee change on the
@@ -620,6 +650,9 @@ func (s *Store) recordOnTimeCorrectionTx(tx *sql.Tx, sc *models.ItemSchedule, ke
 // schedule pays that one lookup and no write; UpdateItem calls it only when the
 // assignee changed. It returns the inserted id, or empty when none was written.
 func (s *Store) journalAssigneeChangeTx(tx *sql.Tx, itemID, from, to string) (string, error) {
+	if _, err := tx.Exec(s.q(`UPDATE schedule_reopen_checkpoints SET blocked_code='reopen_conflict' WHERE schedule_id IN (SELECT id FROM item_schedules WHERE item_id=?) AND reopened_change_id IS NULL AND blocked_code IS NULL`), itemID); err != nil {
+		return "", err
+	}
 	changeID := newID()
 	res, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,change_type,actor,reason,reason_source,root_change_id,recorded_at)
  SELECT ?,workspace_id,item_id,id,'update','system',?,'system',?,? FROM item_schedules WHERE item_id=? AND roles_origin='native' AND deadline_days IS NOT NULL`),

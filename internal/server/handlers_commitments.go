@@ -61,6 +61,21 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 	if err != nil {
 		return nil, err
 	}
+	// Eligibility is exposed only by the commitment read and reopen POST, and
+	// by create, so a GET still reproduces the create body. A new schedule has
+	// no checkpoint, so create always answers reopen_unavailable.
+	createCall := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/commitment")
+	if r.Method == http.MethodGet || createCall || strings.HasSuffix(r.URL.Path, "/commitment/reopen") {
+		editable, err := s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
+		if err != nil {
+			return nil, err
+		}
+		if !editable || !appWriteAllows(r, item.CollectionID) || !tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPost, "") {
+			c.LastResolution = nil
+		}
+	} else {
+		c.LastResolution = nil
+	}
 	v := s.buildScheduleView(r, item, sc)
 	v.TimezoneNote = note
 	out := &commitmentView{Commitment: c, scheduleView: v, Links: []models.ScheduleLink{}, Gates: &models.ScheduleGateView{State: models.GateStateReleased, Gates: []models.ScheduleGate{}}}

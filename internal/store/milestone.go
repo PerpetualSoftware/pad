@@ -100,6 +100,9 @@ func (s *Store) SetForecast(workspaceID, itemID, actor, actorKind, value, source
 		return fmt.Errorf("read forecast: %w", err)
 	}
 	ts := nowNano()
+	if err := s.invalidateScheduleReopenTx(tx, sc.ID); err != nil {
+		return err
+	}
 	if _, err := tx.Exec(s.q(`INSERT INTO schedule_forecasts (schedule_id,workspace_id,item_id,value,set_by,set_by_kind,set_at,source)
  VALUES (?,?,?,?,?,?,?,?)
  ON CONFLICT (schedule_id) DO UPDATE SET value=excluded.value,set_by=excluded.set_by,set_by_kind=excluded.set_by_kind,set_at=excluded.set_at,source=excluded.source`),
@@ -134,6 +137,9 @@ func (s *Store) ClearForecast(workspaceID, itemID, actor, actorKind string) erro
 		return tx.Commit()
 	case err != nil:
 		return fmt.Errorf("read forecast: %w", err)
+	}
+	if err := s.invalidateScheduleReopenTx(tx, sc.ID); err != nil {
+		return err
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM schedule_forecasts WHERE schedule_id = ?`), sc.ID); err != nil {
 		return fmt.Errorf("clear forecast: %w", err)
@@ -196,6 +202,9 @@ func (s *Store) SetMilestoneChild(workspaceID, itemID, childID, kind, reason, ac
 	case err != nil:
 		return fmt.Errorf("check milestone child: %w", err)
 	}
+	if err := s.invalidateScheduleReopenTx(tx, sc.ID); err != nil {
+		return err
+	}
 	res, err := tx.Exec(s.q(`UPDATE milestone_children SET kind = ?, reason = ? WHERE schedule_id = ? AND child_item_id = ? AND removed_at IS NULL`),
 		kind, reason, sc.ID, childID)
 	if err != nil {
@@ -234,9 +243,17 @@ func (s *Store) RemoveMilestoneChild(workspaceID, itemID, childID, actor string)
 	if err != nil || sc == nil {
 		return firstErr(err, ErrScheduleNotFound)
 	}
-	if _, err := tx.Exec(s.q(`UPDATE milestone_children SET removed_by = ?, removed_at = ? WHERE schedule_id = ? AND child_item_id = ? AND removed_at IS NULL`),
-		actor, nowNano(), sc.ID, childID); err != nil {
+	res, err := tx.Exec(s.q(`UPDATE milestone_children SET removed_by = ?, removed_at = ? WHERE schedule_id = ? AND child_item_id = ? AND removed_at IS NULL`),
+		actor, nowNano(), sc.ID, childID)
+	if err != nil {
 		return fmt.Errorf("remove milestone child: %w", err)
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n > 0 {
+		if err := s.invalidateScheduleReopenTx(tx, sc.ID); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

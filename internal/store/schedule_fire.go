@@ -174,6 +174,9 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 				precise, now(), r.ID); err != nil {
 				return false, fmt.Errorf("defer floating reminder: %w", err)
 			}
+			if err := s.invalidateScheduleReopenTx(tx, sc.ID); err != nil {
+				return false, err
+			}
 			return false, nil
 		}
 	}
@@ -404,11 +407,19 @@ func (s *Store) resetFloatingBound(match string, arg string) error {
 			return err
 		}
 		// Only an armed row, and only if it actually moves.
-		if _, err := tx.Exec(s.q(`
+		res, err := tx.Exec(s.q(`
 			UPDATE item_reminders SET remind_at = ?, updated_at = ?
 			WHERE schedule_id = ? AND fired_at IS NULL AND remind_at <> ?`),
-			NormalizeInstant(bound), now(), id, NormalizeInstant(bound)); err != nil {
+			NormalizeInstant(bound), now(), id, NormalizeInstant(bound))
+		if err != nil {
 			return err
+		}
+		if n, err := res.RowsAffected(); err != nil {
+			return err
+		} else if n > 0 {
+			if err := s.invalidateScheduleReopenTx(tx, id); err != nil {
+				return err
+			}
 		}
 	}
 	return tx.Commit()
