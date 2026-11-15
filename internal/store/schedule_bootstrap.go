@@ -217,13 +217,13 @@ func (s *Store) outstandingAgendaRows(found []AgendaSchedule, loc *time.Location
 			skip(as, err)
 			continue
 		}
+		if e == nil {
+			continue
+		}
 		// The read above runs on a zero clock, so the snooze is judged on the
 		// caller's: a snooze whose re-fire instant has passed has ended.
 		if e.SnoozedUntil != nil && !e.SnoozedUntil.After(now) {
 			e.SnoozedUntil = nil
-		}
-		if e == nil {
-			continue
 		}
 		due := e.At
 		if e.Roles.Target != nil && len(*e.Roles.Target) == 10 {

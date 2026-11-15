@@ -31,7 +31,8 @@ func ScheduleSnoozedUntil(sc *models.ItemSchedule, occurrenceState string, now t
 // ReadScheduleSnoozedUntil is for reads without occurrence history already in
 // hand. Agenda expansion calls ScheduleSnoozedUntil with its loaded rows instead.
 func (s *Store) ReadScheduleSnoozedUntil(sc *models.ItemSchedule, now time.Time) (*time.Time, error) {
-	if sc.EndedAt != nil || sc.NextWall == nil || sc.NextAt == nil || sc.NextOverrideAt == nil {
+	// No override, or one already past: nothing to look up.
+	if sc.NextAt == nil || ScheduleSnoozedUntil(sc, "", now) == nil {
 		return nil, nil
 	}
 	column, identity := "occurrence_at", *sc.NextAt

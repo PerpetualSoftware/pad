@@ -88,3 +88,12 @@ func TestBUG4570SnoozeEndsAtItsRefireInstant(t *testing.T) {
 		t.Fatalf("a moved occurrence is not snoozed, got %s", got)
 	}
 }
+
+func TestBUG4570BootstrapSkipsScheduleWithNoOutstanding(t *testing.T) {
+	s := testStore(t)
+	ended := "2030-03-01T00:00:00Z"
+	rows, _ := s.outstandingAgendaRows([]AgendaSchedule{{Schedule: &models.ItemSchedule{ID: "s-ended", WorkspaceID: "w", ItemID: "i", EndedAt: &ended}}}, time.UTC, rt("2030-03-10T00:00:00Z"))
+	if len(rows) != 0 {
+		t.Fatalf("an ended schedule has no outstanding row: %+v", rows)
+	}
+}
