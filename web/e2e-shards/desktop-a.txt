@@ -1,0 +1,24 @@
+# Desktop 1/3: duration-balanced spec list A; the rest runs in desktop 3/3.
+# Refresh recipe: see the e2e strategy comment in .github/workflows/ci.yml.
+attachment-pdf-preview.spec.ts
+attachment-surface-chrome.spec.ts
+attachment-viewer-owners.spec.ts
+attachment-viewer-parity.spec.ts
+attachment-viewer-zoom.spec.ts
+bug-2182-pane-back-scroll.spec.ts
+bug-3030-teardown-write-count.spec.ts
+bug-3050-stale-body-writes.spec.ts
+bug-3230-pruned-edits-notice.spec.ts
+bug-3318-h1-connection-budget.spec.ts
+bug-3540-raw-save-stale-base.spec.ts
+bug-3557-html-prose.spec.ts
+chat-shell.spec.ts
+item-attachment-strip.spec.ts
+pane-a11y-focus.spec.ts
+pane-full-page-capstone.spec.ts
+permission-walk-collections.spec.ts
+permission-walk-move.spec.ts
+permission-walk-system-status.spec.ts
+permission-walk-system.spec.ts
+task-3312-tabs-feel.spec.ts
+task-4545-home-today-row.spec.ts
