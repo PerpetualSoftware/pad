@@ -1,4 +1,5 @@
 import type { Activity, TimelineEntry } from '$lib/types';
+import { resolutionLabel } from '$lib/calendar/undo';
 import { parseFieldChanges, type FieldChange } from '$lib/utils/activityChanges';
 import { agentNameOf } from '$lib/utils/agentActor';
 import { HISTORY_KINDS } from './feed';
@@ -293,6 +294,27 @@ export function groupHistory(entries: readonly TimelineEntry[]): HistoryRow[] {
 
 // ── Presentation helpers (pure, so the wording is tested) ───────────────────
 
+const SCHEDULE_PHRASES: Record<string, (meta: Record<string, unknown>) => string> = {
+	schedule_created: () => 'added a schedule',
+	schedule_updated: () => 'changed the schedule',
+	schedule_deleted: () => 'removed the schedule',
+	schedule_resolved: (meta) => {
+		switch (meta.state) {
+			case 'done': return 'marked an occurrence done';
+			case 'skip': return 'skipped an occurrence';
+			case 'snooze': return 'snoozed an occurrence';
+			case 'move': return 'moved an occurrence';
+			default: return 'resolved an occurrence';
+		}
+	},
+	schedule_acknowledged: () => 'acknowledged an occurrence',
+	schedule_end_dismissed: () => "dismissed the schedule's end notice",
+	schedule_reopened: (meta) => {
+		const label = resolutionLabel(meta.state);
+		return label ? `reopened an occurrence (undid ${label})` : 'reopened an occurrence';
+	}
+};
+
 function joinPhrases(parts: string[]): string {
 	if (parts.length <= 1) return parts.join('');
 	return parts.slice(0, -1).join(', ') + ' and ' + parts[parts.length - 1];
@@ -318,6 +340,7 @@ export function eventVerb(ev: HistoryEvent, noun = 'item', fieldLabel: (key: str
 		else if (a.action === 'archived') parts.push(`archived this ${noun}`);
 		else if (a.action === 'restored') parts.push(`restored this ${noun}`);
 		else if (a.action === 'reordered') parts.push(`moved this ${noun} within its list`);
+		else if (Object.hasOwn(SCHEDULE_PHRASES, a.action)) parts.push(SCHEDULE_PHRASES[a.action](parseMeta(a.metadata)));
 		else parts.push(a.action);
 	}
 	if (!created && ev.changes.length > 0) {

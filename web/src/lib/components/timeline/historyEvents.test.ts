@@ -203,6 +203,72 @@ describe('groupHistory', () => {
 });
 
 describe('eventVerb', () => {
+	it.each([
+		['schedule_created', 'added a schedule'],
+		['schedule_updated', 'changed the schedule'],
+		['schedule_deleted', 'removed the schedule'],
+		['schedule_resolved', 'resolved an occurrence'],
+		['schedule_acknowledged', 'acknowledged an occurrence'],
+		['schedule_end_dismissed', "dismissed the schedule's end notice"],
+		['schedule_reopened', 'reopened an occurrence']
+	])('describes %s without a resolution state', (action, phrase) => {
+		const [ev] = events([activity('a', 0, { action })]);
+		expect(eventVerb(ev)).toBe(phrase);
+	});
+
+	it.each([
+		['done', 'marked an occurrence done'],
+		['skip', 'skipped an occurrence'],
+		['snooze', 'snoozed an occurrence'],
+		['move', 'moved an occurrence'],
+		['unknown', 'resolved an occurrence']
+	])('describes a schedule resolution with state %s', (state, phrase) => {
+		const [ev] = events([activity('a', 0, { action: 'schedule_resolved', meta: { state } })]);
+		expect(eventVerb(ev)).toBe(phrase);
+	});
+
+	it.each([
+		['done', 'reopened an occurrence (undid Done)'],
+		['skip', 'reopened an occurrence (undid Skip)'],
+		['snooze', 'reopened an occurrence (undid Snooze)'],
+		['move', 'reopened an occurrence (undid Move)'],
+		['unknown', 'reopened an occurrence']
+	])('describes a reopened occurrence with state %s', (state, phrase) => {
+		const [ev] = events([activity('a', 0, { action: 'schedule_reopened', meta: { state } })]);
+		expect(eventVerb(ev)).toBe(phrase);
+	});
+
+	it.each([undefined, '{', 'null', '{"state":42}'])('tolerates missing or malformed schedule metadata: %s', (metadata) => {
+		for (const [action, phrase] of [
+			['schedule_resolved', 'resolved an occurrence'],
+			['schedule_reopened', 'reopened an occurrence']
+		]) {
+			const entry = activity('a', 0, { action });
+			// Exercise an incomplete payload even though the API type requires metadata.
+			entry.activity!.metadata = metadata as string;
+			const [ev] = events([entry]);
+			expect(eventVerb(ev)).toBe(phrase);
+		}
+	});
+
+	it('describes a merged creation, schedule, resolution and undo burst', () => {
+		const rows = events([
+			activity('reopened', 30, { action: 'schedule_reopened', source: 'cli', meta: { state: 'done' } }),
+			activity('resolved', 20, { action: 'schedule_resolved', source: 'cli', meta: { state: 'done' } }),
+			activity('schedule', 10, { action: 'schedule_created', source: 'cli' }),
+			activity('created', 0, { action: 'created', source: 'cli' })
+		]);
+		expect(rows).toHaveLength(1);
+		expect(eventVerb(rows[0], 'task')).toBe(
+			'created this task, reopened an occurrence (undid Done), marked an occurrence done and added a schedule'
+		);
+	});
+
+	it('keeps the raw fallback for an unknown action', () => {
+		const [ev] = events([activity('a', 0, { action: 'future_action' })]);
+		expect(eventVerb(ev)).toBe('future_action');
+	});
+
 	it('names one field, counts several, and joins with "and"', () => {
 		const [one] = events([activity('a', 0, { meta: { changes: 'status: open → done' } })]);
 		expect(eventVerb(one)).toBe('changed status');
