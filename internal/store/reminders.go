@@ -541,9 +541,14 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 	// A restored workspace resumes normally: nothing is destroyed, the
 	// reminders simply stop being candidates while it is gone.
 	//
-	// A row held by a commitment gate is skipped the same way and stays armed,
-	// so held rows take no slot and the row fires once its gates release. The
-	// pages keep reading past held rows until the batch is full.
+	// A managed row held by a commitment gate or on a terminal item is skipped
+	// the same way and stays armed, so it takes no slot and fires once its gates
+	// release and its item is open. The pages keep reading until the batch is full.
+	type terminalFilter struct {
+		clause string
+		args   []any
+	}
+	openFilters := map[string]terminalFilter{}
 	var ids []string
 	cursorAt, cursorID := "", ""
 	for len(ids) < limit {
@@ -586,6 +591,19 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 				if ev.state != models.GateStateReleased {
 					continue
 				}
+				filter, ok := openFilters[c.workspace]
+				if !ok {
+					filter.clause, filter.args = s.nonTerminalFilter(c.workspace, "i")
+					openFilters[c.workspace] = filter
+				}
+				var open bool
+				if err := s.db.QueryRow(s.q(`SELECT `+filter.clause+` FROM items i WHERE i.id = ?`), append(filter.args, c.item)...).Scan(&open); err != nil {
+					slog.Error("reminder scan: terminal item read failed", "reminder", c.id, "error", err)
+					continue
+				}
+				if !open {
+					continue
+				}
 			}
 			ids = append(ids, c.id)
 		}
@@ -606,7 +624,8 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 //	be marked fired, and its event emitted, only if at that instant: its
 //	fired_at is still NULL, its remind_at is still at or before the pass's
 //	nowTS, its item is still not soft-deleted, and its workspace is still not
-//	soft-deleted.
+//	soft-deleted. A managed row also requires its item to be non-terminal per
+//	its collection schema, re-asserted in that same fire UPDATE.
 //
 // The reason it is worded as "the scan proves nothing" rather than as a list:
 // a list invites the next person to add a condition to the scan and stop. Four
@@ -725,23 +744,28 @@ func fireEachReminder(ids []string, nowTS string, fire func(id, nowTS string) (*
 // fireOneReminder is the arbiter plus the emission, in one transaction.
 // Returns (nil, nil) when another pass won the row or its item is gone.
 func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return nil, fmt.Errorf("fire reminder: %w", err)
-	}
-	defer tx.Rollback()
-
-	// A managed row (TASK-4102) is the outstanding occurrence of an item schedule
-	// and takes the schedule lock too. schedule_id never changes on a row, so a
-	// plain read decides which pin applies.
+	// These columns never change on a row. Load the terminal filter through the
+	// pool before Begin: SQLite can have only one connection, held by the tx.
+	var workspaceID string
 	var scheduleID sql.NullString
-	switch err := tx.QueryRow(s.q(`SELECT schedule_id FROM item_reminders WHERE id = ?`), id).Scan(&scheduleID); {
+	switch err := s.db.QueryRow(s.q(`SELECT workspace_id, schedule_id FROM item_reminders WHERE id = ?`), id).Scan(&workspaceID, &scheduleID); {
 	case err == sql.ErrNoRows:
 		return nil, nil
 	case err != nil:
 		return nil, fmt.Errorf("read reminder %s: %w", id, err)
 	}
 	managed := scheduleID.Valid
+	var openFilter string
+	var openArgs []any
+	if managed {
+		openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
+	}
+
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, fmt.Errorf("fire reminder: %w", err)
+	}
+	defer tx.Rollback()
 
 	// PIN THE ITEM AND WORKSPACE ROWS FOR THE REST OF THE TRANSACTION on
 	// Postgres. The predicate below READS liveness, and a read
@@ -818,11 +842,17 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	// Same nowTS the candidate scan used, deliberately: the arbiter and the
 	// scan must agree about when this pass is, or a reminder could pass one
 	// and fail the other for no reason but clock drift within the pass.
-	res, err := tx.Exec(s.q(`
+	query := `
 		UPDATE item_reminders SET fired_at = ?, updated_at = ?
 		WHERE id = ? AND fired_at IS NULL AND remind_at <= ?
-		  AND `+reminderFireable+`
-	`), nowTS, now(), id, nowTS)
+		  AND ` + reminderFireable + `
+	`
+	args := []any{nowTS, now(), id, nowTS}
+	if managed {
+		query += ` AND EXISTS (SELECT 1 FROM items i WHERE i.id = item_reminders.item_id AND ` + openFilter + `)`
+		args = append(args, openArgs...)
+	}
+	res, err := tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("fire reminder %s: %w", id, err)
 	}

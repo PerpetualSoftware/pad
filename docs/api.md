@@ -340,7 +340,7 @@ The web roster is built from the caller's own `GET /sessions` plus their existin
 
 ### Item commitments (TASK-4351)
 
-Closing an item keeps its schedule row live and its next occurrence intact; terminal items are filtered from outstanding/scheduled agenda entries and deadline evaluation. Reopening restores those entries. Closing a live recurring schedule requires `force: true` after a `409 schedule_active` refusal (see item update above).
+Closing an item keeps its schedule row live and its next occurrence intact; terminal items are filtered from outstanding/scheduled agenda entries and deadline evaluation, and their managed reminder does not fire. Reopening restores those entries, and the outstanding occurrence fires on the next tick if its time has passed. Closing a live recurring schedule requires `force: true` after a `409 schedule_active` refusal (see item update above).
 
 Release note: `/commitment` replaces `/schedule`. The five old GET, POST, PATCH, DELETE and POST resolve routes now return 404. There are no aliases or compatibility routes.
 
