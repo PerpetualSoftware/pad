@@ -370,6 +370,30 @@ describe('agenda Week and priority', () => {
   await waitFor(() => expect(screen.getByRole('button', { name: 'Week' })).toHaveAttribute('aria-pressed', 'true'));
   expect(localStorage.getItem('pad-agenda-mode:user-b')).toBeNull();
  });
+ it('reviews a crossing target and sends confirmation only after the checkbox is checked', async () => {
+  h.preview.mockResolvedValue(preview(undefined, { past_deadline: '2026-11-06T12:00:00Z' }));
+  await mount(); await drop();
+  const d = await screen.findByRole('dialog', { name: 'Review move' });
+  expect(h.move).not.toHaveBeenCalled();
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+  expect(h.move).not.toHaveBeenCalled();
+  await fireEvent.click(within(d).getByLabelText('Move past the deadline'));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1', confirm_past_deadline: true }));
+ });
+ it('re-previews the same target and opens review when a deadline crossing is refused', async () => {
+  h.preview.mockResolvedValueOnce(preview()).mockResolvedValue(preview(undefined, { revision: 'fresh', past_deadline: '2026-11-06T12:00:00Z' }));
+  h.move.mockRejectedValueOnce({ code: 'target_after_deadline', message: 'This moves the target past its hard deadline (2026-11-06T12:00:00Z).' });
+  await mount(); await drop();
+  const d = await screen.findByRole('dialog', { name: 'Review move' });
+  expect(h.preview).toHaveBeenCalledTimes(2);
+  expect(h.preview.mock.calls[1]).toEqual(h.preview.mock.calls[0]);
+  expect(within(d).getByText(/This moves the target past its hard deadline/)).toBeInTheDocument();
+  expect(h.move).toHaveBeenCalledTimes(1);
+  await fireEvent.click(within(d).getByLabelText('Move past the deadline'));
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+  await waitFor(() => expect(h.move).toHaveBeenLastCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'fresh', confirm_past_deadline: true }));
+ });
  it('cheap drag keeps the wall clock, uses the preview revision once and keeps the week', async () => {
   await mount(); await drop();
   await waitFor(() => expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:00:00.000Z', revision: 'revision-1' }));

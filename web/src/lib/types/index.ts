@@ -3944,6 +3944,7 @@ export interface AgendaResponse {
 export type ScheduleResolveState = 'done' | 'skip' | 'snooze' | 'move' | 'ack';
 
 export interface CommitmentResolveRequest {
+ confirm_past_deadline?: boolean;
  actual_done_at?: string;
 	occurrence_at: string;
 	state: ScheduleResolveState;
@@ -4176,6 +4177,7 @@ export interface CommitmentMovePreviewRequest {
  reason?: string;
 }
 export interface CommitmentMoveRequest extends CommitmentMovePreviewRequest {
+ confirm_past_deadline?: boolean;
  revision?: string;
  acknowledge_violations?: boolean;
 }
@@ -4187,6 +4189,7 @@ export interface CommitmentMoveChange {
  root?: boolean;
 }
 export interface CommitmentMoveResult {
+ past_deadline?: string;
  revision: string;
  changes: CommitmentMoveChange[];
  violations?: CommitmentMoveChange[];

@@ -18,6 +18,19 @@ describe('MoveImpactDialog', () => {
 		render(MoveImpactDialog, { entry, preview: { revision: 'r1', changes: [linked, root], ...preview }, zone: 'America/New_York', titles: { linked: 'Publish price list' }, mobile: false, pending: false, error: '', onclose, onsubmit, ...extra });
 		return { onsubmit, onclose, dialog: screen.getByRole('dialog', { name: 'Review move' }) };
 	}
+	it('requires independent confirmation of the target crossing its own deadline', async () => {
+		const { dialog, onsubmit } = mount({ past_deadline: '2026-11-18T14:00:00Z', violations: [linked] }, { mobile: true });
+		expect(within(dialog).getByText('This puts the target after its hard deadline, Wed 18, 09:00.')).toBeInTheDocument();
+		await fireEvent.click(within(dialog).getByRole('button', { name: 'Move target' }));
+		expect(within(dialog).getByText('Confirm moving past the deadline to continue.')).toBeInTheDocument();
+		expect(onsubmit).not.toHaveBeenCalled();
+		await fireEvent.click(within(dialog).getByLabelText('Move past the deadline'));
+		await fireEvent.click(within(dialog).getByRole('button', { name: 'Move target' }));
+		expect(onsubmit).not.toHaveBeenCalled();
+		await fireEvent.click(within(dialog).getByLabelText('Accept dates outside their bounds'));
+		await fireEvent.click(within(dialog).getByRole('button', { name: 'Move target' }));
+		expect(onsubmit).toHaveBeenCalledWith(undefined, true, true);
+	});
 	it('names the item and lists what moves: title, role and short dates, the moved item first', () => {
 		const { dialog } = mount();
 		expect(dialog.querySelector('.subject')).toHaveTextContent('Tide table import · Harbor App TASK-9');
@@ -37,7 +50,7 @@ describe('MoveImpactDialog', () => {
 		expect(within(dialog).getByRole('alert')).toHaveTextContent('Enter a reason.'); expect(onsubmit).not.toHaveBeenCalled();
 		await fireEvent.input(within(dialog).getByLabelText('Reason'), { target: { value: ' Agreed later ' } });
 		await fireEvent.click(within(dialog).getByRole('button', { name: 'Move and change deadline' }));
-		expect(onsubmit).toHaveBeenCalledWith('Agreed later', undefined);
+		expect(onsubmit).toHaveBeenCalledWith('Agreed later', undefined, undefined);
 	});
 	it('marks a change outside its bound and requires the acknowledgement', async () => {
 		const { dialog, onsubmit } = mount({ violations: [linked] });
@@ -48,7 +61,7 @@ describe('MoveImpactDialog', () => {
 		expect(within(dialog).getByRole('alert')).toHaveTextContent('Accept dates outside their bounds to move.'); expect(onsubmit).not.toHaveBeenCalled();
 		await fireEvent.click(within(dialog).getByLabelText('Accept dates outside their bounds'));
 		await fireEvent.click(within(dialog).getByRole('button', { name: 'Move target' }));
-		expect(onsubmit).toHaveBeenCalledWith(undefined, true);
+		expect(onsubmit).toHaveBeenCalledWith(undefined, true, undefined);
 	});
 	it('names both when a move changes the deadline and breaks bounds', () => {
 		const { dialog } = mount({ renegotiates_deadline: true, violations: [linked, { ...linked, item_id: 'other' }] });
