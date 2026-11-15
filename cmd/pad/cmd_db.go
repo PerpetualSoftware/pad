@@ -109,58 +109,47 @@ func dumpPostgres(dbURL, path string) error {
 	return nil
 }
 
-func backupPostgres(dbURL, outPath string) error {
+func backupPostgres(dbURL, outPath string) (string, error) {
 	if outPath == "-" {
-		return dumpPostgres(dbURL, outPath)
+		return "", dumpPostgres(dbURL, outPath)
 	}
 
-	info, err := os.Lstat(outPath)
-	if err == nil && info.Mode()&os.ModeSymlink != 0 {
-		outPath, err = filepath.EvalSymlinks(outPath)
-		if err != nil {
-			return fmt.Errorf("resolve backup destination: %w", err)
-		}
-		info, err = os.Stat(outPath)
+	outPath, err := resolveDBFilePath(outPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve backup destination: %w", err)
 	}
+	info, err := os.Lstat(outPath)
 	if err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("inspect backup destination: %w", err)
+		return "", fmt.Errorf("inspect backup destination: %w", err)
 	}
 	if info != nil && !info.Mode().IsRegular() {
-		return fmt.Errorf("backup destination must be a regular file: %s", outPath)
+		return "", fmt.Errorf("backup destination must be a regular file: %s", outPath)
 	}
 
-	// Resolve the parent before staging so a symlink followed by ".." lands on the right filesystem.
-	dir, _ := filepath.Split(outPath)
-	if dir == "" {
-		dir = "."
-	}
-	dir, err = filepath.EvalSymlinks(dir)
+	// Use the resolved destination throughout so a rotating symlink cannot redirect publication.
+	stageDir, err := os.MkdirTemp(filepath.Dir(outPath), ".pad-backup-*")
 	if err != nil {
-		return fmt.Errorf("resolve backup directory: %w", err)
-	}
-	stageDir, err := os.MkdirTemp(dir, ".pad-backup-*")
-	if err != nil {
-		return fmt.Errorf("stage PostgreSQL backup: %w", err)
+		return "", fmt.Errorf("stage PostgreSQL backup: %w", err)
 	}
 	defer os.RemoveAll(stageDir)
 	stagePath := filepath.Join(stageDir, "dump.sql")
 	if err := dumpPostgres(dbURL, stagePath); err != nil {
-		return err
+		return "", err
 	}
 	if info != nil {
 		file, err := os.OpenFile(stagePath, os.O_RDWR, 0)
 		if err != nil {
-			return fmt.Errorf("open staged backup: %w", err)
+			return "", fmt.Errorf("open staged backup: %w", err)
 		}
 		err = errors.Join(preserveDBFileOwnership(file, info), file.Chmod(info.Mode().Perm()), file.Sync(), file.Close())
 		if err != nil {
-			return fmt.Errorf("prepare staged backup: %w", err)
+			return "", fmt.Errorf("prepare staged backup: %w", err)
 		}
 	}
 	if err := os.Rename(stagePath, outPath); err != nil {
-		return fmt.Errorf("publish PostgreSQL backup: %w", err)
+		return "", fmt.Errorf("publish PostgreSQL backup: %w", err)
 	}
-	return nil
+	return outPath, nil
 }
 
 func dbBackupCmd() *cobra.Command {
@@ -196,17 +185,18 @@ the server resolves it (PAD_DB_PATH > PAD_DATA_DIR/pad.db > ~/.pad/pad.db).`,
 					fmt.Fprintf(os.Stderr, "Backing up PostgreSQL database %s to %s...\n", dbname, output)
 				}
 
-				if err := backupPostgres(dbURL, output); err != nil {
+				published, err := backupPostgres(dbURL, output)
+				if err != nil {
 					if cronMode {
 						slog.Error("backup failed", "error", err, "output", output)
 					}
 					return err
 				}
-				if output == "-" {
+				if published == "" {
 					return nil
 				}
 
-				if info, err := os.Stat(output); err == nil {
+				if info, err := os.Stat(published); err == nil {
 					sizeMB := float64(info.Size()) / 1024 / 1024
 					if cronMode {
 						slog.Info("backup completed", "output", output, "size_mb", fmt.Sprintf("%.1f", sizeMB))

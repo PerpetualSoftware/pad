@@ -28,6 +28,7 @@ else
   printf '%s' "$FAKE_DUMP_CONTENT" > "$file" || exit 91
 fi
 if [ -n "$FAKE_BLOCK_TARGET" ]; then mkdir "$FAKE_BLOCK_TARGET" || exit 92; fi
+if [ -n "$FAKE_SWITCH_LINK" ]; then ln -sfn "$FAKE_SWITCH_TO" "$FAKE_SWITCH_LINK" || exit 93; fi
 exit "$FAKE_DUMP_STATUS"
 `
 	if err := os.WriteFile(filepath.Join(bin, "pg_dump"), []byte(script), 0755); err != nil {
@@ -38,22 +39,32 @@ exit "$FAKE_DUMP_STATUS"
 	t.Setenv("PAD_DATABASE_URL", "postgres://user@localhost/test")
 	t.Setenv("PGSERVICE", "")
 	t.Setenv("FAKE_BLOCK_TARGET", "")
+	t.Setenv("FAKE_SWITCH_LINK", "")
 }
 
 func TestPostgresBackupAtomicOutput(t *testing.T) {
 	setupFakePostgresDump(t)
 	for _, tc := range []struct {
 		name, initial, dump, status string
-		exists, fail                bool
+		exists, fail, symlink       bool
 	}{
 		{name: "failure preserves existing", initial: "previous complete backup\n", dump: "partial", status: "23", exists: true, fail: true},
 		{name: "failure leaves absent", dump: "partial", status: "23", fail: true},
 		{name: "success replaces existing", initial: "previous complete backup\n", dump: "complete SQL\n", status: "0", exists: true},
 		{name: "success creates absent", dump: "complete SQL\n", status: "0"},
+		{name: "failure leaves dangling target absent", dump: "partial", status: "23", fail: true, symlink: true},
+		{name: "success creates dangling target", dump: "complete SQL\n", status: "0", symlink: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
 			output := filepath.Join(dir, "backup with spaces.sql")
+			target := output
+			if tc.symlink {
+				target = filepath.Join(dir, "target.sql")
+				if err := os.Symlink("target.sql", output); err != nil {
+					t.Fatal(err)
+				}
+			}
 			if tc.exists {
 				if err := os.WriteFile(output, []byte(tc.initial), 0640); err != nil {
 					t.Fatal(err)
@@ -75,7 +86,7 @@ func TestPostgresBackupAtomicOutput(t *testing.T) {
 			} else if err != nil {
 				t.Fatalf("backup failed: %v", err)
 			}
-			got, readErr := os.ReadFile(output)
+			got, readErr := os.ReadFile(target)
 			if tc.fail && !tc.exists {
 				if !os.IsNotExist(readErr) {
 					t.Errorf("output should be absent: contents %q, error %v", got, readErr)
@@ -102,6 +113,12 @@ func TestPostgresBackupAtomicOutput(t *testing.T) {
 			wantEntries := 1
 			if tc.fail && !tc.exists {
 				wantEntries = 0
+			}
+			if tc.symlink {
+				wantEntries++
+				if got, err := os.Readlink(output); err != nil || got != "target.sql" {
+					t.Errorf("symlink = %q, error %v", got, err)
+				}
 			}
 			if len(entries) != wantEntries {
 				t.Errorf("unexpected files after backup: %v", entries)
@@ -200,6 +217,37 @@ func TestPostgresBackupAtomicOutput(t *testing.T) {
 		}
 		if entries, err := os.ReadDir(dir); err != nil || len(entries) != 0 {
 			t.Errorf("directory entries = %v, error %v", entries, err)
+		}
+	})
+
+	t.Run("parent symlink rotation keeps the original destination", func(t *testing.T) {
+		dir := t.TempDir()
+		original := filepath.Join(dir, "original")
+		rotated := filepath.Join(dir, "rotated")
+		for _, parent := range []string{original, rotated} {
+			if err := os.Mkdir(parent, 0700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(parent, "backup.sql"), []byte("previous SQL\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		link := filepath.Join(dir, "current")
+		if err := os.Symlink(original, link); err != nil {
+			t.Fatal(err)
+		}
+		t.Setenv("FAKE_SWITCH_LINK", link)
+		t.Setenv("FAKE_SWITCH_TO", rotated)
+		cmd := dbBackupCmd()
+		cmd.SetArgs([]string{"--output", filepath.Join(link, "backup.sql")})
+		if err := cmd.Execute(); err != nil {
+			t.Fatal(err)
+		}
+		for parent, want := range map[string]string{original: "complete SQL\n", rotated: "previous SQL\n"} {
+			got, err := os.ReadFile(filepath.Join(parent, "backup.sql"))
+			if err != nil || string(got) != want {
+				t.Errorf("backup in %s = %q, error %v; want %q", parent, got, err, want)
+			}
 		}
 	})
 }

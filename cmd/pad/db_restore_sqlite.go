@@ -30,7 +30,7 @@ func restoreSQLite(inputPath, dstPath string) error {
 	}
 	// Keep configured symlinks intact, including links whose database was lost.
 	var err error
-	dstPath, err = resolveSQLiteRestorePath(dstPath)
+	dstPath, err = resolveDBFilePath(dstPath)
 	if err != nil {
 		return fmt.Errorf("resolve database path: %w", err)
 	}
@@ -124,29 +124,41 @@ func restoreSQLite(inputPath, dstPath string) error {
 	return nil
 }
 
-func resolveSQLiteRestorePath(path string) (string, error) {
+// resolveDBFilePath resolves symlinks even when the output file does not exist.
+func resolveDBFilePath(path string) (string, error) {
 	for range 40 {
-		resolved, err := filepath.EvalSymlinks(path)
-		if err == nil || !os.IsNotExist(err) {
-			return resolved, err
+		dir, name := filepath.Split(path)
+		if name == "" {
+			return "", fmt.Errorf("destination must name a file: %s", path)
 		}
-		info, err := os.Lstat(path)
-		if err == nil && info.Mode()&os.ModeSymlink != 0 {
-			target, err := os.Readlink(path)
-			if err != nil {
-				return "", err
-			}
-			if !filepath.IsAbs(target) {
-				target = filepath.Join(filepath.Dir(path), target)
-			}
-			path = target
-			continue
+		if dir == "" {
+			dir = "."
 		}
-		if err != nil && !os.IsNotExist(err) {
+		// Split keeps ".." intact until EvalSymlinks resolves the preceding component.
+		parent, err := filepath.EvalSymlinks(dir)
+		if err != nil {
 			return "", err
 		}
-		parent, err := filepath.EvalSymlinks(filepath.Dir(path))
-		return filepath.Join(parent, filepath.Base(path)), err
+		path = filepath.Join(parent, name)
+		info, err := os.Lstat(path)
+		if os.IsNotExist(err) {
+			return path, nil
+		}
+		if err != nil {
+			return "", err
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			return path, nil
+		}
+		target, err := os.Readlink(path)
+		if err != nil {
+			return "", err
+		}
+		if !filepath.IsAbs(target) {
+			separator := string(filepath.Separator)
+			target = strings.TrimRight(parent, separator) + separator + target
+		}
+		path = target
 	}
 	return "", errors.New("too many destination symlinks")
 }
