@@ -41,7 +41,17 @@
 	const day = $derived(selectedDay || todayIn(zone));
 	const isAgent = false;
 	let audience = $state<AudienceView>(defaultAudience(isAgent));
-	function readAudience() { audience = parseAudience(new URLSearchParams(currentSearch()).get('audience'), isAgent); }
+	function readAudience() {
+		const value = new URLSearchParams(currentSearch()).get('audience');
+		const parsed = parseAudience(value, isAgent);
+		if (value === parsed) { audience = parsed; return; }
+		const userId = authStore.user?.id;
+		let stored: string | null = null;
+		if (userId) {
+			try { stored = localStorage.getItem(`pad-agenda-audience:${userId}`); } catch { /* Storage is optional. */ }
+		}
+		audience = parseAudience(stored, isAgent);
+	}
 	onMount(readAudience);
 	afterNavigate(navigation => { if (!navigation.shallow) readAudience(); });
 	function setAudience(value: AudienceView) {
@@ -51,6 +61,9 @@
 		if (value === defaultAudience(isAgent)) url.searchParams.delete('audience');
 		else url.searchParams.set('audience', value);
 		void goto(url, { replace: true, reset: false });
+		const userId = authStore.user?.id;
+		if (!userId || userId !== preferenceUser) return;
+		try { localStorage.setItem(`pad-agenda-audience:${userId}`, value); } catch { /* Keep the in-memory choice. */ }
 	}
 	let mode = $state<'week' | 'day' | 'month'>('week');
 	const month = $derived(day.slice(0, 7));
@@ -253,6 +266,7 @@
 		const userId = authStore.user?.id;
 		untrack(() => {
 			preferenceUser = userId;
+			readAudience();
 			let value = true;
 			let savedMode: 'week' | 'day' | 'month' = 'week';
 			if (userId) {
