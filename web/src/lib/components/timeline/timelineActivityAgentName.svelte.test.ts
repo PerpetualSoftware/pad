@@ -119,3 +119,17 @@ describe('TimelineActivityCard agent name', () => {
 		expect(queryByText('wren')).toBeNull();
 	});
 });
+
+
+describe('schedule reopen activity (TASK-4539)', () => {
+ it.each([['done', 'Done'], ['skip', 'Skip'], ['snooze', 'Snooze'], ['move', 'Move'], ['unknown', '']])('names the undone %s operation and original actor', (state, label) => {
+  const { container } = render(TimelineActivityCard, { activity: activity({ action: 'schedule_reopened', actor: 'agent', actor_name: 'Dave', metadata: JSON.stringify({ state, original_actor: 'user', agent: 'wren' }) }) });
+  expect(container.querySelector('.action-label')?.textContent).toBe(`Reopened schedule occurrence${label ? `: undid ${label}` : ''} (resolved by User)`);
+  expect(container.querySelector('.actor-label')?.textContent).toBe('wren');
+  expect(container.querySelector('.actor-name')?.textContent).toBe('Dave');
+ });
+ it('omits the original actor suffix when actors match', () => {
+  const { container } = render(TimelineActivityCard, { activity: activity({ action: 'schedule_reopened', actor: 'user', metadata: JSON.stringify({ state: 'done', original_actor: 'user' }) }) });
+  expect(container.querySelector('.action-label')?.textContent).toBe('Reopened schedule occurrence: undid Done');
+ });
+});

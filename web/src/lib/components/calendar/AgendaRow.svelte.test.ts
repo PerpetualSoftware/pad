@@ -159,3 +159,16 @@ describe('AgendaRow', () => {
 		});
 	});
 });
+
+
+describe('agenda Undo menu layout (TASK-4539)', () => {
+ it.each([false, true])('history has only the Undo menu on compact=%s', async compact => {
+  const onAction = vi.fn(); const getUndo = vi.fn().mockResolvedValue({ label: 'Undo Done', onAction });
+  render(AgendaRow, { props: { entry: entry({ state: 'done', occurrence_key: 'key' }), zone: 'UTC', compact, onaction: vi.fn() }, context: new Map([['agendaUndo', getUndo]]) });
+  expect(screen.queryByRole('button', { name: 'Done TASK-1' })).toBeNull();
+  await fireEvent.click(screen.getByRole('button', { name: 'Actions TASK-1' }));
+  await fireEvent.click(await screen.findByRole('menuitem', { name: 'Undo Done' }));
+  expect(getUndo).toHaveBeenCalledTimes(1); expect(onAction).toHaveBeenCalledTimes(1);
+  expect(screen.queryByRole('menuitem', { name: 'Skip' })).toBeNull();
+ });
+});
