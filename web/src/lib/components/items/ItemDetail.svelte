@@ -3674,7 +3674,7 @@
 			// detail page, surface the structured 409 and offer to
 			// force-override instead of toasting a vague "Failed to
 			// save".
-			if (isOpenChildrenError(e)) {
+			if (isOpenChildrenError(e) || (e instanceof PadApiError && e.code === 'schedule_active')) {
 				// Don't even OPEN the confirm dialog if the pane already switched
 				// items while the 409 was in flight — A's dialog must not appear
 				// over B. The retry callback is likewise fenced so a force-PATCH

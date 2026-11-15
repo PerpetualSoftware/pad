@@ -2379,13 +2379,20 @@ type OpenChildEntry struct {
 	CollectionSlug string `json:"collection_slug"`
 }
 
+// ScheduleActiveDetails describes the recurring schedule a forced close silences.
+type ScheduleActiveDetails struct {
+	ScheduleID string  `json:"schedule_id"`
+	NextAt     *string `json:"next_at"`
+}
+
 // OpenChildrenDetails is the parsed shape of APIError.Details when
 // Code == "open_children".
 type OpenChildrenDetails struct {
-	OpenChildren       []OpenChildEntry `json:"open_children"`
-	HiddenBlockerCount int              `json:"hidden_blocker_count"`
-	DoneField          string           `json:"done_field"`
-	AttemptedValue     string           `json:"attempted_value"`
+	OpenChildren       []OpenChildEntry       `json:"open_children"`
+	HiddenBlockerCount int                    `json:"hidden_blocker_count"`
+	DoneField          string                 `json:"done_field"`
+	AttemptedValue     string                 `json:"attempted_value"`
+	ScheduleActive     *ScheduleActiveDetails `json:"schedule_active,omitempty"`
 }
 
 // AsOpenChildren returns the parsed open-children details when this
@@ -2466,6 +2473,10 @@ func WriteOpenChildrenError(w io.Writer, apiErr *APIError, oc *OpenChildrenDetai
 			noun = "children"
 		}
 		fmt.Fprintf(w, "  (+%d hidden %s you don't have access to)\n", oc.HiddenBlockerCount, noun)
+	}
+	if oc.ScheduleActive != nil {
+		fmt.Fprintln(w, "This item has a recurring schedule. Closing it stops its occurrences until it is reopened.")
+		writeNextOccurrence(w, oc.ScheduleActive.NextAt)
 	}
 	fmt.Fprintln(w, "Pass --force to override.")
 }
@@ -3784,4 +3795,39 @@ func (c *Client) SetCommitmentForecast(ws, ref, value, source string) (json.RawM
 func (c *Client) ClearCommitmentForecast(ws, ref string) (json.RawMessage, error) {
 	var result json.RawMessage
 	return result, c.deleteWithResult(commitmentBase(ws, ref)+"/forecast", &result)
+}
+
+// WriteScheduleActiveError preserves the refusal for stdio MCP and names the
+// occurrence that closing will silence for CLI users.
+func WriteScheduleActiveError(w io.Writer, apiErr *APIError) {
+	envelope := map[string]any{"error": map[string]any{"code": apiErr.Code, "message": apiErr.Message, "details": apiErr.Details}}
+	if data, err := json.Marshal(envelope); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+	// The server message ends in its own retry advice ("Retry with force"); the
+	// CLI states the same fact with its flag name instead of repeating both.
+	fmt.Fprintln(w, "This item has a recurring schedule. Closing it stops its occurrences until it is reopened.")
+	var details ScheduleActiveDetails
+	_ = json.Unmarshal(apiErr.Details, &details)
+	writeNextOccurrence(w, details.NextAt)
+	fmt.Fprintln(w, "Rerun with --force to close it anyway.")
+}
+
+// ScheduleActiveNextAt returns the next occurrence a schedule_active refusal
+// names, or "not currently set".
+func ScheduleActiveNextAt(raw json.RawMessage) string {
+	var details ScheduleActiveDetails
+	_ = json.Unmarshal(raw, &details)
+	if details.NextAt == nil {
+		return "not currently set"
+	}
+	return *details.NextAt
+}
+
+func writeNextOccurrence(w io.Writer, nextAt *string) {
+	next := "not currently set"
+	if nextAt != nil {
+		next = *nextAt
+	}
+	fmt.Fprintf(w, "Next occurrence: %s\n", next)
 }

@@ -1511,10 +1511,10 @@ type ItemUpdate struct {
 	ClearAssignedUser bool `json:"clear_assigned_user,omitempty"`
 	ClearAgentRole    bool `json:"clear_agent_role,omitempty"`
 
-	// Force, when true, overrides the server-side open-children guard
+	// Force, when true, overrides the open-children and live recurring schedule guards
 	// (IDEA-1494) that otherwise rejects a non-terminal → terminal
 	// done-field transition while the item still has non-terminal
-	// children. Transport-only: the store layer never sees it (the
+	// children or a live recurring rule. Transport-only: the store layer never sees it (the
 	// handler consumes it before calling UpdateItem). Used by `pad item
 	// update --force` and MCP `pad_item.action: update` with
 	// `force: true`.

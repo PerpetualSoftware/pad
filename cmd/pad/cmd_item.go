@@ -1551,6 +1551,10 @@ A body write with neither prints a warning, and a future release refuses it
 				// the same structured payload MCP clients consume so
 				// the human and machine views agree.
 				if apiErr := cli.AsAPIError(err); apiErr != nil {
+					if apiErr.Code == "schedule_active" {
+						cli.WriteScheduleActiveError(os.Stderr, apiErr)
+						return fmt.Errorf("update rejected: recurring schedule active")
+					}
 					if oc := apiErr.AsOpenChildren(); oc != nil {
 						cli.WriteOpenChildrenError(os.Stderr, apiErr, oc)
 						// Return a bare error so cobra exits non-zero
@@ -1626,7 +1630,7 @@ A body write with neither prints a warning, and a future release refuses it
 	cmd.Flags().StringVar(&fieldsJSON, "fields-json", "", fieldsJSONFlagUsage)
 	cmd.Flags().IntVar(&sortOrder, "sort-order", 0, "set the item's sort_order key (lower appears first; a sort key, not a position: drag-reorder writes values far apart, TASK-3525)")
 	cmd.Flags().StringVar(&comment, "comment", "", "attach a comment explaining this update (e.g. why status changed)")
-	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking the item terminal even if children are non-terminal)")
+	cmd.Flags().BoolVar(&force, "force", false, "override the open-children and active recurring schedule guards")
 	cmd.Flags().StringVar(&expectedUpdatedAt, "expected-updated-at", "", "optimistic concurrency: RFC3339 updated_at you last read; the update is rejected with a conflict (exit non-zero) if the item changed since")
 	cmd.Flags().BoolVar(&overwritePendingEdits, "overwrite-pending-edits", false, "with a version token and new content: replace unflushed edits a browser tab holds for this item instead of being refused with content_pending_flush (BUG-3133)")
 	cmd.Flags().BoolVar(&replaceBody, "replace", false, "with --content, --stdin or --clear-content: overwrite the body on purpose, whatever changed since you read it (no version token). A body write with neither this nor --expected-seq is warned about now and will be refused in a future release (PLAN-3555)")
@@ -4373,6 +4377,16 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 								if oc.HiddenBlockerCount > 0 {
 									fmt.Printf("      (+%d hidden blocker(s) you don't have access to)\n", oc.HiddenBlockerCount)
 								}
+								if oc.ScheduleActive != nil {
+									next := "not currently set"
+									if oc.ScheduleActive.NextAt != nil {
+										next = *oc.ScheduleActive.NextAt
+									}
+									fmt.Printf("      also has a recurring schedule (next occurrence: %s); --force stops its occurrences until it is reopened\n", next)
+								}
+							}
+							if apiErr.Code == "schedule_active" {
+								fmt.Printf("      recurring schedule active (next occurrence: %s); rerun with --force to close it anyway\n", cli.ScheduleActiveNextAt(apiErr.Details))
 							}
 						}
 					}
@@ -4410,7 +4424,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 
 	cmd.Flags().StringVar(&status, "status", "", "set status for all items")
 	cmd.Flags().StringVar(&priority, "priority", "", "set priority for all items")
-	cmd.Flags().BoolVar(&force, "force", false, "override the open-children guard (allow marking items terminal even if children are non-terminal)")
+	cmd.Flags().BoolVar(&force, "force", false, "override the open-children and active recurring schedule guards")
 
 	return cmd
 }

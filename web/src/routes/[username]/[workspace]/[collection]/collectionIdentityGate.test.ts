@@ -25,8 +25,8 @@ identityGateSuite({
 				why: 'loadSeq then identityHeld(epochAtEntry) after every await, with collection writes also gated on collectionGen; re-stamps identityEpochAtLoad at entry; the finally clears metaLoading on loadSeq alone, deliberately',
 			},
 			handleStatusChange: {
-				reviewed: '9e412c6a5b0d',
-				why: `${ENTRY}; the open-children confirm gets identityHeld as its re-check, and the forced re-send checks again; the rethrows stay unfenced so BoardView can undo its optimistic move`,
+				reviewed: '176e94e23013',
+				why: `${ENTRY}; the closing-guard confirm (open_children or schedule_active, TASK-4538) gets identityHeld as its re-check, and the forced re-send checks again; the rethrows stay unfenced so BoardView can undo its optimistic move`,
 			},
 			handleReorder: { reviewed: '6b5001d2be7c', why: 'optimistic upserts before any await (persistReorder applies them before its one request); identityHeld(epochAtEntry) after the request, before each settle, and before a refusal restores the original rows (BUG-3259, TASK-3517). TASK-3525: the moved card id is passed to the synchronous planner; no await or check moved. BUG-3699/3700 rework: each card carries the token of the reorder that wrote it; a settle, rollback or final restore touches only a card still holding it, never writes a landed write without a seq, and never over a row at or past the landed seq; after the request it returns unless identityHeld(epochAtEntry), reads every written card back on a bounded retry, re-checks identityHeld(epochAtEntry) after the reads, restores an unconfirmed card to its last stamped row (kept across overlapping reorders in lastConfirmed) and marks the scope stale; writes every card another reorder still holds, at its visible value' },
 			handleGroupReorder: {

@@ -456,3 +456,19 @@ workspace creation blocked: plan limit reached
 		t.Errorf("upgrade_url: got %q, want /settings/billing", got.UpgradeURL)
 	}
 }
+
+func TestScheduleActivePreservesCodeAndDetails(t *testing.T) {
+	body := `{"error":{"code":"schedule_active","message":"Recurring schedule; retry with force","details":{"schedule_id":"sc-1","next_at":"2099-01-01T09:00:00Z"}}}`
+	for _, transport := range []string{"http", "stdio"} {
+		t.Run(transport, func(t *testing.T) {
+			res := classifyHTTPStatus(context.Background(), "item update", 409, []byte(body), nil)
+			if transport == "stdio" {
+				res = classifyExecError(context.Background(), []string{"item", "update"}, errors.New("exit status 1"), cli.StructuredErrorMarker+body, nil)
+			}
+			env := res.StructuredContent.(ErrorEnvelope)
+			if env.Error.Code != "schedule_active" || string(env.Error.Details) != `{"schedule_id":"sc-1","next_at":"2099-01-01T09:00:00Z"}` {
+				t.Fatalf("error: %+v", env.Error)
+			}
+		})
+	}
+}

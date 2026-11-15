@@ -11,12 +11,13 @@
 // where a quick second drop could fire before the first confirm
 // resolves; queueing avoids dropping the second prompt on the floor.
 
+import type { ScheduleActiveDetails } from '$lib/types';
 import type { OpenChildrenDetails } from '$lib/items/openChildrenError';
 import { authStore } from './auth.svelte';
 
 interface PendingRequest {
 	parentRef: string;
-	details: OpenChildrenDetails;
+	details: OpenChildrenDetails | ScheduleActiveDetails;
 	resolve: (confirmed: boolean) => void;
 	/**
 	 * Whether the question is still worth asking, supplied by the REQUESTER
@@ -59,7 +60,7 @@ function advanceQueue(): void {
  */
 function request(
 	parentRef: string,
-	details: OpenChildrenDetails,
+	details: OpenChildrenDetails | ScheduleActiveDetails,
 	isLive?: () => boolean
 ): Promise<boolean> {
 	return new Promise<boolean>((resolve) => {

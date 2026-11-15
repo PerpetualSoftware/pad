@@ -2336,7 +2336,10 @@ const CmdhelpVersion = "0.1"
 // item's schedule (item_still_open) unless end_schedule is true; new action
 // schedule-dismiss (not_ended on a live schedule). Agenda priority rows gain
 // reason schedule_ended with ended_at.
-const ToolSurfaceVersion = "0.116"
+// v0.117 — TASK-4538: update and bulk-update refuse closing a live recurring
+// schedule with schedule_active unless force is true. Behaviour bump: previously
+// successful closes now require consent; the parameter shape is unchanged.
+const ToolSurfaceVersion = "0.117"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

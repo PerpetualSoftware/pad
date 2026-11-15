@@ -167,7 +167,8 @@ class PadApiError extends Error {
 	 * `code` cast to the matching payload. The canonical consumer
 	 * today is `open_children` (IDEA-1494 / BUG-1538), whose details
 	 * carry `{ open_children, hidden_blocker_count, done_field,
-	 * attempted_value }`. Undefined for codes that don't supply it.
+	 * attempted_value }`. `schedule_active` carries
+	 * `{ schedule_id, next_at }`. Undefined for codes without details.
 	 *
 	 * For `plan_limit_exceeded` (TASK-788) the shape is:
 	 *   { feature: string, limit: number, current: number, plan: string,
