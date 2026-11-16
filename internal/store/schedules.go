@@ -531,14 +531,11 @@ func (s *Store) createScheduleRolesOptionsAt(workspaceID, itemID string, in mode
 			if err != nil {
 				return nil, err
 			}
-			if existing == nil || existing.EndedAt == nil || existing.ReminderID != nil {
-				return nil, ErrScheduleExists
-			}
-			simple, err := s.simpleReminderCommitmentQ(tx, existing)
+			reusable, err := s.reusableEndedReminderCarrierQ(tx, existing)
 			if err != nil {
 				return nil, err
 			}
-			if !simple {
+			if !reusable {
 				return nil, ErrScheduleExists
 			}
 			options.Reminder, err = s.retargetSimpleReminderTx(tx, existing, NormalizeInstant(arm.RemindAt))

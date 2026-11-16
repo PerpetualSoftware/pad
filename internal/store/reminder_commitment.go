@@ -25,6 +25,26 @@ func (s *Store) reminderQ(q Queryer, workspaceID, id string) (*models.Reminder, 
 // simpleReminderCommitmentQ checks capabilities, not provenance. A native
 // start-only commitment has the same compatibility operations as a converted one.
 func (s *Store) simpleReminderCommitmentQ(q Queryer, sc *models.ItemSchedule) (bool, error) {
+	ok, err := s.reminderCommitmentShapeQ(q, sc)
+	if err != nil || !ok {
+		return false, err
+	}
+	var n int
+	err = q.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_gates WHERE blocked_item_id=? OR blocker_item_id=?`), sc.ItemID, sc.ItemID).Scan(&n)
+	return n == 0, err
+}
+
+// reusableEndedReminderCarrierQ ignores item-level gates: rearming preserves
+// those gates, and the ordinary commitment firing path continues to honor them.
+func (s *Store) reusableEndedReminderCarrierQ(q Queryer, sc *models.ItemSchedule) (bool, error) {
+	if sc == nil || sc.EndedAt == nil || sc.ReminderID != nil {
+		return false, nil
+	}
+	return s.reminderCommitmentShapeQ(q, sc)
+}
+
+// reminderCommitmentShapeQ checks the schedule itself, including time links.
+func (s *Store) reminderCommitmentShapeQ(q Queryer, sc *models.ItemSchedule) (bool, error) {
 	if sc == nil || sc.Floating || sc.Tz == nil || len(sc.Dtstart) <= 10 || derefStr(sc.Rrule) != "" || len(sc.RDates) > 0 || len(sc.ExDates) > 0 || sc.Anchor != "calendar" || sc.LeadMinutes != 0 || sc.Dtend != nil {
 		return false, nil
 	}
@@ -36,7 +56,7 @@ func (s *Store) simpleReminderCommitmentQ(q Queryer, sc *models.ItemSchedule) (b
 		return false, nil
 	}
 	var n int
-	err = q.QueryRow(s.q(`SELECT (SELECT COUNT(*) FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?) + (SELECT COUNT(*) FROM schedule_gates WHERE blocked_item_id=? OR blocker_item_id=?)`), sc.ID, sc.ID, sc.ItemID, sc.ItemID).Scan(&n)
+	err = q.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?`), sc.ID, sc.ID).Scan(&n)
 	return n == 0, err
 }
 

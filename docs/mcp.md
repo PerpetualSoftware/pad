@@ -746,8 +746,10 @@ A past instant is retained and fires on the next eligible tick. Native `start`
 continues to refuse a passed one-shot. Existing commitments, even acknowledged
 or ended ones, return `schedule_exists`; use move/edit explicitly. The exception
 is an ended simple run-once commitment without an alarm: `remind_at` retargets
-and re-arms it in place, keeping its history. Mixed instant and wall-time
-parameters remain refused.
+and re-arms it in place, keeping its history. Time links prevent reuse; item-level
+gates do not. Existing gates stay unchanged and continue to govern firing; legacy
+operations by reminder ID still return `reminder_managed` on gated items. Mixed
+instant and wall-time parameters remain refused.
 
 `ack-reminder` acknowledges the outstanding commitment, suppressing both reminder
 and ordinary next/ready suggestions while retaining its agenda entry. By-id
