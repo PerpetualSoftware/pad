@@ -20,7 +20,9 @@
 		const arrived = path !== lastPath;
 		lastPath = path;
 		untrack(() => {
-			if (YOU_PATHS.has(path)) { if (arrived) void homeOverview.load(path, true); }
+			// Agenda owns its arrival refresh after its first list read.
+			if (path === '/agenda') return;
+			if (YOU_PATHS.has(path)) { if (arrived) void homeOverview.arrive(path); }
 			else if (!homeOverview.needs && !homeOverview.agenda && !homeOverview.loading) void homeOverview.load('shell');
 		});
 	});

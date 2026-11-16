@@ -118,12 +118,12 @@ it('shows today’s completed expander on phone and expands compact rows', async
 	expect(today.getByText('Nothing scheduled today.')).toBeInTheDocument();
 });
 
-it('refreshes the phone overview once per You-page arrival', async () => {
+it('refreshes the phone overview on Home and Needs arrivals, leaving Agenda to its page', async () => {
 	render(BottomNav);
 	const home = render(Home);
 	await vi.waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
 	await home.unmount();
-	for (const [path, calls] of [['/needs', 2], ['/agenda', 3], ['/', 4]] as const) {
+	for (const [path, calls] of [['/needs', 2], ['/agenda', 2], ['/', 3]] as const) {
 		page.url = new URL(`http://localhost${path}`);
 		if (path === '/') render(Home);
 		await tick();

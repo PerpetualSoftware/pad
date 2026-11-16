@@ -4,7 +4,8 @@ import { swipeStrip } from '../../../test/weekStripGesture';
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
-const h = vi.hoisted(() => ({ toast: vi.fn(), reopen: vi.fn(), agenda: vi.fn(), counts: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+const h = vi.hoisted(() => ({ arrive: vi.fn(), toast: vi.fn(), reopen: vi.fn(), agenda: vi.fn(), counts: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
+vi.mock('$lib/stores/homeOverview.svelte', () => ({ homeOverview: { arrive: h.arrive } }));
 vi.mock('$app/navigation', () => ({ afterNavigate: vi.fn(), goto: async (url: URL) => { window.history.replaceState({}, '', url); } }));
 vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getMyAgendaCounts: h.counts, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, reopenCommitment: h.reopen, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
@@ -27,7 +28,7 @@ const workspaceGroups: WorkspaceGroup[] = [{ id: 'all', name: 'All', kind: 'all'
 const workspace = { id: 'ws-1', name: 'First workspace', slug: 'work', owner_username: 'alice' };
 const frozenAt = '2026-11-05T17:00:00Z';
 const response = (entries: AgendaEntry[] = [row()], extra: Partial<AgendaResponse> = {}): AgendaResponse => ({ from: '', to: '', tz: 'America/New_York', entries, window_complete:true,priority_list:[],priority_list_complete:true,waiting_on:[],waiting_on_complete:true,no_date:[],no_date_complete:true, ...extra });
-const deferred = <T,>() => { let resolve!: (value: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; };
+const deferred = <T,>() => { let resolve!: (value: T) => void; let reject!: (reason: unknown) => void; const promise = new Promise<T>((r, j) => { resolve = r; reject = j; }); return { promise, resolve, reject }; };
 const settle = async () => { await new Promise(r => setTimeout(r, 0)); flushSync(); };
 async function mount() { render(Agenda); await screen.findAllByText('First item'); }
 async function menu(ref = 'EX-30') { await fireEvent.click(screen.getByRole('button', { name: `Actions ${ref}` })); }
@@ -2203,5 +2204,63 @@ describe('week strip swipe navigation', () => {
   await swipeStrip(screen.getByRole('group', { name: 'Days' }), 80);
   expect(stripDays()[0].dataset.stripDay).toBe('2026-11-05');
   if (mode === 'day') expect(stripDay('2026-11-06')).toHaveAttribute('aria-pressed', 'true');
+ });
+});
+
+
+describe('overview arrival after the first current list read (TASK-4593)', () => {
+ it('waits for the list, not counts, and never repeats after a quiet reload', async () => {
+  const list = deferred<AgendaResponse>();
+  const counts = deferred<{ from: string; to: string; tz: string; counts: [] }>();
+  h.agenda.mockReturnValueOnce(list.promise);
+  h.counts.mockReturnValueOnce(counts.promise);
+  render(Agenda);
+  expect(h.arrive).not.toHaveBeenCalled();
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  await settle();
+  expect(h.counts).toHaveBeenCalledTimes(1);
+  expect(h.arrive).not.toHaveBeenCalled();
+  list.resolve(response());
+  await screen.findByText('First item');
+  expect(h.arrive).toHaveBeenCalledExactlyOnceWith('/agenda');
+  await fireEvent.click(screen.getByRole('button', { name: 'Done EX-30' }));
+  await said('Occurrence marked done.', 'success');
+  expect(h.agenda).toHaveBeenCalledTimes(2);
+  expect(h.arrive).toHaveBeenCalledTimes(1);
+  counts.resolve({ from: '', to: '', tz: 'UTC', counts: [] });
+  await settle();
+  expect(h.arrive).toHaveBeenCalledTimes(1);
+ });
+ it('refreshes the overview after the first list rejects', async () => {
+  const list = deferred<AgendaResponse>(); h.agenda.mockReturnValueOnce(list.promise);
+  render(Agenda);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  expect(h.arrive).not.toHaveBeenCalled();
+  list.reject(new Error('offline'));
+  await waitFor(() => expect(h.arrive).toHaveBeenCalledExactlyOnceWith('/agenda'));
+ });
+ it('skips a superseded read and waits for the next current read', async () => {
+  const first = deferred<AgendaResponse>(); const next = deferred<AgendaResponse>();
+  h.agenda.mockReturnValueOnce(first.promise).mockReturnValueOnce(next.promise);
+  render(Agenda);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(1));
+  h.user = { id: 'user-a', timezone: 'UTC' }; h.signal?.set('auth', 1);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  first.resolve(response()); await settle();
+  expect(h.arrive).not.toHaveBeenCalled();
+  next.resolve(response());
+  await waitFor(() => expect(h.arrive).toHaveBeenCalledExactlyOnceWith('/agenda'));
+ });
+ it('refreshes the overview again after the identity changes on the page', async () => {
+  render(Agenda);
+  await waitFor(() => expect(h.arrive).toHaveBeenCalledExactlyOnceWith('/agenda'));
+  h.epoch++; h.user = { id: 'user-b', timezone: 'UTC' }; h.signal?.set('auth', 2);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(h.arrive).toHaveBeenCalledTimes(2));
+  expect(h.arrive).toHaveBeenLastCalledWith('/agenda');
+ });
+ it('does not arrive without a user', async () => {
+  h.user = null; render(Agenda); await settle();
+  expect(h.agenda).not.toHaveBeenCalled(); expect(h.arrive).not.toHaveBeenCalled();
  });
 });

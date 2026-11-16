@@ -6,6 +6,7 @@
 	import { audienceCounts, defaultAudience, filterAudience, parseAudience, splitAudience, type AudienceView } from '$lib/calendar/audience';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import { agendaUndoContext, resolutionLabel, type AgendaUndo } from '$lib/calendar/undo';
 	import { toastStore, type ToastAction } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
@@ -136,6 +137,8 @@
 	const emptyGroup = $derived(selection.kind === 'group' && workspaces !== null && !!workspaceGroups?.some(group =>
 		group.id === selection.id && group.kind === 'named' && !group.workspace_ids.some(id => workspaces!.some(workspace => workspace.id === id))));
 	let loadedUser: string | undefined;
+	// Plain let: the loader reads and writes it. Once per mount and identity: the navs leave the /agenda arrival to this page.
+	let overviewArrived = false;
 	let preferenceUser: string | undefined;
 	let dragSerial = 0;
 	let hoverDay = $state('');
@@ -411,7 +414,7 @@
 		refusedWorkspace = null; workspacesLoading = false; workspacesError = false;
 		setSelection({ kind: 'group', id: 'all' }, false);
 		pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; endChoice = null; endError = '';
-		review = null; committing = false; linkedTitles = {}; lastAnnouncedMonth = ''; loadedUser = userId;
+		review = null; committing = false; linkedTitles = {}; lastAnnouncedMonth = ''; loadedUser = userId; overviewArrived = false;
 		if (!userId) { groupsReady = true; return; }
 		let remembered = 'all';
 		try { remembered = localStorage.getItem(`pad-agenda-group:${userId}`) || 'all'; } catch { /* Storage is optional. */ }
@@ -531,7 +534,13 @@
 			if (emptyGroup) { data = null; savedRefreshError = false; return true; }
 			monthGrid?.cancelFocus(); loadError = true; return false;
 		} finally {
-			if (current()) { loading = false; updating = false; }
+			if (current()) {
+				loading = false; updating = false;
+				if (!overviewArrived) {
+					overviewArrived = true;
+					void homeOverview.arrive('/agenda');
+				}
+			}
 		}
 	}
 	$effect(() => {

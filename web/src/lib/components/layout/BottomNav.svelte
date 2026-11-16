@@ -97,7 +97,7 @@
 		closeAllSurfaces();
 		if (chatSurface.closeThen(() => void goto('/'))) event.preventDefault();
 	}
-	// Sole overview loader on phone You-page arrivals; Home only loads on desktop.
+	// Own Home and Needs arrivals on phone; Agenda waits for its first list read.
 	// Match YouNav's refresh policy without tracking loader-owned state.
 	let lastPath = '';
 	$effect(() => {
@@ -106,7 +106,8 @@
 		const arrived = path !== lastPath;
 		lastPath = path;
 		untrack(() => {
-			if (homeActive) { if (arrived) void homeOverview.load(path, true); }
+			if (path === '/agenda') return;
+			if (homeActive) { if (arrived) void homeOverview.arrive(path); }
 			else if (!homeOverview.needs && !homeOverview.agenda && !homeOverview.loading) void homeOverview.load('shell');
 		});
 	});
