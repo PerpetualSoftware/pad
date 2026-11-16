@@ -296,7 +296,7 @@ func TestUnreadableReminderReuse(t *testing.T) {
 
 func TestEndedReminderCreateRefusals(t *testing.T) {
 	for _, pg := range []bool{false, true} {
-		for _, shape := range []string{"alarm", "recurring"} {
+		for _, shape := range []string{"alarm", "recurring", "parent_link", "child_link"} {
 			t.Run(fmt.Sprintf("pg=%t/%s", pg, shape), func(t *testing.T) {
 				s, _, _ := reminderMigrationStore(t, pg)
 				ws := createTestWorkspace(t, s, "Ended")
@@ -314,12 +314,132 @@ func TestEndedReminderCreateRefusals(t *testing.T) {
 					s.mustExec(t, `DELETE FROM item_reminders WHERE schedule_id=?`, sc.ID)
 				}
 				s.mustExec(t, `UPDATE item_schedules SET next_at=NULL,next_wall=NULL,ended_at=? WHERE id=?`, past, sc.ID)
+				if shape == "parent_link" || shape == "child_link" {
+					other := createTestItem(t, s, ws.ID, col.ID, "Linked", "open")
+					linked, err := s.CreateCommitmentSchedule(ws.ID, other.ID, models.ScheduleCreate{Dtstart: "2099-01-02T00:00:00", Tz: "UTC"}, models.CommitmentRolesInput{})
+					if err != nil {
+						t.Fatal(err)
+					}
+					parent, child := sc.ID, linked.ID
+					if shape == "child_link" {
+						parent, child = child, parent
+					}
+					tx, err := s.db.Begin()
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer tx.Rollback()
+					if err := s.insertLinkTx(tx, ws.ID, linkRow{ID: newID(), ParentSchedule: parent, ParentRole: "target", ChildSchedule: child, ChildRole: "target", Offset: oneDay, CancelPolicy: models.LinkWaitingOn, CreatedAt: nowNano(), UpdatedAt: nowNano()}); err != nil {
+						t.Fatal(err)
+					}
+					if err := tx.Commit(); err != nil {
+						t.Fatal(err)
+					}
+				}
 				before := renegotiateRows(t, s, "item_schedules", "") + renegotiateRows(t, s, "item_reminders", "")
 				if _, err := s.CreateReminder(ws.ID, item.ID, future); !errors.Is(err, ErrScheduleExists) {
 					t.Fatalf("create=%v", err)
 				}
 				if before != renegotiateRows(t, s, "item_schedules", "")+renegotiateRows(t, s, "item_reminders", "") {
 					t.Fatal("refusal changed state")
+				}
+			})
+		}
+	}
+}
+
+func TestUnreadableReminderGatedReuse(t *testing.T) {
+	for _, pg := range []bool{false, true} {
+		for _, direction := range []string{"blocked", "blocker"} {
+			t.Run(fmt.Sprintf("pg=%t/%s", pg, direction), func(t *testing.T) {
+				s, name, body := reminderMigrationStore(t, pg)
+				ws, item, id := legacyReminderRow(t, s, "armed")
+				s.mustExec(t, `UPDATE item_reminders SET remind_at='unreadable' WHERE id=?`, id)
+				col := createTestCollection(t, s, ws, "Other tasks")
+				other := createTestItem(t, s, ws, col.ID, "Other commitment", "open")
+				otherSchedule, err := s.CreateCommitmentSchedule(ws, other.ID, models.ScheduleCreate{Dtstart: "2099-01-01T00:00:00", Tz: "UTC"}, models.CommitmentRolesInput{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				blocked, blocker := item, other.ID
+				if direction == "blocker" {
+					blocked, blocker = other.ID, item
+				}
+				access := models.CommitmentAccess{Readable: map[string]bool{item: true, other.ID: true}, Editable: map[string]bool{item: true, other.ID: true}}
+				gate, err := s.CreateScheduleGate(ws, blocked, blocker, access)
+				if err != nil {
+					t.Fatal(err)
+				}
+				gateRows := renegotiateRows(t, s, "schedule_gates", "")
+				assertGate := func(state, outcome string) {
+					t.Helper()
+					view, err := s.ScheduleGates(ws, blocked, access)
+					if err != nil || view == nil || view.State != state || len(view.Gates) != 1 || view.Gates[0].ID != gate.ID || view.Gates[0].Outcome != outcome {
+						t.Fatalf("gate: %+v %v; want %s/%s", view, err, state, outcome)
+					}
+				}
+				assertGate(models.GateStateWaiting, models.GateOutcomePending)
+				if err := runReminderMigration(s, name, body); err != nil {
+					t.Fatal(err)
+				}
+				if s.countRows(t, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, name) != 1 {
+					t.Fatal("missing migration version")
+				}
+				sc, err := s.GetSchedule(ws, item)
+				if err != nil || sc == nil || sc.EndedAt == nil || sc.ReminderID != nil {
+					t.Fatalf("carrier: %+v %v", sc, err)
+				}
+				assertGate(models.GateStateWaiting, models.GateOutcomePending)
+				if gateRows != renegotiateRows(t, s, "schedule_gates", "") {
+					t.Fatal("migration changed gate row")
+				}
+				history := renegotiateRows(t, s, "schedule_changes", "WHERE change_type='import'")
+				r, err := s.CreateReminder(ws, item, "2099-01-01T00:00:00Z")
+				if err != nil || r == nil || r.ScheduleID == nil || *r.ScheduleID != sc.ID {
+					t.Fatalf("reuse: %+v %v", r, err)
+				}
+				if s.countRows(t, `SELECT COUNT(*) FROM item_schedules WHERE item_id=?`, item) != 1 {
+					t.Fatal("reuse created another schedule")
+				}
+				assertGate(models.GateStateWaiting, models.GateOutcomePending)
+				if gateRows != renegotiateRows(t, s, "schedule_gates", "") || history != renegotiateRows(t, s, "schedule_changes", "WHERE change_type='import'") {
+					t.Fatal("reuse changed gates or history")
+				}
+				if _, err := s.RearmReminder(ws, r.ID, future); !errors.Is(err, ErrReminderManaged) {
+					t.Fatalf("legacy rearm: %v", err)
+				}
+				if _, err := s.AckReminder(ws, r.ID); !errors.Is(err, ErrReminderManaged) {
+					t.Fatalf("legacy ack: %v", err)
+				}
+				if _, err := s.DeleteReminder(ws, r.ID); !errors.Is(err, ErrReminderManaged) {
+					t.Fatalf("legacy delete: %v", err)
+				}
+				if direction == "blocker" {
+					return
+				}
+				for range 2 {
+					fired, err := s.FireDueReminders("2099-01-01T00:00:00Z", 0)
+					if err != nil {
+						t.Fatal(err)
+					}
+					for _, alarm := range fired {
+						if alarm.ID == r.ID {
+							t.Fatal("gated alarm fired before blocker resolved")
+						}
+					}
+				}
+				if gateRows != renegotiateRows(t, s, "schedule_gates", "") {
+					t.Fatal("waiting tick changed gate row")
+				}
+				if _, err := s.ResolveOccurrence(ws, other.ID, ResolveInput{OccurrenceAt: rt(*otherSchedule.NextAt), State: "done", EndSchedule: true}); err != nil {
+					t.Fatal(err)
+				}
+				assertGate(models.GateStateReleased, models.GateOutcomeSucceeded)
+				for _, want := range []int{1, 0} {
+					fired, err := s.FireDueReminders("2099-01-01T00:00:01Z", 0)
+					if err != nil || len(fired) != want || (want == 1 && fired[0].ID != r.ID) {
+						t.Fatalf("released fire: %+v %v; want %d", fired, err, want)
+					}
 				}
 			})
 		}
