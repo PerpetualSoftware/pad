@@ -326,10 +326,13 @@ func childStateOf(fields, schema, settings sql.NullString, deleted bool) (state,
 	return "open", "", terms
 }
 
-// loadMilestoneRows is the ONLY function that reads milestone_children and
-// milestone_completion_evidence, and the one place a reader's visibility is
-// applied: every caller (the commitment read, its history, the export, the
-// carry counts, the evidence snapshot) goes through it. canRead nil means the
+// loadMilestoneRows is the one function that loads milestone_children and
+// milestone_completion_evidence rows for a reader, and the one place a reader's
+// visibility is applied: every such caller (the commitment read, its history,
+// the export, the carry counts, the evidence snapshot) goes through it. The
+// shape checks in schedule_reopen.go and reminder_commitment.go only count
+// active selection rows, and count them all, hidden or not, because a hidden
+// child is lost just the same if its schedule is deleted. canRead nil means the
 // caller reads everything (an export, an internal snapshot, a store test);
 // otherwise a child the reader cannot read is dropped from every list and sets
 // Hidden. Visibility is decided now, for this reader, on snapshot rows too.
