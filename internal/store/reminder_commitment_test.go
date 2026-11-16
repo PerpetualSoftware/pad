@@ -281,7 +281,7 @@ func TestLegacyReminderBundleConversion(t *testing.T) {
 			changes := 1
 			var wantAlarm *models.ScheduleReminderExport
 			if state == "acked" {
-				changes = 2
+				changes = 3
 			} else {
 				wantAlarm = &models.ScheduleReminderExport{RemindAt: past, FiredAt: r.FiredAt, AckedAt: r.AckedAt}
 			}

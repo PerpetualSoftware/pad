@@ -221,7 +221,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		}
 		if scheduled[r.ItemID] == "" {
 			wall := strings.TrimSuffix(migrationTime, "Z")
-			sc := &models.ItemSchedule{ID: newID(), WorkspaceID: r.WorkspaceID, ItemID: r.ItemID, Kind: "check", Dtstart: wall, Tz: ptr("UTC"), Anchor: "calendar", Audience: "both", RDates: []string{}, ExDates: []string{}, EndedAt: ptr(migrationTime), CreatedAt: migrationTime, UpdatedAt: migrationTime}
+			sc := &models.ItemSchedule{ID: newID(), WorkspaceID: r.WorkspaceID, ItemID: r.ItemID, Kind: "check", Dtstart: wall, Tz: ptr("UTC"), Anchor: "calendar", Audience: "both", RDates: []string{}, ExDates: []string{}, EndedAt: ptr(migrationTime), EndedDismissedAt: ptr(migrationTime), CreatedAt: migrationTime, UpdatedAt: migrationTime}
 			if err := s.insertScheduleTx(tx, sc, &scheduleRoles{Origin: "native"}); err != nil {
 				return err
 			}

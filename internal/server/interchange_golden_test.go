@@ -649,7 +649,7 @@ func projectConvertedGoldenReminders(t *testing.T, files map[string][]byte) {
 	}
 	schedules, _ := exp["schedules"].([]any)
 	changes, _ := exp["schedule_changes"].([]any)
-	if len(schedules) != 2 || len(changes) != 3 {
+	if len(schedules) != 2 || len(changes) != 4 {
 		t.Fatalf("converted schedules=%d changes=%d", len(schedules), len(changes))
 	}
 	var reminders []any

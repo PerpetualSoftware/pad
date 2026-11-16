@@ -89,7 +89,7 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 			continue
 		}
 		if scheduled[rm.ItemID] == "" {
-			sx := models.ScheduleExport{ID: newID(), ItemID: rm.ItemID, Kind: "check", Dtstart: strings.TrimSuffix(migrationTime, "Z"), Tz: "UTC", Anchor: "calendar", Audience: "both", EndedAt: migrationTime, CreatedAt: migrationTime, UpdatedAt: migrationTime, Roles: &models.ScheduleRolesExport{RolesOrigin: "native"}}
+			sx := models.ScheduleExport{ID: newID(), ItemID: rm.ItemID, Kind: "check", Dtstart: strings.TrimSuffix(migrationTime, "Z"), Tz: "UTC", Anchor: "calendar", Audience: "both", EndedAt: migrationTime, EndedDismissedAt: migrationTime, CreatedAt: migrationTime, UpdatedAt: migrationTime, Roles: &models.ScheduleRolesExport{RolesOrigin: "native"}}
 			out.Schedules = append(out.Schedules, sx)
 			scheduled[rm.ItemID] = sx.ID
 			after, err := json.Marshal(sx)
