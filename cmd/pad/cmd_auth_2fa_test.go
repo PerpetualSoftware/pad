@@ -30,8 +30,9 @@ import (
 const twoFAPassword = "correct-horse-battery-staple"
 
 type twoFAFixture struct {
-	store *store.Store
-	url   string
+	store      *store.Store
+	url        string
+	httpClient *http.Client
 }
 
 func newTwoFAFixture(t *testing.T) *twoFAFixture {
@@ -41,7 +42,7 @@ func newTwoFAFixture(t *testing.T) *twoFAFixture {
 	t.Cleanup(srv.Stop)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
-	return &twoFAFixture{store: s, url: ts.URL}
+	return &twoFAFixture{store: s, url: ts.URL, httpClient: ts.Client()}
 }
 
 // session returns a CLI client signed in as user with a fresh session.
@@ -56,6 +57,7 @@ func (f *twoFAFixture) session(t *testing.T, user *models.User) (*cli.Client, st
 
 func (f *twoFAFixture) clientWith(token string) *cli.Client {
 	c := cli.NewClientFromURL(f.url)
+	c.SetHTTPClient(f.httpClient)
 	c.SetAuthToken(token)
 	return c
 }
@@ -199,7 +201,7 @@ func TestTASK403_SetupEmptyCodeLeavesItOff(t *testing.T) {
 	u := f.passwordUser(t, "empty@example.com")
 	client, _ := f.session(t, u)
 	var out bytes.Buffer
-	err := runTwoFactorSetup(client, bufio.NewReader(strings.NewReader("\n")), &out)
+	err := runTwoFactorSetup(client, bufio.NewReader(strings.NewReader(twoFAPassword+"\n\n")), &out)
 	if err == nil || !strings.Contains(err.Error(), "still off") {
 		t.Fatalf("err = %v, want 'still off'", err)
 	}
@@ -398,6 +400,7 @@ func TestTASK403_DisableAgainstAnOlderServerAsksForThePassword(t *testing.T) {
 	}))
 	defer ts.Close()
 	c := cli.NewClientFromURL(ts.URL)
+	c.SetHTTPClient(ts.Client())
 	c.SetAuthToken("padsess_old")
 	var out bytes.Buffer
 	if err := runTwoFactorDisable(c, bufio.NewReader(strings.NewReader("pw\n")), &out, func(string) error { return nil }); err != nil {
@@ -424,6 +427,7 @@ func TestBUG3882_DisableFailsWhenTheServerSendsNoNewSession(t *testing.T) {
 	}))
 	defer ts.Close()
 	c := cli.NewClientFromURL(ts.URL)
+	c.SetHTTPClient(ts.Client())
 	c.SetAuthToken("padsess_old")
 	var out bytes.Buffer
 	err := runTwoFactorDisable(c, bufio.NewReader(strings.NewReader("pw\n")), &out, func(string) error {
@@ -455,6 +459,9 @@ type codeTypingWriter struct {
 
 func (w *codeTypingWriter) Write(p []byte) (int, error) {
 	n, _ := w.buf.Write(p)
+	if strings.Contains(string(p), "Password: ") {
+		go func() { _, _ = w.pw.Write([]byte(twoFAPassword + "\n")) }()
+	}
 	if strings.Contains(string(p), "Code from the app: ") {
 		w.prompts++
 		m := secretLine.FindStringSubmatch(w.buf.String())
@@ -509,5 +516,115 @@ func TestTASK403_ReplaceSessionTokenKeepsTheRestOfTheCredential(t *testing.T) {
 	st, _ = cli.LoadStore()
 	if st.Get(cfg.BaseURL()).Token != "padsess_new" {
 		t.Fatal("the saved credential was overwritten for a PAD_TOKEN session")
+	}
+}
+
+func TestTask4509SetupStepUp(t *testing.T) {
+	for _, tc := range []struct {
+		name, factor, refusal, wantErr string
+		lapse                          bool
+	}{
+		{name: "password", factor: "password"},
+		{name: "email", factor: "email"},
+		{name: "reauth", factor: "unavailable", refusal: "reauth_required", wantErr: "sign in again ('pad auth login'), then run 'pad auth 2fa setup' within 10 minutes"},
+		{name: "expired", factor: "password", lapse: true},
+		{name: "wrong password", factor: "password", refusal: "invalid_password", wantErr: "incorrect password"},
+		{name: "wrong email code", factor: "email", refusal: "invalid_code", wantErr: "verification code"},
+		{name: "limited", factor: "email", refusal: "rate_limited", wantErr: "Try later"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var calls []string
+			verifies := 0
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				path := strings.TrimPrefix(r.URL.Path, "/api/v1/auth/")
+				calls = append(calls, r.Method+" "+path)
+				fail := func(code string) {
+					w.WriteHeader(403)
+					_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": "Try later"}})
+				}
+				switch path {
+				case "me":
+					_ = json.NewEncoder(w).Encode(map[string]any{"totp_enabled": false})
+				case "step-up":
+					_ = json.NewEncoder(w).Encode(map[string]any{"factor": tc.factor, "active_until": nil})
+				case "step-up/email":
+					if tc.refusal == "rate_limited" {
+						fail(tc.refusal)
+						return
+					}
+					_, _ = w.Write([]byte(`{"sent":true}`))
+				case "step-up/verify":
+					var body map[string]string
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					if tc.factor == "password" && body["password"] != "test-password" {
+						t.Error("password not sent")
+					}
+					if tc.factor == "email" && body["code"] != "123456" {
+						t.Error("email code not sent")
+					}
+					if tc.refusal != "" {
+						fail(tc.refusal)
+						return
+					}
+					_, _ = w.Write([]byte(`{"active_until":"2099-01-01T00:00:00Z"}`))
+				case "2fa/setup":
+					if tc.refusal == "reauth_required" {
+						fail(tc.refusal)
+						return
+					}
+					_, _ = w.Write([]byte(`{"secret":"test-secret","url":"otpauth://test"}`))
+				case "2fa/verify":
+					verifies++
+					var body map[string]string
+					_ = json.NewDecoder(r.Body).Decode(&body)
+					if body["secret"] != "test-secret" || body["code"] != "654321" {
+						t.Error("verify did not preserve code and secret")
+					}
+					if tc.lapse && verifies == 1 {
+						fail("step_up_required")
+						return
+					}
+					_, _ = w.Write([]byte(`{"enabled":true,"recovery_codes":["recovery"]}`))
+				default:
+					t.Errorf("unexpected path %s", path)
+					w.WriteHeader(404)
+				}
+			}))
+			defer ts.Close()
+			input := "test-password\n654321\ntest-password\n"
+			if tc.factor == "email" {
+				input = "123456\n654321\n"
+			}
+			var out bytes.Buffer
+			client := cli.NewClientFromURL(ts.URL)
+			client.SetHTTPClient(ts.Client())
+			err := runTwoFactorSetup(client, bufio.NewReader(strings.NewReader(input)), &out)
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("error %v, want %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := []string{"GET me", "GET step-up"}
+			if tc.factor == "email" {
+				want = append(want, "POST step-up/email")
+				if !strings.Contains(out.String(), "We emailed you a verification code.\nEmail code: ") {
+					t.Fatal("missing email prompt")
+				}
+			} else if !strings.Contains(out.String(), "Password: ") {
+				t.Fatal("missing password prompt")
+			}
+			want = append(want, "POST step-up/verify", "POST 2fa/setup", "POST 2fa/verify")
+			if tc.lapse {
+				want = append(want, "GET step-up", "POST step-up/verify", "POST 2fa/verify")
+			}
+			if strings.Join(calls, ",") != strings.Join(want, ",") {
+				t.Fatalf("calls %v, want %v", calls, want)
+			}
+		})
 	}
 }

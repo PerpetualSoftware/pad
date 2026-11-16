@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -92,9 +93,13 @@ func runTwoFactorSetup(client *cli.Client, in *bufio.Reader, out io.Writer) erro
 		return fmt.Errorf("2FA is already on; to set it up again, run 'pad auth 2fa disable' first")
 	}
 
+	if err := totpEnrolStepUp(client, in, out); err != nil {
+		return err
+	}
+
 	setup, err := client.TOTPSetup()
 	if err != nil {
-		return interactiveSessionHint(err)
+		return totpEnrolError(err)
 	}
 
 	fmt.Fprintln(out, "Add Pad to your authenticator app. Open this URI on a device that has the app,")
@@ -103,6 +108,7 @@ func runTwoFactorSetup(client *cli.Client, in *bufio.Reader, out io.Writer) erro
 	fmt.Fprintln(out, "Or enter the secret by hand:")
 	fmt.Fprintf(out, "\n  %s\n\n", setup.Secret)
 
+	renewed := false
 	var verified *cli.TOTPVerifyResponse
 	for attempt := 1; ; attempt++ {
 		fmt.Fprint(out, "Code from the app: ")
@@ -112,6 +118,14 @@ func runTwoFactorSetup(client *cli.Client, in *bufio.Reader, out io.Writer) erro
 			return fmt.Errorf("no code entered; 2FA is still off (run 'pad auth 2fa setup' again)")
 		}
 		verified, err = client.TOTPVerify(setup.Secret, code)
+		var stepUpErr *cli.APIError
+		if !renewed && errors.As(err, &stepUpErr) && stepUpErr.Code == "step_up_required" {
+			renewed = true
+			if err := totpEnrolStepUp(client, in, out); err != nil {
+				return err
+			}
+			verified, err = client.TOTPVerify(setup.Secret, code)
+		}
 		if err == nil {
 			break
 		}
@@ -123,7 +137,7 @@ func runTwoFactorSetup(client *cli.Client, in *bufio.Reader, out io.Writer) erro
 		if errors.As(err, &apiErr) && apiErr.Code == "invalid_code" {
 			return fmt.Errorf("the code didn't match %d times; 2FA is still off. Check the device's clock, then run 'pad auth 2fa setup' again", maxTOTPVerifyAttempts)
 		}
-		return interactiveSessionHint(err)
+		return totpEnrolError(err)
 	}
 
 	green := color.New(color.FgGreen).SprintFunc()
@@ -135,6 +149,70 @@ func runTwoFactorSetup(client *cli.Client, in *bufio.Reader, out io.Writer) erro
 		fmt.Fprintf(out, "  %s\n", c)
 	}
 	fmt.Fprintln(out)
+	return nil
+}
+
+func totpEnrolError(err error) error {
+	var apiErr *cli.APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Code {
+		case "reauth_required":
+			return fmt.Errorf("sign in again ('pad auth login'), then run 'pad auth 2fa setup' within 10 minutes")
+		case "session_required":
+			return fmt.Errorf("2FA can only be changed from a signed-in session, not an API token: run 'pad auth login' (and unset PAD_TOKEN if it is set)")
+		}
+	}
+	return interactiveSessionHint(err)
+}
+
+func totpEnrolStepUp(client *cli.Client, in *bufio.Reader, out io.Writer) error {
+	status, err := client.StepUpStatus()
+	if err != nil {
+		return totpEnrolError(err)
+	}
+	if status.ActiveUntil != nil && status.ActiveUntil.After(time.Now()) {
+		return nil
+	}
+	var code, password string
+	switch status.Factor {
+	case "unavailable":
+		return nil
+	case "email":
+		if err := client.StepUpSendEmail(); err != nil {
+			return totpEnrolError(err)
+		}
+		fmt.Fprintln(out, "We emailed you a verification code.")
+		fmt.Fprint(out, "Email code: ")
+		line, _ := in.ReadString('\n')
+		code = strings.TrimSpace(line)
+		if code == "" {
+			return fmt.Errorf("no verification code entered; 2FA is still off")
+		}
+	case "password":
+		fmt.Fprint(out, "Password: ")
+		password, err = readPasswordFrom(in)
+		fmt.Fprintln(out)
+		if err != nil {
+			return fmt.Errorf("read password: %w", err)
+		}
+		if password == "" {
+			return fmt.Errorf("no password entered; 2FA is still off")
+		}
+	default:
+		return fmt.Errorf("2FA enrolment verification factor %q is not supported", status.Factor)
+	}
+	if err := client.StepUpVerify(code, password); err != nil {
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) {
+			switch apiErr.Code {
+			case "invalid_code":
+				return fmt.Errorf("incorrect verification code; 2FA is still off")
+			case "invalid_password":
+				return fmt.Errorf("incorrect password; 2FA is still off")
+			}
+		}
+		return totpEnrolError(err)
+	}
 	return nil
 }
 
