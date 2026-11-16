@@ -1074,7 +1074,8 @@
 	// commitment, and the server's editable hint. Absent, stale or failed hides it.
 	const canAddDate = $derived.by(() => {
 		const published = commitmentSnapshot?.identity === identityKey ? commitmentSnapshot.snapshot : null;
-		return !!published && published.view === null && published.editable === true
+		// A peeking master is view-only (TASK-2172), like every other edit surface here.
+		return !peeking && !!published && published.view === null && published.editable === true
 			&& published.wsSlug === wsSlug && published.itemSlug === itemSlug && published.itemId === item?.id
 			&& published.authEpoch === authStore.identityEpoch;
 	});
@@ -1376,6 +1377,7 @@
 				paneMenuOpen = false;
 				paneMenuView = 'root';
 				showAddLink = false;
+				addDateOpen = false;
 			});
 		} else if (ended) {
 			untrack(() => {
@@ -7322,6 +7324,7 @@
 							commitmentSnapshot = { identity: handedDown, snapshot };
 						}}
 						{addDateOpen}
+						readOnly={!!peeking}
 						onAddDateClose={() => { if (handedDown !== identityKey) return; addDateOpen = false; }}
 					/>
 					{/key}

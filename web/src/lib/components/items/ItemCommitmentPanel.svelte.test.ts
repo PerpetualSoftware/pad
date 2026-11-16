@@ -167,6 +167,12 @@ it('re-enables the actions once the re-read lands, even when the occurrence is u
  await screen.findByText('Occurrence marked done.');
  await waitFor(() => expect((screen.getByRole('button', { name: 'Done TASK-1' }) as HTMLButtonElement).disabled).toBe(false));
 });
+it('offers an editor no writes while the host is read-only (a peeking master), and no Add date dialog', async () => {
+ h.get.mockResolvedValue(view({ editable: true })); render(ItemCommitmentPanel, { ...props(), readOnly: true, addDateOpen: true });
+ await screen.findByText('every Monday');
+ expect(screen.queryByRole('button', { name: 'Done TASK-1' })).toBeNull(); expect(screen.queryByRole('dialog')).toBeNull();
+ expect(document.querySelector('[data-agenda-actions]')).toBeNull();
+});
 it.each([[{}], [{ editable: false }]])('shows a reader no buttons and no dialogs (%j)', async extra => {
  h.get.mockResolvedValue(view(extra)); render(ItemCommitmentPanel, props());
  await screen.findByText('every Monday');

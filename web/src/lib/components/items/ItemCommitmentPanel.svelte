@@ -27,8 +27,10 @@
   /** Owned by the item header's "+ Add date" button; the panel owns the dialog and the write. */
   addDateOpen?: boolean;
   onAddDateClose?: () => void;
+  /** The host is view-only (a peeking master): dates show, no write is offered. */
+  readOnly?: boolean;
  }
- let { wsSlug, itemSlug, item, collection, onSnapshot, addDateOpen = false, onAddDateClose }: Props = $props();
+ let { wsSlug, itemSlug, item, collection, onSnapshot, addDateOpen = false, onAddDateClose, readOnly = false }: Props = $props();
  const itemId = $derived(item.id);
  const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
  let snapshot = $state.raw<ItemCommitmentSnapshot | null>(null);
@@ -58,7 +60,7 @@
  const itemClosed = $derived(childState(item, collection ?? undefined) !== 'open');
  const display = $derived(view ? commitmentDisplayState({ ...view, itemClosed }, now) : null);
  // The server's display hint; mutations re-check it. Absent or stale means no writes offered.
- const editable = $derived(!!snapshot && current(snapshot) && snapshot.editable);
+ const editable = $derived(!readOnly && !!snapshot && current(snapshot) && snapshot.editable);
  const entry = $derived(view && editable && !itemClosed ? commitmentAgendaEntry(view, { wsSlug, item, collection, zone }) : null);
  const dialogOpen = $derived(!!(actions.dialogEntry || actions.review || actions.endChoice || actions.forecastEntry || addDateOpen));
 

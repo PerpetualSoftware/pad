@@ -110,7 +110,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 import ItemDetail from './ItemDetail.svelte';
 import type { ItemCommitmentSnapshot } from '$lib/commitment';
 
-type PanelProps = { onSnapshot: (s: ItemCommitmentSnapshot) => void; addDateOpen?: boolean; onAddDateClose?: () => void };
+type PanelProps = { onSnapshot: (s: ItemCommitmentSnapshot) => void; addDateOpen?: boolean; onAddDateClose?: () => void; readOnly?: boolean };
 const sink = (globalThis as { __stubProps?: Record<string, unknown>[] });
 
 async function settle() {
@@ -129,8 +129,8 @@ function panel(): PanelProps {
 	return all[all.length - 1];
 }
 
-async function mount() {
-	const r = render(ItemDetail, { props: { username: 'u', wsSlug: 'ws', collSlug: 'tasks', ref: 'i1' } });
+async function mount(extra: Record<string, unknown> = {}) {
+	const r = render(ItemDetail, { props: { username: 'u', wsSlug: 'ws', collSlug: 'tasks', ref: 'i1', ...extra } });
 	await settle();
 	finishBootstrap();
 	await settle();
@@ -176,6 +176,13 @@ describe('item header "+ Add date" (TASK-4600)', () => {
 		panel().onAddDateClose!();
 		await settle();
 		expect(panel().addDateOpen).toBe(false);
+	});
+
+	it('is hidden on a peeking (view-only) master, which also hands the panel readOnly', async () => {
+		await mount({ peeking: true });
+		await publish(snapshot());
+		expect(addDate()).toBeNull();
+		expect(panel().readOnly).toBe(true);
 	});
 
 	it('is hidden for a reader', async () => {
