@@ -201,6 +201,12 @@ it.each([
  await screen.findByRole('heading', { name: 'When' });
  expect(!!screen.queryByRole('button', { name: 'Edit' })).toBe(shown);
 });
+it('renders Edit as a compact sibling of Done, not a boxed panel button', async () => {
+ h.get.mockResolvedValue(view({ editable: true, role_offsets: offsets })); render(ItemCommitmentPanel, props());
+ const edit = await screen.findByRole('button', { name: 'Edit' });
+ expect(edit.classList.contains('btn')).toBe(true); expect(edit.classList.contains('sm')).toBe(true);
+ expect(edit.classList.contains('btn')).toBe(screen.getByRole('button', { name: /^Done / }).classList.contains('btn'));
+});
 it('saves an edit, closes the dialog, re-reads once and announces it', async () => {
  h.get.mockResolvedValue(view({ editable: true, role_offsets: offsets })); h.update.mockResolvedValue(view());
  render(ItemCommitmentPanel, props());

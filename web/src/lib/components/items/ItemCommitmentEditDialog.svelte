@@ -132,6 +132,8 @@
 	const invalid = (field: string) => errorField === field || (field === 'date' && errorField === 'dtstart') || (field === 'rule' && errorField === 'rrule');
 	const show = (value: string | null | undefined) => value ? roleText(value, zone) : 'None';
 	const title = (change: { item_id: string; root?: boolean }) => change.root ? itemTitle || 'This item' : titles[change.item_id] ?? 'Linked item';
+	// An occurrence key is `instant|wall`; the instant is the one to show.
+	const appliesFrom = (key: string | null | undefined) => (key ?? '').split('|')[0].trim();
 	const roleName = (role: string) => role === 'occupied_until' ? 'occupied end' : role;
 </script>
 
@@ -141,9 +143,9 @@
 			{#if review}
 				{@const p = review.result.preview}
 				<section class="review" aria-label="Review the deadline change">
-					<p><span class="k">Deadline now</span> {show(p.current_deadline)}{#if p.current_deadline_behavior} · {p.current_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</p>
-					<p><span class="k">New deadline</span> {show(p.new_deadline)}{#if p.new_deadline_behavior} · {p.new_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</p>
-					<p><span class="k">Applies from</span> {p.applies_from}</p>
+					<p><span class="k">Deadline now</span> {show(p.current_deadline)}{#if p.current_deadline_behavior}{' · '}{p.current_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</p>
+					<p><span class="k">New deadline</span> {show(p.new_deadline)}{#if p.new_deadline_behavior}{' · '}{p.new_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</p>
+					{#if appliesFrom(p.applies_from)}<p><span class="k">Applies from</span> {roleText(appliesFrom(p.applies_from), zone)}</p>{/if}
 					{#if p.miss_recorded_first}<p>The deadline already passed: its miss is recorded first.</p>{/if}
 					{#if p.keeps_deadline_override}<p>This occurrence keeps its own moved deadline.</p>{/if}
 					{#each (review.result.cascade?.changes ?? []).filter(c => !c.root) as change}<p>{title(change)}: {roleName(change.role)} moves to {roleText(change.to, zone)}</p>{/each}
@@ -234,5 +236,7 @@
 	fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 	.check { display: flex; align-items: center; gap: var(--space-2); min-height: 36px; font-size: 14px; font-weight: 400; color: var(--text-primary); }
 	input:not([type='checkbox']):not([type='radio']), select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 6px 10px; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; font-size: 14px; }
+	input:not([type='checkbox']):not([type='radio']):disabled, select:disabled { color: var(--text-muted); background: var(--bg-tertiary); border-color: var(--border-subtle); cursor: not-allowed; opacity: 1; -webkit-text-fill-color: var(--text-muted); }
+	fieldset:disabled .check, .check:has(input:disabled) { color: var(--text-muted); cursor: not-allowed; }
 	@media (max-width: 768px) { .two { grid-template-columns: 1fr; } input:not([type='checkbox']):not([type='radio']), select, .check { min-height: 44px; } }
 </style>

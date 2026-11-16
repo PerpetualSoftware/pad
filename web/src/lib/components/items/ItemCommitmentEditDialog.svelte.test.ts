@@ -10,6 +10,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { get identityEpoch() { r
 import ItemCommitmentEditDialog from './ItemCommitmentEditDialog.svelte';
 import { view } from '$lib/test/commitmentFixtures';
 import type { ItemCommitmentView } from '$lib/types';
+import { roleText } from '$lib/calendar/presentation';
 
 const base = { target: '2031-03-10T13:00:00Z', earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' } as const;
 const offsets = { target_days: 0, target_secs: 0, earliest_days: null, earliest_secs: null, deadline_days: null, deadline_secs: null, occupied_days: null, occupied_secs: null };
@@ -147,4 +148,25 @@ it('ignores a deadline edit while the target date is empty, keeping the offset',
  await input('Target date', '2031-03-10');
  await save();
  await waitFor(() => expect(h.update).toHaveBeenCalledWith('work', 'TASK-1', { roles: { deadline_days: 2, deadline_secs: 28800, deadline_behavior: 'lapses' } }));
+});
+it('formats the review rows: Applies from as a date, a spaced separator before the behavior', async () => {
+ h.get.mockResolvedValue(native()); h.reneg.mockResolvedValueOnce(previewResult('rev1'));
+ mount(native());
+ await fireEvent.click(screen.getByLabelText('Lapses'));
+ await input('Reason for the deadline change', 'Softer'); await save();
+ const panel = await screen.findByRole('region', { name: 'Review the deadline change' });
+ const rows = [...panel.querySelectorAll('p')].map(p => p.textContent ?? '');
+ const row = (k: string) => rows.find(r => r.startsWith(k)) ?? '';
+ expect(row('Deadline now')).toBe(`Deadline now ${roleText('2031-03-11T05:00:00Z', 'America/New_York')} · Still owed`);
+ expect(row('New deadline')).toBe(`New deadline ${roleText('2031-03-12T05:00:00Z', 'America/New_York')} · Still owed`);
+ expect(row('Applies from')).toBe(`Applies from ${roleText('2031-03-10T13:00:00Z', 'America/New_York')}`);
+ expect(panel.textContent).not.toContain('|');
+});
+it('leaves Applies from out when the preview has none', async () => {
+ h.get.mockResolvedValue(native()); const r = previewResult('rev1'); r.preview.applies_from = ''; h.reneg.mockResolvedValueOnce(r);
+ mount(native());
+ await fireEvent.click(screen.getByLabelText('Lapses'));
+ await input('Reason for the deadline change', 'Softer'); await save();
+ const panel = await screen.findByRole('region', { name: 'Review the deadline change' });
+ expect(panel.textContent).not.toContain('Applies from');
 });

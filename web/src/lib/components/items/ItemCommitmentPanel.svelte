@@ -9,6 +9,7 @@
  import { commitmentAgendaEntry, commitmentDisplayState, describeRecurrence, type ItemCommitmentSnapshot } from '$lib/commitment';
  import { acknowledgedText, dateTime, deadlinePill, entryKey, forecastText, isDateOnly, roleText, snoozeLabel } from '$lib/calendar/presentation';
  import StateMark from '$lib/components/calendar/StateMark.svelte';
+ import Button from '$lib/components/common/Button.svelte';
  import OccurrenceActions from '$lib/components/calendar/OccurrenceActions.svelte';
  import SnoozeLabel from '$lib/components/calendar/SnoozeLabel.svelte';
  import ResolveOccurrenceDialog from '$lib/components/calendar/ResolveOccurrenceDialog.svelte';
@@ -175,7 +176,7 @@
     <div class="occurrence-actions">
      <SnoozeLabel label={snoozeLabel(entry, zone, now)} />
      <OccurrenceActions {entry} {zone} pending={!!actions.pending[entryKey(entry)]} disabled={!!actions.saved[entryKey(entry)]} onaction={actions.action} />
-     {#if view.role_offsets}<button onclick={() => { editOpen = true; }}>Edit</button>{/if}
+     {#if view.role_offsets}<Button size="sm" class="edit" onclick={() => { editOpen = true; }}>Edit</Button>{/if}
     </div>
    {/if}
    {#each display.annotations as annotation}<p>{annotation}</p>{/each}
@@ -220,6 +221,7 @@
  button, summary { min-height: 44px; cursor: pointer; }
  .commitment-panel:focus { outline: none; }
  .occurrence-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-2) 0; }
+ @media (pointer: coarse) { .occurrence-actions :global(.btn.edit) { min-height: 44px; } }
  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
  summary { align-content: center; }
  button { color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
