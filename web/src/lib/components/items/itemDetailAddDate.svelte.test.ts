@@ -160,7 +160,8 @@ describe('item header "+ Add date" (TASK-4600)', () => {
 		await publish(snapshot());
 		const button = addDate();
 		expect(button).not.toBeNull();
-		expect(button!.textContent?.trim()).toBe('+ Add date');
+		expect(button!.textContent?.trim()).toBe('📅');
+		expect(button!.getAttribute('title')).toBe('Add date');
 		expect(button!.classList.contains('action-btn')).toBe(true);
 		const row = r.container.querySelector('.meta-actions')!;
 		expect(row.lastElementChild).toBe(button);

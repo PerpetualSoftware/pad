@@ -7212,9 +7212,10 @@
 				</Menu>
 			</div>
 			<!-- TASK-4600: LAST in the row, so appearing once the commitment read
-			     lands shifts nothing. The panel below owns the dialog. -->
+			     lands shifts nothing. A glyph like its neighbours, so it keeps the
+			     band's one uniform control width. The panel below owns the dialog. -->
 			{#if canAddDate}
-				<button class="action-btn add-date-btn" aria-label="Add date" title="Add date" onclick={() => { addDateOpen = true; }}>+ Add date</button>
+				<button class="action-btn add-date-btn" aria-label="Add date" title="Add date" onclick={() => { addDateOpen = true; }}>📅</button>
 			{/if}
 		</div>
 
