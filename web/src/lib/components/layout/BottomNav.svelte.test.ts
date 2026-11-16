@@ -6,16 +6,16 @@ import { render, cleanup } from '@testing-library/svelte';
 import { tick, flushSync } from 'svelte';
 import { cs, parked, chatSurfaceMock } from './chatSurfaceMock.fixture.svelte';
 
-vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { authenticated: true, onIdentityChange: () => () => {} } }));
-vi.mock('$lib/stores/homeOverview.svelte', () => ({ homeOverview: { needs: { total: 7 }, load: vi.fn() } }));
-const h = vi.hoisted(() => ({ chatOn: true, path: '/u/ws' }));
-vi.mock('$app/state', () => ({
-	page: {
-		get url() {
-			return new URL(`http://localhost${h.path}`);
-		}
-	}
-}));
+const h = vi.hoisted(() => ({ chatOn: true, resets: [] as (() => void)[] }));
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: {
+ authenticated: true, userId: 'user-a', user: { timezone: 'UTC' },
+ identityFence: () => () => true, onIdentityChange: (reset: () => void) => { h.resets.push(reset); return () => {}; }
+} }));
+vi.mock('$lib/api/client', () => ({ api: {
+ needs: { list: vi.fn(async () => ({ rows: [], total: 7, hidden: 0, workspaces: [] })) },
+ getMyAgenda: vi.fn(async () => ({ entries: [], priority_list: [] }))
+} }));
+vi.mock('$app/state', async () => await import('./youNavPage.fixture.svelte'));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
 	workspaceStore: { current: { slug: 'ws', owner_username: 'u', name: 'WS' } }
@@ -44,6 +44,9 @@ vi.mock('$lib/stores/chatSetting.svelte', () => ({
 }));
 
 import BottomNav from './BottomNav.svelte';
+import { page } from '$app/state';
+import { api } from '$lib/api/client';
+import { homeOverview } from '$lib/stores/homeOverview.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
 
 const slots = () => [...document.querySelectorAll<HTMLElement>('.bottom-nav .bn-item')];
@@ -54,7 +57,9 @@ const workspaceSlot = () => slot('Workspace');
 beforeEach(() => {
 	cleanup();
 	h.chatOn = true;
-	h.path = '/u/ws';
+	h.resets.forEach(reset => reset());
+	vi.clearAllMocks();
+	page.url = new URL('http://localhost/u/ws');
 	cs.open = false;
 	parked.length = 0;
 	chatSurfaceMock.open.mockClear();
@@ -77,7 +82,7 @@ describe('BottomNav slots', () => {
 	});
 
 	it('Workspace is lit on the activity page', async () => {
-		h.path = '/u/ws/activity';
+		page.url = new URL('http://localhost/u/ws/activity');
 		render(BottomNav);
 		await tick();
 		expect(slot('Workspace').classList.contains('active')).toBe(true);
@@ -199,7 +204,8 @@ describe('BottomNav while Chat is open', () => {
 
 describe('Home and Workspace active states', () => {
  it.each(['/', '/needs', '/agenda'])('Home is active on %s and shows Needs you count', async path => {
-  h.path = path;
+  homeOverview.needs = { rows: [], total: 7, hidden: 0, workspaces: [] };
+  page.url = new URL('http://localhost' + path);
   render(BottomNav); await tick();
   expect(slot('Home').getAttribute('href')).toBe('/');
   expect(slot('Home').classList.contains('active')).toBe(true);
@@ -215,4 +221,22 @@ describe('Home and Workspace active states', () => {
   slot('Quick capture').click(); flushSync();
   expect(slot('Workspace').classList.contains('active')).toBe(false);
  });
+});
+
+
+async function go(path: string) { page.url = new URL('http://localhost' + path); for (let i = 0; i < 8; i++) await tick(); }
+it('leaves agenda arrival to the page, then refreshes once on each needs arrival', async () => {
+ page.url = new URL('http://localhost/agenda');
+ render(BottomNav); await go('/agenda');
+ expect(api.getMyAgenda).not.toHaveBeenCalled();
+ expect(api.needs.list).not.toHaveBeenCalled();
+ await go('/needs');
+ expect(api.getMyAgenda).toHaveBeenCalledTimes(1);
+ expect(api.needs.list).toHaveBeenCalledTimes(1);
+ await go('/agenda');
+ expect(api.getMyAgenda).toHaveBeenCalledTimes(1);
+ expect(api.needs.list).toHaveBeenCalledTimes(1);
+ await go('/needs');
+ expect(api.getMyAgenda).toHaveBeenCalledTimes(2);
+ expect(api.needs.list).toHaveBeenCalledTimes(2);
 });

@@ -4,12 +4,15 @@ import type { AgendaEntry } from '$lib/types';
 import { tick } from 'svelte';
 const h = vi.hoisted(() => ({ needs: vi.fn(), snooze: vi.fn(async () => ({})), agenda: vi.fn(), list: vi.fn(), getCommitment: vi.fn(), resolve: vi.fn(async () => ({})) }));
 vi.mock('$lib/api/client', () => ({ api: { needs: { list: h.needs, snooze: h.snooze }, getMyAgenda: h.agenda, getCommitment: h.getCommitment, resolveCommitment: h.resolve, workspaces: { list: h.list } } }));
+vi.mock('$app/state', async () => await import('$lib/components/layout/youNavPage.fixture.svelte'));
+vi.mock('$lib/stores/chatSetting.svelte', () => ({ chatSetting: { enabled: false } }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({ pendingInvitations: { count: 1, refresh: vi.fn() } }));
-vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { userId: 'u', user: { name: 'Mara Lindqvist', timezone: 'UTC' }, identityFence: () => () => true, onIdentityChange: () => () => {} } }));
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { authenticated: true, userId: 'u', user: { name: 'Mara Lindqvist', timezone: 'UTC' }, identityFence: () => () => true, onIdentityChange: () => () => {} } }));
 import Home from './+page.svelte';
+import YouNav from '$lib/components/layout/YouNav.svelte';
 afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); });
-it('renders Home counts with one call per data source, independent of workspace count', async () => {
+it('shares one overview read on desktop Home arrival with YouNav mounted (TASK-4559)', async () => {
 	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
 	h.list.mockResolvedValue(Array.from({length: 5}, (_, i) => ({ id: String(i), slug: 'ws'+i, name: 'Workspace '+i, owner_username: 'mara', owner_id: 'u' })));
 	const rows = Array.from({length: 4}, (_, i) => ({workspace: {slug:'ws0',name:'Northwind'},item:{ref:'TASK-'+i,title:'Needs row '+i,collection:'tasks'},why:{text:'Waiting for you'},because:[],waiting_since:'2026-11-12T10:00:00Z'}));
@@ -17,6 +20,7 @@ it('renders Home counts with one call per data source, independent of workspace 
 	const entry = (i: number, day = '2026-11-13') => ({ type: 'schedule', state: 'outstanding', at: day+'T10:00:00Z', day, item_ref: 'TASK-'+i, item_title: 'Task '+i, collection: 'tasks', workspace: 'ws0', owner_username: 'mara', schedule_id: String(i), roles: { target: null, deadline: null } });
 	h.agenda.mockResolvedValue({ entries: [{...entry(5, '2026-11-10'), state: 'missed'},entry(1),entry(2),entry(3),{...entry(4, '2026-11-11'), overdue: true}], priority_list: [], window_complete: true });
 	render(Home);
+	render(YouNav);
 	expect(await screen.findByRole('heading', { name: 'Good afternoon, Mara' })).toBeTruthy();
 	expect(await screen.findByText(/7 need you/)).toBeTruthy();
 	expect(document.querySelector('.summary')).toHaveTextContent('7 need you · 3 owed today · 1 past deadline');

@@ -6,6 +6,7 @@
 	import { audienceCounts, defaultAudience, filterAudience, parseAudience, splitAudience, type AudienceView } from '$lib/calendar/audience';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import { agendaUndoContext, resolutionLabel, type AgendaUndo } from '$lib/calendar/undo';
 	import { toastStore, type ToastAction } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
@@ -475,6 +476,8 @@
 		untrack(() => { void loadGroupContext(); });
 	});
 
+	// Plain let: this one-time arrival guard is read and written by the loader.
+	let overviewArrived = false;
 	async function load(date: string, timeZone: string, quiet = false): Promise<boolean | undefined> {
 		const mine = ++ticket;
 		const viewMode = mode;
@@ -531,7 +534,13 @@
 			if (emptyGroup) { data = null; savedRefreshError = false; return true; }
 			monthGrid?.cancelFocus(); loadError = true; return false;
 		} finally {
-			if (current()) { loading = false; updating = false; }
+			if (current()) {
+				loading = false; updating = false;
+				if (!overviewArrived) {
+					overviewArrived = true;
+					void homeOverview.arrive('/agenda');
+				}
+			}
 		}
 	}
 	$effect(() => {

@@ -7,7 +7,7 @@ import { cs, parked, chatSurfaceMock } from './chatSurfaceMock.fixture.svelte';
 import { kb } from '../../chat/uiKeyboard.fixture.svelte';
 
 const h = vi.hoisted(() => ({ chatOn: true, authed: true, hasWorkspace: true, goto: vi.fn() }));
-vi.mock('$lib/stores/homeOverview.svelte', () => ({ homeOverview: { needs: { total: 7 }, load: vi.fn() } }));
+vi.mock('$lib/stores/homeOverview.svelte', () => ({ homeOverview: { needs: { total: 7 }, load: vi.fn(), arrive: vi.fn() } }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { get current() { return h.hasWorkspace ? { slug: 'ws', owner_username: 'u', name: 'WS' } : null; } } }));
 vi.mock('$lib/components/layout/WorkspaceSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));
 vi.mock('$lib/components/layout/QuickCaptureSheet.svelte', async () => await import('./bottomNavSheetStub.fixture.svelte'));

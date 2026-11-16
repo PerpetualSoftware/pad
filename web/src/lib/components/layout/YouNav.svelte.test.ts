@@ -1,5 +1,5 @@
-import { it, expect, vi } from 'vitest';
-import { render } from '@testing-library/svelte';
+import { beforeEach, afterEach, it, expect, vi } from 'vitest';
+import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
 vi.mock('$app/state', async () => await import('./youNavPage.fixture.svelte'));
@@ -10,10 +10,11 @@ vi.mock('$lib/api/client', () => ({
 	}
 }));
 vi.mock('$lib/stores/chatSetting.svelte', () => ({ chatSetting: { enabled: false } }));
-vi.mock('$lib/stores/auth.svelte', async (orig) => {
-	const real = await orig<typeof import('$lib/stores/auth.svelte')>();
-	return { ...real, authStore: new Proxy(real.authStore, { get: (t, k) => (k === 'authenticated' ? true : Reflect.get(t, k)) }) };
-});
+const h = vi.hoisted(() => ({ resets: [] as (() => void)[] }));
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: {
+ authenticated: true, userId: 'user-a', user: { timezone: 'UTC' },
+ identityFence: () => () => true, onIdentityChange: (reset: () => void) => { h.resets.push(reset); return () => {}; }
+} }));
 
 import YouNav from './YouNav.svelte';
 import { page } from '$app/state';
@@ -35,4 +36,23 @@ it('refetches on returning to Home from a workspace, not on workspace navigation
 	await go('/');
 	expect(calls()).toBe(start + 1);
 	expect(vi.mocked(api.needs.list).mock.calls.length).toBe(start + 1);
+});
+
+
+beforeEach(() => { h.resets.forEach(reset => reset()); vi.clearAllMocks(); page.url = new URL('http://localhost/'); });
+afterEach(cleanup);
+it('leaves agenda arrival to the page, then refreshes once on each needs arrival', async () => {
+ page.url = new URL('http://localhost/agenda');
+ render(YouNav); await go('/agenda');
+ expect(api.getMyAgenda).not.toHaveBeenCalled();
+ expect(api.needs.list).not.toHaveBeenCalled();
+ await go('/needs');
+ expect(api.getMyAgenda).toHaveBeenCalledTimes(1);
+ expect(api.needs.list).toHaveBeenCalledTimes(1);
+ await go('/agenda');
+ expect(api.getMyAgenda).toHaveBeenCalledTimes(1);
+ expect(api.needs.list).toHaveBeenCalledTimes(1);
+ await go('/needs');
+ expect(api.getMyAgenda).toHaveBeenCalledTimes(2);
+ expect(api.needs.list).toHaveBeenCalledTimes(2);
 });
