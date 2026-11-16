@@ -2,6 +2,7 @@ package store
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -277,9 +278,20 @@ func TestLegacyReminderBundleConversion(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(out.Reminders) != 0 || len(out.Schedules) != 1 || out.Schedules[0].Reminder == nil || *out.Schedules[0].Reminder != (models.ScheduleReminderExport{RemindAt: past, FiredAt: r.FiredAt, AckedAt: r.AckedAt}) || len(out.ScheduleChanges) != 1 {
-				t.Fatalf("bad bundle: reminders=%+v schedules=%+v changes=%+v", out.Reminders, out.Schedules, out.ScheduleChanges)
+			changes := 1
+			var wantAlarm *models.ScheduleReminderExport
+			if state == "acked" {
+				changes = 2
+			} else {
+				wantAlarm = &models.ScheduleReminderExport{RemindAt: past, FiredAt: r.FiredAt, AckedAt: r.AckedAt}
 			}
+			if len(out.Reminders) != 0 || len(out.Schedules) != 1 || !reflect.DeepEqual(out.Schedules[0].Reminder, wantAlarm) || len(out.ScheduleChanges) != changes {
+				t.Fatalf("bad bundle: %+v", out)
+			}
+			if state == "acked" && (out.Schedules[0].EndedAt == "" || out.Schedules[0].EndedDismissedAt != out.Schedules[0].EndedAt) {
+				t.Fatalf("carrier not dismissed: %+v", out.Schedules[0])
+			}
+
 			// The operator migration uses the same export with a preserved slug.
 			dst := testStore(t)
 			copied, report, err := dst.ImportWorkspaceWithReport(out, "", "", "", WithPreservedSlug())
@@ -287,7 +299,7 @@ func TestLegacyReminderBundleConversion(t *testing.T) {
 				t.Fatalf("operator import: %+v %v", report, err)
 			}
 			again, err := dst.ExportWorkspace(copied.Slug)
-			if err != nil || len(again.Schedules) != 1 || *again.Schedules[0].Reminder != *out.Schedules[0].Reminder || len(again.ScheduleChanges) != 2 {
+			if err != nil || len(again.Schedules) != 1 || !reflect.DeepEqual(again.Schedules[0].Reminder, out.Schedules[0].Reminder) || again.Schedules[0].EndedDismissedAt != out.Schedules[0].EndedDismissedAt || len(again.ScheduleChanges) != changes+1 {
 				t.Fatalf("round trip=%+v %v", again, err)
 			}
 

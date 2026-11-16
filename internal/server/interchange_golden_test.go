@@ -649,7 +649,7 @@ func projectConvertedGoldenReminders(t *testing.T, files map[string][]byte) {
 	}
 	schedules, _ := exp["schedules"].([]any)
 	changes, _ := exp["schedule_changes"].([]any)
-	if len(schedules) != 2 || len(changes) != 2 {
+	if len(schedules) != 2 || len(changes) != 3 {
 		t.Fatalf("converted schedules=%d changes=%d", len(schedules), len(changes))
 	}
 	var reminders []any
@@ -657,6 +657,34 @@ func projectConvertedGoldenReminders(t *testing.T, files map[string][]byte) {
 		sc := raw.(map[string]any)
 		roles, _ := sc["roles"].(map[string]any)
 		alarm, _ := sc["reminder"].(map[string]any)
+		if alarm == nil {
+			if sc["ended_at"] == nil || sc["ended_dismissed_at"] != sc["ended_at"] || sc["next_at"] != nil {
+				t.Fatalf("undismissed carrier: %+v", sc)
+			}
+			found := false
+			for _, raw := range changes {
+				change := raw.(map[string]any)
+				if change["schedule_id"] != sc["id"] || change["reason"] != "one-shot reminder kept as history: acknowledged" {
+					continue
+				}
+				var rm map[string]any
+				if err := json.Unmarshal([]byte(change["before_json"].(string)), &rm); err != nil {
+					t.Fatal(err)
+				}
+				if rm["fired_at"] == "" || rm["acked_at"] == "" {
+					t.Fatalf("missing acknowledged history: %+v", rm)
+				}
+				delete(rm, "bundle_index")
+				rm["item_id"] = sc["item_id"]
+				reminders = append(reminders, rm)
+				found = true
+			}
+			if !found {
+				t.Fatal("missing carrier history")
+			}
+			continue
+		}
+
 		if sc["tz"] != "UTC" || sc["anchor"] != "calendar" || roles["roles_origin"] != "native" || roles["target_days"] != float64(0) || roles["target_secs"] != float64(0) || sc["next_at"] != alarm["remind_at"] || sc["dtstart"] != sc["next_wall"] || sc["rrule"] != nil {
 			t.Fatalf("wrong converted commitment: %+v", sc)
 		}
