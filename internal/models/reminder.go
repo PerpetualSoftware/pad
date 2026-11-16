@@ -1,25 +1,8 @@
 package models
 
-// Reminder is a one-shot, fire-at-an-instant signal attached to an item
-// (IDEA-2641, GitHub #1010).
-//
-// It is deliberately NOT a schema field. See migration 085 for why the
-// annotation-on-a-FieldDef shape was overturned; the short form is that any
-// key added to FieldDef is silently dropped both by the web collection editor
-// (which rebuilds each field key-by-key from an allowlist) and by any Go
-// unmarshal+marshal round-trip through CollectionSchema, which has fixed
-// fields. A reminder also has a LIFECYCLE that a field definition has nowhere
-// to keep.
-//
-// The lifecycle is three states, and they are three states rather than two
-// because acking must not re-arm:
-//
-//	ARMED         fired_at IS NULL                     — a tick may fire it
-//	FIRED-UNACKED fired_at set, acked_at NULL           — on the poll surface
-//	FIRED-ACKED   both set                              — history
-//
-// Re-arming (moving RemindAt on a fired row) returns it to ARMED by clearing
-// both marks.
+// Reminder is the delivery state of a commitment alarm. Armed rows have no
+// fired_at, pending rows have fired_at but no acked_at, and acknowledged rows
+// retain both. Explicit rearm clears both marks while retaining the alarm ID.
 type Reminder struct {
 	ID          string `json:"id"`
 	WorkspaceID string `json:"workspace_id"`
@@ -35,19 +18,12 @@ type Reminder struct {
 	// reminder's event; it is never cleared except by an explicit re-arm.
 	FiredAt *string `json:"fired_at,omitempty"`
 
-	// AckedAt is nil until a caller explicitly acknowledges. NOTHING else
-	// acks — in particular an item reaching a terminal status does not, which
-	// would both couple every status write to reminder state and silently
-	// consume a reminder set to fire after the work was done. The poll
-	// surface filters terminal-item reminders out of its listing instead,
-	// leaving the row untouched.
+	// AckedAt records acknowledgement without completing the outstanding work.
+	// Terminal items pause firing; reopening resumes their commitment.
 	AckedAt *string `json:"acked_at,omitempty"`
 
-	// ScheduleID is set exactly when this row is the managed outstanding
-	// occurrence of an item schedule (TASK-4102). OccurrenceAt is that
-	// occurrence's instant (RFC3339 UTC); it is not a column, it is filled when the
-	// row fires and by the reads. Both are additive and omitted for an ordinary
-	// reminder.
+	// ScheduleID identifies the commitment. OccurrenceAt is its outstanding
+	// instant. Pointers retain decoding compatibility with historical events.
 	ScheduleID   *string `json:"schedule_id,omitempty"`
 	OccurrenceAt *string `json:"occurrence_at,omitempty"`
 

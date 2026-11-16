@@ -661,10 +661,10 @@ func TestScheduleReadsCarryScheduleIDAndOccurrenceAt(t *testing.T) {
 	if seen != 2 {
 		t.Errorf("pending managed rows = %d, want 2", seen)
 	}
-	// An ordinary reminder carries neither member.
+	// The instant adapter exposes the same commitment identity.
 	plain := armReminder(t, f.s, f.ws.ID, f.another(t, "Plain").ID, past)
-	if r := f.reminder(t, plain); r.ScheduleID != nil || r.OccurrenceAt != nil {
-		t.Errorf("ordinary reminder carries schedule members: %+v", r)
+	if r := f.reminder(t, plain); r.ScheduleID == nil || derefStr(r.OccurrenceAt) != past {
+		t.Errorf("instant reminder missing commitment identity: %+v", r)
 	}
 }
 

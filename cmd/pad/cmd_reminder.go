@@ -35,11 +35,11 @@ func newRemindCmd(alias bool) *cobra.Command {
 	)
 	cmd := &cobra.Command{
 		Use:   "remind [ref]",
-		Short: "Arm a reminder on an item",
+		Short: "Create a commitment on an item",
 		Example: `  pad remind TASK-5 --remind-at 2026-11-02T09:00:00Z
   pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays
   pad remind TASK-5 --start 2026-11-14T17:00 --deadline hard`,
-		Long: `Arm a one-shot reminder that fires at a specific instant.
+		Long: `Create a run-once commitment at a specific instant.
 
 The instant is RFC3339 and must carry a time of day — 2026-08-01T09:00:00Z, or
 2026-08-01T09:00:00-04:00, which is stored as the same moment in UTC. A bare
@@ -52,10 +52,14 @@ ready' until you acknowledge it with 'pad item ack', and it emits an
 item.reminder_due webhook event. The poll surface is not optional: an instance
 with no webhook configured delivers reminders that way and only that way.
 
-SCHEDULES. Any of --start, --every, --deadline, --window, --anchor, --audience,
---tz or --floating makes this a schedule instead: a deadline, a window, or a
-rule that repeats, with one outstanding occurrence at a time. --start is
-required and is a wall time with no Z or offset:
+Commitments pause while their item is closed and resume when reopened.
+--remind-at reuses an ended simple run-once commitment with no alarm.
+Other existing commitments refuse creation; use move or edit to change them.
+--remind-at and --rearm preserve past instants and fire on the next eligible tick.
+Native --start creation still refuses an already-passed run-once target.
+
+Use --start for wall time, with optional recurrence, deadline or occupied time.
+--start is required with these flags and has no Z or offset:
 
   --start     2026-11-09T09:00, or 2026-11-09 for an all-day date
   --every     daily, weekdays, weekly, biweekly, monthly, monthly-last,
@@ -112,7 +116,7 @@ Subcommands: forecast, show, done, skip, snooze, move, renegotiate, link, gate, 
 				if formatFlag == "json" {
 					return cli.PrintJSON(r)
 				}
-				fmt.Printf("Re-armed reminder %s for %s\n", r.ID, r.RemindAt)
+				fmt.Printf("Re-armed commitment alarm %s for %s\n", r.ID, r.RemindAt)
 				return nil
 			}
 
@@ -130,7 +134,7 @@ Subcommands: forecast, show, done, skip, snooze, move, renegotiate, link, gate, 
 			if formatFlag == "json" {
 				return cli.PrintJSON(r)
 			}
-			fmt.Printf("Reminder armed on %s for %s (id %s)\n", item.Ref, r.RemindAt, r.ID)
+			fmt.Printf("Run-once commitment created on %s for %s (id %s)\n", item.Ref, r.RemindAt, r.ID)
 			return nil
 		},
 	}
@@ -199,15 +203,11 @@ func ackCmd() *cobra.Command {
   pad item ack TASK-9`,
 		Long: `Acknowledge a reminder that has fired, removing it from 'pad project next'.
 
-Pass a reminder UUID or an item ref. An item ref acknowledges its sole fired,
-unacknowledged reminder that is not managed by a schedule. If several match,
-nothing is acknowledged: use a reminder id from the refusal instead.
-
-Nothing else acknowledges a reminder. In particular, completing the item does
-NOT: a reminder may have been armed precisely to fire after the work was done,
-and consuming it on a status change would throw that away. A reminder on a
-completed item is hidden from the recommendation surface but stays in the
-table, still unacknowledged, exactly as you left it.`,
+Pass a reminder UUID or an item ref. An item ref selects its fired,
+unacknowledged run-once commitment alarm. A repeated by-id ack is idempotent.
+Acknowledgement silences reminder and ordinary next/ready suggestions while
+keeping the commitment outstanding on the agenda; it never completes the item.
+Closed items pause firing until reopened. Richer commitments use 'pad remind ack'.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -237,10 +237,8 @@ func unremindCmd() *cobra.Command {
 		Use:     "unremind <reminder-id>",
 		Short:   "Disarm a reminder",
 		Example: `  pad item unremind <reminder-id>`,
-		Long: `Remove a reminder.
-
-Deletion is the only disarm — there is no cancelled state, because a cancelled
-reminder and an absent one are indistinguishable to everything that reads them.`,
+		Long: `Delete a simple run-once commitment and its alarm by reminder ID.
+Richer commitments require 'pad remind rm'. The item and comments remain.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()

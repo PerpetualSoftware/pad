@@ -82,13 +82,12 @@ func remindAtGiven(input map[string]any) bool {
 	return !isStr || strings.TrimSpace(s) != ""
 }
 
-var errRemindAtWithSchedule = fmt.Errorf("remind_at arms a one-shot reminder and cannot be combined with schedule parameters; give the time as start (e.g. 2026-11-09T09:00)")
+var errRemindAtWithSchedule = fmt.Errorf("remind_at uses instant syntax and cannot be combined with wall-time parameters; give the time as start (e.g. 2026-11-09T09:00)")
 
-// actionItemRemind handles pad_item.action=remind. With no schedule parameter
-// it is the one-shot reminder it always was; any schedule parameter makes it a
-// schedule (`pad item remind --start ...` on stdio, POST .../commitment on
-// /mcp). Inert values are dropped first, so the one-shot form is identical on
-// both transports whatever a client pads it with.
+// actionItemRemind handles pad_item.action=remind. Both forms create commitments:
+// remind_at uses the instant adapter, while schedule parameters use wall time
+// (`pad item remind --start ...` on stdio, POST .../commitment on /mcp).
+// Inert values are dropped first so both transports choose the same form.
 func actionItemRemind(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	out, given, err := withoutInertScheduleParams(input)
 	if err != nil {

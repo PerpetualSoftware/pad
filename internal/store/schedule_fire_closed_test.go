@@ -86,19 +86,18 @@ func TestScheduleClosedItemTakesNoBatchSlot(t *testing.T) {
 	}
 }
 
-func TestUnmanagedReminderStillFiresAfterClose(t *testing.T) {
+func TestInstantReminderPausesAfterClose(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	id := armReminder(t, f.s, f.ws.ID, f.item.ID, "2026-10-26T09:00:00Z")
 	if _, err := f.s.UpdateItem(f.item.ID, models.ItemUpdate{Fields: ptr(`{"status":"done"}`), Force: true}); err != nil {
 		t.Fatal(err)
 	}
-	got := f.fire(t, "2026-10-29T12:00:00Z")
-	if len(got) != 1 || got[0].ID != id || got[0].ScheduleID != nil {
-		t.Fatalf("closed item unmanaged reminder did not fire: %+v", got)
+	if got := f.fire(t, "2026-10-29T12:00:00Z"); len(got) != 0 {
+		t.Fatalf("closed commitment fired: %+v", got)
 	}
-	if n := f.events(t); n != 1 {
-		t.Errorf("outbox events = %d, want 1", n)
+	if r := f.reminder(t, id); !r.Armed() || r.ScheduleID == nil {
+		t.Fatalf("paused state: %+v", r)
 	}
 }
 

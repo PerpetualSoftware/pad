@@ -1844,3 +1844,22 @@ curl -s http://localhost:7777/api/v1/health   # {"status":"ok"}
 - [ ] **Email (optional):** Maileroo configured for invitation emails
 - [ ] **Resource limits:** Set in Docker Compose or K8s manifests
 - [ ] **Log level:** `PAD_LOG_LEVEL=info` (use `debug` only for troubleshooting)
+
+
+## Release notes: run-once reminder commitments
+
+One-shot reminders now create commitments. Converted reminders pause while an
+item is closed and resume when it is reopened. Acknowledgement keeps the work
+outstanding and suppresses its ordinary next/ready suggestions.
+
+Take a verified restorable backup and rehearse the upgrade before deployment.
+Postgres self-hosters running more than one replica must stop **all replicas**
+before starting the new binary; run only one migration runner. Drain writers,
+reminder/deadline ticks and notification consumers. The migration waits at most
+30 seconds for its Postgres table locks, then rolls back on lock timeout.
+Conversion, the NOT NULL constraint and version recording are one transaction.
+
+Items with several reminders keep the newest armed reminder as a commitment, or otherwise the newest fired-unacknowledged reminder if one exists; the rest stay as history on that item. If a commitment already exists, every legacy reminder becomes history on it. Reminders with unreadable dates are kept as history on their item instead of stopping the upgrade.
+After the upgrade, reminders that had fired and been acknowledged under the old model remain as history on their item and are no longer listed by `GET /workspaces/{ws}/items/{slug}/reminders`. History carriers for acknowledged or unreadable reminders are already dismissed, so they add no outstanding work or agenda/calendar occurrences.
+After a successful upgrade, rollback means restoring the backup taken before the
+upgrade. Running an old binary or dropping the constraint is not rollback.

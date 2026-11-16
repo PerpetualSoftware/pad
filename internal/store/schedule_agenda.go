@@ -85,9 +85,15 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 	args = append(args, historyArgs...)
 	args = append(args, workspaceID)
 	args = append(append(args, scopeArgs...), openArgs...)
+	// Dismissed, alarm-less schedules without resolutions carry only journal history.
+	// Exclude them before the limit so they neither emit occurrences nor crowd out work.
 	// EXISTS looks up the item by key per schedule instead of rerunning the whole items filter.
 	rows, err := s.db.Query(s.q(`SELECT `+scheduleColumns+` FROM item_schedules
-		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR `+historySQL+`) AND EXISTS (
+		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR `+historySQL+`)
+		AND (ended_at IS NULL OR ended_dismissed_at IS NULL
+			OR EXISTS (SELECT 1 FROM item_reminders r WHERE r.schedule_id=item_schedules.id)
+			OR EXISTS (SELECT 1 FROM schedule_occurrences h WHERE h.schedule_id=item_schedules.id))
+		AND EXISTS (
 			SELECT 1 FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.id = item_schedules.item_id AND i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)
 		ORDER BY item_schedules.id LIMIT ?`), append(args, limit+1)...)

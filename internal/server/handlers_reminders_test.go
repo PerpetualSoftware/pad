@@ -692,6 +692,7 @@ func TestSuggestedNextSurvivesWithNoTaskCandidates(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("reopen: %d", rr.Code)
 	}
+	srv.runReminderTick()
 	resp = getDashboard(t, srv, slug)
 	if len(resp.SuggestedNext) != 1 {
 		t.Fatalf("a workspace whose only entry is a reminder returned %d suggestions, want 1", len(resp.SuggestedNext))

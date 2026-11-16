@@ -60,3 +60,22 @@ func TestAmbiguousReminderErrorParity(t *testing.T) {
 		}
 	}
 }
+
+func TestReminderCommitmentErrorParity(t *testing.T) {
+	for _, code := range []string{"schedule_exists", "reminder_not_fired", "reminder_managed"} {
+		t.Run(code, func(t *testing.T) {
+			body := `{"error":{"code":"` + code + `","message":"Commitment refused","details":{"schedule_id":"schedule"}}}`
+			remote := classifyHTTPStatus(context.Background(), "item remind", 409, []byte(body), nil)
+			local := extractStructuredCLIError(structuredErrorMarker + body)
+			if local == nil {
+				t.Fatal("stdio discarded structured error")
+			}
+			for _, res := range []*CallToolResult{remote, local} {
+				p := envelopeFrom(res).Error
+				if string(p.Code) != code || !strings.Contains(string(p.Details), "schedule") {
+					t.Fatalf("lost error: %+v", p)
+				}
+			}
+		})
+	}
+}

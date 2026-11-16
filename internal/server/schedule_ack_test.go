@@ -126,7 +126,8 @@ func TestAcknowledgedProjectNextDoesNotFallBackToRankedItem(t *testing.T) {
 			t.Fatalf("ack ranked=%+v", s)
 		}
 	}
-	r, err := f.srv.store.CreateReminder(f.ws.ID, f.item.ID, resolveX)
+	other := mustItem(t, f.srv, f.ws.ID, f.item.CollectionID, "Other work")
+	r, err := f.srv.store.CreateReminder(f.ws.ID, other.ID, resolveX)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -136,13 +137,16 @@ func TestAcknowledgedProjectNextDoesNotFallBackToRankedItem(t *testing.T) {
 	rr = f.as(f.token(f.owner, ""), "GET", path, nil)
 	_ = json.Unmarshal(rr.Body.Bytes(), &d)
 	found := false
-	for _, s := range d.SuggestedNext {
-		if s.ItemRef == f.item.Ref {
+	for _, suggestion := range d.SuggestedNext {
+		if suggestion.ItemRef == f.item.Ref {
+			t.Fatal("acknowledged work resurfaced")
+		}
+		if suggestion.ItemRef == other.Ref {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatal("independent reminder suppressed")
+		t.Fatal("other commitment reminder suppressed")
 	}
 }
 func TestCommitmentAckCancelsQueuedPush(t *testing.T) {

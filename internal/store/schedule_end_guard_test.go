@@ -281,6 +281,19 @@ func TestDismissEndedSchedule(t *testing.T) {
 	if again := f.reload(t, item.ID); !reflect.DeepEqual(again, first) {
 		t.Fatal("an idempotent dismissal wrote")
 	}
+
+	// Dismissal hides history-only carriers, but recorded work still belongs in windows.
+	from, to := rt("2026-10-30T00:00:00Z"), rt("2026-10-31T00:00:00Z")
+	for _, list := range []func(string, PendingReminderScope, time.Time, time.Time, int) ([]AgendaSchedule, bool, error){f.s.ListSchedulesForAgenda, f.s.ListSchedulesForCalendar} {
+		rows, more, err := list(f.ws.ID, PendingReminderScope{ItemIDs: []string{item.ID}, CollectionIDs: []string{}}, from, to, 100)
+		if err != nil || more || len(rows) != 1 {
+			t.Fatalf("dismissed resolution missing from window: %+v %v %v", rows, more, err)
+		}
+		entries, cut, unavailable, err := f.s.ExpandAgenda(rows[0].Schedule, time.UTC, from, to, to)
+		if err != nil || cut || unavailable != "" || len(entries) != 1 || entries[0].State != "done" {
+			t.Fatalf("dismissed history: %+v %v %s %v", entries, cut, unavailable, err)
+		}
+	}
 }
 
 func TestTimingRevivalClearsDismissal(t *testing.T) {

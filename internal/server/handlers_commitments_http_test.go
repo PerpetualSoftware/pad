@@ -360,11 +360,10 @@ func TestManagedReminderOrdering(t *testing.T) {
 	f.expectErr(f.as(f.token(f.owner, ""), "PATCH", base+rid, patch), 409, "archived", "")
 }
 
-// Control: an unmanaged reminder on the same item still re-arms, acks and deletes.
-func TestUnmanagedReminderStillMutable(t *testing.T) {
+// Simple run-once commitments support the legacy alarm lifecycle.
+func TestSimpleReminderCommitmentMutable(t *testing.T) {
 	t.Parallel()
 	f := newSchedHTTP(t)
-	f.create(okSchedule)
 	tok := f.token(f.owner, "")
 	rr := f.as(tok, "POST", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.item.Slug+"/reminders", map[string]any{"remind_at": "2099-01-01T00:00:00Z"})
 	if rr.Code != 201 {

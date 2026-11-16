@@ -44,6 +44,9 @@ import (
 type ErrorCode string
 
 const (
+	ErrReminderManaged           ErrorCode = "reminder_managed"
+	ErrReminderNotFired          ErrorCode = "reminder_not_fired"
+	ErrScheduleExists            ErrorCode = "schedule_exists"
 	ErrInvalidBody               ErrorCode = "invalid_body"
 	ErrReopenUnavailable         ErrorCode = "reopen_unavailable"
 	ErrReopenNotSupported        ErrorCode = "reopen_not_supported"
@@ -531,6 +534,7 @@ const storedStateUnreadableHint = "Retrying will not help — the item's stored 
 // declarations block at the top of this file should also be added
 // for type safety in test assertions.
 var allowedStructuredErrorCodes = map[string]struct{}{
+	"schedule_exists": {}, "reminder_not_fired": {}, "reminder_managed": {},
 	"ambiguous_reminder":          {}, // BUG-4501: acknowledge by id to disambiguate.
 	"invalid_body":                {},
 	"schedule_linked":             {},

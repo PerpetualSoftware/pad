@@ -311,7 +311,11 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return nil, &ErrScheduleBroken{Code: *sc.ErrorCode}
 	}
 	if in.State == "ack" {
-		return s.ackOccurrenceTx(tx, sc, in, x, nowT)
+		res, err := s.ackOccurrenceTx(tx, sc, in, x, nowT)
+		if err != nil {
+			return nil, err
+		}
+		return s.commitResolve(tx, workspaceID, itemID, res)
 	}
 	if moveRoles != nil && moveRoles.DeadlineDays != nil {
 		// Move policy speaks only for an occurrence the caller really named.

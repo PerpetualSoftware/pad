@@ -73,6 +73,7 @@ func TestInterchangeGolden_RoundTrip(t *testing.T) {
 		t.Fatalf("re-export: %d %s", rr.Code, rr.Body.String())
 	}
 	again := readBundle(t, rr.Body.Bytes())
+	projectConvertedGoldenReminders(t, again)
 
 	want := flattenInterchange(t, "golden", golden)
 	got := flattenInterchange(t, "re-export", again)
@@ -636,4 +637,74 @@ func assertInterchangeGoldenCoverage(t *testing.T, files map[string][]byte) {
 			t.Errorf("the interchange golden no longer carries: %s", want)
 		}
 	}
+}
+
+// Compare the historical reminder bytes after proving their new commitment
+// representation. Conversion adds an import journal but loses no delivery state.
+func projectConvertedGoldenReminders(t *testing.T, files map[string][]byte) {
+	t.Helper()
+	var exp map[string]any
+	if err := json.Unmarshal(files["pad-export.json"], &exp); err != nil {
+		t.Fatal(err)
+	}
+	schedules, _ := exp["schedules"].([]any)
+	changes, _ := exp["schedule_changes"].([]any)
+	if len(schedules) != 2 || len(changes) != 4 {
+		t.Fatalf("converted schedules=%d changes=%d", len(schedules), len(changes))
+	}
+	var reminders []any
+	for _, raw := range schedules {
+		sc := raw.(map[string]any)
+		roles, _ := sc["roles"].(map[string]any)
+		alarm, _ := sc["reminder"].(map[string]any)
+		if alarm == nil {
+			if sc["ended_at"] == nil || sc["ended_dismissed_at"] != sc["ended_at"] || sc["next_at"] != nil {
+				t.Fatalf("undismissed carrier: %+v", sc)
+			}
+			found := false
+			for _, raw := range changes {
+				change := raw.(map[string]any)
+				if change["schedule_id"] != sc["id"] || change["reason"] != "one-shot reminder kept as history: acknowledged" {
+					continue
+				}
+				var rm map[string]any
+				if err := json.Unmarshal([]byte(change["before_json"].(string)), &rm); err != nil {
+					t.Fatal(err)
+				}
+				if rm["fired_at"] == "" || rm["acked_at"] == "" {
+					t.Fatalf("missing acknowledged history: %+v", rm)
+				}
+				delete(rm, "bundle_index")
+				rm["item_id"] = sc["item_id"]
+				reminders = append(reminders, rm)
+				found = true
+			}
+			if !found {
+				t.Fatal("missing carrier history")
+			}
+			continue
+		}
+
+		if sc["tz"] != "UTC" || sc["anchor"] != "calendar" || roles["roles_origin"] != "native" || roles["target_days"] != float64(0) || roles["target_secs"] != float64(0) || sc["next_at"] != alarm["remind_at"] || sc["dtstart"] != sc["next_wall"] || sc["rrule"] != nil {
+			t.Fatalf("wrong converted commitment: %+v", sc)
+		}
+		rm := map[string]any{"item_id": sc["item_id"], "created_at": sc["created_at"], "updated_at": sc["updated_at"]}
+		for k, v := range alarm {
+			rm[k] = v
+		}
+		reminders = append(reminders, rm)
+	}
+	for _, raw := range changes {
+		if raw.(map[string]any)["change_type"] != "import" {
+			t.Fatal("invented resolution during conversion")
+		}
+	}
+	exp["reminders"] = reminders
+	delete(exp, "schedules")
+	delete(exp, "schedule_changes")
+	body, err := json.Marshal(exp)
+	if err != nil {
+		t.Fatal(err)
+	}
+	files["pad-export.json"] = body
 }

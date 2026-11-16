@@ -72,7 +72,7 @@ func TestRemindOneShotUnchanged(t *testing.T) {
 
 	t.Run("arm", func(t *testing.T) {
 		out, err, calls := run("item", "remind", "TASK-5", "--remind-at", "2099-01-01T09:00:00Z")
-		if err != nil || out != "Reminder armed on TASK-5 for 2099-01-01T09:00:00Z (id r1)\n" {
+		if err != nil || out != "Run-once commitment created on TASK-5 for 2099-01-01T09:00:00Z (id r1)\n" {
 			t.Fatalf("out=%q err=%v", out, err)
 		}
 		if len(calls) != 2 || calls[1].method != "POST" || calls[1].body != `{"remind_at":"2099-01-01T09:00:00Z"}` {
@@ -82,7 +82,7 @@ func TestRemindOneShotUnchanged(t *testing.T) {
 	})
 	t.Run("rearm", func(t *testing.T) {
 		out, err, calls := run("item", "remind", "--rearm", "r1", "--remind-at", "2099-01-01T09:00:00Z")
-		if err != nil || out != "Re-armed reminder r1 for 2099-01-01T09:00:00Z\n" {
+		if err != nil || out != "Re-armed commitment alarm r1 for 2099-01-01T09:00:00Z\n" {
 			t.Fatalf("out=%q err=%v", out, err)
 		}
 		if len(calls) != 1 || calls[0].method != "PATCH" || calls[0].body != `{"remind_at":"2099-01-01T09:00:00Z"}` {
