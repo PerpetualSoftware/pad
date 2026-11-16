@@ -4046,6 +4046,8 @@ export interface CommitmentReopenResult {
  reopen: { resolution_id: string; change_id: string; occurrence_key: string; previous_state: string; missed_removed: number; comment_id?: string };
 }
 export interface ItemCommitmentView {
+ /** GET only: whether this caller may POST/PATCH this item's commitment. A display hint; mutations re-check. Absent means false. */
+ editable?: boolean;
  last_resolution?: ScheduleLastResolution;
  forecast: CommitmentForecast | null;
  milestone: CommitmentMilestone;
@@ -4140,7 +4142,26 @@ export interface CommitmentGate {
  opened_at?: string;
  created_at: string;
 }
+/** POST .../commitment. Never kind, dtend, every, tz or floating: the server pins the account zone (UTC when none). */
+export interface CommitmentCreateRequest {
+ dtstart: string;
+ rrule?: string;
+ roles: { target_days: 0; target_secs: 0 } & ({} | { deadline_days: number; deadline_secs: number; deadline_behavior: 'lapses' | 'stays_owed' });
+}
+/** PATCH .../commitment: only the members being changed. rrule null clears recurrence. */
+export interface CommitmentUpdateRequest {
+ dtstart?: string;
+ rrule?: string | null;
+ roles?: Partial<{
+  earliest_days: number | null; earliest_secs: number | null;
+  deadline_days: number | null; deadline_secs: number | null; deadline_behavior: 'lapses' | 'stays_owed' | null;
+  occupied_days: number | null; occupied_secs: number | null;
+  target_days: number; target_secs: number;
+ }>;
+}
 export interface CommitmentGateView {
+ /** Top level of GET .../commitment/gates only, about the path item; the nested view.gates never carries it. Absent means false. */
+ editable?: boolean;
  state: 'released' | 'waiting' | 'blocked_needs_decision';
  gates: CommitmentGate[];
  unresolved?: string[];

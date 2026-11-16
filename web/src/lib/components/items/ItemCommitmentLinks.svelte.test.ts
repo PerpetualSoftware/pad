@@ -7,7 +7,7 @@ import ItemCommitmentLinks from './ItemCommitmentLinks.svelte';
 import { gate, item, link, otherId, view } from '$lib/test/commitmentFixtures';
 import type { ItemCommitmentSnapshot } from '$lib/commitment';
 function props(v: ReturnType<typeof view> | null = view({ links: [link(), link({ id: 'second' })], gates: { state: 'waiting', gates: [gate()] } })) {
- const snapshot: ItemCommitmentSnapshot = { wsSlug: 'work', itemId: item.id, itemSlug: 'TASK-1', authEpoch: 0, zone: 'UTC', view: v };
+ const snapshot: ItemCommitmentSnapshot = { wsSlug: 'work', itemId: item.id, itemSlug: 'TASK-1', authEpoch: 0, zone: 'UTC', view: v, editable: false };
  return { wsSlug: 'work', username: 'dave', itemId: item.id, itemSlug: 'TASK-1', snapshot };
 }
 beforeEach(() => { vi.resetAllMocks(); h.get.mockResolvedValue({ ...item, id: otherId, item_number: 2, title: 'Prepare release' }); h.gates.mockResolvedValue({ state: 'released', gates: [] }); });
@@ -26,19 +26,18 @@ it('falls back to unlinked Linked item on failed hydration, never UUID text', as
  await screen.findAllByText('Linked item'); expect(screen.queryByRole('link')).toBeNull();
  expect(container.textContent).not.toContain(otherId);
 });
-it('loads incoming gates after a no-schedule snapshot', async () => {
- h.gates.mockResolvedValue({ state: 'waiting', gates: [gate()] }); render(ItemCommitmentLinks, props(null));
+it('shows the incoming gates a no-schedule snapshot carries, without reading them again', async () => {
+ const p = props(null); render(ItemCommitmentLinks, { ...p, snapshot: { ...p.snapshot, gates: { state: 'waiting', gates: [gate()] } } });
  await screen.findByRole('link', { name: 'TASK-2 · Prepare release' });
- expect(h.gates).toHaveBeenCalledWith('work', 'TASK-1'); expect(screen.getByText('Waiting')).toBeTruthy();
+ expect(h.gates).not.toHaveBeenCalled(); expect(screen.getByText('Waiting')).toBeTruthy();
 });
 it('keeps an aggregate with hidden blockers and no hidden count', async () => {
  const { container } = render(ItemCommitmentLinks, props(view({ gates: { state: 'blocked_needs_decision', gates: [] } })));
  await screen.findByText('Blocked — decision needed'); expect(h.get).not.toHaveBeenCalled(); expect(container.textContent).not.toMatch(/hidden|\d/);
 });
-it('shows unavailable and retries when no-schedule gates cannot be read', async () => {
- h.gates.mockRejectedValueOnce({ code: 'forbidden' }); const { container } = render(ItemCommitmentLinks, props(null));
- await screen.findByText('Date unavailable'); await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
- await waitFor(() => expect(h.gates).toHaveBeenCalledTimes(2)); await waitFor(() => expect(container.textContent).toBe(''));
+it('renders nothing and reads nothing for a no-schedule snapshot without gates', async () => {
+ const { container } = render(ItemCommitmentLinks, props(null));
+ await Promise.resolve(); expect(container.textContent).toBe(''); expect(h.gates).not.toHaveBeenCalled(); expect(h.get).not.toHaveBeenCalled();
 });
 it('renders nothing for an empty snapshot', async () => {
  const { container } = render(ItemCommitmentLinks, props(view()));

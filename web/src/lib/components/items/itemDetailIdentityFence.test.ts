@@ -107,7 +107,8 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		QuickActionsMenu: ['oncollectionupdated'],
 		ChildItems: ['onChildrenChange'],
 		BacklinksPanel: ['onCountChange'],
-		ItemCommitmentPanel: ['onSnapshot'],
+		// TASK-4600: onAddDateClose fires after the Add date dialog's create await.
+		ItemCommitmentPanel: ['onSnapshot', 'onAddDateClose'],
 		EditCollectionModal: ['onupdated', 'onclose'],
 		CopyItemDialog: ['onmove', 'oncopied'],
 		BuiltinUpdateNotice: ['onAccepted'],

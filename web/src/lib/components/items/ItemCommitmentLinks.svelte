@@ -18,7 +18,6 @@
  let { wsSlug, username, itemId, itemSlug, snapshot, onOpenTarget }: Props = $props();
  const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
  let loaded = $state.raw<{ source: ItemCommitmentSnapshot; gates: CommitmentGateView; items: Record<string, Item> } | null>(null);
- let failed = $state.raw<ItemCommitmentSnapshot | null>(null);
  let generation = 0;
  let disposed = false;
  const source = $derived(snapshot && snapshot.wsSlug === wsSlug && snapshot.itemId === itemId && snapshot.itemSlug === itemSlug
@@ -37,28 +36,23 @@
   const target = source;
   const previous = loaded && target && sameIdentity(loaded.source, target) ? loaded : null;
   if (!previous) loaded = null;
-  failed = null;
-  if (!target || target.view === undefined) return;
+  // The panel reads the gates when there is no commitment and hands them down
+  // in the snapshot; without them (loading or unavailable) there is nothing to show.
+  const gateView = target?.view === null ? target.gates : target?.view?.gates;
+  if (!target || !gateView) return;
   const current = () => !disposed && ticket === generation && target === source;
-  try {
-   const gateView = target.view === null ? await api.getCommitmentGates(target.wsSlug, target.itemSlug) : target.view.gates;
-   if (!isSameIdentity() || !current()) return;
-   const ids = new Set([
-    ...(target.view?.links ?? []).map(link => link.child_item_id === target.itemId ? link.parent_item_id : link.child_item_id),
-    ...gateView.gates.map(gate => gate.blocker_item_id)
-   ]);
-   const entries = await Promise.all([...ids].map(async id => {
-    const known = previous?.items[id];
-    if (known) return [id, known] as const;
-    try { return [id, await api.items.get(target.wsSlug, id)] as const; }
-    catch { return null; }
-   }));
-   if (!isSameIdentity() || !current()) return;
-   loaded = { source: target, gates: gateView, items: Object.fromEntries(entries.filter(entry => entry !== null)) };
-  } catch {
-   if (!isSameIdentity() || !current()) return;
-   failed = target;
-  }
+  const ids = new Set([
+   ...(target.view?.links ?? []).map(link => link.child_item_id === target.itemId ? link.parent_item_id : link.child_item_id),
+   ...gateView.gates.map(gate => gate.blocker_item_id)
+  ]);
+  const entries = await Promise.all([...ids].map(async id => {
+   const known = previous?.items[id];
+   if (known) return [id, known] as const;
+   try { return [id, await api.items.get(target.wsSlug, id)] as const; }
+   catch { return null; }
+  }));
+  if (!isSameIdentity() || !current()) return;
+  loaded = { source: target, gates: gateView, items: Object.fromEntries(entries.filter(entry => entry !== null)) };
  }
  $effect(() => { void source; untrack(() => { void load(); }); });
  onDestroy(() => { disposed = true; generation++; });
@@ -83,9 +77,7 @@
  {parts[0]}{#if other?.href}<a href={other.href} onclick={(event) => navigate(event, other)}>{other.label}</a>{:else}<span>{other?.label ?? 'Linked item'}</span>{/if}{parts[1]}
 {/snippet}
 
-{#if failed && failed === source}
- <section class="commitment-links" aria-label="Date relationships"><p role="status">Date unavailable</p><button onclick={() => load()}>Retry</button></section>
-{:else if links.length || hasGates}
+{#if links.length || hasGates}
  <section class="commitment-links" aria-label="Date relationships">
   <h3>Date relationships</h3>
   {#each links as link (link.id)}
@@ -105,5 +97,4 @@
  a { color: var(--accent-blue); text-decoration: none; }
  a:hover { text-decoration: underline; }
  .aggregate { font-weight: 500; }
- button { min-height: 44px; cursor: pointer; color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
 </style>
