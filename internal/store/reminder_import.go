@@ -2,7 +2,7 @@ package store
 
 import (
 	"encoding/json"
-	"fmt"
+	"log/slog"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -38,11 +38,18 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 	reminders := make([]*models.Reminder, 0, len(data.Reminders))
 	targets := make([]string, 0, len(data.Reminders))
 	unreadable := make([]string, 0, len(data.Reminders))
+	// Keep original bundle positions for history even when entries are skipped.
+	indices := make([]int, 0, len(data.Reminders))
+	skipped := 0
 	migrationTime := now()
-	for _, rm := range data.Reminders {
+	for i, rm := range data.Reminders {
 		if !items[rm.ItemID] {
-			return nil, fmt.Errorf("legacy reminder item %s: missing owner", rm.ItemID)
+			// Import skips items whose collection is absent too. Neither kind
+			// of orphan has an item to carry a schedule or reminder history.
+			skipped++
+			continue
 		}
+		indices = append(indices, i)
 		r := &models.Reminder{ID: rm.ItemID, ItemID: rm.ItemID, RemindAt: rm.RemindAt, CreatedAt: rm.CreatedAt, UpdatedAt: rm.UpdatedAt}
 		if rm.FiredAt != "" {
 			r.FiredAt = &rm.FiredAt
@@ -56,7 +63,8 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		targets = append(targets, at)
 	}
 	winners := resolveReminderCollisions(reminders, scheduled, unreadable, true)
-	for i, rm := range data.Reminders {
+	for i, index := range indices {
+		rm := data.Reminders[index]
 		if winner, ok := winners[rm.ItemID]; !ok || winner != i {
 			continue
 		}
@@ -73,7 +81,8 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		out.Schedules = append(out.Schedules, sx)
 		scheduled[rm.ItemID] = sx.ID
 	}
-	for i, rm := range data.Reminders {
+	for i, index := range indices {
+		rm := data.Reminders[index]
 		if winner, ok := winners[rm.ItemID]; ok && winner == i {
 			continue
 		}
@@ -95,7 +104,7 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		before, err := json.Marshal(map[string]any{
 			"item_id": rm.ItemID, "remind_at": rm.RemindAt,
 			"fired_at": rm.FiredAt, "acked_at": rm.AckedAt,
-			"created_at": rm.CreatedAt, "updated_at": rm.UpdatedAt, "bundle_index": i,
+			"created_at": rm.CreatedAt, "updated_at": rm.UpdatedAt, "bundle_index": index,
 		})
 		if err != nil {
 			return nil, err
@@ -108,5 +117,8 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		})
 	}
 
+	if skipped > 0 {
+		slog.Warn("workspace import: skipped orphaned reminders", "skipped", skipped)
+	}
 	return &out, nil
 }
