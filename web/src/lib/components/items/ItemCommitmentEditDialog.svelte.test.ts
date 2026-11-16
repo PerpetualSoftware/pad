@@ -136,3 +136,15 @@ it('keeps a one-off deadline at its offset from the target as the target moves',
  await save();
  await waitFor(() => expect(h.update).toHaveBeenCalledWith('work', 'TASK-1', { dtstart: '2031-03-11T09:00:00', roles: { deadline_days: 2, deadline_secs: 28800, deadline_behavior: 'lapses' } }));
 });
+it('ignores a deadline edit while the target date is empty, keeping the offset', async () => {
+ const once = { ...plain(), rrule: undefined };
+ h.get.mockResolvedValue(once);
+ mount(once);
+ await fireEvent.click(screen.getByLabelText('Hard deadline'));
+ await input('Deadline date', '2031-03-12'); await input('Deadline time', '17:00');
+ await input('Target date', '');
+ await input('Deadline time', '18:00');
+ await input('Target date', '2031-03-10');
+ await save();
+ await waitFor(() => expect(h.update).toHaveBeenCalledWith('work', 'TASK-1', { roles: { deadline_days: 2, deadline_secs: 28800, deadline_behavior: 'lapses' } }));
+});
