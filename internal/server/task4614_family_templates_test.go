@@ -62,6 +62,47 @@ func TestTASK4614_FamilyTemplatesSeedWorkspaces(t *testing.T) {
 	}
 }
 
+// TestTASK4614_FamilyEventDoneKeepsEndUnset marks a family event done and
+// checks no end date is stamped on it: an event's end is set by the user, not
+// by the completion auto-fill that stamps end_date.
+func TestTASK4614_FamilyEventDoneKeepsEndUnset(t *testing.T) {
+	srv := testServer(t)
+	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "WS family events", "template": "family-shared"})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace: %d %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+
+	rr = doRequest(srv, "POST", "/api/v1/workspaces/"+ws.Slug+"/collections/events/items", map[string]interface{}{
+		"title":  "Dentist",
+		"fields": `{"status":"upcoming","due_date":"2026-11-10"}`,
+	})
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create event: %d %s", rr.Code, rr.Body.String())
+	}
+	var created models.Item
+	parseJSON(t, rr, &created)
+
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+ws.Slug+"/items/"+created.Slug, map[string]interface{}{
+		"fields": `{"status":"done","due_date":"2026-11-10"}`,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("mark event done: %d %s", rr.Code, rr.Body.String())
+	}
+	var updated models.Item
+	parseJSON(t, rr, &updated)
+	fields := decodeItemFields(t, updated.Fields)
+	if fields["status"] != "done" {
+		t.Fatalf("premise: status = %v, want done", fields["status"])
+	}
+	for _, key := range []string{"ends_on", "end_date"} {
+		if v, ok := fields[key]; ok && v != "" {
+			t.Errorf("marking an event done set %s = %v; an event's end stays as the user left it", key, v)
+		}
+	}
+}
+
 // TestTASK4614_FamilyTemplatesNotListed checks the template picker endpoint
 // leaves the hidden family templates out.
 func TestTASK4614_FamilyTemplatesNotListed(t *testing.T) {

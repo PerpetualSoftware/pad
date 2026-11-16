@@ -111,8 +111,12 @@ func familyEventsCollection(sortOrder int) DefaultCollection {
 					Label: "Date",
 					Type:  "date",
 				},
+				// Keyed ends_on, not end_date: the item handlers stamp an
+				// empty end_date with today when an item moves to done,
+				// and end_date also counts as a deadline in the overdue
+				// report. An event's end is a date the user sets.
 				{
-					Key:   "end_date",
+					Key:   "ends_on",
 					Label: "End date",
 					Type:  "date",
 				},
