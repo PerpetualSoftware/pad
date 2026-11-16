@@ -2251,6 +2251,14 @@ describe('overview arrival after the first current list read (TASK-4593)', () =>
   next.resolve(response());
   await waitFor(() => expect(h.arrive).toHaveBeenCalledExactlyOnceWith('/agenda'));
  });
+ it('refreshes the overview again after the identity changes on the page', async () => {
+  render(Agenda);
+  await waitFor(() => expect(h.arrive).toHaveBeenCalledExactlyOnceWith('/agenda'));
+  h.epoch++; h.user = { id: 'user-b', timezone: 'UTC' }; h.signal?.set('auth', 2);
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(2));
+  await waitFor(() => expect(h.arrive).toHaveBeenCalledTimes(2));
+  expect(h.arrive).toHaveBeenLastCalledWith('/agenda');
+ });
  it('does not arrive without a user', async () => {
   h.user = null; render(Agenda); await settle();
   expect(h.agenda).not.toHaveBeenCalled(); expect(h.arrive).not.toHaveBeenCalled();

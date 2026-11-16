@@ -137,6 +137,8 @@
 	const emptyGroup = $derived(selection.kind === 'group' && workspaces !== null && !!workspaceGroups?.some(group =>
 		group.id === selection.id && group.kind === 'named' && !group.workspace_ids.some(id => workspaces!.some(workspace => workspace.id === id))));
 	let loadedUser: string | undefined;
+	// Plain let: the loader reads and writes it. Once per mount and identity: the navs leave the /agenda arrival to this page.
+	let overviewArrived = false;
 	let preferenceUser: string | undefined;
 	let dragSerial = 0;
 	let hoverDay = $state('');
@@ -412,7 +414,7 @@
 		refusedWorkspace = null; workspacesLoading = false; workspacesError = false;
 		setSelection({ kind: 'group', id: 'all' }, false);
 		pending = {}; saved = {}; dialogEntry = null; forecastEntry = null; endChoice = null; endError = '';
-		review = null; committing = false; linkedTitles = {}; lastAnnouncedMonth = ''; loadedUser = userId;
+		review = null; committing = false; linkedTitles = {}; lastAnnouncedMonth = ''; loadedUser = userId; overviewArrived = false;
 		if (!userId) { groupsReady = true; return; }
 		let remembered = 'all';
 		try { remembered = localStorage.getItem(`pad-agenda-group:${userId}`) || 'all'; } catch { /* Storage is optional. */ }
@@ -476,8 +478,6 @@
 		untrack(() => { void loadGroupContext(); });
 	});
 
-	// Plain let: this one-time arrival guard is read and written by the loader.
-	let overviewArrived = false;
 	async function load(date: string, timeZone: string, quiet = false): Promise<boolean | undefined> {
 		const mine = ++ticket;
 		const viewMode = mode;
