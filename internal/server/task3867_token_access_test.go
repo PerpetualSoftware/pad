@@ -231,8 +231,8 @@ func TestTask3867Unavailable409(t *testing.T) {
 	task3867Factor(t, e, "unavailable")
 	rr := task3867Verify(e, map[string]string{"password": "correct-horse-battery-staple"})
 	task3867Want(t, rr, 409, "step_up_unavailable")
-	if !strings.Contains(rr.Body.String(), "Turn on two-factor authentication to change key access.") {
-		t.Fatal("missing recovery guidance")
+	if !strings.Contains(rr.Body.String(), "No verification method is available for this account") {
+		t.Fatal("missing unavailable-factor message")
 	}
 }
 func TestTask3867GrantPerSession(t *testing.T) {
@@ -528,6 +528,16 @@ func TestTask3867AnonymousRefused(t *testing.T) {
 
 func task3867EnrolTOTP(t *testing.T, e *tokenAuthEnv) string {
 	t.Helper()
+	// These tests exercise factor pinning after enrolment. Supply enrolment's
+	// grant, then remove it so their subsequent widening checks stay independent.
+	info, err := e.srv.store.ValidateSession(e.sessTok)
+	if err != nil || info == nil {
+		t.Fatal("missing session", err)
+	}
+	if err := e.srv.store.GrantSessionStepUp(info.ID, time.Now().Add(10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+
 	rr := doRequestWithBearer(e.srv, "POST", "/api/v1/auth/2fa/setup", e.sessTok, nil)
 	task3867Want(t, rr, 200, "")
 	var setup struct {
@@ -539,6 +549,10 @@ func task3867EnrolTOTP(t *testing.T, e *tokenAuthEnv) string {
 		t.Fatal(err)
 	}
 	task3867Want(t, doRequestWithBearer(e.srv, "POST", "/api/v1/auth/2fa/verify", e.sessTok, map[string]string{"secret": setup.Secret, "code": code}), 200, "")
+	if _, err := e.srv.store.DB().Exec(`UPDATE sessions SET step_up_until=NULL WHERE id=?`, info.ID); err != nil {
+		t.Fatal(err)
+	}
+
 	return setup.Secret
 }
 

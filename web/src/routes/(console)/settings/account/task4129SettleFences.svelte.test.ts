@@ -71,6 +71,7 @@ vi.mock('$lib/api/client', () => ({
 		},
 		auth: {
 			me: vi.fn(async () => state.meQueue.length ? state.meQueue.shift() : profileOf('Pat')),
+			stepUp: { status: vi.fn(async () => ({ factor: 'password', active_until: new Date(Date.now() + 600000).toISOString() })) },
 			totp: { disable: vi.fn(), setup: vi.fn(), verify: vi.fn() },
 			tokens: { list: vi.fn(async () => []), create: vi.fn(), rotate: vi.fn(), delete: vi.fn() },
 			updateProfile: state.update,
@@ -373,6 +374,20 @@ describe('2FA writers', () => {
 		wake();
 		await waitFor(() => expect(state.toCanvas).toHaveBeenCalledOnce());
 		expect(state.toCanvas.mock.calls[0][1]).toBe(SETUP.url);
+	});
+	it('a QR render completing during verification leaves Verify busy', async () => {
+		const wake = await toHeldQrTimer();
+		const held = deferred();
+		mocked.verify.mockReturnValueOnce(held.promise as Promise<never>);
+		await fireEvent.input(document.getElementById('totp-verify')!, { target: { value: '123456' } });
+		await fireEvent.click(button('Verify & Enable'));
+		expect(button('Verifying...')).toBeDisabled();
+		wake();
+		await waitFor(() => expect(state.toCanvas).toHaveBeenCalledOnce());
+		await flush();
+		expect(button('Verifying...')).toBeDisabled();
+		held.resolve({ recovery_codes: ['RC-QR'] });
+		await screen.findByText('RC-QR');
 	});
 	it('a QR render with no identity change still draws', async () => {
 		state.extra = { totp_enabled: false };

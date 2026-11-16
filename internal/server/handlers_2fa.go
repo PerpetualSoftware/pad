@@ -77,6 +77,10 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if !s.requireTOTPEnrolStepUp(w, r, user) {
+		return
+	}
+
 	// Generate TOTP key
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      totpIssuer,
@@ -116,6 +120,10 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 
 	if user.TOTPEnabled {
 		writeError(w, http.StatusConflict, "conflict", "2FA is already enabled")
+		return
+	}
+
+	if !s.requireTOTPEnrolStepUp(w, r, user) {
 		return
 	}
 

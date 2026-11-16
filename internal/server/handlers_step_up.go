@@ -13,6 +13,34 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
+// sessionHasStepUp reports whether this user's authenticated session has a live grant.
+func (s *Server) sessionHasStepUp(r *http.Request, userID string) bool {
+	session := s.requestSessionInfo(r)
+	return session != nil && session.User != nil && session.User.ID == userID && session.StepUpUntil != nil && session.StepUpUntil.After(time.Now())
+}
+
+// requireTOTPEnrolStepUp gates both creating and confirming a pending secret.
+// Accounts without a verification factor must have signed in recently instead.
+func (s *Server) requireTOTPEnrolStepUp(w http.ResponseWriter, r *http.Request, user *models.User) bool {
+	if s.sessionHasStepUp(r, user.ID) {
+		return true
+	}
+	session := s.requestSessionInfo(r)
+	if session != nil && session.User != nil && session.User.ID == user.ID {
+		factor, _ := s.stepUpFactor(user, session)
+		if factor == "unavailable" {
+			age := time.Since(session.SignedInAt)
+			if age >= 0 && age <= accountDeleteReauthWindow {
+				return true
+			}
+			writeError(w, http.StatusForbidden, "reauth_required", "Sign in again, then turn on two-factor authentication within 10 minutes")
+			return false
+		}
+	}
+	writeError(w, http.StatusForbidden, "step_up_required", "Verify your identity before turning on two-factor authentication")
+	return false
+}
+
 // stepUpFactor selects the strongest factor established before the session. A sender needs no
 // public base URL because the email carries a code rather than a link.
 func (s *Server) stepUpFactor(user *models.User, session *store.SessionInfo) (string, *email.Sender) {
@@ -113,7 +141,7 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 	user := session.User
 	factor, _ := s.stepUpFactor(user, session)
 	if factor == "unavailable" {
-		writeError(w, http.StatusConflict, "step_up_unavailable", "Turn on two-factor authentication to change key access.")
+		writeError(w, http.StatusConflict, "step_up_unavailable", "No verification method is available for this account")
 		return
 	}
 	var input struct {

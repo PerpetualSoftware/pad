@@ -2171,6 +2171,25 @@ func (c *Client) GetAccountSecurity() (*AccountSecurity, error) {
 	return &result, c.get("/auth/me", &result)
 }
 
+// StepUpStatusResponse describes the current session's verification factor and grant.
+type StepUpStatusResponse struct {
+	Factor      string     `json:"factor"`
+	ActiveUntil *time.Time `json:"active_until"`
+}
+
+func (c *Client) StepUpStatus() (*StepUpStatusResponse, error) {
+	var result StepUpStatusResponse
+	return &result, c.get("/auth/step-up", &result)
+}
+
+func (c *Client) StepUpSendEmail() error {
+	return c.post("/auth/step-up/email", nil, nil)
+}
+
+func (c *Client) StepUpVerify(code, password string) error {
+	return c.post("/auth/step-up/verify", map[string]string{"code": code, "password": password}, nil)
+}
+
 // TOTPSetupResponse is POST /auth/2fa/setup's answer: a fresh secret (not yet
 // enabled) and its otpauth:// URI.
 type TOTPSetupResponse struct {
