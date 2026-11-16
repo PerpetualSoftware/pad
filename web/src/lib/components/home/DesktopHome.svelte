@@ -49,8 +49,8 @@
 		weekOffset = 0;
 		stripAgenda = null;
 	}
-	// Identity changes clear already-loaded local counts as well as fencing pending requests.
-	$effect(() => { authStore.identityEpoch; thisWeek(); });
+	// Identity, zone and week-start changes clear already-loaded local counts and fence pending requests.
+	$effect(() => { authStore.identityEpoch; zone; homeOverview.monday; thisWeek(); });
 	onDestroy(() => { stripRequest++; });
 	async function swipeWeek(delta: 1 | -1) {
 		weekOffset += delta;

@@ -204,7 +204,8 @@
 
 <style>
 	.strip { margin-top: var(--space-4); }
-	.swipe-enabled { overflow: clip; overflow-clip-margin: 4px; }
+	/* Clip only sideways (the dragged row); the inline padding keeps the end days' focus rings inside the clip. */
+	.swipe-enabled { overflow-x: clip; padding-inline: 4px; margin-inline: -4px; }
 	.motion { transition: transform 180ms ease-out; }
 	.motion.tracking { transition: none; }
 	.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--space-2); }
