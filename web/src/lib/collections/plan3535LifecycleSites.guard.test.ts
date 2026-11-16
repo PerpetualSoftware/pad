@@ -38,6 +38,7 @@ const HELPERS = [
 const SITES: Record<string, [number, string]> = {
 	'src/lib/calendar/monthGrid.ts::doneFieldTerminalOptions': [1, 'keep: calendar entries show each item’s terminal status, including reference items; no progress count'],
 	'src/lib/calendar/monthGrid.ts::getAbandonedOptions': [1, 'keep: calendar entries mark an abandoned terminal item without a completed check; no progress count'],
+	'src/lib/components/items/ItemCommitmentPanel.svelte::childState': [1, "keep: labels the item's own dates 'Item closed' when the item is in a terminal state; no progress count"],
 	// The hub, composed of itself and of the per-collection resolvers.
 	'src/lib/collections/childProgress.ts::childState': [6, 'exclude: the hub; every counting door here asks isReferenceChild first'],
 	'src/lib/collections/childProgress.ts::isReferenceChild': [3, 'exclude: the reference predicate, asked by split / counted / count'],
