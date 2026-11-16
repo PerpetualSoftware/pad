@@ -169,9 +169,11 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		}
 	}
 	winners := resolveReminderCollisions(reminders, scheduled, unreadable, false)
+	// A dismissed legacy winner carries history only; live commitment ack
+	// semantics do not apply to reminders dismissed before the upgrade.
 	converted := 0
 	for i, r := range reminders {
-		if winner, ok := winners[r.ItemID]; !ok || winner != i {
+		if winner, ok := winners[r.ItemID]; !ok || winner != i || r.AckedAt != nil {
 			continue
 		}
 		at := targets[r.ID]
@@ -214,7 +216,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 	}
 	history := 0
 	for i, r := range reminders {
-		if winner, ok := winners[r.ItemID]; ok && winner == i {
+		if winner, ok := winners[r.ItemID]; ok && winner == i && r.AckedAt == nil {
 			continue
 		}
 		if scheduled[r.ItemID] == "" {
@@ -233,6 +235,9 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 			scheduled[r.ItemID] = sc.ID
 		}
 		reason := legacyReminderHistoryReason
+		if winner, ok := winners[r.ItemID]; ok && reminders[winner].AckedAt != nil {
+			reason += ": acknowledged"
+		}
 		if unreadable[i] != "" {
 			reason = "reminder kept as history: unreadable " + unreadable[i]
 		}
@@ -259,6 +264,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		}
 		history++
 	}
+	// History includes acknowledged winners as well as unreadable and losing rows.
 	if converted+history != len(reminders) {
 		return fmt.Errorf("reminder conversion count mismatch")
 	}

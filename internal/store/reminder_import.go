@@ -63,9 +63,11 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		targets = append(targets, at)
 	}
 	winners := resolveReminderCollisions(reminders, scheduled, unreadable, true)
+	// A dismissed legacy winner carries history only; live commitment ack
+	// semantics do not apply to reminders dismissed before the upgrade.
 	for i, index := range indices {
 		rm := data.Reminders[index]
-		if winner, ok := winners[rm.ItemID]; !ok || winner != i {
+		if winner, ok := winners[rm.ItemID]; !ok || winner != i || reminders[i].AckedAt != nil {
 			continue
 		}
 		at := targets[i]
@@ -83,7 +85,7 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 	}
 	for i, index := range indices {
 		rm := data.Reminders[index]
-		if winner, ok := winners[rm.ItemID]; ok && winner == i {
+		if winner, ok := winners[rm.ItemID]; ok && winner == i && reminders[i].AckedAt == nil {
 			continue
 		}
 		if scheduled[rm.ItemID] == "" {
@@ -98,6 +100,9 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 			out.ScheduleChanges = append(out.ScheduleChanges, models.ScheduleChangeExport{ID: id, ItemID: rm.ItemID, ScheduleID: sx.ID, ChangeType: "import", AfterJSON: ptr(string(after)), Reason: legacyReminderCarrierReason, ReasonSource: "system", RootChangeID: id, RecordedAt: migrationTime})
 		}
 		reason := legacyReminderHistoryReason
+		if winner, ok := winners[rm.ItemID]; ok && reminders[winner].AckedAt != nil {
+			reason += ": acknowledged"
+		}
 		if unreadable[i] != "" {
 			reason = "reminder kept as history: unreadable " + unreadable[i]
 		}
