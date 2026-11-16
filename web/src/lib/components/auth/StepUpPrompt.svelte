@@ -5,8 +5,9 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import type { StepUpStatus, StepUpProof } from '$lib/types';
 
-	let { factor, onverified, formId, busy = $bindable(false), canVerify = $bindable(false) }: {
+	let { factor, onverified, formId, description = 'Verify your identity to increase this key’s access. Verification lasts 10 minutes in this session.', busy = $bindable(false), canVerify = $bindable(false) }: {
 		factor: StepUpStatus['factor'];
+		description?: string;
 		onverified: () => void;
 		/** A hosting dialog supplies its own submit button for this form. */
 		formId?: string;
@@ -99,7 +100,7 @@
 		<p>Turn on two-factor authentication to change key access.</p>
 	{:else}
 		<form id={formId} onsubmit={verify} aria-labelledby={headingId}>
-			<p>Verify your identity to increase this key’s access. Verification lasts 10 minutes in this session.</p>
+			<p>{description}</p>
 			{#if factor === 'password'}
 				<label for="step-up-password">Password</label>
 				<input id="step-up-password" type="password" autocomplete="current-password" bind:this={passwordEl} bind:value={password} disabled={busy} required aria-invalid={error ? 'true' : undefined} aria-describedby={error ? errorId : undefined} />

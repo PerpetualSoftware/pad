@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { confirmSignOut, signOutLogout } from '$lib/stores/signOutGuard.svelte';
+	import StepUpPrompt from '$lib/components/auth/StepUpPrompt.svelte';
 	import EditTokenAccessDialog from '$lib/components/auth/EditTokenAccessDialog.svelte';
 	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
 	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
@@ -18,7 +19,7 @@
 	import CalendarFeedsSettings from '$lib/components/settings/CalendarFeedsSettings.svelte';
 	import ChatEnterSendsToggle from '$lib/components/settings/ChatEnterSendsToggle.svelte';
 	import CharacterShortcutsToggle from '$lib/components/common/CharacterShortcutsToggle.svelte';
-	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse } from '$lib/types';
+	import type { User, APIToken, APITokenWithSecret, TOTPSetupResponse, StepUpStatus } from '$lib/types';
 	import { describeTokenScopes } from '$lib/settings/tokenScopes';
 
 	// Profile
@@ -97,6 +98,9 @@
 
 	// 2FA
 	let totpStep = $state<'idle' | 'setup' | 'verify' | 'recovery'>('idle');
+	let totpStepUp = $state<StepUpStatus | null>(null);
+	let totpStepUpBusy = $state(false);
+	let pendingTOTPVerify = $state<{ code: string; secret: string } | null>(null);
 	let totpSetup = $state<TOTPSetupResponse | null>(null);
 	let totpCode = $state('');
 	let totpSaving = $state(false);
@@ -293,6 +297,9 @@
 		}
 		totpStep = 'idle';
 		totpSetup = null;
+		totpStepUp = null;
+		pendingTOTPVerify = null;
+		totpStepUpBusy = false;
 		totpCode = '';
 		totpSaving = false;
 		totpMsg = '';
@@ -449,6 +456,35 @@
 
 	async function startTOTPSetup() {
 		const isSameIdentity = authStore.identityFence();
+		totpError = ''; totpMsg = ''; totpSaving = true;
+		let status: StepUpStatus;
+		try {
+			status = await api.auth.stepUp.status();
+		} catch (err) {
+			if (isSameIdentity()) totpError = err instanceof Error ? err.message : 'Could not load verification.';
+			return;
+		} finally {
+			if (isSameIdentity()) totpSaving = false;
+		}
+		if (!isSameIdentity()) return;
+		if (!(status.active_until && Date.parse(status.active_until) > Date.now()) && status.factor !== 'unavailable') {
+			totpStepUp = status;
+			return;
+		}
+		// Setup owns its busy state; its later QR rendering must not clear a
+		// verification that started while the canvas was being prepared.
+		await performTOTPSetup();
+	}
+
+	function totpIdentityVerified() {
+		const pending = pendingTOTPVerify;
+		totpStepUp = null; pendingTOTPVerify = null; totpStepUpBusy = false;
+		if (pending) void submitTOTP(pending.code, pending.secret, false);
+		else void performTOTPSetup();
+	}
+
+	async function performTOTPSetup() {
+		const isSameIdentity = authStore.identityFence();
 		totpError = '';
 		totpMsg = '';
 		totpSaving = true;
@@ -503,10 +539,14 @@
 			return;
 		}
 
+		await submitTOTP(code, totpSetup.secret, true);
+	}
+
+	async function submitTOTP(code: string, secret: string, allowPrompt: boolean) {
 		const isSameIdentity = authStore.identityFence();
 		totpSaving = true;
 		try {
-			const result = await api.auth.totp.verify(code, totpSetup.secret);
+			const result = await api.auth.totp.verify(code, secret);
 			if (!isSameIdentity()) return;
 			recoveryCodes = result.recovery_codes;
 			totpStep = 'recovery';
@@ -516,7 +556,23 @@
 			if (!isSameIdentity()) return;
 			profile = refreshed;
 		} catch (err) {
-			if (isSameIdentity()) totpError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
+			if (!isSameIdentity()) return;
+			if (allowPrompt && err instanceof PadApiError && err.code === 'step_up_required') {
+				try {
+					const status = await api.auth.stepUp.status();
+					if (!isSameIdentity()) return;
+					if (status.factor === 'unavailable') {
+						await submitTOTP(code, secret, false);
+					} else {
+						pendingTOTPVerify = { code, secret };
+						totpStepUp = status;
+					}
+				} catch (statusError) {
+					if (isSameIdentity()) totpError = statusError instanceof Error ? statusError.message : 'Could not load verification.';
+				}
+			} else {
+				totpError = err instanceof Error ? err.message : 'Invalid code. Please try again.';
+			}
 		} finally {
 			if (isSameIdentity()) totpSaving = false;
 		}
@@ -565,6 +621,9 @@
 	function finishSetup() {
 		totpStep = 'idle';
 		totpSetup = null;
+		totpStepUp = null;
+		pendingTOTPVerify = null;
+		totpStepUpBusy = false;
 		recoveryCodes = [];
 		totpMsg = 'Two-factor authentication is now enabled.';
 	}
@@ -572,6 +631,9 @@
 	function cancelSetup() {
 		totpStep = 'idle';
 		totpSetup = null;
+		totpStepUp = null;
+		pendingTOTPVerify = null;
+		totpStepUpBusy = false;
 		totpCode = '';
 		totpError = '';
 		recoveryCodes = [];
@@ -1017,7 +1079,10 @@
 		<section class="card" id="two-factor-authentication">
 			<h2 class="card-title">Two-Factor Authentication</h2>
 			<div class="card-body">
-				{#if totpStep === 'idle'}
+				{#if totpStepUp}
+					<StepUpPrompt factor={totpStepUp.factor} onverified={totpIdentityVerified} bind:busy={totpStepUpBusy} description="Verify your identity before turning on two-factor authentication. Verification lasts 10 minutes in this session." />
+					<div class="btn-row"><Button variant="secondary" onclick={cancelSetup} disabled={totpStepUpBusy}>Cancel</Button></div>
+				{:else if totpStep === 'idle'}
 					<div class="totp-status-row">
 						<div class="totp-status-info">
 							<span class="totp-label">Status</span>
