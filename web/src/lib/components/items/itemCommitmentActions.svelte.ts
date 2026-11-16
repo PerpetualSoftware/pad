@@ -74,6 +74,8 @@ export class ItemCommitmentActions {
 		this.review = null; this.committing = false; this.actionError = ''; this.announcement = ''; this.refreshFailed = false; this.linkedTitles = {};
 	};
 	dispose = () => { this.#epoch++; };
+	/** A re-read landed: the shown entries are fresh, so none stays disabled as just saved (the Agenda's reload does the same). */
+	refreshed = () => { this.saved = {}; };
 
 	action = (entry: AgendaEntry, state: AgendaAction) => {
 		if (this.pending[entryKey(entry)] || this.saved[entryKey(entry)] || !canResolve(entry)) return;

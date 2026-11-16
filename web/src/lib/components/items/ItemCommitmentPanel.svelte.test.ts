@@ -130,6 +130,13 @@ it('shows occurrence actions to an editor and re-reads only the commitment after
  expect(h.resolve).toHaveBeenCalledTimes(1); expect(h.gates).not.toHaveBeenCalled();
  await screen.findByText('Occurrence marked done.');
 });
+it('re-enables the actions once the re-read lands, even when the occurrence is unchanged (a snooze keeps it)', async () => {
+ h.get.mockResolvedValue(view({ editable: true })); h.resolve.mockResolvedValue({ commitment: view(), resolution: { occurrence_at: '', state: 'done', missed_recorded: 0 } });
+ render(ItemCommitmentPanel, props());
+ await fireEvent.click(await screen.findByRole('button', { name: 'Done TASK-1' }));
+ await screen.findByText('Occurrence marked done.');
+ await waitFor(() => expect((screen.getByRole('button', { name: 'Done TASK-1' }) as HTMLButtonElement).disabled).toBe(false));
+});
 it.each([[{}], [{ editable: false }]])('shows a reader no buttons and no dialogs (%j)', async extra => {
  h.get.mockResolvedValue(view(extra)); render(ItemCommitmentPanel, props());
  await screen.findByText('every Monday');

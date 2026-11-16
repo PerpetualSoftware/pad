@@ -77,6 +77,7 @@
    const loaded = await api.getCommitment(target.wsSlug, target.itemSlug);
    if (!fresh()) return true;
    snapshot = { ...target, view: loaded, editable: loaded.editable === true };
+   actions.refreshed();
    onSnapshot(snapshot);
    return true;
   } catch (error) {
@@ -90,6 +91,7 @@
    const gates = await api.getCommitmentGates(target.wsSlug, target.itemSlug);
    if (!fresh()) return true;
    snapshot = { ...target, view: null, gates, editable: gates.editable === true };
+   actions.refreshed();
    onSnapshot(snapshot);
    return true;
   } catch {
