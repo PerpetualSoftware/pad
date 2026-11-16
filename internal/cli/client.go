@@ -3600,7 +3600,7 @@ func (c *Client) AckReminder(wsSlug, reminderID string) (*models.Reminder, error
 	return &result, c.post("/workspaces/"+url.PathEscape(wsSlug)+"/reminders/"+url.PathEscape(reminderID)+"/ack", nil, &result)
 }
 
-// AckItemReminder acknowledges the item's sole fired, unacknowledged unmanaged reminder.
+// AckItemReminder acknowledges the item's fired, unacknowledged run-once commitment alarm.
 // Multiple candidates are refused without acknowledging any of them.
 func (c *Client) AckItemReminder(wsSlug, itemRef string) (*models.Reminder, error) {
 	var result models.Reminder

@@ -363,8 +363,8 @@ func (s *Store) enqueueReminderNotificationTx(tx *sql.Tx, r *models.Reminder, it
 	// schedule's audience includes a human. An agent-only schedule writes no
 	// notification row; its outbox event is written by the caller as always, so
 	// webhooks and the agenda are unchanged. The audience is read here, in the
-	// fire transaction, so a change applies from the next fire. A one-shot
-	// reminder has no schedule and pushes as before.
+	// fire transaction, so a change applies from the next fire. Historical
+	// snapshots can lack schedule identity; all current alarms belong to commitments.
 	target := ""
 	if r.ScheduleID != nil {
 		var audience string

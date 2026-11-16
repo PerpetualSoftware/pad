@@ -763,13 +763,8 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 
 	// (b2) Fired-but-unacknowledged reminders (IDEA-2641).
 	//
-	// TERMINAL-ITEM REMINDERS ARE FILTERED, NOT ACKED. Acking on terminal
-	// status would make every status write a reminder mutation, and it would
-	// consume a reminder a user may have armed precisely to fire after the
-	// work was done. Filtering leaves the row exactly as the user left it —
-	// armed, fired, unacked, still theirs — while keeping a finished item off
-	// the surface an agent polls. The distinction is observable: the reminder
-	// is absent from here and present in the table.
+	// Terminal items pause commitment firing and hide pending alarms without
+	// acknowledging them. Reopening restores their existing lifecycle state.
 	// Visibility is scoped IN THE QUERY, using the same collection/item id sets
 	// every other section here reads through `allItems`.
 	// Filtering after a bounded window is what let fifty invisible rows hide a

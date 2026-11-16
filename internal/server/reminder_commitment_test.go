@@ -1,10 +1,11 @@
 package server
 
 import (
-	"github.com/PerpetualSoftware/pad/internal/models"
 	"net/http"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
 func TestReminderCompatibilityRoutes(t *testing.T) {
@@ -16,6 +17,17 @@ func TestReminderCompatibilityRoutes(t *testing.T) {
 		t.Fatalf("POST did not create commitment: %+v", r)
 	}
 	base := "/api/v1/workspaces/" + ws
+	activityCount := func(action string) int {
+		t.Helper()
+		var n int
+		if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM activities WHERE document_id=? AND action=?`, item.ID, action).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := activityCount("schedule_created"); n != 1 {
+		t.Fatalf("creation activities=%d", n)
+	}
 	rr := doRequest(srv, "POST", base+"/items/"+item.ID+"/reminders", map[string]string{"remind_at": futureInstant})
 	if rr.Code != 409 || !strings.Contains(rr.Body.String(), "schedule_exists") || !strings.Contains(rr.Body.String(), "pad remind move") {
 		t.Fatalf("conflict=%d %s", rr.Code, rr.Body.String())
@@ -37,6 +49,9 @@ func TestReminderCompatibilityRoutes(t *testing.T) {
 	rr = doRequest(srv, "POST", base+"/reminders/"+r.ID+"/ack", nil)
 	if rr.Code != 200 {
 		t.Fatalf("retry=%d %s", rr.Code, rr.Body.String())
+	}
+	if n := activityCount("schedule_acknowledged"); n != 1 {
+		t.Fatalf("acknowledgement activities=%d", n)
 	}
 	rr = doRequest(srv, "POST", base+"/items/"+item.ID+"/reminders/ack", nil)
 	if rr.Code != 404 {

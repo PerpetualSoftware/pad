@@ -26,7 +26,7 @@ func (s *Store) ackOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveI
 	}
 	res := &ResolveResult{}
 	if sc.ReminderAckedAt != nil {
-		return s.commitResolve(tx, sc.WorkspaceID, sc.ItemID, res)
+		return res, nil
 	}
 	undo, err := s.captureResolutionUndoTx(tx, sc, "ack", in.Actor, in.ActorUserID, occurrence, now)
 	if err != nil {
@@ -51,15 +51,20 @@ func (s *Store) ackOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in ResolveI
 		return nil, err
 	}
 	prefix := "reminder:" + *sc.ReminderID + ":" + evidence.OccurrenceAt + ":"
+	legacyPrefix := "reminder:" + *sc.ReminderID + ":"
+	// Legacy keys contain one UTC stamp (four colons including the prefix).
+	// Managed keys contain two stamps. This also matches nanosecond fire stamps
+	// that differ from the whole-second fired_at column, without cancelling a
+	// different managed occurrence.
 	if _, err := tx.Exec(s.q(`UPDATE user_notifications SET push_state='skipped',skip_reason='occurrence_acknowledged',claim_token='',claimed_at=NULL
- WHERE workspace_id=? AND item_id=? AND kind='reminder' AND push_state='pending' AND substr(dedupe_key,1,?)=?`), sc.WorkspaceID, sc.ItemID, len(prefix), prefix); err != nil {
+ WHERE workspace_id=? AND item_id=? AND kind='reminder' AND push_state='pending' AND (substr(dedupe_key,1,?)=? OR (substr(dedupe_key,1,?)=? AND length(dedupe_key)-length(replace(dedupe_key,':',''))=4))`), sc.WorkspaceID, sc.ItemID, len(prefix), prefix, len(legacyPrefix), legacyPrefix); err != nil {
 		return nil, fmt.Errorf("cancel acknowledged occurrence pushes: %w", err)
 	}
 	if err := s.finishResolutionUndoTx(tx, sc, undo); err != nil {
 		return nil, err
 	}
 	res.AckChanged = true
-	return s.commitResolve(tx, sc.WorkspaceID, sc.ItemID, res)
+	return res, nil
 }
 
 // fillScheduleAcknowledgements reads evidence for current occurrences in one

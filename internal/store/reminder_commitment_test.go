@@ -155,8 +155,32 @@ func TestOneShotReminderIdentityRace(t *testing.T) {
 				f := newSchedFixture(t)
 				id := armReminder(t, f.s, f.ws.ID, f.item.ID, past)
 				f.fire(t, nowTS())
+				readDone, continueMutation := make(chan struct{}), make(chan struct{})
 				f.s.beforeCommitmentPin = func() {
-					f.s.beforeCommitmentPin = nil
+					close(readDone)
+					<-continueMutation
+				}
+				result := make(chan error, 1)
+				go func() {
+					var err error
+					switch action {
+					case "ack":
+						_, err = f.s.AckReminder(f.ws.ID, id)
+					case "rearm":
+						_, err = f.s.RearmReminder(f.ws.ID, id, future)
+					case "delete":
+						_, err = f.s.DeleteReminder(f.ws.ID, id)
+					}
+					result <- err
+				}()
+				select {
+				case <-readDone:
+				case <-time.After(10 * time.Second):
+					t.Fatal("adapter did not reach identity barrier")
+				}
+				f.s.beforeCommitmentPin = nil
+				func() {
+					defer close(continueMutation)
 					if change == "replace" {
 						if _, err := f.s.DeleteScheduleChecked(f.ws.ID, f.item.ID, true, nil); err != nil {
 							t.Fatal(err)
@@ -165,17 +189,13 @@ func TestOneShotReminderIdentityRace(t *testing.T) {
 					} else {
 						f.exec(t, `UPDATE item_schedules SET rrule='FREQ=DAILY' WHERE item_id=?`, f.item.ID)
 					}
-				}
+				}()
 				var err error
-				switch action {
-				case "ack":
-					_, err = f.s.AckReminder(f.ws.ID, id)
-				case "rearm":
-					_, err = f.s.RearmReminder(f.ws.ID, id, future)
-				case "delete":
-					_, err = f.s.DeleteReminder(f.ws.ID, id)
+				select {
+				case err = <-result:
+				case <-time.After(10 * time.Second):
+					t.Fatal("adapter did not finish after identity changed")
 				}
-				f.s.beforeCommitmentPin = nil
 				if change == "enrich" && !errors.Is(err, ErrReminderManaged) {
 					t.Fatalf("enriched mutation: %v", err)
 				}
@@ -242,25 +262,53 @@ func TestLegacyReminderBundleConversion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data.Reminders = []models.ReminderExport{{ItemID: f.item.ID, RemindAt: past, FiredAt: past, AckedAt: past, CreatedAt: past, UpdatedAt: past}}
-	ws, err := f.s.ImportWorkspace(data, "Imported reminders", "", "test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	out, err := f.s.ExportWorkspace(ws.Slug)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(out.Reminders) != 0 || len(out.Schedules) != 1 || out.Schedules[0].Reminder == nil || out.Schedules[0].Reminder.AckedAt != past {
-		t.Fatalf("bad bundle: reminders=%+v schedules=%+v", out.Reminders, out.Schedules)
-	}
-	before := f.count(t, `SELECT COUNT(*) FROM workspaces`)
-	data.Reminders = append(data.Reminders, data.Reminders[0])
-	if _, err := f.s.ImportWorkspace(data, "Collision", "", "test"); err == nil {
-		t.Fatal("collision accepted")
-	}
-	if f.count(t, `SELECT COUNT(*) FROM workspaces`) != before {
-		t.Fatal("collision wrote workspace")
+	for _, state := range []string{"armed", "fired", "acked"} {
+		t.Run(state, func(t *testing.T) {
+			r := models.ReminderExport{ItemID: f.item.ID, RemindAt: past, CreatedAt: past, UpdatedAt: past}
+			if state != "armed" {
+				r.FiredAt = past
+			}
+			if state == "acked" {
+				r.AckedAt = past
+			}
+			data.Reminders = []models.ReminderExport{r}
+			ws, err := f.s.ImportWorkspace(data, "Imported "+state, "", "test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := f.s.ExportWorkspace(ws.Slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(out.Reminders) != 0 || len(out.Schedules) != 1 || out.Schedules[0].Reminder == nil || *out.Schedules[0].Reminder != (models.ScheduleReminderExport{RemindAt: past, FiredAt: r.FiredAt, AckedAt: r.AckedAt}) || len(out.ScheduleChanges) != 1 {
+				t.Fatalf("bad bundle: reminders=%+v schedules=%+v changes=%+v", out.Reminders, out.Schedules, out.ScheduleChanges)
+			}
+			// The operator migration uses the same export with a preserved slug.
+			dst := testStore(t)
+			copied, report, err := dst.ImportWorkspaceWithReport(out, "", "", "", WithPreservedSlug())
+			if err != nil || len(report.DroppedSchedules) != 0 {
+				t.Fatalf("operator import: %+v %v", report, err)
+			}
+			again, err := dst.ExportWorkspace(copied.Slug)
+			if err != nil || len(again.Schedules) != 1 || *again.Schedules[0].Reminder != *out.Schedules[0].Reminder || len(again.ScheduleChanges) != 2 {
+				t.Fatalf("round trip=%+v %v", again, err)
+			}
+			for _, collision := range []string{"multiple", "existing"} {
+				bad := *data
+				if collision == "multiple" {
+					bad.Reminders = []models.ReminderExport{r, r}
+				} else {
+					bad.Schedules = []models.ScheduleExport{{ItemID: r.ItemID}}
+				}
+				before := f.count(t, `SELECT COUNT(*) FROM workspaces`)
+				if _, err := f.s.ImportWorkspace(&bad, "Collision", "", "test"); err == nil {
+					t.Fatalf("%s collision accepted", collision)
+				}
+				if f.count(t, `SELECT COUNT(*) FROM workspaces`) != before {
+					t.Fatal("collision wrote workspace")
+				}
+			}
+		})
 	}
 }
 

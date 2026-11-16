@@ -1324,6 +1324,13 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 			slog.Warn("migration foreign key check unavailable for table; skipped", "migration", name, "stage", "before", "table", t, "error", cerr)
 		}
 	}
+	already, err := prepareReminderMigrationTx(tx, name, &sqliteDialect{})
+	if err != nil {
+		return fmt.Errorf("convert reminders in %s: %w", name, err)
+	}
+	if already {
+		return nil
+	}
 	if err := execMulti(tx, body); err != nil {
 		return fmt.Errorf("apply migration %s: %w", name, err)
 	}
@@ -1344,6 +1351,11 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 			if n > fkBefore.counts[fk] {
 				return fmt.Errorf("apply migration %s: leaves %d foreign key violation(s) on %s (table|parent|fkid) where it found %d", name, n, fk, fkBefore.counts[fk])
 			}
+		}
+	}
+	if name == sqliteReminderMigration || name == postgresReminderMigration {
+		if err := (&Store{dialect: &sqliteDialect{}}).checkReminderMigrationTx(tx); err != nil {
+			return err
 		}
 	}
 	if _, err := tx.ExecContext(ctx, "INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", name, now()); err != nil {
@@ -1405,8 +1417,20 @@ func applyPostgresMigration(db *sql.DB, name, sqlText string) error {
 		}
 	}()
 
+	already, err := prepareReminderMigrationTx(tx, name, &postgresDialect{})
+	if err != nil {
+		return fmt.Errorf("convert reminders in %s: %w", name, err)
+	}
+	if already {
+		return nil
+	}
 	if _, err := tx.Exec(sqlText); err != nil {
 		return fmt.Errorf("apply migration %s: %w", name, err)
+	}
+	if name == sqliteReminderMigration || name == postgresReminderMigration {
+		if err := (&Store{dialect: &postgresDialect{}}).checkReminderMigrationTx(tx); err != nil {
+			return err
+		}
 	}
 	if _, err := tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES ($1, $2)", name, now()); err != nil {
 		return fmt.Errorf("record migration %s: %w", name, err)

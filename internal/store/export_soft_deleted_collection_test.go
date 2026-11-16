@@ -207,9 +207,9 @@ func TestRoundTripPreservesDependentsUnderSoftDeletedCollection(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
-	if len(exp.Comments) == 0 || len(exp.ItemVersions) == 0 || len(exp.Reminders) == 0 {
-		t.Fatalf("control leg failed: export carried comments=%d versions=%d reminders=%d, want all non-zero",
-			len(exp.Comments), len(exp.ItemVersions), len(exp.Reminders))
+	if len(exp.Comments) == 0 || len(exp.ItemVersions) == 0 || len(exp.Schedules) != 1 || exp.Schedules[0].Reminder == nil {
+		t.Fatalf("control leg failed: export carried comments=%d versions=%d schedules=%+v",
+			len(exp.Comments), len(exp.ItemVersions), exp.Schedules)
 	}
 
 	imported, err := s.ImportWorkspace(exp, "dependents-2884-target", owner.ID, "")

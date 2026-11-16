@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"strings"
@@ -101,11 +102,38 @@ func TestReminderMigrationArmedPastFiresOnce(t *testing.T) {
 
 func TestReminderMigrationConflictRollback(t *testing.T) {
 	for _, pg := range []bool{false, true} {
-		for _, mode := range []string{"multiple", "existing", "ended", "invalid_time", "invalid_state", "after_backfill", "constraint"} {
+		for _, mode := range []string{"multiple", "existing", "ended", "orphan", "mismatched_owner", "invalid_time", "invalid_state", "after_backfill", "constraint"} {
 			t.Run(fmt.Sprint(pg)+"/"+mode, func(t *testing.T) {
 				s, name, body := reminderMigrationStore(t, pg)
 				ws, item, id := legacyReminderRow(t, s, "armed")
 				switch mode {
+				case "orphan", "mismatched_owner":
+					query, value := `UPDATE item_reminders SET item_id=? WHERE id=?`, newID()
+					if mode == "mismatched_owner" {
+						query = `UPDATE item_reminders SET workspace_id=? WHERE id=?`
+						value = createTestWorkspace(t, s, "Other owner").ID
+					}
+					if pg {
+						s.mustExec(t, `ALTER TABLE item_reminders DROP CONSTRAINT item_reminders_item_workspace_fkey`)
+						s.mustExec(t, query, value, id)
+					} else {
+						ctx := context.Background()
+						conn, err := s.db.Conn(ctx)
+						if err != nil {
+							t.Fatal(err)
+						}
+						for _, stmt := range []string{`PRAGMA foreign_keys=OFF`, s.q(query), `PRAGMA foreign_keys=ON`} {
+							var args []any
+							if stmt == s.q(query) {
+								args = []any{value, id}
+							}
+							if _, err := conn.ExecContext(ctx, stmt, args...); err != nil {
+								conn.Close()
+								t.Fatal(err)
+							}
+						}
+						conn.Close()
+					}
 				case "multiple":
 					s.mustExec(t, `INSERT INTO item_reminders(id,workspace_id,item_id,remind_at,created_at,updated_at) VALUES(?,?,?,?,?,?)`, newID(), ws, item, past, past, past)
 				case "existing", "ended":
@@ -131,9 +159,19 @@ func TestReminderMigrationConflictRollback(t *testing.T) {
 				if (mode == "multiple" || mode == "existing" || mode == "ended") && !strings.Contains(err.Error(), item) {
 					t.Fatalf("collision must identify item and reason: %v", err)
 				}
+				if mode == "multiple" && !strings.Contains(err.Error(), "multiple legacy reminders") || (mode == "existing" || mode == "ended") && !strings.Contains(err.Error(), "existing commitment") {
+					t.Fatalf("collision omitted reason: %v", err)
+				}
+				if (mode == "orphan" || mode == "mismatched_owner") && !strings.Contains(err.Error(), "missing or mismatched owner") {
+					t.Fatalf("wrong ownership refusal: %v", err)
+				}
 				after := renegotiateRows(t, s, "item_reminders", "") + renegotiateRows(t, s, "item_schedules", "") + renegotiateRows(t, s, "schedule_changes", "")
 				if before != after || s.countRows(t, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, name) != 0 {
 					t.Fatal("refusal was not atomic")
+				}
+				if mode == "constraint" {
+					// The failed rebuild must restore the old nullable schema too.
+					s.mustExec(t, `INSERT INTO item_reminders(id,workspace_id,item_id,remind_at,created_at,updated_at,schedule_id) VALUES(?,?,?,?,?,?,NULL)`, newID(), ws, item, past, past, past)
 				}
 			})
 		}
@@ -163,5 +201,61 @@ func TestReminderMigrationLockTimeoutRollback(t *testing.T) {
 	tx.Rollback()
 	if renegotiateRows(t, s, "item_reminders", "") != before || s.countRows(t, `SELECT COUNT(*) FROM item_schedules`) != 0 || s.countRows(t, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, name) != 0 {
 		t.Fatal("lock timeout changed migration state")
+	}
+}
+
+func TestReminderCommitmentMigration(t *testing.T) {
+	for _, pg := range []bool{false, true} {
+		for _, state := range []string{"closed", "archived"} {
+			t.Run(fmt.Sprint(pg)+"/"+state, func(t *testing.T) {
+				s, name, body := reminderMigrationStore(t, pg)
+				ws, item, id := legacyReminderRow(t, s, "armed")
+				if state == "closed" {
+					s.mustExec(t, `UPDATE items SET fields='{"status":"done"}' WHERE id=?`, item)
+				} else {
+					s.mustExec(t, `UPDATE items SET deleted_at=? WHERE id=?`, past, item)
+				}
+				if err := runReminderMigration(s, name, body); err != nil {
+					t.Fatal(err)
+				}
+				if fired, err := s.FireDueReminders(nowTS(), 0); err != nil || len(fired) != 0 {
+					t.Fatalf("paused fire=%+v %v", fired, err)
+				}
+				s.mustExec(t, `UPDATE items SET fields='{"status":"open"}',deleted_at=NULL WHERE id=?`, item)
+				fired, err := s.FireDueReminders(nowTS(), 0)
+				if err != nil || len(fired) != 1 || fired[0].ID != id {
+					t.Fatalf("restored fire=%+v %v", fired, err)
+				}
+				if r, err := s.GetReminder(ws, id); err != nil || r == nil || r.ScheduleID == nil {
+					t.Fatalf("restored alarm=%+v %v", r, err)
+				}
+			})
+		}
+	}
+}
+
+func TestMigratedReminderAckCancelsLegacyNotification(t *testing.T) {
+	for _, pg := range []bool{false, true} {
+		t.Run(fmt.Sprint(pg), func(t *testing.T) {
+			s, name, body := reminderMigrationStore(t, pg)
+			ws, item, id := legacyReminderRow(t, s, "fired")
+			u := createTestUser(t, s, "legacy-notification@example.com", "Recipient", "password123")
+			for _, row := range []struct{ id, key, state string }{{"old", "reminder:" + id + ":2020-01-01T00:00:00.123456789Z", "pending"}, {"delivered", "reminder:" + id + ":2020-01-01T00:00:00Z", "sent"}, {"other", "reminder:other:2020-01-01T00:00:00Z", "pending"}} {
+				s.mustExec(t, `INSERT INTO user_notifications(id,user_id,workspace_id,item_id,kind,dedupe_key,created_at,push_state) VALUES(?,?,?,?,'reminder',?,?,?)`, row.id, u.ID, ws, item, row.key, past, row.state)
+			}
+			if err := runReminderMigration(s, name, body); err != nil {
+				t.Fatal(err)
+			}
+			r, err := s.AckReminder(ws, id)
+			if err != nil || r == nil || r.AckedAt == nil {
+				t.Fatalf("ack=%+v %v", r, err)
+			}
+			var state string
+			for id, want := range map[string]string{"old": "skipped", "delivered": "sent", "other": "pending"} {
+				if err := s.db.QueryRow(s.q(`SELECT push_state FROM user_notifications WHERE id=?`), id).Scan(&state); err != nil || state != want {
+					t.Fatalf("%s state=%s want=%s err=%v", id, state, want, err)
+				}
+			}
+		})
 	}
 }

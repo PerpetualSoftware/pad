@@ -60,9 +60,8 @@ var (
 	// occurrence at or after now. An update that exhausts a schedule ends it
 	// instead.
 	ErrScheduleExhausted = errors.New("schedule has no occurrence at or after now")
-	// ErrReminderManaged is the answer when a caller tries to change a reminder
-	// that belongs to a schedule. Change or delete the schedule instead.
-	ErrReminderManaged = errors.New("reminder is managed by its item's schedule")
+	// ErrReminderManaged refuses compatibility operations on richer commitments.
+	ErrReminderManaged = errors.New("reminder belongs to a richer commitment")
 )
 
 // ScheduleFieldError is a refusal of one of the store-owned field checks (the
@@ -445,9 +444,20 @@ func (s *Store) createScheduleAt(workspaceID, itemID string, in models.ScheduleC
 	return s.createScheduleRolesAt(workspaceID, itemID, in, nil, nowT)
 }
 
+type scheduleCreateOptions struct {
+	// AllowPastSingleOccurrence retains an exact timed target for reminder adapters.
+	// Native commitment entry points never set it.
+	AllowPastSingleOccurrence bool
+	Reminder                  *models.Reminder
+}
+
 // createScheduleRolesAt creates the schedule with the legacy roles derived from
 // its kind, or with native roles when roles is given.
 func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.ScheduleCreate, roles *scheduleRoles, nowT time.Time) (*models.ItemSchedule, error) {
+	return s.createScheduleRolesOptionsAt(workspaceID, itemID, in, roles, nowT, &scheduleCreateOptions{})
+}
+
+func (s *Store) createScheduleRolesOptionsAt(workspaceID, itemID string, in models.ScheduleCreate, roles *scheduleRoles, nowT time.Time, options *scheduleCreateOptions) (*models.ItemSchedule, error) {
 	anchor, audience := in.Anchor, in.Audience
 	if anchor == "" {
 		anchor = "calendar"
@@ -483,6 +493,13 @@ func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.Sche
 		}
 	}
 	occ, found, err := nextOccurrence(c, view, nowT)
+	if options.AllowPastSingleOccurrence && !spec.Floating && !spec.Start.AllDay && spec.Rule == "" && len(spec.RDates) == 0 && len(spec.ExDates) == 0 {
+		loc, zoneErr := time.LoadLocation(spec.Zone)
+		if zoneErr != nil {
+			return nil, zoneErr
+		}
+		occ, found, err = schedule.Occurrence{At: schedule.Resolve(loc, spec.Start), Wall: spec.Start}, true, nil
+	}
 	if err != nil {
 		return nil, err
 	}
@@ -548,10 +565,18 @@ func (s *Store) createScheduleRolesAt(workspaceID, itemID string, in models.Sche
 	if err := s.journalScheduleAfterTx(tx, id, "create", "", "", "", "system"); err != nil {
 		return nil, err
 	}
+	sc, err = s.getScheduleQ(tx, workspaceID, itemID, false)
+	if err != nil {
+		return nil, err
+	}
+	options.Reminder, err = s.reminderQ(tx, workspaceID, *sc.ReminderID)
+	if err != nil {
+		return nil, err
+	}
 	if err := tx.Commit(); err != nil {
 		return nil, fmt.Errorf("create schedule: %w", err)
 	}
-	return s.GetSchedule(workspaceID, itemID)
+	return sc, nil
 }
 
 // insertScheduleTx stores the initial kind/end and native role columns in the
@@ -581,9 +606,9 @@ func (s *Store) insertScheduleTx(tx *sql.Tx, sc *models.ItemSchedule, native *sc
 // requireLiveItemTx asserts the item is a live item of the workspace and, on
 // Postgres, holds it shared so an archival cannot commit under the insert.
 func (s *Store) requireLiveItemTx(tx *sql.Tx, workspaceID, itemID string) error {
-	q := `SELECT 1 FROM items WHERE id = ? AND workspace_id = ? AND deleted_at IS NULL`
+	q := `SELECT 1 FROM items i JOIN workspaces w ON w.id=i.workspace_id WHERE i.id = ? AND i.workspace_id = ? AND i.deleted_at IS NULL AND w.deleted_at IS NULL`
 	if s.dialect.Driver() == DriverPostgres {
-		q += ` FOR SHARE`
+		q += ` FOR SHARE OF i, w`
 	}
 	var one int
 	err := tx.QueryRow(s.q(q), itemID, workspaceID).Scan(&one)
@@ -596,9 +621,7 @@ func (s *Store) requireLiveItemTx(tx *sql.Tx, workspaceID, itemID string) error 
 	return nil
 }
 
-// The managed-row writers below are the schedule's own, so they carry NO
-// schedule_id IS NULL predicate (the public reminder writers do). Callers hold
-// the schedule row first.
+// Alarm writers run after the caller has locked the commitment.
 
 func (s *Store) insertManagedReminderTx(tx *sql.Tx, workspaceID, itemID, scheduleID, remindAt string) error {
 	if err := s.invalidateScheduleReopenTx(tx, scheduleID); err != nil {
@@ -1134,30 +1157,37 @@ func (s *Store) DeleteScheduleChecked(workspaceID, itemID string, mayDropDeadlin
 			}
 		}
 	}
-	used, err := s.linkedRolesTx(tx, cur.ID)
-	if err != nil {
+	if err := s.deleteScheduleCheckedTx(tx, cur); err != nil {
 		return false, err
-	}
-	if len(used) > 0 {
-		return false, ErrScheduleLinked
-	}
-	before, err := s.scheduleSnapshotTx(tx, cur.ID)
-	if err != nil {
-		return false, err
-	}
-	if err := s.journalScheduleChangeTx(tx, cur.ID, "delete", "", "", before, "", "system"); err != nil {
-		return false, err
-	}
-	if err := s.deleteManagedReminderTx(tx, cur.ID); err != nil {
-		return false, err
-	}
-	if _, err := tx.Exec(s.q(`DELETE FROM item_schedules WHERE id = ?`), cur.ID); err != nil {
-		return false, fmt.Errorf("delete schedule: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("delete schedule: %w", err)
 	}
 	return true, nil
+}
+
+func (s *Store) deleteScheduleCheckedTx(tx *sql.Tx, cur *models.ItemSchedule) error {
+	used, err := s.linkedRolesTx(tx, cur.ID)
+	if err != nil {
+		return err
+	}
+	if len(used) > 0 {
+		return ErrScheduleLinked
+	}
+	before, err := s.scheduleSnapshotTx(tx, cur.ID)
+	if err != nil {
+		return err
+	}
+	if err := s.journalScheduleChangeTx(tx, cur.ID, "delete", "", "", before, "", "system"); err != nil {
+		return err
+	}
+	if err := s.deleteManagedReminderTx(tx, cur.ID); err != nil {
+		return err
+	}
+	if _, err := tx.Exec(s.q(`DELETE FROM item_schedules WHERE id = ?`), cur.ID); err != nil {
+		return fmt.Errorf("delete schedule: %w", err)
+	}
+	return nil
 }
 
 func nullStr(p *string) any {

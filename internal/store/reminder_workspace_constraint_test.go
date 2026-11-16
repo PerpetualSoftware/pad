@@ -46,25 +46,23 @@ func TestReminderWorkspaceMustMatchItem(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	item, own, other := reminderConstraintFixture(t, s)
-	ts := now()
-
-	// Control: the AGREEING row is accepted by the same statement shape. Without
-	// this leg a broken INSERT would look like a working constraint.
-	if _, err := s.db.Exec(s.q(`
-		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`),
-		newID(), own, item.ID, time.Now().UTC().Add(time.Hour).Format(time.RFC3339), ts, ts); err != nil {
-		t.Fatalf("control leg failed: the agreeing row was rejected: %v", err)
+	r, err := s.CreateReminder(own, item.ID, future)
+	if err != nil {
+		t.Fatal(err)
 	}
-
-	_, err := s.db.Exec(s.q(`
-		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`),
-		newID(), other, item.ID, time.Now().UTC().Add(time.Hour).Format(time.RFC3339), ts, ts)
-	if err == nil {
-		t.Fatal("a reminder filed under a workspace that is not its item's was ACCEPTED; the composite foreign key is not in force")
+	if _, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id=?`), r.ID); err != nil {
+		t.Fatal(err)
 	}
-	t.Logf("disagreeing row refused: %v", err)
+	query := `INSERT INTO item_reminders(id,workspace_id,item_id,remind_at,created_at,updated_at,schedule_id) VALUES(?,?,?,?,?,?,?)`
+	if _, err := s.db.Exec(s.q(query), r.ID, own, item.ID, future, now(), now(), *r.ScheduleID); err != nil {
+		t.Fatalf("agreeing row: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id=?`), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(s.q(query), r.ID, other, item.ID, future, now(), now(), *r.ScheduleID); err == nil {
+		t.Fatal("mismatched owner accepted")
+	}
 }
 
 // TestReminderCascadeSurvivesTheCompositeKey is a PRESERVATION LOCK, not a
@@ -252,6 +250,7 @@ func TestMigration063DropsPreExistingDisagreeingRows(t *testing.T) {
 	// Rewind: drop the constraint this migration added and forget its
 	// bookkeeping row, so the table admits the row again and 063 can re-run.
 	for _, stmt := range []string{
+		`ALTER TABLE item_reminders ALTER COLUMN schedule_id DROP NOT NULL`,
 		`ALTER TABLE item_reminders DROP CONSTRAINT item_reminders_item_workspace_fkey`,
 		`DELETE FROM schema_migrations WHERE version = '` + migrationName + `'`,
 	} {

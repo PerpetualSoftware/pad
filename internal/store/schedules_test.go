@@ -724,7 +724,7 @@ func TestScheduleSurvivesArchive(t *testing.T) {
 func TestManagedReminderRefusesDirectStoreMutation(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
-	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC"})
+	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
 	rid := *sc.ReminderID
 	f.exec(t, `UPDATE item_reminders SET fired_at = ? WHERE id = ?`, "2026-11-02T09:00:00Z", rid)
 	before := f.managed(t, sc)
@@ -744,30 +744,29 @@ func TestManagedReminderRefusesDirectStoreMutation(t *testing.T) {
 	}
 }
 
-// The unmanaged answers are unchanged: not found and not-yet-fired are still
-// (nil, nil), never ErrReminderManaged.
-func TestUnmanagedReminderWritesAreUnchanged(t *testing.T) {
+// Missing alarms remain not found; an armed commitment refuses acknowledgement.
+func TestSimpleReminderWritesAndMissingIdentity(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	id := armReminder(t, f.s, f.ws.ID, f.item.ID, future)
-	if r, err := f.s.AckReminder(f.ws.ID, id); r != nil || err != nil {
+	if r, err := f.s.AckReminder(f.ws.ID, id); r != nil || !errors.Is(err, ErrOccurrenceNotFired) {
 		t.Fatalf("ack of an armed reminder = %v %v", r, err)
 	}
 	if r, err := f.s.RearmReminder(f.ws.ID, "missing", future); r != nil || err != nil {
 		t.Fatalf("rearm of a missing reminder = %v %v", r, err)
 	}
 	if r, err := f.s.RearmReminder(f.ws.ID, id, past); err != nil || r == nil {
-		t.Fatalf("rearm of an unmanaged reminder = %v %v", r, err)
+		t.Fatalf("rearm of a simple commitment = %v %v", r, err)
 	}
 	if ok, err := f.s.DeleteReminder(f.ws.ID, id); !ok || err != nil {
-		t.Fatalf("delete of an unmanaged reminder = %v %v", ok, err)
+		t.Fatalf("delete of a simple commitment = %v %v", ok, err)
 	}
 	if ok, err := f.s.DeleteReminder(f.ws.ID, id); ok || err != nil {
 		t.Fatalf("second delete = %v %v", ok, err)
 	}
 }
 
-func TestExportSkipsManagedReminders(t *testing.T) {
+func TestExportCarriesAllRemindersInSchedules(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-11-02T09:00", Tz: "UTC"})
@@ -777,8 +776,13 @@ func TestExportSkipsManagedReminders(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exp.Reminders) != 1 || exp.Reminders[0].ItemID != other.ID {
-		t.Fatalf("export reminders = %+v, want only the unmanaged one", exp.Reminders)
+	if len(exp.Reminders) != 0 || len(exp.Schedules) != 2 {
+		t.Fatalf("export reminders = %+v, schedules = %+v", exp.Reminders, exp.Schedules)
+	}
+	for _, sc := range exp.Schedules {
+		if sc.Reminder == nil {
+			t.Fatal("schedule export lost its alarm")
+		}
 	}
 }
 

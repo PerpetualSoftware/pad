@@ -129,10 +129,14 @@ func (s *Server) handleCreateItemReminder(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusNotFound, "not_found", "Item not found")
 		return
 	}
-	if err != nil {
-		writeInternalError(w, err)
+	if errors.Is(err, store.ErrScheduleExists) {
+		writeError(w, http.StatusConflict, "schedule_exists", fmt.Sprintf("This item already has a commitment. Use pad remind move %s --until INSTANT to move its target, or pad remind edit %s to edit it.", item.Ref, item.Ref))
 		return
 	}
+	if s.writeScheduleError(w, r, err) {
+		return
+	}
+	s.recordScheduleWrite(r, workspaceID, item, "schedule_created", scheduleActivityMeta("check", nil))
 	writeJSON(w, http.StatusCreated, reminder)
 }
 
@@ -143,7 +147,7 @@ func (s *Server) handleRearmReminder(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	reminder, _ := s.resolveReminderForWrite(w, r, workspaceID)
+	reminder, item := s.resolveReminderForWrite(w, r, workspaceID)
 	if reminder == nil {
 		return
 	}
@@ -161,21 +165,21 @@ func (s *Server) handleRearmReminder(w http.ResponseWriter, r *http.Request) {
 
 	updated, err := s.store.RearmReminder(workspaceID, reminder.ID, remindAt)
 	if errors.Is(err, store.ErrReminderManaged) {
-		writeReminderManaged(w, "")
+		writeReminderManaged(w, derefReminderSchedule(reminder))
 		return
 	}
-	if err != nil {
-		writeInternalError(w, err)
+	if s.writeReminderItemGone(w, r, workspaceID, item, err) || s.writeScheduleError(w, r, err) {
 		return
 	}
 	if updated == nil {
 		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return
 	}
+	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta("check", []string{"dtstart"}))
 	writeJSON(w, http.StatusOK, updated)
 }
 
-// handleAckItemReminder acknowledges the sole pending, unmanaged reminder on an item.
+// handleAckItemReminder acknowledges the pending simple run-once alarm on an item.
 // POST /api/v1/workspaces/{slug}/items/{itemSlug}/reminders/ack
 func (s *Server) handleAckItemReminder(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -196,7 +200,13 @@ func (s *Server) handleAckItemReminder(w http.ResponseWriter, r *http.Request) {
 	}
 	var ids []string
 	for _, reminder := range reminders {
-		if reminder.PendingAck() && reminder.ScheduleID == nil {
+		if reminder.PendingAck() {
+			if err := s.store.ReminderCompatibility(workspaceID, item.ID); errors.Is(err, store.ErrReminderManaged) {
+				continue
+			} else if err != nil {
+				writeInternalError(w, err)
+				return
+			}
 			ids = append(ids, reminder.ID)
 		}
 	}
@@ -204,7 +214,7 @@ func (s *Server) handleAckItemReminder(w http.ResponseWriter, r *http.Request) {
 	case 0:
 		writeError(w, http.StatusNotFound, "not_found", "No fired, unacknowledged reminder on "+item.Ref)
 	case 1:
-		s.ackReminder(w, workspaceID, ids[0])
+		s.ackReminder(w, r, workspaceID, ids[0], item)
 	default:
 		writeError2(w, http.StatusConflict, "ambiguous_reminder",
 			fmt.Sprintf("%d fired, unacknowledged reminders on %s; acknowledge by id instead", len(ids), item.Ref),
@@ -219,47 +229,46 @@ func (s *Server) handleAckReminder(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	reminder, _ := s.resolveReminderForWrite(w, r, workspaceID)
+	reminder, item := s.resolveReminderForWrite(w, r, workspaceID)
 	if reminder == nil {
 		return
 	}
 
-	s.ackReminder(w, workspaceID, reminder.ID)
+	s.ackReminder(w, r, workspaceID, reminder.ID, item)
 }
 
 // ackReminder keeps the by-id and by-item doors' store and race handling identical.
-func (s *Server) ackReminder(w http.ResponseWriter, workspaceID, reminderID string) {
-	acked, err := s.store.AckReminder(workspaceID, reminderID)
+func (s *Server) ackReminder(w http.ResponseWriter, r *http.Request, workspaceID, reminderID string, item *models.Item) {
+	in := store.ResolveInput{Actor: "user", ActorUserID: currentUserID(r), AgentName: agentNameFromRequest(r)}
+	in.Actor, _ = actorFromRequest(r)
+	acked, changed, err := s.store.AckReminderWithActor(workspaceID, reminderID, in)
 	if errors.Is(err, store.ErrReminderManaged) {
-		writeReminderManaged(w, "")
+		reminder, _ := s.store.GetReminder(workspaceID, reminderID)
+		writeReminderManaged(w, derefReminderSchedule(reminder))
 		return
 	}
-	if err != nil {
-		writeInternalError(w, err)
+	if errors.Is(err, store.ErrOccurrenceNotFired) {
+		writeError(w, http.StatusConflict, "reminder_not_fired", "This reminder has not fired yet, so there is nothing to acknowledge.")
+		return
+	}
+	if s.writeReminderItemGone(w, r, workspaceID, item, err) || s.writeResolveError(w, r, err) {
 		return
 	}
 	if acked == nil {
-		// THE PRE-READ IS NOT CONSULTED HERE. AckReminder
-		// matches every fired row, acknowledged or not, so a nil answer means
-		// exactly "not fired at the instant of the ack" — or "gone", which a
-		// fresh read tells apart. The earlier form decided 409-vs-200 from the
-		// row resolveReminderForWrite read before the UPDATE, and a fire or
-		// re-arm landing in between made it answer for a state that had
-		// already stopped holding.
-		current, err := s.store.GetReminder(workspaceID, reminderID)
-		if err != nil {
-			writeInternalError(w, err)
-			return
-		}
-		if current == nil {
-			writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
-			return
-		}
-		writeError(w, http.StatusConflict, "reminder_not_fired",
-			"This reminder has not fired yet, so there is nothing to acknowledge.")
+		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return
 	}
+	if changed {
+		s.recordScheduleWrite(r, workspaceID, item, "schedule_acknowledged", resolveActivityMeta("check", "ack"))
+	}
 	writeJSON(w, http.StatusOK, acked)
+}
+
+func derefReminderSchedule(r *models.Reminder) string {
+	if r == nil || r.ScheduleID == nil {
+		return ""
+	}
+	return *r.ScheduleID
 }
 
 // handleDeleteReminder disarms a reminder by removing it.
@@ -269,24 +278,24 @@ func (s *Server) handleDeleteReminder(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	reminder, _ := s.resolveReminderForWrite(w, r, workspaceID)
+	reminder, item := s.resolveReminderForWrite(w, r, workspaceID)
 	if reminder == nil {
 		return
 	}
 
 	removed, err := s.store.DeleteReminder(workspaceID, reminder.ID)
 	if errors.Is(err, store.ErrReminderManaged) {
-		writeReminderManaged(w, "")
+		writeReminderManaged(w, derefReminderSchedule(reminder))
 		return
 	}
-	if err != nil {
-		writeInternalError(w, err)
+	if s.writeReminderItemGone(w, r, workspaceID, item, err) || s.writeScheduleError(w, r, err) {
 		return
 	}
 	if !removed {
 		writeError(w, http.StatusNotFound, "not_found", "Reminder not found")
 		return
 	}
+	s.recordScheduleWrite(r, workspaceID, item, "schedule_deleted", scheduleActivityMeta("check", nil))
 	writeJSON(w, http.StatusOK, map[string]any{"id": reminder.ID, "deleted": true})
 }
 
@@ -326,19 +335,7 @@ func (s *Server) resolveVisibleItem(w http.ResponseWriter, r *http.Request, work
 // says nothing about why — the reminder exists, its item exists, and the
 // remedy is the item's restore.
 //
-// THE ARCHIVED CHECK IS A DOOR COURTESY, NOT A STORE INVARIANT, and an archive
-// that lands between this check and the store's UPDATE lets the verb through
-// (an accepted tradeoff). That is the posture of every item mutation in
-// this API — UpdateItem's own UPDATE is `WHERE id = ?` with no liveness
-// clause — and the outcome is benign: an ack, re-arm or delete on a reminder
-// whose item was archived a moment ago leaves rows the scan and the pending
-// surface already exclude, and RestoreItem brings back whatever state they
-// hold. Asserting liveness inside the store's WHERE would make AckReminder's
-// no-match ambiguous again ("not fired" vs "archived"), which an earlier change removed
-// on purpose; the courtesy stays at the door. See handleListItemReminders for the read
-// side of the same posture. The include-deleted load is what lets the
-// visibility check run first, so a guest who could not see the item learns
-// nothing from the difference between 404 and 409.
+// The store rechecks liveness and alarm identity under its commitment lock.
 func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request, workspaceID string) (*models.Reminder, *models.Item) {
 	id := chi.URLParam(r, "reminderID")
 	reminder, err := s.store.GetReminder(workspaceID, id)
@@ -388,12 +385,14 @@ func (s *Server) resolveReminderForWrite(w http.ResponseWriter, r *http.Request,
 	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
 		return nil, nil
 	}
-	// A reminder that belongs to a schedule is changed through the schedule.
-	// The check runs last, so only a caller who may edit the item learns the
-	// row is managed, and before any body decode, because no body can make
-	// the request succeed.
-	if reminder.ScheduleID != nil {
-		writeReminderManaged(w, *reminder.ScheduleID)
+	// Only simple run-once commitments support these aliases. Check after
+	// permissions and before decoding; the store checks again under its lock.
+	if err := s.store.ReminderCompatibility(workspaceID, item.ID); err != nil {
+		if errors.Is(err, store.ErrReminderManaged) {
+			writeReminderManaged(w, derefReminderSchedule(reminder))
+		} else {
+			writeInternalError(w, err)
+		}
 		return nil, nil
 	}
 	return reminder, item
@@ -407,7 +406,7 @@ func writeReminderManaged(w http.ResponseWriter, scheduleID string) {
 		details["schedule_id"] = scheduleID
 	}
 	writeError2(w, http.StatusConflict, "reminder_managed",
-		"This reminder is managed by the item's schedule; acknowledge its current occurrence with pad remind ack REF --occurrence INSTANT (POST .../commitment/resolve), or change or delete the commitment instead", details)
+		"This reminder belongs to a richer commitment; acknowledge its current occurrence with pad remind ack REF --occurrence INSTANT (POST .../commitment/resolve), or change or delete the commitment instead", details)
 }
 
 // Bounds for the pending-reminder read (IDEA-2641).
@@ -491,4 +490,12 @@ func (s *Server) collectPendingRemindersBounded(workspaceID string, scope store.
 	// Either the window filled or the scan bound stopped us; in both cases
 	// rows remain unread, so say so.
 	return out, true, nil
+}
+
+func (s *Server) writeReminderItemGone(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item, err error) bool {
+	if !errors.Is(err, store.ErrScheduleItemGone) {
+		return false
+	}
+	s.writeItemResolveError(w, r, workspaceID, item.Slug)
+	return true
 }

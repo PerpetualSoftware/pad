@@ -57,7 +57,7 @@ func TestFireDueRemindersFiresOnlyArrivedReminders(t *testing.T) {
 	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
 
 	dueID := armReminder(t, s, ws.ID, item.ID, past)
-	laterID := armReminder(t, s, ws.ID, item.ID, future)
+	laterID := armReminder(t, s, ws.ID, createTestItem(t, s, ws.ID, col.ID, "Later", "").ID, future)
 
 	fired, err := s.FireDueReminders(nowTS(), 0)
 	if err != nil {
@@ -297,7 +297,7 @@ func TestAckRequiresAFiredReminder(t *testing.T) {
 	id := armReminder(t, s, ws.ID, item.ID, future)
 
 	acked, err := s.AckReminder(ws.ID, id)
-	if err != nil {
+	if !errors.Is(err, ErrOccurrenceNotFired) {
 		t.Fatalf("AckReminder: %v", err)
 	}
 	if acked != nil {
@@ -427,7 +427,7 @@ func TestPendingRemindersAreFiredAndUnacked(t *testing.T) {
 	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
 
 	firedID := armReminder(t, s, ws.ID, item.ID, past)
-	armReminder(t, s, ws.ID, item.ID, future)
+	armReminder(t, s, ws.ID, createTestItem(t, s, ws.ID, col.ID, "Later", "").ID, future)
 
 	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -700,7 +700,6 @@ func TestFractionalSecondsRoundUp(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
 
 	for _, tc := range []struct{ in, want string }{
 		{"2026-08-01T09:00:00.900Z", "2026-08-01T09:00:01Z"},
@@ -712,7 +711,7 @@ func TestFractionalSecondsRoundUp(t *testing.T) {
 		// disturb that.
 		{"2026-08-01T09:00:00.500+09:00", "2026-08-01T00:00:01Z"},
 	} {
-		r, err := s.CreateReminder(ws.ID, item.ID, tc.in)
+		r, err := s.CreateReminder(ws.ID, createTestItem(t, s, ws.ID, col.ID, "Fraction", "").ID, tc.in)
 		if err != nil {
 			t.Fatalf("CreateReminder(%q): %v", tc.in, err)
 		}
@@ -828,10 +827,9 @@ func TestPendingRemindersAreBounded(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Test")
 	col := createTestCollection(t, s, ws.ID, "Tasks")
-	item := createTestItem(t, s, ws.ID, col.ID, "Ship it", "")
 
 	for i := 0; i < 5; i++ {
-		armReminder(t, s, ws.ID, item.ID, past)
+		armReminder(t, s, ws.ID, createTestItem(t, s, ws.ID, col.ID, "Bounded", "").ID, past)
 	}
 	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
 		t.Fatalf("tick: %v", err)
@@ -1046,8 +1044,8 @@ func TestRemindersRoundTripThroughExport(t *testing.T) {
 	item := createTestItem(t, s, src.ID, col.ID, "Ship it", "")
 
 	armedID := armReminder(t, s, src.ID, item.ID, future)
-	firedID := armReminder(t, s, src.ID, item.ID, past)
-	ackedID := armReminder(t, s, src.ID, item.ID, past)
+	firedID := armReminder(t, s, src.ID, createTestItem(t, s, src.ID, col.ID, "Fired", "").ID, past)
+	ackedID := armReminder(t, s, src.ID, createTestItem(t, s, src.ID, col.ID, "Acked", "").ID, past)
 	if _, err := s.FireDueReminders(nowTS(), 0); err != nil {
 		t.Fatalf("tick: %v", err)
 	}
@@ -1061,7 +1059,7 @@ func TestRemindersRoundTripThroughExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
-	if len(exp.Reminders) != 3 {
+	if len(exp.Reminders) != 0 || len(exp.Schedules) != 3 {
 		t.Fatalf("export carried %d reminders, want 3", len(exp.Reminders))
 	}
 
@@ -1074,12 +1072,16 @@ func TestRemindersRoundTripThroughExport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListItems: %v", err)
 	}
-	if len(items) != 1 {
+	if len(items) != 3 {
 		t.Fatalf("imported %d items, want 1", len(items))
 	}
-	got, err := s.ListRemindersForItem(dst.ID, items[0].ID)
-	if err != nil {
-		t.Fatalf("ListRemindersForItem: %v", err)
+	var got []*models.Reminder
+	for _, it := range items {
+		rows, err := s.ListRemindersForItem(dst.ID, it.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, rows...)
 	}
 	if len(got) != 3 {
 		t.Fatalf("imported %d reminders, want 3", len(got))
@@ -1314,10 +1316,10 @@ func TestExportSkipsRemindersForSoftDeletedItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
-	if len(exp.Reminders) != 1 {
+	if len(exp.Reminders) != 0 || len(exp.Schedules) != 1 {
 		t.Fatalf("export carried %d reminders, want only the live item's", len(exp.Reminders))
 	}
-	if exp.Reminders[0].ItemID != live.ID {
+	if exp.Schedules[0].ItemID != live.ID {
 		t.Errorf("export carried the archived item's reminder")
 	}
 }
@@ -1345,17 +1347,9 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
-	if len(exp.Reminders) != 1 {
-		t.Fatalf("setup: export carried %d reminders", len(exp.Reminders))
-	}
-	// A bundle carrying an offset instant and a fractional second — both of
-	// which the API door would have normalized on the way in.
-	exp.Reminders[0].RemindAt = "2099-08-01T09:00:00.500+09:00"
-	// And a second reminder whose value is not a time at all.
-	exp.Reminders = append(exp.Reminders, models.ReminderExport{
-		ItemID: exp.Reminders[0].ItemID, RemindAt: "next tuesday",
-		CreatedAt: exp.Reminders[0].CreatedAt, UpdatedAt: exp.Reminders[0].UpdatedAt,
-	})
+	exp.Schedules = nil
+	exp.ScheduleChanges = nil
+	exp.Reminders = []models.ReminderExport{{ItemID: item.ID, RemindAt: "2099-08-01T09:00:00.500+09:00", CreatedAt: now(), UpdatedAt: now()}}
 
 	dst, err := s.ImportWorkspace(exp, "import-norm-target", owner.ID, "")
 	if err != nil {
@@ -1369,32 +1363,17 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListRemindersForItem: %v", err)
 	}
-	// The unparseable one is skipped rather than failing the whole restore.
+	// The legacy instant becomes a normalized commitment target.
 	if len(got) != 1 {
-		t.Fatalf("imported %d reminders, want 1 (the unparseable one skipped)", len(got))
+		t.Fatalf("imported %d reminders, want 1", len(got))
 	}
 	if got[0].RemindAt != "2099-08-01T00:00:01Z" {
 		t.Errorf("imported remind_at = %q, want the same instant normalized to UTC and rounded up", got[0].RemindAt)
 	}
 }
 
-// TestOrphanedItemDoesNotAbortTheImport
-//
-// An ORPHANED item — one whose collection is missing from the bundle — still
-// gets an itemMap entry, because that entry is written before the skip and
-// parent resolution inside the same loop needs it. So `itemMap[x] != ""` is
-// satisfied by an id that names no row, and inserting a foreign key to it
-// fails. This loop treated that as fatal, so ONE orphaned item carrying a
-// reminder aborted an entire workspace restore.
-//
-// The bundle is hand-built rather than exported, because ExportWorkspace
-// cannot produce an orphan — which is exactly why this needed a test: the
-// shape only arrives from a hand-edited or foreign bundle, and those are the
-// ones import exists to survive.
-//
-// MUTANT: gate on `itemMap[...] != ""` instead of insertedItems, or restore
-// the fatal return, and the import fails.
-func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
+// Invalid legacy reminders refuse the entire bundle before writing.
+func TestOrphanedReminderRefusesImport(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
 	owner := createTestUser(t, s, "orphan-import@test.com", "Orphan Import", "password123")
@@ -1420,26 +1399,12 @@ func TestOrphanedItemDoesNotAbortTheImport(t *testing.T) {
 		CreatedAt: exp.Items[0].CreatedAt, UpdatedAt: exp.Items[0].UpdatedAt,
 	})
 
-	dst, err := s.ImportWorkspace(exp, "orphan-import-target", owner.ID, "")
-	if err != nil {
-		t.Fatalf("one orphaned item aborted the whole import: %v", err)
+	before := s.countRows(t, `SELECT COUNT(*) FROM workspaces`)
+	if _, err := s.ImportWorkspace(exp, "orphan-import-target", owner.ID, ""); err == nil {
+		t.Fatal("orphaned reminder accepted")
 	}
-
-	// The real item and its reminder still arrived — the point is that the
-	// orphan was skipped, not that everything was.
-	items, err := s.ListItems(dst.ID, models.ItemListParams{})
-	if err != nil {
-		t.Fatalf("ListItems: %v", err)
-	}
-	if len(items) != 1 || items[0].Title != "Real item" {
-		t.Fatalf("imported %d items, want just the real one", len(items))
-	}
-	got, err := s.ListRemindersForItem(dst.ID, items[0].ID)
-	if err != nil {
-		t.Fatalf("ListRemindersForItem: %v", err)
-	}
-	if len(got) != 1 {
-		t.Errorf("the real item's reminder did not survive the orphan (%d reminders)", len(got))
+	if s.countRows(t, `SELECT COUNT(*) FROM workspaces`) != before {
+		t.Fatal("orphan refusal wrote rows")
 	}
 }
 
@@ -1467,30 +1432,15 @@ func TestImportRefusesAckWithoutFire(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ExportWorkspace: %v", err)
 	}
-	// An acknowledgement with no fire behind it.
-	exp.Reminders[0].AckedAt = "2026-01-01T00:00:00Z"
-	exp.Reminders[0].FiredAt = ""
-
-	dst, err := s.ImportWorkspace(exp, "ack-fire-target", owner.ID, "")
-	if err != nil {
-		t.Fatalf("ImportWorkspace: %v", err)
+	exp.Schedules = nil
+	exp.ScheduleChanges = nil
+	exp.Reminders = []models.ReminderExport{{ItemID: item.ID, RemindAt: future, AckedAt: past, CreatedAt: now(), UpdatedAt: now()}}
+	before := s.countRows(t, `SELECT COUNT(*) FROM workspaces`)
+	if _, err := s.ImportWorkspace(exp, "ack-fire-target", owner.ID, ""); err == nil {
+		t.Fatal("ack without fire accepted")
 	}
-	items, err := s.ListItems(dst.ID, models.ItemListParams{})
-	if err != nil || len(items) != 1 {
-		t.Fatalf("ListItems: %v (%d)", err, len(items))
-	}
-	got, err := s.ListRemindersForItem(dst.ID, items[0].ID)
-	if err != nil {
-		t.Fatalf("ListRemindersForItem: %v", err)
-	}
-	if len(got) != 1 {
-		t.Fatalf("imported %d reminders, want 1 — the schedule is the part worth keeping", len(got))
-	}
-	if !got[0].Armed() {
-		t.Errorf("imported reminder is not armed: fired=%v acked=%v", got[0].FiredAt, got[0].AckedAt)
-	}
-	if got[0].AckedAt != nil {
-		t.Error("an acknowledgement of something that never fired was carried in")
+	if s.countRows(t, `SELECT COUNT(*) FROM workspaces`) != before {
+		t.Fatal("invalid state wrote rows")
 	}
 }
 
@@ -1617,14 +1567,25 @@ func TestAReminderWhoseWorkspaceDisagreesWithItsItemIsInert(t *testing.T) {
 //     constraint in its store.
 func insertUnconstrainedReminder(t *testing.T, s *Store, id, workspaceID, itemID, remindAt, ts string) {
 	t.Helper()
-	const ins = `INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
-		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`
+	item, err := s.GetItem(itemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := s.CreateReminder(item.WorkspaceID, itemID, remindAt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id=?`), r.ID); err != nil {
+		t.Fatal(err)
+	}
+	const ins = `INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at, schedule_id)
+		VALUES (?, ?, ?, ?, NULL, NULL, ?, ?, ?)`
 
 	if s.dialect.Driver() == DriverPostgres {
 		if _, err := s.db.Exec(`ALTER TABLE item_reminders DROP CONSTRAINT item_reminders_item_workspace_fkey`); err != nil {
 			t.Fatalf("suspend composite fk: %v", err)
 		}
-		if _, err := s.db.Exec(s.q(ins), id, workspaceID, itemID, remindAt, ts, ts); err != nil {
+		if _, err := s.db.Exec(s.q(ins), id, workspaceID, itemID, remindAt, ts, ts, *r.ScheduleID); err != nil {
 			t.Fatalf("raw insert: %v", err)
 		}
 		return
@@ -1644,7 +1605,7 @@ func insertUnconstrainedReminder(t *testing.T, s *Store, id, workspaceID, itemID
 			t.Fatalf("restore foreign keys: %v", err)
 		}
 	}()
-	if _, err := conn.ExecContext(ctx, s.q(ins), id, workspaceID, itemID, remindAt, ts, ts); err != nil {
+	if _, err := conn.ExecContext(ctx, s.q(ins), id, workspaceID, itemID, remindAt, ts, ts, *r.ScheduleID); err != nil {
 		t.Fatalf("raw insert: %v", err)
 	}
 }

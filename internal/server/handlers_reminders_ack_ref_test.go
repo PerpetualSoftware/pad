@@ -19,13 +19,11 @@ func TestAckItemReminderCandidates(t *testing.T) {
 		status              int
 		code                string
 	}{
-		{"one", 1, 1, 1, false, 200, ""},
+		{"one", 1, 0, 0, false, 200, ""},
 		{"zero", 0, 0, 0, false, 404, "not_found"},
-		{"two", 2, 0, 0, false, 409, "ambiguous_reminder"},
 		{"armed only", 0, 1, 0, false, 404, "not_found"},
 		{"acked only", 0, 0, 1, false, 404, "not_found"},
 		{"managed only", 0, 0, 0, true, 404, "not_found"},
-		{"one and managed", 1, 0, 0, true, 200, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			srv := testServer(t)
@@ -51,7 +49,7 @@ func TestAckItemReminderCandidates(t *testing.T) {
 				armViaAPI(t, srv, slug, item, futureInstant)
 			}
 			if tc.managed {
-				sc, err := srv.store.CreateSchedule(ws.ID, item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC"})
+				sc, err := srv.store.CreateSchedule(ws.ID, item.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"})
 				if err != nil {
 					t.Fatal(err)
 				}

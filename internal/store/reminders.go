@@ -141,46 +141,23 @@ func normalizeRemindAt(remindAt string) (string, error) {
 // the existence-oracle shape GetReminder already refuses to be.
 var ErrReminderItemGone = errors.New("reminder item is not live in this workspace")
 
-// CreateReminder arms a reminder on an item.
-//
-// THE ITEM MUST BE A LIVE ITEM OF THIS WORKSPACE, and that is asserted by the
-// INSERT itself rather than by a read before it. The table
-// has a foreign key to items but no same-workspace constraint, so a plain
-// INSERT accepts a (workspace, item) pair that names another workspace's item
-// — and every reader then scopes by r.workspace_id and joins the item, which
-// hands the first workspace's dashboard and webhooks the second one's title.
-// The HTTP door resolves the item inside the workspace before calling here;
-// the store refuses regardless, because a door is not the only caller the
-// process can grow and a doc comment does not travel with the argument (the
-// same argument normalizeRemindAt makes one function up).
-//
-// Liveness is part of the same predicate: arming a reminder on an archived
-// item would write a row the scan filters out forever, which reads to the
-// caller as a reminder that silently never fires.
+// CreateReminder creates a target-only run-once commitment and returns its alarm.
 func (s *Store) CreateReminder(workspaceID, itemID, remindAt string) (*models.Reminder, error) {
-	remindAt, err := normalizeRemindAt(remindAt)
+	at, err := normalizeRemindAt(remindAt)
 	if err != nil {
 		return nil, err
 	}
-	id := newID()
-	ts := now()
-	res, err := s.db.Exec(s.q(`
-		INSERT INTO item_reminders (id, workspace_id, item_id, remind_at, fired_at, acked_at, created_at, updated_at)
-		SELECT ?, i.workspace_id, i.id, ?, NULL, NULL, ?, ?
-		FROM items i
-		WHERE i.id = ? AND i.workspace_id = ? AND i.deleted_at IS NULL
-	`), id, remindAt, ts, ts, itemID, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("create reminder: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return nil, fmt.Errorf("create reminder: %w", err)
-	}
-	if n == 0 {
+	options := &scheduleCreateOptions{AllowPastSingleOccurrence: true}
+	_, err = s.createScheduleRolesOptionsAt(workspaceID, itemID, models.ScheduleCreate{
+		Dtstart: at[:len(at)-1], Tz: "UTC", Anchor: "calendar", Audience: "both",
+	}, &scheduleRoles{Origin: "native"}, time.Now(), options)
+	if errors.Is(err, ErrScheduleItemGone) {
 		return nil, ErrReminderItemGone
 	}
-	return s.GetReminder(workspaceID, id)
+	if err != nil {
+		return nil, err
+	}
+	return options.Reminder, nil
 }
 
 // GetReminder returns one reminder scoped to a workspace, or (nil, nil) when
@@ -237,110 +214,6 @@ func (s *Store) ListRemindersForItem(workspaceID, itemID string) ([]*models.Remi
 		return nil, err
 	}
 	return out, nil
-}
-
-// RearmReminder moves a reminder's instant and clears BOTH fire marks, so a
-// reminder that already fired becomes armed again.
-//
-// The clear is unconditional rather than "only when fired_at is set" because
-// the two cases must not diverge: on an armed row the marks are already NULL
-// and the write is a no-op, and making it conditional would create a path
-// where a re-arm leaves a stale acked_at behind on a row that is armed —
-// a state models.Reminder's lifecycle does not have a name for.
-func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminder, error) {
-	remindAt, err := normalizeRemindAt(remindAt)
-	if err != nil {
-		return nil, err
-	}
-	res, err := s.db.Exec(s.q(`
-		UPDATE item_reminders
-		SET remind_at = ?, fired_at = NULL, acked_at = NULL, updated_at = ?
-		WHERE id = ? AND workspace_id = ? AND schedule_id IS NULL
-	`), remindAt, now(), id, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("rearm reminder: %w", err)
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return nil, s.refuseIfManaged(workspaceID, id)
-	}
-	return s.GetReminder(workspaceID, id)
-}
-
-// AckReminder acknowledges a FIRED reminder.
-//
-// The `fired_at IS NOT NULL` predicate is what makes acking an armed reminder
-// impossible rather than merely discouraged: an acked-but-never-fired row
-// would sit in a state the lifecycle has no name for, and it would be
-// invisible — the poll surface reads fired-unacked, so the row would simply
-// never appear again.
-//
-// THE STATEMENT MATCHES EVERY FIRED ROW, acknowledged or not, so that a
-// non-match means exactly one thing: at the instant of the ack, the reminder
-// had not fired (or does not exist, which the handler tells apart by
-// re-reading). The previous form also excluded already-acked rows, which left
-// a no-match ambiguous — "too early" and "already done" need opposite
-// reactions from a caller — and the handler resolved the ambiguity from a row
-// it had read BEFORE the ack. A fire or re-arm landing between that read and
-// the UPDATE made it answer 409 for a reminder it had just acknowledged, or
-// 200 for one it had not. Folding the distinction into the
-// statement removes the read the race needed.
-//
-// IDEMPOTENT by construction: COALESCE keeps the first acknowledgement's
-// instant, and updated_at moves only when acked_at does, so a second ack
-// matches, returns the row, and rewrites nothing.
-func (s *Store) AckReminder(workspaceID, id string) (*models.Reminder, error) {
-	ts := now()
-	res, err := s.db.Exec(s.q(`
-		UPDATE item_reminders
-		SET updated_at = CASE WHEN acked_at IS NULL THEN ? ELSE updated_at END,
-		    acked_at = COALESCE(acked_at, ?)
-		WHERE id = ? AND workspace_id = ? AND fired_at IS NOT NULL AND schedule_id IS NULL
-	`), ts, ts, id, workspaceID)
-	if err != nil {
-		return nil, fmt.Errorf("ack reminder: %w", err)
-	}
-	if n, err := res.RowsAffected(); err == nil && n == 0 {
-		return nil, s.refuseIfManaged(workspaceID, id)
-	}
-	return s.GetReminder(workspaceID, id)
-}
-
-// DeleteReminder removes a reminder outright. Disarming by deletion is the
-// only disarm: there is no "cancelled" state, because a cancelled reminder and
-// an absent one are indistinguishable to every surface that reads them.
-func (s *Store) DeleteReminder(workspaceID, id string) (bool, error) {
-	res, err := s.db.Exec(s.q(`DELETE FROM item_reminders WHERE id = ? AND workspace_id = ? AND schedule_id IS NULL`), id, workspaceID)
-	if err != nil {
-		return false, fmt.Errorf("delete reminder: %w", err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return false, nil
-	}
-	if n == 0 {
-		return false, s.refuseIfManaged(workspaceID, id)
-	}
-	return true, nil
-}
-
-// refuseIfManaged is what RearmReminder, AckReminder and DeleteReminder answer
-// when their statement matched nothing: ErrReminderManaged if the row exists and
-// belongs to a schedule, nil otherwise (not found, or not yet fired, as before).
-//
-// THE PREDICATE IS IN THE STORE, not only at the HTTP door, for the reason
-// normalizeRemindAt gives: the store is callable from anywhere in the process.
-// A managed row changes only through its schedule's own writers (create,
-// update, delete, the tick), which use statements that do not carry it.
-func (s *Store) refuseIfManaged(workspaceID, id string) error {
-	var one int
-	err := s.db.QueryRow(s.q(`SELECT 1 FROM item_reminders WHERE id = ? AND workspace_id = ? AND schedule_id IS NOT NULL AND `+reminderOwned), id, workspaceID).Scan(&one)
-	switch {
-	case err == sql.ErrNoRows:
-		return nil
-	case err != nil:
-		return fmt.Errorf("check managed reminder: %w", err)
-	}
-	return ErrReminderManaged
 }
 
 // ListPendingReminders returns a workspace's fired-and-unacked reminders,
@@ -561,7 +434,7 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 		}
 		type candidate struct {
 			id, workspace, item, at string
-			sc                      sql.NullString
+			sc                      string
 		}
 		var page []candidate
 		for rows.Next() {
@@ -579,32 +452,32 @@ func (s *Store) dueReminderCandidates(nowTS string, limit int) ([]string, error)
 		}
 		for _, c := range page {
 			cursorAt, cursorID = c.at, c.id
-			if c.sc.Valid {
-				// A read that fails leaves this row out of the batch and is logged,
-				// so one broken row neither stops the pass nor takes a slot from
-				// the rows behind it.
-				ev, err := s.evaluateGatesQ(s.db, c.workspace, c.item)
-				if err != nil {
-					slog.Error("reminder scan: commitment gate read failed", "reminder", c.id, "error", err)
-					continue
-				}
-				if ev.state != models.GateStateReleased {
-					continue
-				}
-				filter, ok := openFilters[c.workspace]
-				if !ok {
-					filter.clause, filter.args = s.nonTerminalFilter(c.workspace, "i")
-					openFilters[c.workspace] = filter
-				}
-				var open bool
-				if err := s.db.QueryRow(s.q(`SELECT `+filter.clause+` FROM items i WHERE i.id = ?`), append(append([]any{}, filter.args...), c.item)...).Scan(&open); err != nil {
-					slog.Error("reminder scan: terminal item read failed", "reminder", c.id, "error", err)
-					continue
-				}
-				if !open {
-					continue
-				}
+
+			// A read that fails leaves this row out of the batch and is logged,
+			// so one broken row neither stops the pass nor takes a slot from
+			// the rows behind it.
+			ev, err := s.evaluateGatesQ(s.db, c.workspace, c.item)
+			if err != nil {
+				slog.Error("reminder scan: commitment gate read failed", "reminder", c.id, "error", err)
+				continue
 			}
+			if ev.state != models.GateStateReleased {
+				continue
+			}
+			filter, ok := openFilters[c.workspace]
+			if !ok {
+				filter.clause, filter.args = s.nonTerminalFilter(c.workspace, "i")
+				openFilters[c.workspace] = filter
+			}
+			var open bool
+			if err := s.db.QueryRow(s.q(`SELECT `+filter.clause+` FROM items i WHERE i.id = ?`), append(append([]any{}, filter.args...), c.item)...).Scan(&open); err != nil {
+				slog.Error("reminder scan: terminal item read failed", "reminder", c.id, "error", err)
+				continue
+			}
+			if !open {
+				continue
+			}
+
 			ids = append(ids, c.id)
 		}
 		if len(page) < size {
@@ -747,19 +620,17 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	// These columns never change on a row. Load the terminal filter through the
 	// pool before Begin: SQLite can have only one connection, held by the tx.
 	var workspaceID string
-	var scheduleID sql.NullString
+	var scheduleID string
 	switch err := s.db.QueryRow(s.q(`SELECT workspace_id, schedule_id FROM item_reminders WHERE id = ?`), id).Scan(&workspaceID, &scheduleID); {
 	case err == sql.ErrNoRows:
 		return nil, nil
 	case err != nil:
 		return nil, fmt.Errorf("read reminder %s: %w", id, err)
 	}
-	managed := scheduleID.Valid
 	var openFilter string
 	var openArgs []any
-	if managed {
-		openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
-	}
+
+	openFilter, openArgs = s.nonTerminalFilter(workspaceID, "i")
 
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -789,7 +660,7 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	// SQLite skips the pin: its DSN sets _txlock=immediate, so db.Begin() is a
 	// BEGIN IMMEDIATE and writers already serialize — the interleaving is
 	// unrepresentable there, and the locking clause is a syntax error.
-	if s.dialect.Driver() == DriverPostgres && managed {
+	if s.dialect.Driver() == DriverPostgres {
 		pinned, err := s.pinManagedReminderTx(tx, id)
 		switch {
 		case err != nil:
@@ -797,38 +668,19 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 		case !pinned:
 			return nil, nil
 		}
-	} else if s.dialect.Driver() == DriverPostgres {
-		var pinned string
-		err := tx.QueryRow(s.q(`
-			SELECT i.id FROM item_reminders r
-			JOIN items i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
-			JOIN workspaces w ON w.id = i.workspace_id
-			WHERE r.id = ? AND i.deleted_at IS NULL AND w.deleted_at IS NULL
-			FOR NO KEY UPDATE OF i, w
-		`), id).Scan(&pinned)
-		switch {
-		case err == sql.ErrNoRows:
-			// Archived, or gone, since the scan. Leave the reminder as it is
-			// and emit nothing — the same outcome the predicate produces.
-			return nil, nil
-		case err != nil:
-			return nil, fmt.Errorf("pin reminder %s item and workspace: %w", id, err)
-		}
 	}
 
-	if managed {
-		sc, err := s.getScheduleByIDQ(tx, scheduleID.String)
+	sc, err := s.getScheduleByIDQ(tx, scheduleID)
+	if err != nil {
+		return nil, err
+	}
+	if sc != nil {
+		ev, err := s.evaluateGatesQ(tx, sc.WorkspaceID, sc.ItemID)
 		if err != nil {
 			return nil, err
 		}
-		if sc != nil {
-			ev, err := s.evaluateGatesQ(tx, sc.WorkspaceID, sc.ItemID)
-			if err != nil {
-				return nil, err
-			}
-			if ev.state != models.GateStateReleased {
-				return nil, nil
-			}
+		if ev.state != models.GateStateReleased {
+			return nil, nil
 		}
 	}
 
@@ -848,10 +700,10 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 		  AND ` + reminderFireable + `
 	`
 	args := []any{nowTS, now(), id, nowTS}
-	if managed {
-		query += ` AND EXISTS (SELECT 1 FROM items i WHERE i.id = item_reminders.item_id AND ` + openFilter + `)`
-		args = append(args, openArgs...)
-	}
+
+	query += ` AND EXISTS (SELECT 1 FROM items i WHERE i.id = item_reminders.item_id AND ` + openFilter + `)`
+	args = append(args, openArgs...)
+
 	res, err := tx.Exec(s.q(query), args...)
 	if err != nil {
 		return nil, fmt.Errorf("fire reminder %s: %w", id, err)
@@ -871,11 +723,11 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reload fired reminder %s: %w", id, err)
 	}
-	if r.ScheduleID != nil {
-		if err := s.invalidateScheduleReopenTx(tx, *r.ScheduleID); err != nil {
-			return nil, err
-		}
+
+	if err := s.invalidateScheduleReopenTx(tx, *r.ScheduleID); err != nil {
+		return nil, err
 	}
+
 	// One stamp per won fire, carried by the event payload and the dedupe key.
 	r.FireStamp = ptr(nowNano())
 
@@ -894,19 +746,17 @@ func (s *Store) fireOneReminder(id, nowTS string) (*models.Reminder, error) {
 		return nil, nil
 	}
 
-	if r.ScheduleID != nil {
-		emit, err := s.fireManagedTx(tx, r, nowTS)
-		if err != nil {
-			return nil, fmt.Errorf("fire managed reminder %s: %w", id, err)
+	emit, err := s.fireManagedTx(tx, r, nowTS)
+	if err != nil {
+		return nil, fmt.Errorf("fire managed reminder %s: %w", id, err)
+	}
+	if !emit {
+		// Deferred to its exact instant, or its rule no longer compiles
+		// (error_code set): either way the write stands and no event goes out.
+		if err := tx.Commit(); err != nil {
+			return nil, fmt.Errorf("fire reminder %s: %w", id, err)
 		}
-		if !emit {
-			// Deferred to its exact instant, or its rule no longer compiles
-			// (error_code set): either way the write stands and no event goes out.
-			if err := tx.Commit(); err != nil {
-				return nil, fmt.Errorf("fire reminder %s: %w", id, err)
-			}
-			return nil, nil
-		}
+		return nil, nil
 	}
 
 	if err := s.emitReminderEventTx(tx, r, item); err != nil {

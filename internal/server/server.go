@@ -2623,10 +2623,8 @@ func (s *Server) setupRouter() {
 					r.Get("/me", s.handleGetMe)
 
 					// Dashboard (v2)
-					// Reminder lifecycle, addressed by reminder id rather
-					// than by item: an acknowledgement is about the reminder,
-					// and an item can carry several. Permission is still the
-					// ITEM's — see resolveReminderForWrite.
+					// Compatibility lifecycle aliases address the commitment alarm
+					// by its stable reminder ID. Permission belongs to the item.
 					r.Patch("/reminders/{reminderID}", s.handleRearmReminder)
 					r.Post("/reminders/{reminderID}/ack", s.handleAckReminder)
 					r.Delete("/reminders/{reminderID}", s.handleDeleteReminder)
