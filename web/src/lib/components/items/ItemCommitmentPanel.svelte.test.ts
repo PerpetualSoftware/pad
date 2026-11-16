@@ -79,3 +79,13 @@ it('keeps the shown view while an item_updated refresh is in flight', async () =
  expect(p.onSnapshot.mock.calls.slice(published).some(([s]) => s.view === undefined)).toBe(false);
  resolve(view({ rrule: 'FREQ=DAILY' })); await screen.findByText('every day');
 });
+it('keeps the view but offers Retry when a background refresh fails', async () => {
+ render(ItemCommitmentPanel, props()); await screen.findByText('every Monday');
+ h.get.mockRejectedValueOnce({ code: 'internal_error' });
+ h.subscribe.mock.calls[0][0]({ type: 'item_updated', item_id: item.id });
+ await screen.findByText(/Couldn't refresh these dates/);
+ expect(screen.getByText('every Monday')).toBeTruthy();
+ h.get.mockResolvedValueOnce(view({ rrule: 'FREQ=DAILY' }));
+ await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+ await screen.findByText('every day'); expect(screen.queryByText(/Couldn't refresh/)).toBeNull();
+});

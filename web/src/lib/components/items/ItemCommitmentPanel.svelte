@@ -106,7 +106,8 @@
    <p class="state"><StateMark state={display.mark} label={display.primary} /><span>{display.primary}</span></p>
    {#each display.annotations as annotation}<p>{annotation}</p>{/each}
    {#if display.acknowledgedAt || display.acknowledgedBy}<p>{acknowledgedText(display.acknowledgedAt, display.acknowledgedBy, zone, now)}</p>{/if}
-   {#if display.unavailable}<button onclick={() => load()}>Retry</button>{/if}
+   {#if display.unavailable}<button onclick={() => load()}>Retry</button>
+   {:else if unavailable}<p role="status" class="refresh-failed">Couldn't refresh these dates. <button onclick={() => load()}>Retry</button></p>{/if}
   {:else}
    <p role="status">Date unavailable</p><button onclick={() => load()}>Retry</button>
   {/if}

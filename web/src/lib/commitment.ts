@@ -1,4 +1,5 @@
-import type { CommitmentRoles } from '$lib/types';
+import type { AcknowledgedBy, CommitmentGate, CommitmentGateView, CommitmentLink, CommitmentRoles, ItemCommitmentView } from '$lib/types';
+import type { OccurrenceState } from '$lib/calendar/presentation';
 
 export function commitmentKind(roles: Pick<CommitmentRoles, 'deadline' | 'occupied_until'>): 'deadline_hard' | 'window' | 'check' {
  if (roles.deadline !== null) return 'deadline_hard';
@@ -6,8 +7,6 @@ export function commitmentKind(roles: Pick<CommitmentRoles, 'deadline' | 'occupi
  return 'check';
 }
 
-import type { AcknowledgedBy, CommitmentGate, CommitmentGateView, CommitmentLink, ItemCommitmentView } from '$lib/types';
-import type { OccurrenceState } from '$lib/calendar/presentation';
 
 /** undefined is loading/unavailable; null is an authoritative not_found. */
 export interface ItemCommitmentSnapshot {
