@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-const h = vi.hoisted(() => ({ get: vi.fn(), gates: vi.fn(), resolve: vi.fn(), create: vi.fn(), subscribe: vi.fn(), auth: { identityEpoch: 0, user: { timezone: 'UTC' } } }));
-vi.mock('$lib/api/client', () => ({ api: { getCommitment: h.get, getCommitmentGates: h.gates, resolveCommitment: h.resolve, createCommitment: h.create } }));
+const h = vi.hoisted(() => ({ get: vi.fn(), gates: vi.fn(), resolve: vi.fn(), create: vi.fn(), update: vi.fn(), subscribe: vi.fn(), auth: { identityEpoch: 0, user: { timezone: 'UTC' } } }));
+vi.mock('$lib/api/client', () => ({ api: { getCommitment: h.get, getCommitmentGates: h.gates, resolveCommitment: h.resolve, createCommitment: h.create, updateCommitment: h.update } }));
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { get identityEpoch() { return h.auth.identityEpoch; }, get user() { return h.auth.user; }, identityFence() { const epoch = h.auth.identityEpoch; return () => epoch === h.auth.identityEpoch; } } }));
 vi.mock('$lib/services/sse.svelte', () => ({ sseService: { onItemEvent: h.subscribe } }));
 import ItemCommitmentPanel from './ItemCommitmentPanel.svelte';
@@ -187,4 +187,29 @@ it.each([
  h.get.mockResolvedValue(view({ editable: true, ...extra })); render(ItemCommitmentPanel, { ...props(), item: { ...item, ...itemExtra } });
  await screen.findByRole('heading', { name: 'When' });
  expect(screen.queryByRole('button', { name: 'Done TASK-1' })).toBeNull();
+});
+const offsets = { target_days: 0, target_secs: 0, earliest_days: null, earliest_secs: null, deadline_days: null, deadline_secs: null, occupied_days: null, occupied_secs: null };
+it.each([
+ ['an editor with stored offsets', { editable: true, role_offsets: offsets }, {}, {}, true],
+ ['no role_offsets', { editable: true }, {}, {}, false],
+ ['a reader', { editable: false, role_offsets: offsets }, {}, {}, false],
+ ['a read-only host', { editable: true, role_offsets: offsets }, {}, { readOnly: true }, false],
+ ['a closed item', { editable: true, role_offsets: offsets }, { fields: '{"status":"shipped"}' }, {}, false],
+ ['an ended schedule', { editable: true, ended_at: '2031-03-09', next_occurrence: undefined }, {}, {}, false]
+])('offers Edit for %s: %s', async (_name, extra, itemExtra, propExtra, shown) => {
+ h.get.mockResolvedValue(view(extra)); render(ItemCommitmentPanel, { ...props(), item: { ...item, ...itemExtra }, ...propExtra });
+ await screen.findByRole('heading', { name: 'When' });
+ expect(!!screen.queryByRole('button', { name: 'Edit' })).toBe(shown);
+});
+it('saves an edit, closes the dialog, re-reads once and announces it', async () => {
+ h.get.mockResolvedValue(view({ editable: true, role_offsets: offsets })); h.update.mockResolvedValue(view());
+ render(ItemCommitmentPanel, props());
+ await fireEvent.click(await screen.findByRole('button', { name: 'Edit' }));
+ await fireEvent.input(await screen.findByLabelText('Target date'), { target: { value: '2031-03-17' } });
+ await fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+ await screen.findByText('Date updated.');
+ expect(h.update).toHaveBeenCalledWith('work', 'TASK-1', { dtstart: '2031-03-17T00:30:00' });
+ // The initial read, the pre-write fence, and one refresh.
+ expect(h.get).toHaveBeenCalledTimes(3);
+ expect(screen.queryByRole('dialog')).toBeNull();
 });

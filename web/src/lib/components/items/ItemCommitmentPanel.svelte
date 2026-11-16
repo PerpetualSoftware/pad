@@ -16,6 +16,7 @@
  import MoveImpactDialog from '$lib/components/calendar/MoveImpactDialog.svelte';
  import ForecastDialog from '$lib/components/calendar/ForecastDialog.svelte';
  import ItemCommitmentDateDialog from './ItemCommitmentDateDialog.svelte';
+ import ItemCommitmentEditDialog from './ItemCommitmentEditDialog.svelte';
  import { createItemCommitmentActions, permissionCopy } from './itemCommitmentActions.svelte';
 
  interface Props {
@@ -43,6 +44,7 @@
  let addSerial = 0;
  let mobile = $state(false);
  let added = $state('');
+ let editOpen = $state(false);
  let section = $state<HTMLElement>();
  const actions = createItemCommitmentActions({
   identity: () => ({ wsSlug, itemSlug, itemId: item.id }),
@@ -62,7 +64,7 @@
  // The server's display hint; mutations re-check it. Absent or stale means no writes offered.
  const editable = $derived(!readOnly && !!snapshot && current(snapshot) && snapshot.editable);
  const entry = $derived(view && editable && !itemClosed ? commitmentAgendaEntry(view, { wsSlug, item, collection, zone }) : null);
- const dialogOpen = $derived(!!(actions.dialogEntry || actions.review || actions.endChoice || actions.forecastEntry || addDateOpen));
+ const dialogOpen = $derived(!!(actions.dialogEntry || actions.review || actions.endChoice || actions.forecastEntry || addDateOpen || editOpen));
 
  async function load() {
   const ticket = ++generation;
@@ -112,11 +114,20 @@
   if (sameIdentity() && announced === addSerial && !disposed) added = 'Date added.';
  }
 
+ async function edited() {
+  editOpen = false;
+  added = '';
+  const sameIdentity = authStore.identityFence();
+  const announced = ++addSerial;
+  await load();
+  if (sameIdentity() && announced === addSerial && !disposed) added = 'Date updated.';
+ }
+
  $effect(() => {
   const identity = JSON.stringify([wsSlug, itemId, itemSlug, authStore.identityEpoch, zone]);
   if (identity === requestedIdentity) return;
   requestedIdentity = identity;
-  untrack(() => { actions.reset(); if (addDateOpen) onAddDateClose?.(); added = ''; addSerial++; void load(); });
+  untrack(() => { actions.reset(); editOpen = false; if (addDateOpen) onAddDateClose?.(); added = ''; addSerial++; void load(); });
  });
  onMount(() => {
   const query = window.matchMedia('(max-width: 768px)');
@@ -164,6 +175,7 @@
     <div class="occurrence-actions">
      <SnoozeLabel label={snoozeLabel(entry, zone, now)} />
      <OccurrenceActions {entry} {zone} pending={!!actions.pending[entryKey(entry)]} disabled={!!actions.saved[entryKey(entry)]} onaction={actions.action} />
+     {#if view.role_offsets}<button onclick={() => { editOpen = true; }}>Edit</button>{/if}
     </div>
    {/if}
    {#each display.annotations as annotation}<p>{annotation}</p>{/each}
@@ -178,6 +190,9 @@
  </section>
 {/if}{#if editable}
  <ItemCommitmentDateDialog open={addDateOpen} {wsSlug} {itemSlug} itemRef={formatItemRef(item) ?? ''} itemTitle={item.title} {mobile} onclose={() => onAddDateClose?.()} oncreated={() => void created()} />
+ <ItemCommitmentEditDialog open={editOpen && !!view?.role_offsets} view={view ?? null} {wsSlug} {itemSlug} itemRef={formatItemRef(item) ?? ''} itemTitle={item.title} {zone} {mobile}
+  titles={actions.linkedTitles} onloadtitles={result => { if (entry) void actions.loadTitles(entry, result); }}
+  onclose={() => { editOpen = false; }} onsaved={() => void edited()} onreload={() => { editOpen = false; void load(); }} />
  <ForecastDialog open={!!actions.forecastEntry} entry={actions.forecastEntry} {zone} {mobile} {permissionCopy} onclose={actions.closeForecast} onsaved={actions.forecastSaved} />
  <ResolveOccurrenceDialog open={!!actions.dialogEntry} mode={actions.dialogMode} entry={actions.dialogEntry} {zone} {mobile}
   pending={actions.dialogEntry ? !!actions.pending[entryKey(actions.dialogEntry)] : false} error={actions.actionError}

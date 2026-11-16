@@ -176,6 +176,9 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 	}
 	out.Roles = models.CommitmentRoles{DeadlineBehavior: roles.DeadlineBehavior, Outcome: roles.Outcome, RolesOrigin: roles.Origin}
 	if sc.EndedAt == nil && sc.NextWall != nil {
+		out.RoleOffsets = &models.CommitmentRoleOffsets{TargetDays: roles.TargetDays, TargetSecs: roles.TargetSecs,
+			EarliestDays: roles.EarliestDays, EarliestSecs: roles.EarliestSecs, DeadlineDays: roles.DeadlineDays, DeadlineSecs: roles.DeadlineSecs,
+			OccupiedDays: roles.OccupiedDays, OccupiedSecs: roles.OccupiedSecs}
 		loc, err := s.scheduleViewZone(s.db, sc)
 		if err != nil {
 			return nil, err

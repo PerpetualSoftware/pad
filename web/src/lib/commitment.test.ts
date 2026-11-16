@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { buildCommitmentCreate, COMMITMENT_RECURRENCES, commitmentAgendaEntry, commitmentDisplayState, describeGate, describeLinkOffset, describeRecurrence } from './commitment';
+import { buildCommitmentCreate, buildCommitmentEdit, COMMITMENT_RECURRENCES, commitmentAgendaEntry, commitmentDisplayState, describeGate, describeLinkOffset, describeRecurrence, editStateFromView, offsetWall, wallOffset, type CommitmentEditState } from './commitment';
 import { collection, gate, item, link, otherId, view } from './test/commitmentFixtures';
+import type { ItemCommitmentView } from '$lib/types';
 
 const now = new Date('2031-03-10T12:00:00Z');
 describe('recurrence', () => {
@@ -144,5 +145,92 @@ describe('create body', () => {
   expect(buildCommitmentCreate({ date: '2031-03-10', time: '10:00', rule: 'once', deadline: { date: '2031-03-10', time: '09:59', behavior: 'lapses' } })).toEqual({ field: 'deadline', message: 'The deadline cannot be before the target.' });
   expect(buildCommitmentCreate({ date: '2031-03-10', time: '10:00', rule: 'once', deadline: { date: '2031-03-11', time: '', behavior: 'lapses' } })).toEqual({ field: 'deadline', message: 'Choose a deadline time.' });
   expect(keys(buildCommitmentCreate({ date: '2031-03-10', rule: 'once', deadline: { date: '2031-03-10', behavior: 'lapses' } }))).toEqual(['dtstart', 'roles']);
+ });
+});
+describe('edit (TASK-4610)', () => {
+ const offsets = (extra: Partial<NonNullable<ItemCommitmentView['role_offsets']>> = {}) => ({ target_days: 0, target_secs: 0, earliest_days: null, earliest_secs: null, deadline_days: null, deadline_secs: null, occupied_days: null, occupied_secs: null, ...extra });
+ const noRoles = { target: '2031-03-10T13:00:00Z', earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' } as const;
+ const ev = (extra: Partial<ItemCommitmentView> = {}, o: Parameters<typeof offsets>[0] = {}) => view({ dtstart: '2031-03-10T09:00:00', tz: 'America/New_York', rrule: 'FREQ=WEEKLY', roles: { ...noRoles }, next_occurrence: { at: '2031-03-10T13:00:00Z', wall: '2031-03-10T09:00:00', state: 'outstanding' }, role_offsets: offsets(o), ...extra });
+ const withDeadline = (origin: 'native' | 'legacy_backfill' = 'native', days = 1, secs = -28800) => ev({ roles: { ...noRoles, deadline: '2031-03-11T05:00:00Z', deadline_behavior: 'stays_owed', roles_origin: origin } }, { deadline_days: days, deadline_secs: secs });
+ const ctx = { zone: 'America/New_York', now: new Date('2031-03-01T12:00:00Z') };
+ const st = (v: ItemCommitmentView) => editStateFromView(v) as CommitmentEditState;
+ const plan = (v: ItemCommitmentView, change: (f: CommitmentEditState['initial']) => void) => { const s = st(v); const f = structuredClone(s.initial); change(f); return buildCommitmentEdit(s, f, ctx); };
+
+ it('offers no Edit without role_offsets or once ended', () => {
+  expect(editStateFromView(view())).toBeNull();
+  expect(editStateFromView(ev({ ended_at: '2031-03-09' }))).toBeNull();
+ });
+ it('starts from the stored values, not the effective ones', () => {
+  expect(st(withDeadline()).initial).toEqual({ date: '2031-03-10', time: '09:00', rule: 'weekly', deadline: { days: 1, secs: -28800, behavior: 'stays_owed' } });
+ });
+ it.each([
+  ['a native deadline', withDeadline(), 'Fixed while a hard deadline exists; renegotiate or remove the deadline first.'],
+  ['a link', ev({ links: [link({ child_role: 'target' })] }), 'Fixed while this date is linked to another item.'],
+  ['a custom rule', ev({ rrule: 'FREQ=WEEKLY;COUNT=4' }), 'Repeats by a custom rule (FREQ=WEEKLY;COUNT=4); use pad remind edit to change it.'],
+  ['additional dates', ev({ rdates: ['2031-03-12'] }), 'Repeats by a custom rule (FREQ=WEEKLY, additional dates); use pad remind edit to change it.'],
+  ['excluded dates', ev({ exdates: ['2031-03-17'] }), 'Repeats by a custom rule (FREQ=WEEKLY, excluded dates); use pad remind edit to change it.'],
+  ['a target offset', ev({}, { target_secs: 3600 }), 'Fixed because the target is offset from the start; use pad remind edit to change it.']
+ ])('locks start and Repeats for %s', (_name, v, reason) => {
+  expect(st(v).timingLock).toBe(reason);
+  expect(plan(v, f => { f.date = '2031-03-17'; })).toEqual({ field: 'date', message: reason });
+ });
+ it('leaves a plain legacy deadline row unlocked', () => {
+  expect(st(withDeadline('legacy_backfill', 0, 0)).timingLock).toBe('');
+ });
+ it('locks a linked deadline and a timed deadline on an all-day date', () => {
+  expect(st(withDeadline('legacy_backfill', 0, 0)).deadlineLock).toBe('');
+  const linked = ev({ ...withDeadline(), links: [link({ child_role: 'deadline' })] });
+  expect(st(linked).deadlineLock).toBe('Fixed while the deadline is linked to another item.');
+  const allDay = ev({ dtstart: '2031-03-10', roles: { ...noRoles, target: '2031-03-10', deadline: '2031-03-11T05:00:00Z', deadline_behavior: 'lapses', roles_origin: 'legacy_backfill' } }, { deadline_days: 0, deadline_secs: 3600 });
+  expect(st(allDay).deadlineLock).toBe('This all-day date has a timed deadline; use pad remind edit to change it.');
+ });
+ it('locks adding or removing the time while other roles hang off the start', () => {
+  expect(plan(ev({}, { earliest_days: 0, earliest_secs: -1800 }), f => { f.time = ''; })).toEqual({ field: 'time', message: 'The time can be added or removed only while the date has no other roles.' });
+  expect(plan(ev(), f => { f.time = ''; })).toEqual({ kind: 'patch', body: { dtstart: '2031-03-10' } });
+ });
+ it('warns that a timing edit re-plans when this occurrence was moved or snoozed', () => {
+  expect(st(ev()).replanDrops).toBe(false);
+  expect(st(ev({ snoozed_until: '2031-03-10T12:00:00Z' })).replanDrops).toBe(true);
+  expect(st(ev({ next_override_at: '2031-03-11T13:00:00Z' })).replanDrops).toBe(true);
+  expect(st(ev({ roles: { ...noRoles, target: '2031-03-11T13:00:00Z' } })).replanDrops).toBe(true);
+ });
+ it('makes no request for an untouched form', () => {
+  expect(plan(ev(), () => {})).toEqual({ kind: 'none' });
+  expect(plan(withDeadline(), () => {})).toEqual({ kind: 'none' });
+ });
+ it('sends only dtstart for a date edit and keeps stored seconds unless the time is edited', () => {
+  expect(plan(ev(), f => { f.date = '2031-03-17'; })).toEqual({ kind: 'patch', body: { dtstart: '2031-03-17T09:00:00' } });
+  const secs = ev({ dtstart: '2031-03-10T09:00:30' });
+  expect(plan(secs, f => { f.date = '2031-03-17'; })).toEqual({ kind: 'patch', body: { dtstart: '2031-03-17T09:00:30' } });
+  expect(plan(secs, f => { f.time = '10:15'; })).toEqual({ kind: 'patch', body: { dtstart: '2031-03-10T10:15' } });
+ });
+ it('sends rrule null for once and the canonical rule for a shorthand', () => {
+  expect(plan(ev(), f => { f.rule = 'once'; })).toEqual({ kind: 'patch', body: { rrule: null } });
+  expect(plan(ev(), f => { f.rule = 'monthly-last'; })).toEqual({ kind: 'patch', body: { rrule: 'FREQ=MONTHLY;BYMONTHDAY=-1' } });
+ });
+ it('puts a first deadline in the PATCH', () => {
+  expect(plan(ev(), f => { f.deadline = { days: 1, secs: 0, behavior: 'lapses' }; })).toEqual({ kind: 'patch', body: { roles: { deadline_days: 1, deadline_secs: 0, deadline_behavior: 'lapses' } } });
+ });
+ it('sends a native deadline change to renegotiate only', () => {
+  expect(plan(withDeadline(), f => { f.deadline = { days: 2, secs: 0, behavior: 'stays_owed' }; })).toEqual({ kind: 'renegotiate', body: { scope: 'series', deadline_offset: { deadline_days: 2, deadline_secs: 0 } } });
+  expect(plan(withDeadline(), f => { f.deadline!.behavior = 'lapses'; })).toEqual({ kind: 'renegotiate', body: { scope: 'series', deadline_behavior: 'lapses' } });
+  expect(plan(withDeadline(), f => { f.deadline = null; })).toEqual({ kind: 'renegotiate', body: { scope: 'series', remove_deadline: true } });
+ });
+ it('puts a legacy deadline change and removal in the PATCH (converting the row)', () => {
+  const legacy = withDeadline('legacy_backfill', 0, 0);
+  expect(plan(legacy, f => { f.deadline = { days: 1, secs: 0, behavior: 'stays_owed' }; })).toEqual({ kind: 'patch', body: { roles: { deadline_days: 1, deadline_secs: 0, deadline_behavior: 'stays_owed' } } });
+  expect(plan(legacy, f => { f.deadline = null; })).toEqual({ kind: 'patch', body: { roles: { deadline_days: null, deadline_secs: null, deadline_behavior: null } } });
+ });
+ it('converts walls to civil offsets across the New York DST change and back', () => {
+  expect(wallOffset('2031-03-08', '09:00', '2031-03-10', '09:00')).toEqual({ days: 2, secs: 0 });
+  expect(offsetWall('2031-03-08', '09:00', 2, 0)).toEqual({ date: '2031-03-10', time: '09:00' });
+  expect(offsetWall('2031-03-10', '09:00', 1, -28800)).toEqual({ date: '2031-03-11', time: '01:00' });
+  expect(offsetWall('2031-03-10', '', 3, 0)).toEqual({ date: '2031-03-13', time: '' });
+ });
+ it('refuses a deadline before the target and a one-off date that has passed', () => {
+  expect(plan(ev(), f => { f.deadline = { days: 0, secs: -60, behavior: 'lapses' }; })).toEqual({ field: 'deadline', message: 'The deadline cannot be before the target.' });
+  expect(plan(ev(), f => { f.rule = 'once'; f.date = '2031-02-28'; })).toEqual({ field: 'date', message: 'Choose a date that has not passed.' });
+  expect(plan(ev({ dtstart: '2031-03-10', rrule: undefined }), f => { f.date = '2031-03-01'; })).toEqual({ kind: 'patch', body: { dtstart: '2031-03-01' } });
+  expect(plan(ev({ dtstart: '2031-03-10', rrule: undefined }), f => { f.date = '2031-02-28'; })).toEqual({ field: 'date', message: 'Choose a date that has not passed.' });
  });
 });
