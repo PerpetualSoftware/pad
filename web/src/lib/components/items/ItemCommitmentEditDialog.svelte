@@ -144,9 +144,9 @@
 			{#if review}
 				{@const p = review.result.preview}
 				<section class="review" aria-label="Review the deadline change">
-					<p><span class="k">Deadline now</span> {show(p.current_deadline)}{#if p.current_deadline_behavior}{' · '}{p.current_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</p>
-					<p><span class="k">New deadline</span> {show(p.new_deadline)}{#if p.new_deadline_behavior}{' · '}{p.new_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</p>
-					{#if appliesFrom(p.applies_from)}<p><span class="k">Applies from</span> {roleText(appliesFrom(p.applies_from), zone)}</p>{/if}
+					<p class="row"><span class="k">Deadline now</span> <span>{show(p.current_deadline)}{#if p.current_deadline_behavior}{' · '}{p.current_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</span></p>
+					<p class="row"><span class="k">New deadline</span> <span>{show(p.new_deadline)}{#if p.new_deadline_behavior}{' · '}{p.new_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</span></p>
+					{#if appliesFrom(p.applies_from)}<p class="row"><span class="k">Applies from</span> <span>{roleText(appliesFrom(p.applies_from), zone)}</span></p>{/if}
 					{#if p.miss_recorded_first}<p>The deadline already passed: its miss is recorded first.</p>{/if}
 					{#if p.keeps_deadline_override}<p>This occurrence keeps its own moved deadline.</p>{/if}
 					{#each (review.result.cascade?.changes ?? []).filter(c => !c.root) as change}<p>{title(change)}: {roleName(change.role)} moves to {roleText(change.to, zone)}</p>{/each}
@@ -228,7 +228,8 @@
 	p { margin: 0; }
 	.hint { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
 	.review { display: flex; flex-direction: column; gap: var(--space-2); font-size: 14px; overflow-wrap: anywhere; }
-	.k { display: inline-block; min-width: 110px; color: var(--text-secondary); font-weight: 600; font-size: 12px; }
+	.row { display: grid; grid-template-columns: 110px minmax(0, 1fr); column-gap: var(--space-3); align-items: baseline; }
+	.k { color: var(--text-secondary); font-weight: 600; font-size: 12px; }
 	.warn { color: var(--color-warning, var(--text-primary)); }
 	.two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 	.field { min-width: 0; }
@@ -237,7 +238,10 @@
 	fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }
 	.check { display: flex; align-items: center; gap: var(--space-2); min-height: 36px; font-size: 14px; font-weight: 400; color: var(--text-primary); }
 	input:not([type='checkbox']):not([type='radio']), select { box-sizing: border-box; width: 100%; min-width: 0; min-height: 36px; padding: 6px 10px; color: var(--text-primary); background: var(--bg-primary); border: 1px solid var(--border); border-radius: var(--radius); font: inherit; font-size: 14px; }
-	input:not([type='checkbox']):not([type='radio']):disabled, select:disabled { color: var(--text-muted); background: var(--bg-tertiary); border-color: var(--border-subtle); cursor: not-allowed; opacity: 1; -webkit-text-fill-color: var(--text-muted); }
+	input:not([type='checkbox']):not([type='radio']):disabled, select:disabled { color: var(--text-muted); background: var(--disabled-bg, var(--bg-tertiary)); border-color: var(--disabled-border, var(--border-subtle)); cursor: not-allowed; opacity: 1; -webkit-text-fill-color: var(--text-muted); }
 	fieldset:disabled .check, .check:has(input:disabled) { color: var(--text-muted); cursor: not-allowed; }
+	/* Light theme: tertiary is barely off the enabled fill, so disabled fields take the active tone. */
+	:global([data-theme='light']) form { --disabled-bg: var(--bg-active); --disabled-border: var(--border); }
+	@media (prefers-color-scheme: light) { :global(:root:not([data-theme='dark'])) form { --disabled-bg: var(--bg-active); --disabled-border: var(--border); } }
 	@media (max-width: 768px) { .two { grid-template-columns: 1fr; } input:not([type='checkbox']):not([type='radio']), select, .check { min-height: 44px; } }
 </style>

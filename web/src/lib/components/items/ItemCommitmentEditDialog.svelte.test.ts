@@ -177,3 +177,14 @@ it('keeps the deadline offset when Deadline time is cleared on a timed target', 
  expect(await screen.findByText('No changes.')).toBeTruthy();
  expect(h.calls).toEqual([]);
 });
+it('lays each labelled review row out as a label cell and a value cell', async () => {
+ h.get.mockResolvedValue(native()); h.reneg.mockResolvedValueOnce(previewResult('rev1'));
+ mount(native());
+ await fireEvent.click(screen.getByLabelText('Lapses'));
+ await input('Reason for the deadline change', 'Softer'); await save();
+ const panel = await screen.findByRole('region', { name: 'Review the deadline change' });
+ const rows = [...panel.querySelectorAll('.k')].map(k => k.parentElement!);
+ expect(rows.map(r => r.firstElementChild!.textContent)).toEqual(['Deadline now', 'New deadline', 'Applies from']);
+ for (const r of rows) { expect(r.classList.contains('row')).toBe(true); expect(r.children).toHaveLength(2); }
+ expect(rows[0].children[1].textContent).toBe(`${roleText('2031-03-11T05:00:00Z', 'America/New_York')} · Still owed`);
+});
