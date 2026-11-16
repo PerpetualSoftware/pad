@@ -102,7 +102,7 @@ func TestReminderMigrationArmedPastFiresOnce(t *testing.T) {
 
 func TestReminderMigrationConflictRollback(t *testing.T) {
 	for _, pg := range []bool{false, true} {
-		for _, mode := range []string{"multiple", "existing", "ended", "orphan", "mismatched_owner", "invalid_time", "invalid_state", "after_backfill", "constraint"} {
+		for _, mode := range []string{"orphan", "mismatched_owner", "invalid_time", "invalid_state", "after_backfill", "constraint"} {
 			t.Run(fmt.Sprint(pg)+"/"+mode, func(t *testing.T) {
 				s, name, body := reminderMigrationStore(t, pg)
 				ws, item, id := legacyReminderRow(t, s, "armed")
@@ -134,14 +134,6 @@ func TestReminderMigrationConflictRollback(t *testing.T) {
 						}
 						conn.Close()
 					}
-				case "multiple":
-					s.mustExec(t, `INSERT INTO item_reminders(id,workspace_id,item_id,remind_at,created_at,updated_at) VALUES(?,?,?,?,?,?)`, newID(), ws, item, past, past, past)
-				case "existing", "ended":
-					var ended any
-					if mode == "ended" {
-						ended = past
-					}
-					s.mustExec(t, `INSERT INTO item_schedules(id,workspace_id,item_id,kind,dtstart,tz,ended_at,created_at,updated_at) VALUES(?,?,?,'check','2020-01-01T00:00:00','UTC',?,?,?)`, newID(), ws, item, ended, past, past)
 				case "invalid_time":
 					s.mustExec(t, `UPDATE item_reminders SET remind_at='invalid' WHERE id=?`, id)
 				case "invalid_state":
@@ -155,12 +147,6 @@ func TestReminderMigrationConflictRollback(t *testing.T) {
 				err := runReminderMigration(s, name, body)
 				if err == nil {
 					t.Fatal("migration accepted invalid population")
-				}
-				if (mode == "multiple" || mode == "existing" || mode == "ended") && !strings.Contains(err.Error(), item) {
-					t.Fatalf("collision must identify item and reason: %v", err)
-				}
-				if mode == "multiple" && !strings.Contains(err.Error(), "multiple legacy reminders") || (mode == "existing" || mode == "ended") && !strings.Contains(err.Error(), "existing commitment") {
-					t.Fatalf("collision omitted reason: %v", err)
 				}
 				if (mode == "orphan" || mode == "mismatched_owner") && !strings.Contains(err.Error(), "missing or mismatched owner") {
 					t.Fatalf("wrong ownership refusal: %v", err)

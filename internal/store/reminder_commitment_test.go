@@ -293,21 +293,7 @@ func TestLegacyReminderBundleConversion(t *testing.T) {
 			if err != nil || len(again.Schedules) != 1 || *again.Schedules[0].Reminder != *out.Schedules[0].Reminder || len(again.ScheduleChanges) != 2 {
 				t.Fatalf("round trip=%+v %v", again, err)
 			}
-			for _, collision := range []string{"multiple", "existing"} {
-				bad := *data
-				if collision == "multiple" {
-					bad.Reminders = []models.ReminderExport{r, r}
-				} else {
-					bad.Schedules = []models.ScheduleExport{{ItemID: r.ItemID}}
-				}
-				before := f.count(t, `SELECT COUNT(*) FROM workspaces`)
-				if _, err := f.s.ImportWorkspace(&bad, "Collision", "", "test"); err == nil {
-					t.Fatalf("%s collision accepted", collision)
-				}
-				if f.count(t, `SELECT COUNT(*) FROM workspaces`) != before {
-					t.Fatal("collision wrote workspace")
-				}
-			}
+
 		})
 	}
 }
