@@ -173,6 +173,18 @@ it('hands a lapsed occurrence to the full agenda instead of resolving it (TASK-4
 	expect(h.getCommitment).not.toHaveBeenCalled();
 	expect(h.resolve).not.toHaveBeenCalled();
 });
+it('opens the agenda on the tapped strip day (BUG-4569)', async () => {
+	const { goto } = await import('$app/navigation');
+	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
+	vi.mocked(goto).mockClear();
+	h.list.mockResolvedValue([]);
+	h.needs.mockResolvedValue({ rows: [], total: 0, hidden: 0, workspaces: [] });
+	h.agenda.mockResolvedValue({ entries: [], priority_list: [], window_complete: true });
+	render(Home);
+	await fireEvent.click(document.querySelector<HTMLButtonElement>('[data-strip-day="2026-11-11"]')!);
+	expect(goto).toHaveBeenCalledTimes(1);
+	expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-11');
+});
 it('refetches the overview when the time zone changes on the same date (TASK-4595 review)', async () => {
 	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
 	h.needs.mockResolvedValue({ rows: [], total: 0, hidden: 0, workspaces: [] });

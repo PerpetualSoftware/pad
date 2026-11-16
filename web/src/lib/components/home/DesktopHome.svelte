@@ -119,6 +119,10 @@
 	function openAgenda() {
 		void goto('/agenda');
 	}
+	// A strip tap opens the agenda on the day tapped, in whichever week the strip shows.
+	function openAgendaOn(day: string) {
+		void goto(`/agenda?day=${day}`);
+	}
 	async function action(entry: AgendaEntry, kind: AgendaAction) {
 		// The full agenda records a lapsed occurrence at its own instant; Home hands it over.
 		if ((kind !== 'done' && kind !== 'ack' && kind !== 'skip') || entry.state === 'lapsed') { openAgenda(); return; }
@@ -147,7 +151,7 @@
 	{#if weekOffset !== 0}
 		<div class="strip-week"><span>{weekLabel(firstDay, viewport.isMobile)}</span><button type="button" class="invitations-toggle" onclick={backToThisWeek}>This week</button></div>
 	{/if}
-	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripEntries} {zone} dragging={null} hoverDay="" onselect={openAgenda} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} />
+	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripEntries} {zone} dragging={null} hoverDay="" onselect={openAgendaOn} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} />
 	<div class="overview-columns">
 		<section class="panel needs-panel" aria-label="Needs you">
 			<header><h2>Needs you <span class="badge">{homeOverview.needs?.total ?? '…'}</span></h2><span class="sort">Oldest waiting</span></header>

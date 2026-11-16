@@ -6,7 +6,7 @@ import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult
 
 const h = vi.hoisted(() => ({ arrive: vi.fn(), toast: vi.fn(), reopen: vi.fn(), agenda: vi.fn(), counts: vi.fn(), groups: vi.fn(), workspaces: vi.fn(), createGroup: vi.fn(), updateGroup: vi.fn(), removeGroup: vi.fn(), view: vi.fn(), resolve: vi.fn(), setForecast: vi.fn(), clearForecast: vi.fn(), preview: vi.fn(), move: vi.fn(), item: vi.fn(), update: vi.fn(), dismiss: vi.fn(), user: { id: 'user-a', timezone: 'America/New_York' } as { id: string; timezone?: string } | null, epoch: 0, signal: null as null | { set(key: string, value: number): unknown }, browserZone: 'Europe/London' as string | null }));
 vi.mock('$lib/stores/homeOverview.svelte', () => ({ homeOverview: { arrive: h.arrive } }));
-vi.mock('$app/navigation', () => ({ afterNavigate: vi.fn(), goto: async (url: URL) => { window.history.replaceState({}, '', url); } }));
+vi.mock('$app/navigation', () => ({ afterNavigate: vi.fn(), replaceState: vi.fn(), goto: async (url: URL) => { window.history.replaceState({}, '', url); } }));
 vi.mock('$lib/api/client', () => ({ api: { getMyAgenda: h.agenda, getMyAgendaCounts: h.counts, workspaceGroups: { list: h.groups, create: h.createGroup, update: h.updateGroup, remove: h.removeGroup }, workspaces: { list: h.workspaces }, getCommitment: h.view, setCommitmentForecast: h.setForecast, clearCommitmentForecast: h.clearForecast, resolveCommitment: h.resolve, reopenCommitment: h.reopen, previewCommitmentMove: h.preview, moveCommitment: h.move, dismissEndedCommitment: h.dismiss, items: { get: h.item, update: h.update } } }));
 vi.mock('$lib/timezone', () => ({ browserZone: () => h.browserZone }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
@@ -2262,5 +2262,50 @@ describe('overview arrival after the first current list read (TASK-4593)', () =>
  it('does not arrive without a user', async () => {
   h.user = null; render(Agenda); await settle();
   expect(h.agenda).not.toHaveBeenCalled(); expect(h.arrive).not.toHaveBeenCalled();
+ });
+});
+
+describe('agenda ?day= link (BUG-4569)', () => {
+ beforeEach(() => { window.history.replaceState({}, '', '/agenda'); });
+ afterEach(() => { window.history.replaceState({}, '', '/agenda'); });
+ const open = async (search: string) => { window.history.replaceState({}, '', `/agenda${search}`); render(Agenda); await waitFor(() => expect(h.agenda).toHaveBeenCalled()); await settle(); };
+ it('opens Week range on the linked day', async () => {
+  await open('?day=2026-11-20');
+  expect(screen.getByRole('heading', { name: '20–26 November 2026' })).toBeTruthy();
+  expect(h.agenda.mock.calls.every(call => call[0] === '2026-11-20T05:00:00.000Z')).toBe(true);
+ });
+ it('opens a stored Day range on the linked day, anchoring its strip there', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'day');
+  await open('?day=2026-11-20');
+  expect(screen.getByRole('button', { name: 'Day' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('heading', { name: 'November 20, 2026' })).toBeTruthy();
+  expect(h.agenda.mock.lastCall?.slice(0, 2)).toEqual(['2026-11-20T05:00:00.000Z', '2026-11-21T05:00:00.000Z']);
+  expect(stripDays()[0].dataset.stripDay).toBe('2026-11-20'); expect(stripDay('2026-11-20')).toHaveAttribute('aria-pressed', 'true');
+ });
+ it('opens a stored Month range with the linked day selected', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'month');
+  await open('?day=2026-11-20');
+  expect(screen.getByRole('button', { name: 'Month' })).toHaveAttribute('aria-pressed', 'true');
+  const selected = [...document.querySelectorAll('[role="gridcell"][aria-selected="true"]')];
+  expect(selected).toHaveLength(1);
+  expect(selected[0].querySelector('button[data-day]')?.getAttribute('data-day')).toBe('2026-11-20');
+ });
+ it('opens a stored Month range on the linked day in another month', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'month');
+  await open('?day=2026-12-03');
+  expect(screen.getByRole('heading', { name: 'December 2026' })).toBeTruthy();
+ });
+ it.each(['2026-02-30', 'nope', '2026-1-5', '2026-11-20x', ''])('ignores an invalid day %j and opens on today', async value => {
+  await open(`?day=${value}`);
+  expect(screen.getByRole('heading', { name: '5–11 November 2026' })).toBeTruthy();
+  expect(h.agenda.mock.calls.every(call => call[0] === '2026-11-05T05:00:00.000Z')).toBe(true);
+ });
+ it('drops the day from the URL without a new history entry, keeping audience', async () => {
+  const before = window.history.length;
+  await open('?day=2026-11-20&audience=agents');
+  await waitFor(() => expect(window.location.search).toBe('?audience=agents'));
+  expect(window.history.length).toBe(before);
+  expect(within(screen.getByRole('group', { name: 'Audience' })).getByRole('button', { name: /^Agents / })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('heading', { name: '20–26 November 2026' })).toBeTruthy();
  });
 });

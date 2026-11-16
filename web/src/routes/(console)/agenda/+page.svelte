@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, tick, untrack, setContext } from 'svelte';
-	import { afterNavigate, goto } from '$app/navigation';
+	import { afterNavigate, goto, replaceState } from '$app/navigation';
+	import { page } from '$app/state';
 	import { chatSurface } from '$lib/stores/chatSurface.svelte';
 	import { currentHref, currentSearch } from '$lib/utils/pageLocation';
 	import { audienceCounts, defaultAudience, filterAudience, parseAudience, splitAudience, type AudienceView } from '$lib/calendar/audience';
@@ -80,6 +81,37 @@
 		? shiftDay(stripAnchor, 7 * Math.floor((Date.parse(`${day}T00:00:00Z`) - Date.parse(`${stripAnchor}T00:00:00Z`)) / 604_800_000))
 		: day);
 	const stripDays = $derived(Array.from({ length: 7 }, (_, index) => shiftDay(stripStart, index)));
+	// A link names the day to open on (`?day=YYYY-MM-DD`, Home's week strip). Only a real calendar date counts.
+	function linkedDay(value: string | null): string {
+		if (!value || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return '';
+		const date = new Date(`${value}T00:00:00Z`);
+		return !Number.isNaN(date.getTime()) && date.toISOString().slice(0, 10) === value ? value : '';
+	}
+	// Mode only is restored from storage, so the linked day holds in whichever range is current.
+	function readDay() {
+		const linked = linkedDay(new URLSearchParams(currentSearch()).get('day'));
+		if (!linked) return;
+		selectedDay = linked; stripAnchor = linked;
+		void dropDayFromUrl();
+	}
+	// The day is applied; drop it from the address so a reload or later step is not pinned to it.
+	// Replacing, not pushing; other params stay. Held while Chat is open, then run against the live URL.
+	function dropDayFromUrl(): Promise<unknown> | undefined {
+		const href = currentHref();
+		if (!href || !new URL(href).searchParams.has('day')) return;
+		if (chatSurface.deferPageWrite('/agenda#drop-day', () => dropDayFromUrl())) return;
+		const url = new URL(href);
+		url.searchParams.delete('day');
+		return goto(url, { replace: true, reset: false }).catch(() => {
+			try {
+				replaceState(url, page.state);
+			} catch {
+				// The router is not up; nothing else can carry the clear.
+			}
+		});
+	}
+	onMount(readDay);
+	afterNavigate(navigation => { if (!navigation.shallow) readDay(); });
 	let openedDay = $state<string | null>(null);
 	let monthGrid = $state<{ cancelFocus: () => void }>();
 	let lastFocusScope = '';
