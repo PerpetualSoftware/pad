@@ -242,3 +242,38 @@ func TestReminderCreateActivity(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyAcknowledgedReminderImportStaysDismissed(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+	item := createItem(t, srv, ws, "tasks", map[string]interface{}{"title": "Dismissed reminder", "fields": `{"status":"open"}`})
+	data, err := srv.store.ExportWorkspace(ws)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data.Reminders = []models.ReminderExport{{ItemID: item.ID, RemindAt: pastInstant, FiredAt: pastInstant, AckedAt: pastInstant, CreatedAt: pastInstant, UpdatedAt: pastInstant}}
+	imported, report, err := srv.store.ImportWorkspaceWithReport(data, "Dismissed import", "", "test")
+	if err != nil || len(report.DroppedSchedules) != 0 {
+		t.Fatalf("import: %+v %v", report, err)
+	}
+	itemID := report.ItemIDs[item.ID]
+	base := "/api/v1/workspaces/" + imported.Slug + "/items/" + itemID
+	rr := doRequest(srv, "GET", base+"/reminders", nil)
+	var listed struct {
+		Reminders []models.Reminder `json:"reminders"`
+	}
+	parseJSON(t, rr, &listed)
+	if rr.Code != http.StatusOK || len(listed.Reminders) != 0 {
+		t.Fatalf("dismissed reminder listed: %d %s", rr.Code, rr.Body.String())
+	}
+	sc, err := srv.store.GetSchedule(imported.ID, itemID)
+	if err != nil || sc == nil || sc.EndedAt == nil || sc.ReminderID != nil {
+		t.Fatalf("carrier: %+v %v", sc, err)
+	}
+	rr = doRequest(srv, "POST", base+"/reminders", map[string]string{"remind_at": pastInstant})
+	var rearmed models.Reminder
+	parseJSON(t, rr, &rearmed)
+	if rr.Code != http.StatusCreated || rearmed.ScheduleID == nil || *rearmed.ScheduleID != sc.ID {
+		t.Fatalf("rearm: %d %s", rr.Code, rr.Body.String())
+	}
+}

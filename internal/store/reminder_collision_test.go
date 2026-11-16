@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -14,7 +15,7 @@ const reminderHistoryReason = "one-shot reminder kept as history"
 func TestReminderCollisionPolicy(t *testing.T) {
 	for _, pg := range []bool{false, true} {
 		for _, mode := range []string{"migration", "bundle"} {
-			for _, shape := range []string{"acked_fired", "armed_fired", "two_armed", "all_acked", "created_tie", "identity_tie", "offset_order", "active", "acknowledged", "ended"} {
+			for _, shape := range []string{"acked_fired", "armed_fired", "two_armed", "all_acked", "single_acked", "created_tie", "identity_tie", "offset_order", "active", "acknowledged", "ended"} {
 				t.Run(fmt.Sprintf("pg=%t/%s/%s", pg, mode, shape), func(t *testing.T) {
 					s, name, body := reminderMigrationStore(t, pg)
 					ws, item, firstID := legacyReminderRow(t, s, "armed")
@@ -24,14 +25,20 @@ func TestReminderCollisionPolicy(t *testing.T) {
 					second.RemindAt = "2020-01-02T00:00:00Z"
 					fired, acked := "2020-01-03T01:02:03.4500+01:00", "2020-01-04T01:02:03.600+01:00"
 					winner := 1
+					carrier := shape == "all_acked" || shape == "single_acked"
+					historyReason := reminderHistoryReason
+					if carrier {
+						historyReason += ": acknowledged"
+					}
 					switch shape {
 					case "acked_fired":
 						first.FiredAt, first.AckedAt, second.FiredAt = &fired, &acked, &fired
 					case "armed_fired":
 						second.FiredAt = &fired
 						winner = 0
-					case "all_acked":
+					case "all_acked", "single_acked":
 						first.FiredAt, first.AckedAt, second.FiredAt, second.AckedAt = &fired, &acked, &fired, &acked
+						winner = -1
 					case "created_tie":
 						second.RemindAt = first.RemindAt
 						second.CreatedAt = "2019-01-02T00:00:00Z"
@@ -52,7 +59,7 @@ func TestReminderCollisionPolicy(t *testing.T) {
 						winner = -1
 					}
 					var existing *models.ItemSchedule
-					if winner == -1 {
+					if winner == -1 && !carrier {
 						var err error
 						existing, err = s.CreateCommitmentSchedule(ws, item, models.ScheduleCreate{Dtstart: "2099-01-01T00:00:00", Tz: "UTC"}, models.CommitmentRolesInput{})
 						if err != nil {
@@ -69,6 +76,9 @@ func TestReminderCollisionPolicy(t *testing.T) {
 					}
 					s.mustExec(t, `DELETE FROM item_reminders WHERE schedule_id IS NULL`)
 					legacy := []models.Reminder{first, second}
+					if shape == "single_acked" {
+						legacy = legacy[:1]
+					}
 					for _, r := range legacy {
 						s.mustExec(t, `INSERT INTO item_reminders(id,workspace_id,item_id,remind_at,fired_at,acked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, r.ID, ws, item, r.RemindAt, r.FiredAt, r.AckedAt, r.CreatedAt, r.UpdatedAt)
 					}
@@ -98,14 +108,11 @@ func TestReminderCollisionPolicy(t *testing.T) {
 						if s.countRows(t, `SELECT COUNT(*) FROM item_reminders WHERE schedule_id IS NULL`) != 0 {
 							t.Fatal("bare rows remain")
 						}
-						histories := 1
-						if winner == -1 {
-							histories = 2
-						}
-						if s.countRows(t, `SELECT COUNT(*) FROM schedule_changes WHERE reason=?`, reminderHistoryReason) != histories || s.countRows(t, `SELECT COUNT(*) FROM item_reminders WHERE item_id IN (?,?)`, item, single.ID) != 3-histories+boolInt(existing != nil && shape != "ended") {
+						histories := len(legacy) - boolInt(winner >= 0)
+						if s.countRows(t, `SELECT COUNT(*) FROM schedule_changes WHERE reason=?`, historyReason) != histories || s.countRows(t, `SELECT COUNT(*) FROM item_reminders WHERE item_id IN (?,?)`, item, single.ID) != len(legacy)+1-histories+boolInt(existing != nil && shape != "ended") {
 							t.Fatal("conversion accounting mismatch")
 						}
-						if winner == -1 && (scheduleBefore != renegotiateRows(t, s, "item_schedules", "WHERE item_id<>?", single.ID) || alarmBefore != renegotiateRows(t, s, "item_reminders", "WHERE item_id=?", item) || occurrencesBefore != renegotiateRows(t, s, "schedule_occurrences", "")) {
+						if existing != nil && (scheduleBefore != renegotiateRows(t, s, "item_schedules", "WHERE item_id<>?", single.ID) || alarmBefore != renegotiateRows(t, s, "item_reminders", "WHERE item_id=?", item) || occurrencesBefore != renegotiateRows(t, s, "schedule_occurrences", "")) {
 							t.Fatal("existing schedule, alarm or occurrences changed")
 						}
 					} else {
@@ -122,7 +129,7 @@ func TestReminderCollisionPolicy(t *testing.T) {
 						if string(inputBefore) != string(inputAfter) {
 							t.Fatal("conversion mutated input bundle")
 						}
-						if winner == -1 && !reflect.DeepEqual(data.Schedules, converted.Schedules) {
+						if existing != nil && !reflect.DeepEqual(data.Schedules, converted.Schedules) {
 							t.Fatal("existing bundle schedule changed")
 						}
 						// The source rows only construct the legacy bundle; live firing uses
@@ -148,6 +155,9 @@ func TestReminderCollisionPolicy(t *testing.T) {
 					}
 					if s.countRows(t, `SELECT COUNT(*) FROM item_schedules WHERE item_id=?`, targetItem) != 1 {
 						t.Fatal("second schedule")
+					}
+					if carrier {
+						assertDismissedReminderCarrier(t, s, targetWS, targetItem, sc)
 					}
 					if winner >= 0 {
 						r, err := s.GetReminder(targetWS, *sc.ReminderID)
@@ -178,7 +188,7 @@ func TestReminderCollisionPolicy(t *testing.T) {
 					}
 					var history []models.ScheduleChangeExport
 					for _, c := range changes {
-						if c.Reason == reminderHistoryReason {
+						if c.Reason == historyReason {
 							history = append(history, c)
 						}
 					}
@@ -261,6 +271,27 @@ func TestReminderCollisionPolicy(t *testing.T) {
 							t.Fatalf("tick %d: %+v want %d", tick, got, want)
 						}
 					}
+					if carrier {
+						before := renegotiateRows(t, s, "schedule_changes", "WHERE schedule_id=? AND change_type='import'", sc.ID)
+						r, err := s.CreateReminder(targetWS, targetItem, "2025-01-01T00:00:00Z")
+						if err != nil || r == nil || r.ScheduleID == nil || *r.ScheduleID != sc.ID || r.ID == first.ID || r.ID == second.ID || !r.Armed() {
+							t.Fatalf("rearm carrier: %+v %v", r, err)
+						}
+						got, err := s.GetSchedule(targetWS, targetItem)
+						if err != nil || got.EndedAt != nil || got.ReminderID == nil || *got.ReminderID != r.ID || s.countRows(t, `SELECT COUNT(*) FROM item_schedules WHERE item_id=?`, targetItem) != 1 {
+							t.Fatalf("rearmed schedule: %+v %v", got, err)
+						}
+						for tick := 0; tick < 2; tick++ {
+							rows, err := s.FireDueReminders("2026-01-01T00:00:00Z", 0)
+							if err != nil || len(rows) != 1-tick || (len(rows) == 1 && rows[0].ID != r.ID) {
+								t.Fatalf("rearmed tick %d: %+v %v", tick, rows, err)
+							}
+						}
+						if before != renegotiateRows(t, s, "schedule_changes", "WHERE schedule_id=? AND change_type='import'", sc.ID) {
+							t.Fatal("rearm changed legacy history")
+						}
+					}
+
 				})
 			}
 		}
@@ -272,4 +303,32 @@ func boolInt(v bool) int {
 		return 1
 	}
 	return 0
+}
+
+func assertDismissedReminderCarrier(t *testing.T, s *Store, ws, item string, sc *models.ItemSchedule) {
+	t.Helper()
+	reusable, err := s.reusableEndedReminderCarrierQ(s.db, sc)
+	if err != nil || !reusable || sc.EndedAt == nil || sc.ReminderID != nil || sc.NextAt != nil || sc.NextWall != nil {
+		t.Fatalf("not an ended alarm-less carrier: %+v %v", sc, err)
+	}
+	alarms, err := s.ListRemindersForItem(ws, item)
+	if err != nil || len(alarms) != 0 {
+		t.Fatalf("dismissed reminder listed: %+v %v", alarms, err)
+	}
+	pending, _, err := s.ListPendingReminders(ws, PendingReminderScope{ItemIDs: []string{item}, CollectionIDs: []string{}}, 0, 0)
+	if err != nil || len(pending) != 0 {
+		t.Fatalf("dismissed reminder pending: %+v %v", pending, err)
+	}
+	from := time.Date(2019, 1, 1, 0, 0, 0, 0, time.UTC)
+	to := time.Now().UTC().Add(24 * time.Hour)
+	schedules, _, err := s.ListSchedulesForAgenda(ws, PendingReminderScope{ItemIDs: []string{item}, CollectionIDs: []string{}}, from, to, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range schedules {
+		entries, truncated, unavailable, err := s.ExpandAgenda(candidate.Schedule, time.UTC, from, to, time.Now())
+		if err != nil || truncated || unavailable != "" || len(entries) != 0 {
+			t.Fatalf("dismissed reminder on agenda: %+v %v %s %v", entries, truncated, unavailable, err)
+		}
+	}
 }

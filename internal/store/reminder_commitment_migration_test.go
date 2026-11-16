@@ -74,12 +74,23 @@ func testReminderMigrationLifecycle(t *testing.T, state string) {
 			if err := runReminderMigration(s, name, body); err != nil {
 				t.Fatalf("second upgrade: %v", err)
 			}
-			r, err := s.GetReminder(ws, id)
-			if err != nil || r == nil || r.ScheduleID == nil || derefStr(r.FiredAt) != derefStr(before.FiredAt) || derefStr(r.AckedAt) != derefStr(before.AckedAt) || r.CreatedAt != before.CreatedAt || r.UpdatedAt != before.UpdatedAt {
-				t.Fatalf("lost identity or state: %+v %v", r, err)
-			}
-			if s.countRows(t, `SELECT COUNT(*) FROM schedule_changes WHERE item_id=? AND change_type='import'`, item) != 1 || s.countRows(t, `SELECT COUNT(*) FROM schedule_occurrences`) != 0 {
-				t.Fatal("conversion journal or invented resolution")
+			if state == "acked" {
+				sc, err := s.GetSchedule(ws, item)
+				if err != nil || sc == nil {
+					t.Fatalf("carrier: %+v %v", sc, err)
+				}
+				assertDismissedReminderCarrier(t, s, ws, item, sc)
+				if s.countRows(t, `SELECT COUNT(*) FROM schedule_changes WHERE item_id=? AND change_type='import'`, item) != 2 || s.countRows(t, `SELECT COUNT(*) FROM schedule_occurrences`) != 0 {
+					t.Fatal("carrier journal or invented resolution")
+				}
+			} else {
+				r, err := s.GetReminder(ws, id)
+				if err != nil || r == nil || r.ScheduleID == nil || derefStr(r.FiredAt) != derefStr(before.FiredAt) || derefStr(r.AckedAt) != derefStr(before.AckedAt) || r.CreatedAt != before.CreatedAt || r.UpdatedAt != before.UpdatedAt {
+					t.Fatalf("lost identity or state: %+v %v", r, err)
+				}
+				if s.countRows(t, `SELECT COUNT(*) FROM schedule_changes WHERE item_id=? AND change_type='import'`, item) != 1 || s.countRows(t, `SELECT COUNT(*) FROM schedule_occurrences`) != 0 {
+					t.Fatal("conversion journal or invented resolution")
+				}
 			}
 			for tick := 0; tick < 2; tick++ {
 				fired, err := s.FireDueReminders(nowTS(), 0)
