@@ -170,3 +170,10 @@ it('leaves Applies from out when the preview has none', async () => {
  const panel = await screen.findByRole('region', { name: 'Review the deadline change' });
  expect(panel.textContent).not.toContain('Applies from');
 });
+it('keeps the deadline offset when Deadline time is cleared on a timed target', async () => {
+ mount(native());
+ await input('Deadline time', '');
+ await save();
+ expect(await screen.findByText('No changes.')).toBeTruthy();
+ expect(h.calls).toEqual([]);
+});

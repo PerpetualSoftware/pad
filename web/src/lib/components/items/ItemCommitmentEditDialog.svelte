@@ -60,8 +60,9 @@
 	});
 
 	function setWall(toDate: string, toTime: string) {
-		// An empty target date has no civil day to measure from; keep the stored offset.
-		if (!deadline || !toDate || !date) return;
+		// An empty target date has no civil day to measure from, and an empty deadline
+		// time on a timed target is not midnight; either way keep the stored offset.
+		if (!deadline || !toDate || !date || (time && !toTime)) return;
 		deadline = { ...deadline, ...wallOffset(date, time, toDate, time ? toTime : '') };
 	}
 	function setDaysAfter(raw: string) {
