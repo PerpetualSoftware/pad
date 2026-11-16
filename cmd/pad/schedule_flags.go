@@ -62,7 +62,7 @@ func commitmentFlags(f scheduleFlags) schedule.CommitmentFlags {
 
 func buildScheduleCreate(f scheduleFlags) (map[string]any, error) {
 	if f.RemindAt != "" || f.Rearm != "" {
-		return nil, fmt.Errorf("--remind-at and --rearm arm a one-shot reminder and cannot be combined with schedule flags; give the time with --start")
+		return nil, fmt.Errorf("--remind-at and --rearm use instant syntax and cannot be combined with wall-time flags; give the time with --start")
 	}
 	return schedule.CommitmentBody(commitmentFlags(f), nil, "")
 }

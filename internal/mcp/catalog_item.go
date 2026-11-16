@@ -96,8 +96,8 @@ var padItemTool = ToolDef{
 		"link-pr":   refAsItemRef([]string{"github", "link"}),
 		"unlink-pr": refAsItemRef([]string{"github", "unlink"}),
 
-		// `remind` is also the door to schedules (TASK-4105): any schedule
-		// parameter makes it one. The rest of the schedule surface rides
+		// Both instant and wall-time syntax create commitments. The rest of
+		// the schedule surface rides
 		// `pad item remind <subcommand>`; see catalog_item_schedule.go.
 		"remind":       actionItemRemind,
 		"ack-reminder": actionItemAckReminder,
@@ -212,7 +212,7 @@ var padItemSchemaParams = []ParamDef{
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
-	{Name: "remind_at", Type: "string", Description: "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset). Required: remind as a one-shot (no schedule parameters). A bare date is REFUSED, not assumed to be midnight."},
+	{Name: "remind_at", Type: "string", Description: "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset). Required: one-shot commitment (no wall-time parameters). A bare date is REFUSED, not assumed to be midnight."},
 	// PR metadata for action=link-pr (TASK-3611), sent as given.
 	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required: link-pr."},
 	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required: link-pr."},
@@ -460,10 +460,10 @@ Actions:
     Required: ref, pr_number, pr_url. Optional: pr_title, pr_state, pr_branch, pr_repo.
     Replaces any previous link; returns the item.
   unlink-pr — Remove PR link. Required: ref.
-  remind — Arm a one-shot reminder. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused).
-    Use when deferring work. Fired items carry reminder_id in pad_project next/ready
-    until acknowledged. start replaces remind_at for a once/repeating check, deadline
-    or window; optional every, deadline, window, anchor, audience, tz, floating.
+  remind — Create a commitment. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused).
+    Existing commitment: schedule_exists; use move/edit. Closed items pause firing.
+    start replaces remind_at for wall time; optional every, deadline, window,
+    anchor, audience, tz, floating. Past remind_at fires next tick.
   schedule — Read the item's schedule. Required: ref.
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-reopen — Undo one resolution. Required: ref, resolution_id. Keeps its comment.
@@ -484,14 +484,14 @@ Actions:
   schedule-gate — Wait for blocker success (fixed occurrence if scheduled): ref, blocker.
     With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
   schedule-dismiss — Clear an ended schedule from Outstanding. ref required.
-  schedule-delete — Irreversibly delete schedule/rule/history/managed reminder; stops pending firing. ref required. Keeps item/comments/one-shot reminders.
+  schedule-delete — Irreversibly delete schedule/rule/history/managed reminder; stops pending firing. ref required. Keeps item/comments.
   agenda — Occurrences/dated items: from, to (RFC3339, <=92 days); tz optional.
     no_date_scope:personal_only means undated work is not listed, never empty.
   ack-reminder — Acknowledge by reminder_id OR ref, never both; leaves next/ready.
-    ref requires one fired, unacknowledged unmanaged reminder; multiple refuse, ack by id.
-    Only this acknowledges; completing the item does not. Reminders may fire after work finishes.
+    ref selects a fired, unacknowledged run-once alarm. By-id retry is idempotent.
+    Keeps work outstanding; richer commitments use schedule-resolve state ack.
   reminders — Armed/fired/acknowledged reminders; ref required. Row id is reminder_id for unremind/ack-reminder (fired only).
-  unremind — Disarm/delete by reminder_id (from reminders or arming response).
+  unremind — Delete a simple run-once commitment by reminder_id.
   claim — Atomic execution lease. Required: ref. Optional: holder, worker_id, ttl
     (Go duration; default 15m, max 24h). Returns worker_id. One claimer wins; loser's
     409 names live holder/expiry: log and skip, never retry in a loop. Re-claim extends expiry.
