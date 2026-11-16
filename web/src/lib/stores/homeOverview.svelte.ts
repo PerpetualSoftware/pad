@@ -26,7 +26,7 @@ class HomeOverview {
 		const to = dayWindow(shiftDay(this.monday, 6), this.zone).to;
 		this.loading = true;
 		this.error = '';
-		this.pending = Promise.allSettled([Promise.resolve().then(() => api.needs.list({ sort: 'age', limit: 4 })), Promise.resolve().then(() => api.getMyAgenda(from, to, this.zone, undefined, undefined, 'omit'))]).then(([needs, agenda]) => {
+		this.pending = Promise.allSettled([Promise.resolve().then(() => api.needs.list({ sort: 'age', limit: 4 })), Promise.resolve().then(() => api.getMyAgenda(from, to, this.zone, undefined, ['completed'], 'omit'))]).then(([needs, agenda]) => {
 			if (!sameIdentity() || this.key !== key) return;
 			if (needs.status === 'fulfilled') this.needs = needs.value;
 			if (agenda.status === 'fulfilled') this.agenda = agenda.value;

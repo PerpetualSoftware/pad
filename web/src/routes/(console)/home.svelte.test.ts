@@ -1,12 +1,14 @@
 import { afterEach, it, expect, vi } from 'vitest';
-import { render, screen, cleanup, fireEvent } from '@testing-library/svelte';
+import { render, screen, cleanup, fireEvent, within } from '@testing-library/svelte';
+import type { AgendaEntry } from '$lib/types';
+import { tick } from 'svelte';
 const h = vi.hoisted(() => ({ needs: vi.fn(), snooze: vi.fn(async () => ({})), agenda: vi.fn(), list: vi.fn(), getCommitment: vi.fn(), resolve: vi.fn(async () => ({})) }));
 vi.mock('$lib/api/client', () => ({ api: { needs: { list: h.needs, snooze: h.snooze }, getMyAgenda: h.agenda, getCommitment: h.getCommitment, resolveCommitment: h.resolve, workspaces: { list: h.list } } }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/pendingInvitations.svelte', () => ({ pendingInvitations: { count: 1, refresh: vi.fn() } }));
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { userId: 'u', user: { name: 'Mara Lindqvist', timezone: 'UTC' }, identityFence: () => () => true, onIdentityChange: () => () => {} } }));
 import Home from './+page.svelte';
-afterEach(() => { cleanup(); vi.useRealTimers(); });
+afterEach(() => { cleanup(); vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); localStorage.clear(); });
 it('renders Home counts with one call per data source, independent of workspace count', async () => {
 	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
 	h.list.mockResolvedValue(Array.from({length: 5}, (_, i) => ({ id: String(i), slug: 'ws'+i, name: 'Workspace '+i, owner_username: 'mara', owner_id: 'u' })));
@@ -23,7 +25,7 @@ it('renders Home counts with one call per data source, independent of workspace 
 	expect(document.querySelectorAll('[data-strip-day]')).toHaveLength(7);
 	expect(screen.getByRole('group', { name: 'Audience' })).toBeTruthy();
 	expect(document.querySelector('.today-panel .agenda-row')?.getAttribute('data-ref')).toBe('TASK-4');
-	expect(h.agenda).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'UTC', undefined, undefined, 'omit');
+	expect(h.agenda).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'UTC', undefined, ['completed'], 'omit');
 	expect(h.needs).toHaveBeenCalledTimes(1); expect(h.agenda).toHaveBeenCalledTimes(1); expect(h.list).toHaveBeenCalledTimes(1);
 	expect(screen.getAllByRole('button', { name: 'Dismiss' })).toHaveLength(4);
 	expect(screen.getAllByRole('button', { name: 'Defer' })).toHaveLength(4);
@@ -32,6 +34,107 @@ it('renders Home counts with one call per data source, independent of workspace 
 	expect(h.snooze).toHaveBeenCalledWith('ws0', 'TASK-0', { kind: 'dismiss' });
 	expect(await screen.findByRole('link', { name: 'See all 6 →' })).toBeTruthy();
 	expect(h.list).toHaveBeenCalledTimes(1);
+});
+
+const completed = (item_ref = 'TASK-90', day = '2026-11-13'): AgendaEntry => ({
+	type: 'completed', at: `${day}T12:00:00Z`, day, item_ref, item_title: `Finished ${item_ref}`,
+	collection: 'tasks', workspace: 'ws0', owner_username: 'mara',
+});
+
+async function renderCompleted(entries: AgendaEntry[], events_truncated = false) {
+	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
+	h.list.mockResolvedValue([]);
+	h.needs.mockResolvedValue({ rows: [], total: 0, hidden: 0, workspaces: [] });
+	h.agenda.mockResolvedValue({ entries, priority_list: [], window_complete: true, events_truncated });
+	const { homeOverview } = await import('$lib/stores/homeOverview.svelte');
+	await homeOverview.load('/', true);
+	render(Home);
+	await tick();
+	return within(screen.getByRole('region', { name: 'Today' }));
+}
+
+it('folds only today’s completed entries below the empty Today rows', async () => {
+	const today = await renderCompleted([completed(), completed('TASK-91', '2026-11-12')]);
+	const toggle = today.getByRole('button', { name: '1 completed', expanded: false });
+	expect(today.getByText('Nothing scheduled today.')).toBeInTheDocument();
+	expect(today.queryByText('Finished TASK-90')).not.toBeInTheDocument();
+	expect(toggle.closest('li')?.parentElement?.tagName).toBe('UL');
+	await fireEvent.click(toggle);
+	expect(toggle).toHaveAttribute('aria-expanded', 'true');
+	expect(today.getByText('Finished TASK-90')).toBeInTheDocument();
+	expect(today.queryByText('Finished TASK-91')).not.toBeInTheDocument();
+	expect(today.getByText('Nothing scheduled today.')).toBeInTheDocument();
+});
+
+it('keeps completed and created events out of existing Home rows, figures, audience counts and week strip', async () => {
+	const schedule = (item_ref: string, extra: Partial<AgendaEntry> = {}): AgendaEntry => ({
+		...completed(item_ref), type: 'schedule', state: 'outstanding', schedule_id: item_ref, ...extra,
+	});
+	const today = await renderCompleted([
+		schedule('TASK-1'), schedule('TASK-2', { audience: 'agent' }),
+		schedule('TASK-3', { day: '2026-11-12', at: '2026-11-12T12:00:00Z', overdue: true }),
+		completed(), { ...completed('TASK-91'), audience: 'agent' },
+		completed('TASK-92', '2026-11-12'), { ...completed('TASK-93'), type: 'created' },
+	]);
+	expect(document.querySelector('.summary')).toHaveTextContent('0 need you · 2 owed today · 1 past deadline');
+	const refs = () => [...screen.getByRole('region', { name: 'Today' }).querySelectorAll('.agenda-row')].map(row => row.getAttribute('data-ref'));
+	expect(refs()).toEqual(['TASK-3', 'TASK-1']);
+	for (const name of ['Mine 1', 'Agents 1', 'All 2']) expect(today.getByRole('button', { name })).toBeInTheDocument();
+	expect(today.getByText('Agents: 1 reminders today, 1 owed, 0 missed')).toBeInTheDocument();
+	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 2 entries, 2 owed');
+	expect(document.querySelector('[data-strip-day="2026-11-12"]')).toHaveAttribute('aria-label', 'Thursday 12 November, 1 entry, 1 owed');
+	expect(document.querySelectorAll('.pip')).toHaveLength(3);
+	await fireEvent.click(today.getByRole('button', { name: 'All 2' }));
+	expect(refs()).toEqual(['TASK-3', 'TASK-1', 'TASK-2']);
+	await fireEvent.click(today.getByRole('button', { name: '2 completed' }));
+	expect(today.queryByText('Finished TASK-93')).not.toBeInTheDocument();
+	expect(document.querySelector('.summary')).toHaveTextContent('0 need you · 2 owed today · 1 past deadline');
+});
+
+it('matches the agenda audience filter: even agent completions appear in Mine and All, never Agents', async () => {
+	const today = await renderCompleted([completed(), { ...completed('TASK-91'), audience: 'agent' }]);
+	await fireEvent.click(today.getByRole('button', { name: '2 completed' }));
+	for (const ref of ['TASK-90', 'TASK-91']) expect(today.getByText(`Finished ${ref}`)).toBeInTheDocument();
+	await fireEvent.click(today.getByRole('button', { name: 'Agents 0' }));
+	expect(today.queryByRole('button', { name: /completed/ })).not.toBeInTheDocument();
+	for (const ref of ['TASK-90', 'TASK-91']) expect(today.queryByText(`Finished ${ref}`)).not.toBeInTheDocument();
+	await fireEvent.click(today.getByRole('button', { name: 'All 0' }));
+	expect(today.getByRole('button', { name: '2 completed' })).toBeInTheDocument();
+	for (const ref of ['TASK-90', 'TASK-91']) expect(today.getByText(`Finished ${ref}`)).toBeInTheDocument();
+});
+
+it.each(['0', '1', 'other', null])('reads the user’s completed preference once on mount (%s)', async value => {
+	localStorage.setItem('pad-agenda-completed:other-user', '0');
+	if (value !== null) localStorage.setItem('pad-agenda-completed:u', value);
+	const storage = localStorage;
+	const read = vi.fn((key: string) => storage.getItem(key));
+	vi.stubGlobal('localStorage', { getItem: read });
+	const today = await renderCompleted([completed()]);
+	expect(read.mock.calls.filter(([key]) => key === 'pad-agenda-completed:u')).toHaveLength(1);
+	if (value === '0') expect(today.queryByRole('button', { name: /completed/ })).not.toBeInTheDocument();
+	else expect(today.getByRole('button', { name: '1 completed' })).toBeInTheDocument();
+	await fireEvent.click(today.getByRole('button', { name: 'All 0' }));
+	expect(read.mock.calls.filter(([key]) => key === 'pad-agenda-completed:u')).toHaveLength(1);
+});
+
+it('still shows completed entries when optional storage is unavailable', async () => {
+	vi.stubGlobal('localStorage', { getItem: () => { throw new Error('Storage unavailable'); } });
+	const today = await renderCompleted([completed()]);
+	expect(today.getByRole('button', { name: '1 completed', expanded: false })).toBeInTheDocument();
+});
+
+it('shows the completed truncation note and agenda link inside Today even without completed rows', async () => {
+	const today = await renderCompleted([], true);
+	const note = today.getByText('Some completed items today may not be shown.', { exact: false });
+	expect(note).toHaveClass('empty');
+	expect(within(note).getByRole('link', { name: 'Open the full agenda →' })).toHaveAttribute('href', '/agenda');
+});
+
+it('hides the completed truncation note when the user hides completed work on the agenda', async () => {
+	localStorage.setItem('pad-agenda-completed:u', '0');
+	const today = await renderCompleted([completed()], true);
+	expect(today.queryByText('Some completed items today may not be shown.', { exact: false })).not.toBeInTheDocument();
+	expect(today.queryByRole('button', { name: /completed/ })).not.toBeInTheDocument();
 });
 
 // TASK-4545 review: Home runs the agenda page's occurrence guard, so Done never

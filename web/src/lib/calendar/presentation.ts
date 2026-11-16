@@ -2,6 +2,7 @@ import type { CalendarRow } from './monthGrid';
 import type { AcknowledgedBy, AgendaForecast, AgendaEntry, AgendaWorkEntry, CommitmentForecastSummary, CommitmentRoles } from '$lib/types';
 
 const DAY = 86_400_000;
+export const completedPreferencePrefix = 'pad-agenda-completed:';
 
 function wallFormatter(zone: string) {
 	return new Intl.DateTimeFormat('en-CA', { timeZone: zone, year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });

@@ -15,11 +15,18 @@
 	import AgendaWeekStrip from '$lib/components/calendar/AgendaWeekStrip.svelte';
 	import AudienceToggle from '$lib/components/calendar/AudienceToggle.svelte';
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
+	import AgendaCompleted from '$lib/components/calendar/AgendaCompleted.svelte';
 	import { audienceCounts, filterAudience, type AudienceView } from '$lib/calendar/audience';
-	import { isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
+	// The agenda's Show completed preference, per user: hidden there means hidden here.
+	const showCompleted = $derived.by(() => {
+		const userId = authStore.userId;
+		if (!userId) return true;
+		try { return localStorage.getItem(`${completedPreferencePrefix}${userId}`) !== '0'; } catch { return true; /* Storage is optional. */ }
+	});
 	let workspaceError = $state(false);
 	let invitationsOpen = $state(false);
 	let actionError = $state('');
@@ -28,7 +35,8 @@
 	const zone = $derived(homeOverview.zone);
 	const today = $derived(homeOverview.today);
 	const days = $derived(Array.from({ length: 7 }, (_, i) => shiftDay(homeOverview.monday, i)));
-	const entries = $derived(homeOverview.agenda?.entries ?? []);
+	const entries = $derived(filterEntries(homeOverview.agenda?.entries ?? [], false));
+	const todayCompleted = $derived(filterAudience((homeOverview.agenda?.entries ?? []).filter(e => isCompleted(e) && e.day === today), audience));
 	const todayEntries = $derived(entries.filter(e => e.day === today && (e.type === 'schedule' || e.type === 'date')));
 	const counts = $derived(audienceCounts(todayEntries));
 	const owed = $derived(todayEntries.filter(e => e.type === 'schedule' && isOpenState(e.state)).length);
@@ -114,6 +122,8 @@
 			{#if attention.length}<h3>{pastDeadline ? 'Past deadline' : 'Needs attention'}</h3><ul>{#each attention as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} showDay pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>{/if}
 			<h3>Today</h3><ul>{#each todayRows as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>
 			{#if !homeOverview.loading && !todayRows.length}<p class="empty">Nothing scheduled today.</p>{/if}
+			{#if showCompleted}<ul><AgendaCompleted {audience} completed={todayCompleted} {zone} compact={viewport.isMobile} onaction={action} /></ul>{/if}
+			{#if showCompleted && homeOverview.agenda?.events_truncated}<p class="empty">Some completed items today may not be shown. <a href="/agenda">Open the full agenda →</a></p>{/if}
 			<footer><span>Agents: {agents.length} reminders today, {agents.filter(e => isOpenState(e.state)).length} owed, {agents.filter(e => e.state === 'missed' || e.state === 'lapsed').length} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
 	</div>
