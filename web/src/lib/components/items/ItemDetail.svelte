@@ -1067,6 +1067,17 @@
 	// notifies us and the badge hides.
 	let backlinksCount = $state(0);
 	let commitmentSnapshot = $state.raw<{ identity: number; snapshot: ItemCommitmentSnapshot } | null>(null);
+	// TASK-4600: the header's "+ Add date" opens the commitment panel's dialog.
+	// The panel owns the dialog and every write; this flag is all it hands down.
+	let addDateOpen = $state(false);
+	// Offered only from the current identity's snapshot of THIS item: no
+	// commitment, and the server's editable hint. Absent, stale or failed hides it.
+	const canAddDate = $derived.by(() => {
+		const published = commitmentSnapshot?.identity === identityKey ? commitmentSnapshot.snapshot : null;
+		return !!published && published.view === null && published.editable === true
+			&& published.wsSlug === wsSlug && published.itemSlug === itemSlug && published.itemId === item?.id
+			&& published.authEpoch === authStore.identityEpoch;
+	});
 
 	// Drives BottomSheet vs popover branching for mobile-only surfaces on this
 	// page (currently the "Move to…" menu) via the shared breakpoint store
@@ -1298,6 +1309,7 @@
 		// cleanup is where the old draft would be flushed.
 		if (activeCollabContext) activeCollabContext.retired = true;
 		identityKey++;
+		addDateOpen = false;
 		loadData();
 		void loadTagSuggestions(wsSlug);
 	});
@@ -2082,6 +2094,7 @@
 		editCollectionOpen = false;
 		showGraph = false;
 		backlinksCount = 0;
+		addDateOpen = false;
 		// lastFlushedContent is per-item; resetting prevents the
 		// dedupe from incorrectly suppressing the first flush on
 		// the next item (which happens to share the same markdown
@@ -7196,6 +7209,11 @@
 					{/if}
 				</Menu>
 			</div>
+			<!-- TASK-4600: LAST in the row, so appearing once the commitment read
+			     lands shifts nothing. The panel below owns the dialog. -->
+			{#if canAddDate}
+				<button class="action-btn add-date-btn" aria-label="Add date" title="Add date" onclick={() => { addDateOpen = true; }}>+ Add date</button>
+			{/if}
 		</div>
 
 		<!-- Pane tabs (PLAN-2290 Phase 4). Panels below are CSS-hidden, never
@@ -7303,6 +7321,8 @@
 							if (handedDown !== identityKey || !itemMatchesRef || snapshot.wsSlug !== wsSlug || snapshot.itemId !== item?.id || snapshot.itemSlug !== itemSlug || snapshot.authEpoch !== authStore.identityEpoch) return;
 							commitmentSnapshot = { identity: handedDown, snapshot };
 						}}
+						{addDateOpen}
+						onAddDateClose={() => { if (handedDown !== identityKey) return; addDateOpen = false; }}
 					/>
 					{/key}
 				{/if}

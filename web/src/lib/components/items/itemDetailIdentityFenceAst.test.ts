@@ -106,7 +106,8 @@ const ASYNC_FUNCTIONS: Record<string, Row> = {
 	// BUG-3473: the index await is skipped when the index is
 	// already ready; it adds no await and commits nothing, and every fence
 	// after the Promise.all is unchanged.
-	loadData: { reviewed: 'eeabbdb9eaa2', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
+	// TASK-4600: re-reviewed; the only change is a synchronous `addDateOpen = false` in the item-switch reset, before the first await.
+	loadData: { reviewed: '5f1ab1de684b', why: 'IS the load: myGen against loadGeneration after every await; the BUG-3198 re-read of a changed item runs after the install, keyed on the installed item id, and fences itself on itemGen' },
 	startEditTitle: { reviewed: '17f04352d420', why: 'focuses and sizes the input it opened synchronously', may: ['el', 'titleInputEl.focus', 'titleInputEl.setSelectionRange'] },
 	// BUG-2836: saveTitle's own lines are unchanged (the diff
 	// touches only a $derived beside titleDraft and the textarea's aria
@@ -275,16 +276,17 @@ const CONTINUATIONS: SignedRow[] = [
 	},
 	// TASK-3537: re-reviewed; this continuation's body is unchanged. It re-hashed because the $lib/types import line it names lost getTerminalOptions (the dead terminalStatuses feed).
 	{ call: /^setTimeout\($/, body: /copied = false/, why: 'copy-flag reset: switchedAway', reviewed: 'ae1b50ad6010' },
-	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: '96ca7b441a9f' },
+	{ call: /api\.items\.get\(wsSlug, itemSlug\)\.catch\($/, body: /./, why: 'loadData item fetch: sets a flag local to that load and re-throws', reviewed: 'fefa1e31bc1b' },
+	// TASK-4600: the loadData continuation rows below re-hashed only because loadData gained a synchronous addDateOpen reset.
 	// BUG-3473: the background index catch-up on an already-populated index.
-	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: '1363f6b72fb5' },
+	{ call: /indexBoot\.catch\($/, body: /^/, why: 'background index catch-up: swallows its failure and commits nothing', reviewed: 'b4cee17c528e' },
 	// TASK-2228: loadData issues progress and links together and settles each
 	// into a plain result object; loadData's own myGen checks after each await
 	// fence the use of those results.
-	{ call: /api\.items\.progress\(wsSlug, itemData\.id\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: 'aaef1f9b3fa8' },
-	{ call: /api\.items\.progress\(wsSlug, itemData\.id\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: 'dcfa544d6c0b' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.id\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: 'aaef1f9b3fa8' },
-	{ call: /api\.links\.list\(wsSlug, itemData\.id\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: 'dcfa544d6c0b' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.id\)\.then\(\s*$/, body: /ok: true/, why: 'loadData progress read, value arm: builds a result object and commits nothing', reviewed: 'edeba2c41c77' },
+	{ call: /api\.items\.progress\(wsSlug, itemData\.id\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData progress read, failure arm: builds a result object and commits nothing', reviewed: '3c24a91710b3' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.id\)\.then\(\s*$/, body: /ok: true/, why: 'loadData links read, value arm: builds a result object and commits nothing', reviewed: 'edeba2c41c77' },
+	{ call: /api\.links\.list\(wsSlug, itemData\.id\)\.then\([\s\S]*ok: true[\s\S]*,\s*$/, body: /ok: false/, why: 'loadData links read, failure arm: builds a result object and commits nothing', reviewed: '3c24a91710b3' },
 	{
 		call: /^setTimeout\($/,
 		body: /staleConnecting = true/,

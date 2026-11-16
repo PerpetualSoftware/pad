@@ -24,8 +24,11 @@
   item: Item;
   collection: Collection | null;
   onSnapshot: (snapshot: ItemCommitmentSnapshot) => void;
+  /** Owned by the item header's "+ Add date" button; the panel owns the dialog and the write. */
+  addDateOpen?: boolean;
+  onAddDateClose?: () => void;
  }
- let { wsSlug, itemSlug, item, collection, onSnapshot }: Props = $props();
+ let { wsSlug, itemSlug, item, collection, onSnapshot, addDateOpen = false, onAddDateClose }: Props = $props();
  const itemId = $derived(item.id);
  const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
  let snapshot = $state.raw<ItemCommitmentSnapshot | null>(null);
@@ -37,7 +40,6 @@
  let requestedIdentity = '';
  let addSerial = 0;
  let mobile = $state(false);
- let adding = $state(false);
  let added = $state('');
  let section = $state<HTMLElement>();
  const actions = createItemCommitmentActions({
@@ -57,9 +59,8 @@
  const display = $derived(view ? commitmentDisplayState({ ...view, itemClosed }, now) : null);
  // The server's display hint; mutations re-check it. Absent or stale means no writes offered.
  const editable = $derived(!!snapshot && current(snapshot) && snapshot.editable);
- const addable = $derived(view === null && editable && !failed);
  const entry = $derived(view && editable && !itemClosed ? commitmentAgendaEntry(view, { wsSlug, item, collection, zone }) : null);
- const dialogOpen = $derived(!!(actions.dialogEntry || actions.review || actions.endChoice || actions.forecastEntry || adding));
+ const dialogOpen = $derived(!!(actions.dialogEntry || actions.review || actions.endChoice || actions.forecastEntry || addDateOpen));
 
  async function load() {
   const ticket = ++generation;
@@ -101,7 +102,8 @@
   }
  }
  async function created() {
-  adding = false;
+  onAddDateClose?.();
+  added = '';
   const sameIdentity = authStore.identityFence();
   const announced = ++addSerial;
   await load();
@@ -112,7 +114,7 @@
   const identity = JSON.stringify([wsSlug, itemId, itemSlug, authStore.identityEpoch, zone]);
   if (identity === requestedIdentity) return;
   requestedIdentity = identity;
-  untrack(() => { actions.reset(); adding = false; added = ''; addSerial++; void load(); });
+  untrack(() => { actions.reset(); if (addDateOpen) onAddDateClose?.(); added = ''; addSerial++; void load(); });
  });
  onMount(() => {
   const query = window.matchMedia('(max-width: 768px)');
@@ -134,13 +136,12 @@
  onDestroy(() => { disposed = true; generation++; actions.dispose(); });
 </script>
 
-{#if view || unavailable || addable}
+<!-- No commitment renders no section (no layout shift once the read lands);
+     "+ Add date" lives in the item header. The live region stays mounted,
+     visually hidden, so "Date added." is announced before the re-read lands. --><p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{actions.announcement || added}</p>{#if view || unavailable}
  <section class="commitment-panel" aria-label="When" bind:this={section} tabindex="-1">
   <h3>When</h3>
-  {#if addable}
-   <p>No date</p>
-   <button class="add" onclick={() => { added = ''; adding = true; }}>+ Add date</button>
-  {:else if view && display}
+  {#if view && display}
    {#if view.roles.target}
     <div class="date-row primary"><span class="label">Target</span><span>{roleText(view.roles.target, zone)}</span></div>
    {:else if view.next_occurrence}
@@ -172,10 +173,9 @@
    <p role="status">Date unavailable</p><button onclick={() => load()}>Retry</button>
   {/if}
   {#if actions.actionError && !dialogOpen}<p role="alert">{actions.actionError}</p>{/if}
-  <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{actions.announcement || added}</p>
  </section>
 {/if}{#if editable}
- <ItemCommitmentDateDialog open={adding} {wsSlug} {itemSlug} itemRef={formatItemRef(item) ?? ''} itemTitle={item.title} {mobile} onclose={() => adding = false} oncreated={() => void created()} />
+ <ItemCommitmentDateDialog open={addDateOpen} {wsSlug} {itemSlug} itemRef={formatItemRef(item) ?? ''} itemTitle={item.title} {mobile} onclose={() => onAddDateClose?.()} oncreated={() => void created()} />
  <ForecastDialog open={!!actions.forecastEntry} entry={actions.forecastEntry} {zone} {mobile} {permissionCopy} onclose={actions.closeForecast} onsaved={actions.forecastSaved} />
  <ResolveOccurrenceDialog open={!!actions.dialogEntry} mode={actions.dialogMode} entry={actions.dialogEntry} {zone} {mobile}
   pending={actions.dialogEntry ? !!actions.pending[entryKey(actions.dialogEntry)] : false} error={actions.actionError}

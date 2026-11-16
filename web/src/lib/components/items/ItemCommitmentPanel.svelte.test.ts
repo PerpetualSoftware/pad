@@ -8,7 +8,7 @@ vi.mock('$lib/services/sse.svelte', () => ({ sseService: { onItemEvent: h.subscr
 import ItemCommitmentPanel from './ItemCommitmentPanel.svelte';
 import { collection, item, view } from '$lib/test/commitmentFixtures';
 import type { ItemCommitmentView } from '$lib/types';
-const props = () => ({ wsSlug: 'work', itemSlug: 'TASK-1', item, collection, onSnapshot: vi.fn() });
+const props = () => ({ wsSlug: 'work', itemSlug: 'TASK-1', item, collection, onSnapshot: vi.fn(), addDateOpen: false, onAddDateClose: vi.fn() });
 beforeEach(() => { vi.resetAllMocks(); h.auth.identityEpoch = 0; h.get.mockResolvedValue(view()); h.gates.mockResolvedValue({ state: 'released', gates: [] }); h.subscribe.mockReturnValue(vi.fn()); vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2031-03-10T12:00:00Z')); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 it('renders roles, recurrence, forecast and state and publishes an identity-tagged snapshot', async () => {
@@ -89,12 +89,29 @@ it('keeps the view but offers Retry when a background refresh fails', async () =
  await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
  await screen.findByText('every day'); expect(screen.queryByText(/Couldn't refresh/)).toBeNull();
 });
-it('offers Add date to an editor when there is no commitment, from the gates answer', async () => {
+it('renders no section for an editor without a commitment (no layout shift) and publishes the editable snapshot', async () => {
  h.get.mockRejectedValue({ code: 'not_found' }); h.gates.mockResolvedValue({ state: 'released', gates: [], editable: true });
- const p = props(); render(ItemCommitmentPanel, p);
- await screen.findByRole('button', { name: '+ Add date' }); expect(screen.getByText('No date')).toBeTruthy();
+ const p = props(); const { container } = render(ItemCommitmentPanel, p);
+ await waitFor(() => expect(p.onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ view: null, editable: true, gates: { state: 'released', gates: [], editable: true } })));
+ flushSync();
  expect(h.gates).toHaveBeenCalledTimes(1); expect(h.gates).toHaveBeenCalledWith('work', 'TASK-1');
- expect(p.onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ view: null, editable: true, gates: { state: 'released', gates: [], editable: true } }));
+ expect(screen.queryByRole('heading', { name: 'When' })).toBeNull();
+ expect(screen.queryByRole('button', { name: /Add date/ })).toBeNull();
+ expect(screen.queryByText('No date')).toBeNull();
+ expect(container.querySelector('section')).toBeNull();
+ // Closed dialogs leave only inter-element whitespace, which a grid ignores.
+ expect(container.textContent?.trim()).toBe('');
+ expect(container.querySelectorAll('button, h3, p:not(.sr-only)')).toHaveLength(0);
+});
+it('opens the Add date dialog through the addDateOpen prop and closes it through onAddDateClose', async () => {
+ h.get.mockRejectedValue({ code: 'not_found' }); h.gates.mockResolvedValue({ state: 'released', gates: [], editable: true });
+ const p = props(); const { rerender } = render(ItemCommitmentPanel, p);
+ await waitFor(() => expect(p.onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ view: null, editable: true })));
+ expect(screen.queryByRole('dialog')).toBeNull();
+ await rerender({ ...p, addDateOpen: true });
+ await screen.findByRole('dialog'); expect(screen.getByLabelText('Target date')).toBeTruthy();
+ await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+ expect(p.onAddDateClose).toHaveBeenCalled();
 });
 it.each([[false], [undefined]])('shows readers nothing without a commitment (editable %s)', async editable => {
  h.get.mockRejectedValue({ code: 'not_found' }); h.gates.mockResolvedValue({ state: 'waiting', gates: [], ...(editable === undefined ? {} : { editable }) });
@@ -105,22 +122,35 @@ it.each([[false], [undefined]])('shows readers nothing without a commitment (edi
 it('shows unavailable, not Add date, when the no-schedule gates read fails', async () => {
  h.get.mockRejectedValue({ code: 'not_found' }); h.gates.mockRejectedValueOnce({ code: 'forbidden' });
  const p = props(); render(ItemCommitmentPanel, p);
- await screen.findByText('Date unavailable'); expect(screen.queryByRole('button', { name: '+ Add date' })).toBeNull();
+ await screen.findByText('Date unavailable');
  expect(p.onSnapshot.mock.calls.some(([s]) => s.view === null)).toBe(false);
  h.gates.mockResolvedValueOnce({ state: 'released', gates: [], editable: true });
  await fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
- await screen.findByRole('button', { name: '+ Add date' });
+ await waitFor(() => expect(p.onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ view: null, editable: true })));
+ flushSync(); expect(screen.queryByText('Date unavailable')).toBeNull();
 });
-it('adds a date, re-reads and announces it once', async () => {
+it('adds a date, closes through onAddDateClose, re-reads and announces it once', async () => {
  h.get.mockRejectedValueOnce({ code: 'not_found' }); h.gates.mockResolvedValue({ state: 'released', gates: [], editable: true }); h.create.mockResolvedValue(view());
  h.get.mockResolvedValue(view({ editable: true }));
- render(ItemCommitmentPanel, props());
- await fireEvent.click(await screen.findByRole('button', { name: '+ Add date' }));
- await fireEvent.input(screen.getByLabelText('Target date'), { target: { value: '2031-03-10' } });
+ const p = props(); const { rerender } = render(ItemCommitmentPanel, p);
+ await waitFor(() => expect(p.onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ view: null, editable: true })));
+ const close = vi.fn(() => { void rerender({ ...p, onAddDateClose: close, addDateOpen: false }); });
+ await rerender({ ...p, onAddDateClose: close, addDateOpen: true });
+ await fireEvent.input(await screen.findByLabelText('Target date'), { target: { value: '2031-03-10' } });
  await fireEvent.click(screen.getByRole('button', { name: 'Add date' }));
  await screen.findByText('every Monday');
+ expect(close).toHaveBeenCalled();
  expect(screen.getAllByText('Date added.')).toHaveLength(1);
  expect(screen.queryByRole('dialog')).toBeNull();
+});
+it('keeps the live region mounted and visually hidden while the section is empty', async () => {
+ h.get.mockRejectedValueOnce({ code: 'not_found' }); h.gates.mockResolvedValue({ state: 'released', gates: [], editable: true });
+ const p = props(); const { container } = render(ItemCommitmentPanel, p);
+ await waitFor(() => expect(p.onSnapshot).toHaveBeenLastCalledWith(expect.objectContaining({ view: null })));
+ flushSync();
+ const live = container.querySelector('[aria-live="polite"]');
+ expect(live).not.toBeNull(); expect(live!.classList.contains('sr-only')).toBe(true);
+ expect(live!.closest('section')).toBeNull();
 });
 it('shows occurrence actions to an editor and re-reads only the commitment after one', async () => {
  h.get.mockResolvedValue(view({ editable: true })); h.resolve.mockResolvedValue({ commitment: view(), resolution: { occurrence_at: '', state: 'done', missed_recorded: 0 } });
