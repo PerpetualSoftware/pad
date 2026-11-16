@@ -43,7 +43,10 @@ func (s *Store) reusableEndedReminderCarrierQ(q Queryer, sc *models.ItemSchedule
 	return s.reminderCommitmentShapeQ(q, sc)
 }
 
-// reminderCommitmentShapeQ checks the schedule itself, including time links.
+// reminderCommitmentShapeQ checks the schedule itself, including time links,
+// a forecast and an active milestone selection. A forecast and the selection
+// rows cascade away with the schedule, so a commitment that has either is
+// managed: the legacy alias operations must not delete or retarget it.
 func (s *Store) reminderCommitmentShapeQ(q Queryer, sc *models.ItemSchedule) (bool, error) {
 	if sc == nil || sc.Floating || sc.Tz == nil || len(sc.Dtstart) <= 10 || derefStr(sc.Rrule) != "" || len(sc.RDates) > 0 || len(sc.ExDates) > 0 || sc.Anchor != "calendar" || sc.LeadMinutes != 0 || sc.Dtend != nil {
 		return false, nil
@@ -56,7 +59,7 @@ func (s *Store) reminderCommitmentShapeQ(q Queryer, sc *models.ItemSchedule) (bo
 		return false, nil
 	}
 	var n int
-	err = q.QueryRow(s.q(`SELECT COUNT(*) FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?`), sc.ID, sc.ID).Scan(&n)
+	err = q.QueryRow(s.q(`SELECT (SELECT COUNT(*) FROM schedule_links WHERE parent_schedule_id=? OR child_schedule_id=?) + (SELECT COUNT(*) FROM schedule_forecasts WHERE schedule_id=?) + (SELECT COUNT(*) FROM milestone_children WHERE schedule_id=? AND removed_at IS NULL)`), sc.ID, sc.ID, sc.ID, sc.ID).Scan(&n)
 	return n == 0, err
 }
 
