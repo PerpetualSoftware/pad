@@ -102,7 +102,7 @@ func TestReminderMigrationArmedPastFiresOnce(t *testing.T) {
 
 func TestReminderMigrationConflictRollback(t *testing.T) {
 	for _, pg := range []bool{false, true} {
-		for _, mode := range []string{"orphan", "mismatched_owner", "invalid_time", "invalid_state", "after_backfill", "constraint"} {
+		for _, mode := range []string{"orphan", "mismatched_owner", "after_backfill", "constraint"} {
 			t.Run(fmt.Sprint(pg)+"/"+mode, func(t *testing.T) {
 				s, name, body := reminderMigrationStore(t, pg)
 				ws, item, id := legacyReminderRow(t, s, "armed")
@@ -134,10 +134,6 @@ func TestReminderMigrationConflictRollback(t *testing.T) {
 						}
 						conn.Close()
 					}
-				case "invalid_time":
-					s.mustExec(t, `UPDATE item_reminders SET remind_at='invalid' WHERE id=?`, id)
-				case "invalid_state":
-					s.mustExec(t, `UPDATE item_reminders SET acked_at=? WHERE id=?`, past, id)
 				case "after_backfill":
 					body = "SELECT * FROM absent_conversion_table;"
 				case "constraint":

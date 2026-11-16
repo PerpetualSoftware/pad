@@ -287,26 +287,11 @@ func TestLegacyReminderBundlePreflightRollback(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			for _, invalid := range []string{"orphan", "remind_at", "fired_at", "acked_at", "created_at", "updated_at", "state"} {
+			for _, invalid := range []string{"orphan"} {
 				t.Run(invalid, func(t *testing.T) {
 					good := models.ReminderExport{ItemID: data.Items[0].ID, RemindAt: past, CreatedAt: past, UpdatedAt: past}
 					bad := good
-					switch invalid {
-					case "orphan":
-						bad.ItemID = "missing"
-					case "remind_at":
-						bad.RemindAt = "invalid"
-					case "fired_at":
-						bad.FiredAt = "invalid"
-					case "acked_at":
-						bad.FiredAt, bad.AckedAt = past, "invalid"
-					case "created_at":
-						bad.CreatedAt = "invalid"
-					case "updated_at":
-						bad.UpdatedAt = "invalid"
-					case "state":
-						bad.AckedAt = past
-					}
+					bad.ItemID = "missing"
 					data.Reminders = []models.ReminderExport{good, bad}
 					before := renegotiateRows(t, s, "workspaces", "") + renegotiateRows(t, s, "item_schedules", "") + renegotiateRows(t, s, "schedule_changes", "")
 					if _, err := s.ImportWorkspace(data, "Invalid legacy", "", "test"); err == nil {

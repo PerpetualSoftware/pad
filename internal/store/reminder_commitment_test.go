@@ -47,7 +47,7 @@ func TestOneShotReminderCreatesCommitment(t *testing.T) {
 }
 
 func TestOneShotReminderExistingCommitment(t *testing.T) {
-	for _, state := range []string{"active", "acknowledged", "ended", "concurrent"} {
+	for _, state := range []string{"active", "acknowledged", "concurrent"} {
 		t.Run(state, func(t *testing.T) {
 			f := newSchedFixture(t)
 			if state == "concurrent" {
@@ -88,10 +88,7 @@ func TestOneShotReminderExistingCommitment(t *testing.T) {
 			if state == "acknowledged" {
 				f.exec(t, `UPDATE item_reminders SET fired_at=?,acked_at=? WHERE schedule_id=?`, past, past, sc.ID)
 			}
-			if state == "ended" {
-				f.exec(t, `DELETE FROM item_reminders WHERE schedule_id=?`, sc.ID)
-				f.exec(t, `UPDATE item_schedules SET next_at=NULL,next_wall=NULL,ended_at=? WHERE id=?`, past, sc.ID)
-			}
+
 			before := renegotiateRows(t, f.s, "item_schedules", "") + renegotiateRows(t, f.s, "item_reminders", "")
 			if _, err := f.s.CreateReminder(f.ws.ID, f.item.ID, future); !errors.Is(err, ErrScheduleExists) {
 				t.Fatalf("want schedule_exists, got %v", err)

@@ -133,3 +133,33 @@ func TestOneShotReminderNextReady(t *testing.T) {
 		t.Fatal("delete retained suppression")
 	}
 }
+
+func TestReminderPostReusesEndedSimpleCommitment(t *testing.T) {
+	srv := testServer(t)
+	ws := createWSWithCollections(t, srv)
+	item := createItem(t, srv, ws, "tasks", map[string]interface{}{"title": "Ended reminder", "fields": `{"status":"open"}`})
+	r := armViaAPI(t, srv, ws, item, futureInstant)
+	if _, err := srv.store.DB().Exec(`DELETE FROM item_reminders WHERE id=?`, r.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := srv.store.DB().Exec(`UPDATE item_schedules SET ended_at=?,next_at=NULL,next_wall=NULL WHERE id=?`, pastInstant, *r.ScheduleID); err != nil {
+		t.Fatal(err)
+	}
+	base := "/api/v1/workspaces/" + ws + "/items/" + item.ID
+	rr := doRequest(srv, "POST", base+"/commitment", map[string]any{"dtstart": "2099-01-01T00:00:00", "tz": "UTC", "roles": map[string]int{"target_days": 0, "target_secs": 0}})
+	if rr.Code != 409 || !strings.Contains(rr.Body.String(), "schedule_exists") {
+		t.Fatalf("native=%d %s", rr.Code, rr.Body.String())
+	}
+	got := armViaAPI(t, srv, ws, item, futureInstant)
+	if got.ScheduleID == nil || *got.ScheduleID != *r.ScheduleID || got.ID == r.ID {
+		t.Fatalf("reuse=%+v", got)
+	}
+	rr = doRequest(srv, "DELETE", base+"/commitment", nil)
+	if rr.Code != 200 {
+		t.Fatalf("delete=%d %s", rr.Code, rr.Body.String())
+	}
+	fresh := armViaAPI(t, srv, ws, item, futureInstant)
+	if *fresh.ScheduleID == *r.ScheduleID {
+		t.Fatal("fresh create reused deleted schedule")
+	}
+}
