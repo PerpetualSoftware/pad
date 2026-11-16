@@ -451,6 +451,7 @@ type scheduleCreateOptions struct {
 	// ReuseEndedSimple is set only by the reminder-entry create adapter.
 	ReuseEndedSimple bool
 	Reminder         *models.Reminder
+	Reused           bool
 }
 
 // createScheduleRolesAt creates the schedule with the legacy roles derived from
@@ -549,6 +550,7 @@ func (s *Store) createScheduleRolesOptionsAt(workspaceID, itemID string, in mode
 			if err := tx.Commit(); err != nil {
 				return nil, err
 			}
+			options.Reused = true
 			return sc, nil
 		}
 	}

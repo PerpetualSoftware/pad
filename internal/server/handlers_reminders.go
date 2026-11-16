@@ -121,7 +121,7 @@ func (s *Server) handleCreateItemReminder(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	reminder, err := s.store.CreateReminder(workspaceID, item.ID, remindAt)
+	reminder, reused, err := s.store.CreateReminderWithReuse(workspaceID, item.ID, remindAt)
 	if errors.Is(err, store.ErrReminderItemGone) {
 		// resolveVisibleItem saw a live item in this workspace a moment ago;
 		// the store's own predicate did not. The item was archived in the
@@ -136,7 +136,12 @@ func (s *Server) handleCreateItemReminder(w http.ResponseWriter, r *http.Request
 	if s.writeScheduleError(w, r, err) {
 		return
 	}
-	s.recordScheduleWrite(r, workspaceID, item, "schedule_created", scheduleActivityMeta("check", nil))
+	action := "schedule_created"
+	var fields []string
+	if reused {
+		action, fields = "schedule_updated", []string{"dtstart"}
+	}
+	s.recordScheduleWrite(r, workspaceID, item, action, scheduleActivityMeta("check", fields))
 	writeJSON(w, http.StatusCreated, reminder)
 }
 

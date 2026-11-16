@@ -143,21 +143,28 @@ var ErrReminderItemGone = errors.New("reminder item is not live in this workspac
 
 // CreateReminder creates a target-only run-once commitment and returns its alarm.
 func (s *Store) CreateReminder(workspaceID, itemID, remindAt string) (*models.Reminder, error) {
+	reminder, _, err := s.CreateReminderWithReuse(workspaceID, itemID, remindAt)
+	return reminder, err
+}
+
+// CreateReminderWithReuse also reports whether the write rearmed an existing
+// ended commitment, as determined under the same locks as the write.
+func (s *Store) CreateReminderWithReuse(workspaceID, itemID, remindAt string) (*models.Reminder, bool, error) {
 	at, err := normalizeRemindAt(remindAt)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	options := &scheduleCreateOptions{AllowPastSingleOccurrence: true, ReuseEndedSimple: true}
 	_, err = s.createScheduleRolesOptionsAt(workspaceID, itemID, models.ScheduleCreate{
 		Dtstart: at[:len(at)-1], Tz: "UTC", Anchor: "calendar", Audience: "both",
 	}, &scheduleRoles{Origin: "native"}, time.Now(), options)
 	if errors.Is(err, ErrScheduleItemGone) {
-		return nil, ErrReminderItemGone
+		return nil, false, ErrReminderItemGone
 	}
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return options.Reminder, nil
+	return options.Reminder, options.Reused, nil
 }
 
 // GetReminder returns one reminder scoped to a workspace, or (nil, nil) when
