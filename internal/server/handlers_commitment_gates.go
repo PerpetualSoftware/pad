@@ -3,6 +3,8 @@ package server
 import (
 	"net/http"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
+
 	"github.com/go-chi/chi/v5"
 )
 
@@ -79,5 +81,15 @@ func (s *Server) handleGetCommitmentGates(w http.ResponseWriter, r *http.Request
 	if s.writeGraphError(w, r, err) {
 		return
 	}
-	writeJSON(w, 200, view)
+	// The GET-only `editable` hint is about the path item, never its
+	// blockers, and authorises nothing. The nested view.gates never has it.
+	writable, err := s.commitmentWriteAllowed(r, ws, item)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	writeJSON(w, 200, struct {
+		*models.ScheduleGateView
+		Editable bool `json:"editable"`
+	}{view, item.DeletedAt == nil && writable})
 }

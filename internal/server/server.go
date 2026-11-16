@@ -4061,7 +4061,7 @@ func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, w
 	// ordinary editor member, possibly with "all" access, so the role check
 	// below would otherwise pass it in every collection.
 	if !appWriteAllows(r, collectionID) {
-		writeError(w, http.StatusForbidden, "forbidden", "This app may not write here")
+		s.writeEditRefusal(w, r, collectionID)
 		return false
 	}
 	ok, err := s.canEditInCollection(r, workspaceID, itemID, collectionID)
@@ -4070,16 +4070,27 @@ func (s *Server) requireEditPermission(w http.ResponseWriter, r *http.Request, w
 		return false
 	}
 	if !ok {
-		// An editor or owner refused here is outside their collection access,
-		// and a guest holds grants, not a role: neither is fixed by a role change.
-		reason := roleGateReason(r)
-		if requireRole(r, "editor") {
-			reason = forbiddenReasonNoAccess
-		}
-		writeForbidden(w, "forbidden", "Insufficient permissions", reason)
+		s.writeEditRefusal(w, r, collectionID)
 		return false
 	}
 	return true
+}
+
+// writeEditRefusal writes requireEditPermission's refusal bytes. The
+// commitment write door (requireCommitmentWrite) shares it, so both refuse
+// identically.
+func (s *Server) writeEditRefusal(w http.ResponseWriter, r *http.Request, collectionID string) {
+	if !appWriteAllows(r, collectionID) {
+		writeError(w, http.StatusForbidden, "forbidden", "This app may not write here")
+		return
+	}
+	// An editor or owner refused here is outside their collection access,
+	// and a guest holds grants, not a role: neither is fixed by a role change.
+	reason := roleGateReason(r)
+	if requireRole(r, "editor") {
+		reason = forbiddenReasonNoAccess
+	}
+	writeForbidden(w, "forbidden", "Insufficient permissions", reason)
 }
 
 // canEditInCollection is requireEditPermission's decision without the

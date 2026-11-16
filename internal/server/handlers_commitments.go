@@ -50,6 +50,45 @@ type commitmentView struct {
 	scheduleView
 	Links []models.ScheduleLink    `json:"links"`
 	Gates *models.ScheduleGateView `json:"gates"`
+	// Editable is set on GET only: a display hint saying whether this caller
+	// may POST/PATCH the commitment. It authorises nothing; writes re-check.
+	Editable *bool `json:"editable,omitempty"`
+}
+
+// commitmentWriteAllowed is the single decision for writing an item's
+// commitment. Its consumers: the POST and PATCH commitment doors
+// (requireCommitmentWrite), the GET commitment and gates `editable` flags,
+// and the last_resolution redaction in buildCommitmentView. The scope check
+// uses a fixed write method, never r.Method, so a read-scoped token reading
+// with GET is judged as the writer it is not.
+func (s *Server) commitmentWriteAllowed(r *http.Request, workspaceID string, item *models.Item) (bool, error) {
+	if !tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPost, "") {
+		return false, nil
+	}
+	if !appWriteAllows(r, item.CollectionID) {
+		return false, nil
+	}
+	return s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
+}
+
+// requireCommitmentWrite answers a refused commitment write with the same
+// bytes as the middleware token-scope gate and requireEditPermission.
+func (s *Server) requireCommitmentWrite(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item) bool {
+	ok, err := s.commitmentWriteAllowed(r, workspaceID, item)
+	if err != nil {
+		writeInternalError(w, err)
+		return false
+	}
+	if ok {
+		return true
+	}
+	if !tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPost, "") {
+		// Unreachable behind the middleware's scope gate; kept as defence.
+		writeForbidden(w, "forbidden", "Token scope does not permit this action", forbiddenReasonTokenScope)
+		return false
+	}
+	s.writeEditRefusal(w, r, item.CollectionID)
+	return false
 }
 
 func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *models.Item, sc *models.ItemSchedule, note string) (*commitmentView, error) {
@@ -62,16 +101,22 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 		return nil, err
 	}
 	// Eligibility is exposed only by the commitment read and reopen POST, and
-	// by create, so a GET still reproduces the create body. A new schedule has
-	// no checkpoint, so create always answers reopen_unavailable.
+	// by create, so a GET reproduces the create body apart from the GET-only
+	// `editable` hint. A new schedule has no checkpoint, so create always
+	// answers reopen_unavailable.
+	var editable *bool
 	createCall := r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/commitment")
 	if r.Method == http.MethodGet || createCall || strings.HasSuffix(r.URL.Path, "/commitment/reopen") {
-		editable, err := s.canEditInCollection(r, workspaceID, item.ID, item.CollectionID)
+		writable, err := s.commitmentWriteAllowed(r, workspaceID, item)
 		if err != nil {
 			return nil, err
 		}
-		if !editable || !appWriteAllows(r, item.CollectionID) || !tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodPost, "") {
+		if !writable {
 			c.LastResolution = nil
+		}
+		if r.Method == http.MethodGet {
+			flag := item.DeletedAt == nil && writable
+			editable = &flag
 		}
 	} else {
 		c.LastResolution = nil
@@ -81,7 +126,7 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 		return nil, err
 	}
 	v.TimezoneNote = note
-	out := &commitmentView{Commitment: c, scheduleView: v, Links: []models.ScheduleLink{}, Gates: &models.ScheduleGateView{State: models.GateStateReleased, Gates: []models.ScheduleGate{}}}
+	out := &commitmentView{Commitment: c, scheduleView: v, Links: []models.ScheduleLink{}, Gates: &models.ScheduleGateView{State: models.GateStateReleased, Gates: []models.ScheduleGate{}}, Editable: editable}
 	if access.Readable[item.ID] {
 		out.Links, err = s.store.ListScheduleLinks(workspaceID, item.ID, access)
 		if err != nil {
@@ -174,7 +219,7 @@ func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Reque
 	if item == nil {
 		return
 	}
-	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+	if !s.requireCommitmentWrite(w, r, workspaceID, item) {
 		return
 	}
 	raw, ok := readCommitmentBody(w, r)
@@ -239,7 +284,7 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 	if item == nil {
 		return
 	}
-	if !s.requireEditPermission(w, r, workspaceID, item.ID, item.CollectionID) {
+	if !s.requireCommitmentWrite(w, r, workspaceID, item) {
 		return
 	}
 	raw, ok := readCommitmentBody(w, r)
