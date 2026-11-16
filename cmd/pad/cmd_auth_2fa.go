@@ -93,11 +93,16 @@ func runTwoFactorSetup(client *cli.Client, in *bufio.Reader, out io.Writer) erro
 		return fmt.Errorf("2FA is already on; to set it up again, run 'pad auth 2fa disable' first")
 	}
 
-	if err := totpEnrolStepUp(client, in, out); err != nil {
-		return err
-	}
-
+	// Verify identity only when the server asks: a server from before the
+	// enrolment gate has no step-up endpoint and enrols without one.
 	setup, err := client.TOTPSetup()
+	var stepUpErr *cli.APIError
+	if errors.As(err, &stepUpErr) && stepUpErr.Code == "step_up_required" {
+		if err := totpEnrolStepUp(client, in, out); err != nil {
+			return err
+		}
+		setup, err = client.TOTPSetup()
+	}
 	if err != nil {
 		return totpEnrolError(err)
 	}

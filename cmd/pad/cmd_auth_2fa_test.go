@@ -522,7 +522,7 @@ func TestTASK403_ReplaceSessionTokenKeepsTheRestOfTheCredential(t *testing.T) {
 func TestTask4509SetupStepUp(t *testing.T) {
 	for _, tc := range []struct {
 		name, factor, refusal, wantErr string
-		lapse                          bool
+		lapse, older                   bool
 	}{
 		{name: "password", factor: "password"},
 		{name: "email", factor: "email"},
@@ -531,10 +531,14 @@ func TestTask4509SetupStepUp(t *testing.T) {
 		{name: "wrong password", factor: "password", refusal: "invalid_password", wantErr: "incorrect password"},
 		{name: "wrong email code", factor: "email", refusal: "invalid_code", wantErr: "verification code"},
 		{name: "limited", factor: "email", refusal: "rate_limited", wantErr: "Try later"},
+		// A server from before the enrolment gate has no step-up endpoint and
+		// enrols without one: setup must not ask for, or call, step-up.
+		{name: "older server", older: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []string
 			verifies := 0
+			granted := false
 			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				path := strings.TrimPrefix(r.URL.Path, "/api/v1/auth/")
@@ -542,6 +546,11 @@ func TestTask4509SetupStepUp(t *testing.T) {
 				fail := func(code string) {
 					w.WriteHeader(403)
 					_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"code": code, "message": "Try later"}})
+				}
+				if tc.older && strings.HasPrefix(path, "step-up") {
+					t.Errorf("older server: unexpected %s", path)
+					w.WriteHeader(404)
+					return
 				}
 				switch path {
 				case "me":
@@ -567,10 +576,15 @@ func TestTask4509SetupStepUp(t *testing.T) {
 						fail(tc.refusal)
 						return
 					}
+					granted = true
 					_, _ = w.Write([]byte(`{"active_until":"2099-01-01T00:00:00Z"}`))
 				case "2fa/setup":
 					if tc.refusal == "reauth_required" {
 						fail(tc.refusal)
+						return
+					}
+					if !tc.older && !granted {
+						fail("step_up_required")
 						return
 					}
 					_, _ = w.Write([]byte(`{"secret":"test-secret","url":"otpauth://test"}`))
@@ -596,6 +610,9 @@ func TestTask4509SetupStepUp(t *testing.T) {
 			if tc.factor == "email" {
 				input = "123456\n654321\n"
 			}
+			if tc.older {
+				input = "654321\n"
+			}
 			var out bytes.Buffer
 			client := cli.NewClientFromURL(ts.URL)
 			client.SetHTTPClient(ts.Client())
@@ -609,7 +626,15 @@ func TestTask4509SetupStepUp(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			want := []string{"GET me", "GET step-up"}
+			if tc.older {
+				want := "GET me,POST 2fa/setup,POST 2fa/verify"
+				if got := strings.Join(calls, ","); got != want || strings.Contains(out.String(), "Password: ") {
+					t.Fatalf("calls %v, want %v; output %q", got, want, out.String())
+				}
+				return
+			}
+			// Setup is tried first; step-up runs only when the server asks for it.
+			want := []string{"GET me", "POST 2fa/setup", "GET step-up"}
 			if tc.factor == "email" {
 				want = append(want, "POST step-up/email")
 				if !strings.Contains(out.String(), "We emailed you a verification code.\nEmail code: ") {
