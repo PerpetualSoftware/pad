@@ -756,5 +756,9 @@ All three codes and details are preserved on HTTP and stdio. Closed items pause
 firing until reopened; completion does not acknowledge the alarm.
 
 Exports carry alarms inside schedules; legacy bundle reminders convert to
-run-once commitments with lifecycle preserved. Collisions refuse the entire
-import. The temporary collision refusal also blocks upgrades on affected data.
+run-once commitments with lifecycle preserved. On items without a commitment,
+armed reminders rank first, then fired-unacknowledged, then acknowledged; the
+newest within that state wins. The rest become history on the item. An existing
+commitment stays unchanged and receives every legacy reminder as history.
+Migration and legacy bundle import use this same policy; invalid legacy data
+still rolls back atomically.

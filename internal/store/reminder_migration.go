@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"sort"
 	"strings"
 	"time"
 
@@ -14,26 +13,55 @@ import (
 const sqliteReminderMigration = "183_reminders_require_commitment.sql"
 const postgresReminderMigration = "143_reminders_require_commitment.sql"
 
-// Collision policy pending: refusal is a placeholder and must not ship.
-func resolveReminderCollisions(counts map[string]int, scheduled map[string]bool) error {
-	var conflicts []string
-	for item, n := range counts {
-		var reasons []string
-		if n > 1 {
-			reasons = append(reasons, "multiple legacy reminders")
+// resolveReminderCollisions selects one row per unscheduled item after preflight.
+// State outranks chronology. Equal instants use ID for database rows and the
+// later array position for bundles, whose reminder entries have no identity.
+func resolveReminderCollisions(reminders []*models.Reminder, scheduled map[string]string, bundle bool) map[string]int {
+	winners := map[string]int{}
+	rank := func(r *models.Reminder) int {
+		if r.FiredAt == nil {
+			return 0
 		}
-		if scheduled[item] {
-			reasons = append(reasons, "existing commitment")
+		if r.AckedAt == nil {
+			return 1
 		}
-		if len(reasons) > 0 {
-			conflicts = append(conflicts, item+": "+strings.Join(reasons, ", "))
+		return 2
+	}
+	newer := func(a, b *models.Reminder) bool {
+		if rank(a) != rank(b) {
+			return rank(a) < rank(b)
+		}
+		for _, stamps := range [][2]string{{a.RemindAt, b.RemindAt}, {a.CreatedAt, b.CreatedAt}} {
+			at, _ := time.Parse(time.RFC3339, stamps[0])
+			bt, _ := time.Parse(time.RFC3339, stamps[1])
+			if order := at.Compare(bt); order != 0 {
+				return order > 0
+			}
+		}
+		return bundle || a.ID > b.ID
+	}
+	for i, r := range reminders {
+		if scheduled[r.ItemID] != "" {
+			continue
+		}
+		previous, ok := winners[r.ItemID]
+		if !ok || newer(r, reminders[previous]) {
+			winners[r.ItemID] = i
 		}
 	}
-	sort.Strings(conflicts)
-	if len(conflicts) > 0 {
-		return fmt.Errorf("reminder collisions: %s", strings.Join(conflicts, "; "))
-	}
-	return nil
+	return winners
+}
+
+const legacyReminderHistoryReason = "one-shot reminder kept as history"
+
+// Keep every legacy column, including NULL marks, independently of the public
+// Reminder JSON shape, which omits NULLs and includes derived fields.
+func legacyReminderHistoryJSON(r *models.Reminder) ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"id": r.ID, "workspace_id": r.WorkspaceID, "item_id": r.ItemID,
+		"remind_at": r.RemindAt, "fired_at": r.FiredAt, "acked_at": r.AckedAt,
+		"created_at": r.CreatedAt, "updated_at": r.UpdatedAt,
+	})
 }
 
 func validateLegacyReminder(r *models.Reminder) (string, error) {
@@ -106,7 +134,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 	if err != nil {
 		return err
 	}
-	counts, scheduled := map[string]int{}, map[string]bool{}
+	scheduled := map[string]string{}
 	targets := map[string]string{}
 	for _, r := range reminders {
 		at, err := validateLegacyReminder(r)
@@ -122,23 +150,31 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		if err != nil {
 			return err
 		}
-		var n int
-		if err := tx.QueryRow(s.q(`SELECT COUNT(*) FROM item_schedules WHERE item_id=?`), r.ItemID).Scan(&n); err != nil {
+		var scheduleID, scheduleWorkspace string
+		err = tx.QueryRow(s.q(`SELECT id,workspace_id FROM item_schedules WHERE item_id=?`), r.ItemID).Scan(&scheduleID, &scheduleWorkspace)
+		if err != nil && err != sql.ErrNoRows {
 			return err
 		}
-		counts[r.ItemID]++
-		scheduled[r.ItemID] = n > 0
+		if err == nil {
+			if scheduleWorkspace != r.WorkspaceID {
+				return fmt.Errorf("reminder %s: mismatched schedule owner", r.ID)
+			}
+			scheduled[r.ItemID] = scheduleID
+		}
 	}
-	if err := resolveReminderCollisions(counts, scheduled); err != nil {
-		return err
-	}
-	for _, r := range reminders {
+	winners := resolveReminderCollisions(reminders, scheduled, false)
+	converted := 0
+	for i, r := range reminders {
+		if winner, ok := winners[r.ItemID]; !ok || winner != i {
+			continue
+		}
 		at := targets[r.ID]
 		wall := strings.TrimSuffix(at, "Z")
 		sc := &models.ItemSchedule{ID: newID(), WorkspaceID: r.WorkspaceID, ItemID: r.ItemID, Kind: "check", Dtstart: wall, Tz: ptr("UTC"), Anchor: "calendar", Audience: "both", RDates: []string{}, ExDates: []string{}, NextAt: ptr(at), NextWall: ptr(wall), CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 		if err := s.insertScheduleTx(tx, sc, &scheduleRoles{Origin: "native"}); err != nil {
 			return err
 		}
+		scheduled[r.ItemID] = sc.ID
 		result, err := tx.Exec(s.q(`UPDATE item_reminders SET schedule_id=?,remind_at=? WHERE id=? AND workspace_id=? AND item_id=? AND schedule_id IS NULL`), sc.ID, at, r.ID, r.WorkspaceID, r.ItemID)
 		if err != nil {
 			return err
@@ -150,6 +186,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		if n != 1 {
 			return fmt.Errorf("reminder %s: conversion lost identity", r.ID)
 		}
+		converted++
 		before, err := json.Marshal(r)
 		if err != nil {
 			return err
@@ -169,6 +206,38 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 			return fmt.Errorf("reminder %s: conversion changed lifecycle", r.ID)
 		}
 	}
+	history := 0
+	for i, r := range reminders {
+		if winner, ok := winners[r.ItemID]; ok && winner == i {
+			continue
+		}
+		before, err := legacyReminderHistoryJSON(r)
+		if err != nil {
+			return err
+		}
+		changeID := newID()
+		// History does not change the existing commitment or invalidate its undo.
+		if _, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,change_type,before_json,actor,reason,reason_source,root_change_id,recorded_at)
+ VALUES (?,?,?,?,'import',?,'',?,'system',?,?)`), changeID, r.WorkspaceID, r.ItemID, scheduled[r.ItemID], string(before), legacyReminderHistoryReason, changeID, nowNano()); err != nil {
+			return err
+		}
+		result, err := tx.Exec(s.q(`DELETE FROM item_reminders WHERE id=? AND workspace_id=? AND item_id=? AND schedule_id IS NULL`), r.ID, r.WorkspaceID, r.ItemID)
+		if err != nil {
+			return err
+		}
+		n, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return fmt.Errorf("reminder %s: history lost identity", r.ID)
+		}
+		history++
+	}
+	if converted+history != len(reminders) {
+		return fmt.Errorf("reminder conversion count mismatch")
+	}
+
 	return s.checkReminderMigrationTx(tx)
 }
 

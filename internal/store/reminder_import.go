@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -13,16 +14,6 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 	if len(data.Reminders) == 0 {
 		return data, nil
 	}
-	counts, scheduled := map[string]int{}, map[string]bool{}
-	for _, r := range data.Reminders {
-		counts[r.ItemID]++
-	}
-	for _, sc := range data.Schedules {
-		scheduled[sc.ItemID] = true
-	}
-	if err := resolveReminderCollisions(counts, scheduled); err != nil {
-		return nil, err
-	}
 	items, collections := map[string]bool{}, map[string]bool{}
 	for _, c := range data.Collections {
 		collections[c.ID] = true
@@ -32,7 +23,20 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 	}
 	out := *data
 	out.Schedules = append([]models.ScheduleExport(nil), data.Schedules...)
+	out.ScheduleChanges = append([]models.ScheduleChangeExport(nil), data.ScheduleChanges...)
 	out.Reminders = nil
+	scheduled := map[string]string{}
+	for i := range out.Schedules {
+		sc := &out.Schedules[i]
+		// Older schedule bundles predate journal identities. Supply an import
+		// identity so any new history can follow the usual schedule remapping.
+		if sc.ID == "" {
+			sc.ID = newID()
+		}
+		scheduled[sc.ItemID] = sc.ID
+	}
+	reminders := make([]*models.Reminder, 0, len(data.Reminders))
+	targets := make([]string, 0, len(data.Reminders))
 	for _, rm := range data.Reminders {
 		if !items[rm.ItemID] {
 			return nil, fmt.Errorf("legacy reminder item %s: missing owner", rm.ItemID)
@@ -48,6 +52,15 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		if err != nil {
 			return nil, err
 		}
+		reminders = append(reminders, r)
+		targets = append(targets, at)
+	}
+	winners := resolveReminderCollisions(reminders, scheduled, true)
+	for i, rm := range data.Reminders {
+		if winner, ok := winners[rm.ItemID]; !ok || winner != i {
+			continue
+		}
+		at := targets[i]
 		wall := strings.TrimSuffix(at, "Z")
 		sx := models.ScheduleExport{ID: newID(), ItemID: rm.ItemID, Kind: "check", Dtstart: wall, Tz: "UTC", Anchor: "calendar", Audience: "both", NextAt: at, NextWall: wall, CreatedAt: rm.CreatedAt, UpdatedAt: rm.UpdatedAt, Roles: &models.ScheduleRolesExport{RolesOrigin: "native"}, Reminder: &models.ScheduleReminderExport{RemindAt: at, FiredAt: rm.FiredAt, AckedAt: rm.AckedAt}}
 		in, err := carriedFromExport(sx, nil)
@@ -58,6 +71,27 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 			return nil, err
 		}
 		out.Schedules = append(out.Schedules, sx)
+		scheduled[rm.ItemID] = sx.ID
 	}
+	for i, rm := range data.Reminders {
+		if winner, ok := winners[rm.ItemID]; ok && winner == i {
+			continue
+		}
+		before, err := json.Marshal(map[string]any{
+			"item_id": rm.ItemID, "remind_at": rm.RemindAt,
+			"fired_at": rm.FiredAt, "acked_at": rm.AckedAt,
+			"created_at": rm.CreatedAt, "updated_at": rm.UpdatedAt, "bundle_index": i,
+		})
+		if err != nil {
+			return nil, err
+		}
+		id := newID()
+		out.ScheduleChanges = append(out.ScheduleChanges, models.ScheduleChangeExport{
+			ID: id, ItemID: rm.ItemID, ScheduleID: scheduled[rm.ItemID], ChangeType: "import",
+			BeforeJSON: ptr(string(before)), Reason: legacyReminderHistoryReason, ReasonSource: "system",
+			RootChangeID: id, RecordedAt: nowNano(),
+		})
+	}
+
 	return &out, nil
 }

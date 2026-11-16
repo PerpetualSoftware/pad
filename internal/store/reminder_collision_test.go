@@ -125,6 +125,9 @@ func TestReminderCollisionPolicy(t *testing.T) {
 						if winner == -1 && !reflect.DeepEqual(data.Schedules, converted.Schedules) {
 							t.Fatal("existing bundle schedule changed")
 						}
+						// The source rows only construct the legacy bundle; live firing uses
+						// the imported workspace, where every alarm has a schedule.
+						s.mustExec(t, `DELETE FROM item_reminders WHERE schedule_id IS NULL`)
 						imported, report, err := s.ImportWorkspaceWithReport(data, "Collision import", "", "test")
 						if err != nil {
 							t.Fatal(err)
@@ -149,6 +152,18 @@ func TestReminderCollisionPolicy(t *testing.T) {
 					if winner >= 0 {
 						r, err := s.GetReminder(targetWS, *sc.ReminderID)
 						want := legacy[winner]
+						// The existing bundle carry path normalizes lifecycle stamps. History
+						// retains the original bytes independently of that winner conversion.
+						if mode == "bundle" {
+							if want.FiredAt != nil {
+								at, _ := normalizeRemindAt(*want.FiredAt)
+								want.FiredAt = &at
+							}
+							if want.AckedAt != nil {
+								at, _ := normalizeRemindAt(*want.AckedAt)
+								want.AckedAt = &at
+							}
+						}
 						at, _ := normalizeRemindAt(want.RemindAt)
 						if err != nil || r.RemindAt != at || derefStr(r.FiredAt) != derefStr(want.FiredAt) || derefStr(r.AckedAt) != derefStr(want.AckedAt) || (mode == "migration" && r.ID != want.ID) {
 							t.Fatalf("wrong winner: %+v %v", r, err)

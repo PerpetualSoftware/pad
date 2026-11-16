@@ -1859,8 +1859,6 @@ reminder/deadline ticks and notification consumers. The migration waits at most
 30 seconds for its Postgres table locks, then rolls back on lock timeout.
 Conversion, the NOT NULL constraint and version recording are one transaction.
 
-Multiple legacy reminders on an item, or a legacy reminder beside an existing
-commitment, currently refuse upgrade/import atomically with item IDs and reasons.
-This collision policy is provisional and must be resolved before release.
+Items with several reminders keep one as a commitment (an armed one first, else the newest); the rest stay as history on that item. If a commitment already exists, every legacy reminder becomes history on it.
 After a successful upgrade, rollback means restoring the backup taken before the
 upgrade. Running an old binary or dropping the constraint is not rollback.
