@@ -20,6 +20,9 @@ type Commitment struct {
 	ScheduleID     string                  `json:"schedule_id"`
 	ItemID         string                  `json:"item_id"`
 	Roles          CommitmentRoles         `json:"roles"`
+	// RoleOffsets is this schedule row's own stored offsets, the base a PATCH
+	// merges against; nil whenever Roles is (an ended schedule).
+	RoleOffsets *CommitmentRoleOffsets `json:"role_offsets,omitempty"`
 	// OccurrenceKey names the outstanding occurrence; empty once the schedule
 	// ended.
 	OccurrenceKey string                   `json:"occurrence_key,omitempty"`
@@ -147,6 +150,20 @@ type CommitmentRoles struct {
 	OccupiedUntil    *string `json:"occupied_until"`
 	Outcome          string  `json:"outcome"`
 	RolesOrigin      string  `json:"roles_origin"` // legacy_backfill | native
+}
+
+// CommitmentRoleOffsets is each role's stored offset, days plus seconds from
+// the occurrence's seed wall, as the schedule row holds it. Occurrence
+// overrides never change it. A role the schedule does not carry is null.
+type CommitmentRoleOffsets struct {
+	TargetDays   int  `json:"target_days"`
+	TargetSecs   int  `json:"target_secs"`
+	EarliestDays *int `json:"earliest_days"`
+	EarliestSecs *int `json:"earliest_secs"`
+	DeadlineDays *int `json:"deadline_days"`
+	DeadlineSecs *int `json:"deadline_secs"`
+	OccupiedDays *int `json:"occupied_days"`
+	OccupiedSecs *int `json:"occupied_secs"`
 }
 
 // CommitmentChange is one journal row of the deadline's history: a recorded

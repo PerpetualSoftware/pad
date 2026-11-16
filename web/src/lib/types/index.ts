@@ -3987,6 +3987,18 @@ export interface CommitmentRoles {
  roles_origin: 'native' | 'legacy_backfill';
 }
 
+/** The schedule row's own stored role offsets (days + seconds from the seed wall), the base a PATCH merges against. Overrides and links never change them. */
+export interface CommitmentRoleOffsets {
+ target_days: number;
+ target_secs: number;
+ earliest_days: number | null;
+ earliest_secs: number | null;
+ deadline_days: number | null;
+ deadline_secs: number | null;
+ occupied_days: number | null;
+ occupied_secs: number | null;
+}
+
 export interface CommitmentForecastSummary {
  value: string;
  set_by: string;
@@ -4058,6 +4070,8 @@ export interface ItemCommitmentView {
  item_id: string;
  item_ref: string;
  roles: CommitmentRoles;
+ /** Absent once the schedule has ended (as roles are null); absent means no Edit is offered. */
+ role_offsets?: CommitmentRoleOffsets;
  occurrence_key?: string;
  journal: CommitmentChange[];
  id: string;

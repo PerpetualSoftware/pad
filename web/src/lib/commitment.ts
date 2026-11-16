@@ -1,4 +1,4 @@
-import type { AcknowledgedBy, AgendaEntry, Collection, CommitmentCreateRequest, CommitmentGate, CommitmentGateView, CommitmentLink, CommitmentRoles, Item, ItemCommitmentView } from '$lib/types';
+import type { AcknowledgedBy, AgendaEntry, Collection, CommitmentCreateRequest, CommitmentGate, CommitmentGateView, CommitmentLink, CommitmentRenegotiateRequest, CommitmentRoles, CommitmentUpdateRequest, Item, ItemCommitmentView } from '$lib/types';
 import { isDateOnly, roleDay, todayIn, wallToInstant, type OccurrenceState } from '$lib/calendar/presentation';
 
 export function commitmentKind(roles: Pick<CommitmentRoles, 'deadline' | 'occupied_until'>): 'deadline_hard' | 'window' | 'check' {
@@ -85,6 +85,111 @@ export function buildCommitmentCreate(input: {
  const secs = clock(deadline.time) - clock(input.time);
  if (days < 0 || (days === 0 && secs < 0)) return { field: 'deadline', message: 'The deadline cannot be before the target.' };
  return { ...body, roles: { target_days: 0, target_secs: 0, deadline_days: days, deadline_secs: secs, deadline_behavior: deadline.behavior } };
+}
+
+type Behavior = 'lapses' | 'stays_owed';
+const civilDay = (date: string) => Date.UTC(+date.slice(0, 4), +date.slice(5, 7) - 1, +date.slice(8, 10)) / 86_400_000;
+const clockSecs = (time: string) => time ? +time.slice(0, 2) * 3600 + +time.slice(3, 5) * 60 + (time.length > 5 ? +time.slice(6, 8) : 0) : 0;
+
+/** The wall a role offset lands on from a target date and clock ('' for all-day): calendar days, then a clock difference. */
+export function offsetWall(date: string, time: string, days: number, secs: number): { date: string; time: string } {
+ const at = new Date((civilDay(date) + days) * 86_400_000 + (clockSecs(time) + secs) * 1000).toISOString();
+ return { date: at.slice(0, 10), time: time ? at.slice(11, 16) : '' };
+}
+/** The civil offset from a target to a wall: days between the dates plus the clock difference (DST-safe). */
+export function wallOffset(date: string, time: string, toDate: string, toTime: string): { days: number; secs: number } {
+ return { days: civilDay(toDate) - civilDay(date), secs: time ? clockSecs(toTime) - clockSecs(time) : 0 };
+}
+
+/** The Edit dialog's controls: the series start, its repeat and the hard deadline as a stored offset. */
+export interface CommitmentEditForm {
+ date: string;
+ /** HH:MM, or '' for an all-day start. */
+ time: string;
+ /** null: a rule the shorthands cannot express (shown raw, read-only). */
+ rule: CommitmentRecurrence | null;
+ deadline: { days: number; secs: number; behavior: Behavior } | null;
+}
+export interface CommitmentEditState {
+ initial: CommitmentEditForm;
+ /** The stored start's seconds (":30"), kept unless the time is edited. */
+ seconds: string;
+ /** Why start and Repeats are read-only; '' when editable. */
+ timingLock: string;
+ /** Why the deadline is read-only; '' when editable. */
+ deadlineLock: string;
+ /** Other roles hang off the start, so adding or removing its time is refused. */
+ timeLocked: boolean;
+ /** A native row with a stored deadline: deadline edits go through renegotiate. */
+ nativeDeadline: boolean;
+ /** A timing edit re-plans from now and drops this occurrence's move or snooze. */
+ replanDrops: boolean;
+}
+
+/** The Edit dialog's starting state, from the stored values only; null when the view offers no Edit. */
+export function editStateFromView(view: ItemCommitmentView): CommitmentEditState | null {
+ const o = view.role_offsets;
+ if (!o || view.ended_at) return null;
+ const [date, clock = ''] = view.dtstart.split('T');
+ const time = clock.slice(0, 5);
+ const rule = !view.rrule ? (view.rdates.length ? null : 'once') : COMMITMENT_RECURRENCES.find(([, r]) => r === view.rrule)?.[0] ?? null;
+ const behavior = view.roles.deadline_behavior;
+ const deadline = o.deadline_days !== null && o.deadline_secs !== null && behavior ? { days: o.deadline_days, secs: o.deadline_secs, behavior } : null;
+ const nativeDeadline = !!deadline && view.roles.roles_origin === 'native';
+ const linkedDeadline = view.links.some(l => (l.child_item_id === view.item_id && l.child_role === 'deadline') || (l.parent_item_id === view.item_id && l.parent_role === 'deadline'));
+ const next = view.next_occurrence;
+ const expected = next ? (isDateOnly(view.dtstart) ? next.wall.slice(0, 10) : next.at) : null;
+ return {
+  initial: { date, time, rule, deadline }, seconds: clock.slice(5),
+  timingLock: nativeDeadline ? 'Fixed while a hard deadline exists; renegotiate or remove the deadline first.'
+   : view.links.length ? 'Fixed while this date is linked to another item.'
+   : rule === null || view.rdates.length || view.exdates.length ? `Repeats by a custom rule (${[view.rrule, view.rdates.length && 'additional dates', view.exdates.length && 'excluded dates'].filter(Boolean).join(', ')}); use pad remind edit to change it.`
+   : o.target_days || o.target_secs ? 'Fixed because the target is offset from the start; use pad remind edit to change it.' : '',
+  deadlineLock: linkedDeadline ? 'Fixed while the deadline is linked to another item.'
+   : !time && deadline && deadline.secs ? 'This all-day date has a timed deadline; use pad remind edit to change it.' : '',
+  timeLocked: o.earliest_days !== null || o.occupied_days !== null || !!deadline,
+  nativeDeadline,
+  replanDrops: !!view.next_override_at || !!view.snoozed_until || (!!expected && view.roles.target !== null && view.roles.target !== expected)
+ };
+}
+
+export type CommitmentEditPlan =
+ | { kind: 'none' }
+ | { kind: 'patch'; body: CommitmentUpdateRequest }
+ | { kind: 'renegotiate'; body: Pick<CommitmentRenegotiateRequest, 'scope' | 'deadline_offset' | 'deadline_behavior' | 'remove_deadline'> };
+
+/**
+ * The writes for an Edit save: only the members whose controls changed. A
+ * native row's deadline goes through renegotiate alone (its timing is locked);
+ * otherwise everything goes in one PATCH, which converts a legacy row.
+ */
+export function buildCommitmentEdit(state: CommitmentEditState, form: CommitmentEditForm, ctx: { zone: string; now: Date }): CommitmentEditPlan | { field: 'date' | 'time' | 'deadline'; message: string } {
+ const init = state.initial;
+ const timingChanged = form.date !== init.date || form.time !== init.time || form.rule !== init.rule;
+ const d = form.deadline, i = init.deadline;
+ const deadlineChanged = (d === null) !== (i === null) || (!!d && !!i && (d.days !== i.days || d.secs !== i.secs || d.behavior !== i.behavior));
+ if (state.timingLock && timingChanged) return { field: 'date', message: state.timingLock };
+ if (state.deadlineLock && deadlineChanged) return { field: 'deadline', message: state.deadlineLock };
+ if (!isDateOnly(form.date)) return { field: 'date', message: 'Choose a target date.' };
+ if (form.time && !/^\d{2}:\d{2}$/.test(form.time)) return { field: 'time', message: 'Choose a valid time.' };
+ if (state.timeLocked && !form.time !== !init.time) return { field: 'time', message: 'The time can be added or removed only while the date has no other roles.' };
+ if (d && (d.days < 0 || (d.days === 0 && d.secs < 0))) return { field: 'deadline', message: 'The deadline cannot be before the target.' };
+ if (!form.time && d?.secs) return { field: 'deadline', message: 'An all-day date takes an all-day deadline.' };
+ if (!timingChanged && !deadlineChanged) return { kind: 'none' };
+ if (timingChanged && form.rule === 'once') {
+  const passed = form.time ? Date.parse(wallToInstant(`${form.date}T${form.time}`, ctx.zone)) <= ctx.now.getTime() : form.date < todayIn(ctx.zone, ctx.now);
+  if (passed) return { field: 'date', message: 'Choose a date that has not passed.' };
+ }
+ if (state.nativeDeadline) {
+  if (!d) return { kind: 'renegotiate', body: { scope: 'series', remove_deadline: true } };
+  const moved = d.days !== i!.days || d.secs !== i!.secs;
+  return { kind: 'renegotiate', body: { scope: 'series', ...(moved ? { deadline_offset: { deadline_days: d.days, deadline_secs: d.secs } } : {}), ...(d.behavior !== i!.behavior ? { deadline_behavior: d.behavior } : {}) } };
+ }
+ const body: CommitmentUpdateRequest = {};
+ if (form.date !== init.date || form.time !== init.time) body.dtstart = form.time ? `${form.date}T${form.time}${form.time === init.time ? state.seconds : ''}` : form.date;
+ if (form.rule !== init.rule) body.rrule = COMMITMENT_RECURRENCES.find(([value]) => value === form.rule)?.[1] ?? null;
+ if (deadlineChanged) body.roles = d ? { deadline_days: d.days, deadline_secs: d.secs, deadline_behavior: d.behavior } : { deadline_days: null, deadline_secs: null, deadline_behavior: null };
+ return { kind: 'patch', body };
 }
 
 export function describeRecurrence(view: Pick<ItemCommitmentView, 'rrule' | 'rdates' | 'dtstart' | 'anchor'>): string {
