@@ -172,6 +172,8 @@ it('swipes Home to next week, fetches only the strip and returns to This week wi
 	expect(firstStripDay().dataset.stripDay).toBe('2026-11-09');
 	expect(h.agenda).toHaveBeenCalledTimes(2);
 	expect(screen.queryByRole('button', { name: 'This week' })).not.toBeInTheDocument();
+	await vi.waitFor(() => expect(document.activeElement).toHaveAttribute('data-strip-day'));
+	expect(document.activeElement).toHaveAttribute('tabindex', '0');
 	const { goto } = await import('$app/navigation');
 	await stripPointer(firstStripDay(), 'pointerdown', 200);
 	await stripPointer(firstStripDay(), 'pointerup', 200);

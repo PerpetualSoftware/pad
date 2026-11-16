@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Button from '$lib/components/common/Button.svelte';
 	import { avatarColor } from '$lib/utils/avatar';
-	import { onMount, onDestroy } from 'svelte';
+	import { onMount, onDestroy, tick } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -44,6 +44,12 @@
 	const stripLoad = () => weekOffset === 0
 		? homeOverview.loading ? 'none' : homeOverview.agenda?.window_complete === false ? 'partial' : 'full'
 		: !stripAgenda ? 'none' : stripAgenda.window_complete === false ? 'partial' : 'full';
+	// The button goes away with the offset, so focus lands on the strip's tab-stop day instead of the page.
+	async function backToThisWeek() {
+		thisWeek();
+		await tick();
+		document.querySelector<HTMLButtonElement>('.home [data-strip-day][tabindex="0"]')?.focus();
+	}
 	function thisWeek() {
 		stripRequest++;
 		weekOffset = 0;
@@ -139,7 +145,7 @@
 	{#if homeOverview.error}<p role="alert">{homeOverview.error} <button onclick={() => homeOverview.load('/', true)}>Retry</button></p>{/if}
 	{#if actionError}<p role="alert">{actionError}</p>{/if}
 	{#if weekOffset !== 0}
-		<div class="strip-week"><span>{weekLabel(firstDay, viewport.isMobile)}</span><button type="button" class="invitations-toggle" onclick={thisWeek}>This week</button></div>
+		<div class="strip-week"><span>{weekLabel(firstDay, viewport.isMobile)}</span><button type="button" class="invitations-toggle" onclick={backToThisWeek}>This week</button></div>
 	{/if}
 	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripEntries} {zone} dragging={null} hoverDay="" onselect={openAgenda} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} />
 	<div class="overview-columns">
