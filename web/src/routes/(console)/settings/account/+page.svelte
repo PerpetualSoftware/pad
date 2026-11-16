@@ -100,6 +100,7 @@
 	let totpStep = $state<'idle' | 'setup' | 'verify' | 'recovery'>('idle');
 	let totpStepUp = $state<StepUpStatus | null>(null);
 	let totpStepUpBusy = $state(false);
+	let totpStepUpCanVerify = $state(false);
 	let pendingTOTPVerify = $state<{ code: string; secret: string } | null>(null);
 	let totpSetup = $state<TOTPSetupResponse | null>(null);
 	let totpCode = $state('');
@@ -1080,8 +1081,13 @@
 			<h2 class="card-title">Two-Factor Authentication</h2>
 			<div class="card-body">
 				{#if totpStepUp}
-					<StepUpPrompt factor={totpStepUp.factor} onverified={totpIdentityVerified} bind:busy={totpStepUpBusy} description="Verify your identity before turning on two-factor authentication. Verification lasts 10 minutes in this session." />
-					<div class="btn-row"><Button variant="secondary" onclick={cancelSetup} disabled={totpStepUpBusy}>Cancel</Button></div>
+					<StepUpPrompt factor={totpStepUp.factor} onverified={totpIdentityVerified} formId="totp-step-up" bind:busy={totpStepUpBusy} bind:canVerify={totpStepUpCanVerify} description="Verify your identity before turning on two-factor authentication. Verification lasts 10 minutes in this session." />
+					<div class="btn-row">
+						{#if totpStepUp.factor !== 'unavailable'}
+							<Button variant="primary" type="submit" form="totp-step-up" disabled={!totpStepUpCanVerify}>{totpStepUpBusy ? 'Verifying…' : 'Verify'}</Button>
+						{/if}
+						<Button variant="secondary" onclick={cancelSetup} disabled={totpStepUpBusy}>Cancel</Button>
+					</div>
 				{:else if totpStep === 'idle'}
 					<div class="totp-status-row">
 						<div class="totp-status-info">

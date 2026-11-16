@@ -43,10 +43,13 @@ async function start() {
 	await fireEvent.click(await screen.findByRole('button', { name: 'Enable 2FA' }));
 }
 async function confirmPassword() {
-	const prompt = await screen.findByRole('heading', {name: 'Verify it’s you'});
-	const container = prompt.parentElement!;
-	await fireEvent.input(within(container).getByLabelText('Password'), {target:{value:'password'}});
-	await fireEvent.click(within(container).getByRole('button', {name:'Verify'}));
+	await screen.findByRole('heading', {name: 'Verify it’s you'});
+	// The card's button row hosts the prompt's submit button (formId), beside Cancel.
+	const card = document.getElementById('two-factor-authentication')!;
+	await fireEvent.input(within(card).getByLabelText('Password'), {target:{value:'password'}});
+	const verify = within(card).getByRole('button', {name:'Verify'});
+	await waitFor(() => expect(verify).toBeEnabled());
+	await fireEvent.click(verify);
 }
 it.each(['password', 'email'])('checks status and prompts for %s before creating a secret', async (factor) => {
 	state.factor = factor;
