@@ -4,7 +4,7 @@
 	import EditTokenAccessDialog from '$lib/components/auth/EditTokenAccessDialog.svelte';
 	import PasswordRuleHint from '$lib/components/auth/PasswordRuleHint.svelte';
 	import { isPasswordRuleError, localPasswordProblem, passwordDescribedBy } from '$lib/auth/passwordRule';
-	import { onMount } from 'svelte';
+	import { onMount, tick } from 'svelte';
 	import { api, isPlanLimitError, PadApiError } from '$lib/api/client';
 	import { showPlanLimitToast } from '$lib/billing/planLimitToast';
 	import { chatSetting } from '$lib/stores/chatSetting.svelte';
@@ -480,8 +480,15 @@
 	function totpIdentityVerified() {
 		const pending = pendingTOTPVerify;
 		totpStepUp = null; pendingTOTPVerify = null; totpStepUpBusy = false;
-		if (pending) void submitTOTP(pending.code, pending.secret, false);
-		else void performTOTPSetup();
+		if (pending) {
+			// The prompt replaced the setup view and its canvas. If the retry
+			// fails, the setup view returns, so draw the QR code into the new canvas.
+			void submitTOTP(pending.code, pending.secret, false).then(async () => {
+				if (totpStep !== 'setup' || totpStepUp) return;
+				await tick();
+				await renderQRCode();
+			});
+		} else void performTOTPSetup();
 	}
 
 	async function performTOTPSetup() {
@@ -499,6 +506,20 @@
 			totpStep = 'setup';
 		} catch (err) {
 			if (!isSameIdentity()) return;
+			// The page's clock may read a grant as live after the server's has
+			// ended: when the server asks for verification, show the prompt.
+			if (err instanceof PadApiError && err.code === 'step_up_required') {
+				try {
+					const status = await api.auth.stepUp.status();
+					if (!isSameIdentity()) return;
+					if (status.factor !== 'unavailable') {
+						totpStepUp = status;
+						return;
+					}
+				} catch {
+					// Fall through to the setup error below.
+				}
+			}
 			totpError = err instanceof Error ? err.message : 'Failed to start 2FA setup';
 			totpStep = 'idle';
 			return;

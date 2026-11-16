@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"strings"
-	"time"
 
 	"github.com/fatih/color"
 	"github.com/spf13/cobra"
@@ -170,13 +169,13 @@ func totpEnrolError(err error) error {
 	return interactiveSessionHint(err)
 }
 
+// totpEnrolStepUp runs only after the server answered step_up_required, so it
+// always asks: the server's refusal outranks an active_until read against this
+// machine's clock.
 func totpEnrolStepUp(client *cli.Client, in *bufio.Reader, out io.Writer) error {
 	status, err := client.StepUpStatus()
 	if err != nil {
 		return totpEnrolError(err)
-	}
-	if status.ActiveUntil != nil && status.ActiveUntil.After(time.Now()) {
-		return nil
 	}
 	var code, password string
 	switch status.Factor {

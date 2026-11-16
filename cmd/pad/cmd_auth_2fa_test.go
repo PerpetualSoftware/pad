@@ -522,7 +522,7 @@ func TestTASK403_ReplaceSessionTokenKeepsTheRestOfTheCredential(t *testing.T) {
 func TestTask4509SetupStepUp(t *testing.T) {
 	for _, tc := range []struct {
 		name, factor, refusal, wantErr string
-		lapse, older                   bool
+		lapse, older, skew             bool
 	}{
 		{name: "password", factor: "password"},
 		{name: "email", factor: "email"},
@@ -534,6 +534,9 @@ func TestTask4509SetupStepUp(t *testing.T) {
 		// A server from before the enrolment gate has no step-up endpoint and
 		// enrols without one: setup must not ask for, or call, step-up.
 		{name: "older server", older: true},
+		// This machine's clock reads the grant as live, but the server refused:
+		// the refusal wins and the prompt still runs.
+		{name: "skewed clock", factor: "password", skew: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var calls []string
@@ -556,7 +559,11 @@ func TestTask4509SetupStepUp(t *testing.T) {
 				case "me":
 					_ = json.NewEncoder(w).Encode(map[string]any{"totp_enabled": false})
 				case "step-up":
-					_ = json.NewEncoder(w).Encode(map[string]any{"factor": tc.factor, "active_until": nil})
+					var active any
+					if tc.skew {
+						active = "2099-01-01T00:00:00Z"
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"factor": tc.factor, "active_until": active})
 				case "step-up/email":
 					if tc.refusal == "rate_limited" {
 						fail(tc.refusal)

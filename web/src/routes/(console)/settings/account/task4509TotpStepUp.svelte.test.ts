@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/svelte';
 
-const state = vi.hoisted(() => ({ factor: 'password', active: null as string | null, lapse: false, reauth: false }));
+const state = vi.hoisted(() => ({ factor: 'password', active: null as string | null, lapse: false, reauth: false, setupStepUp: false, retryFails: false }));
 vi.mock('$lib/api/client', () => {
 	class PadApiError extends Error {
 		code: string;
@@ -20,10 +20,12 @@ vi.mock('$lib/api/client', () => {
 			totp: {
 				setup: vi.fn(async () => {
 					if (state.reauth) throw new PadApiError({code: 'reauth_required', message: 'Sign in again, then turn on two-factor authentication within 10 minutes'});
+					if (state.setupStepUp) { state.setupStepUp = false; throw new PadApiError({code: 'step_up_required', message: 'Verify your identity before turning on two-factor authentication'}); }
 					return { secret: 'pending-secret', url: 'otpauth://test' };
 				}),
 				verify: vi.fn(async () => {
 					if (state.lapse) { state.lapse = false; throw new PadApiError({code: 'step_up_required', message: 'Verify your identity'}); }
+					if (state.retryFails) throw new PadApiError({code: 'invalid_code', message: 'Invalid TOTP code. Please try again.'});
 					return { enabled: true, recovery_codes: ['recovery'] };
 				})
 			}
@@ -35,9 +37,10 @@ vi.mock('$lib/stores/auth.svelte', () => ({ authStore: {
 	identityFence() { return () => true; }, onIdentityChange() { return () => {}; }, load: vi.fn(), ensureLoaded: vi.fn()
 } }));
 vi.mock('qrcode', () => ({ default: { toCanvas: vi.fn() } }));
+const { default: QRCode } = await import('qrcode');
 const { api } = await import('$lib/api/client');
 const { default: AccountSettings } = await import('./+page.svelte');
-beforeEach(() => { vi.clearAllMocks(); Object.assign(state, { factor: 'password', active: null, lapse: false, reauth: false }); });
+beforeEach(() => { vi.clearAllMocks(); Object.assign(state, { factor: 'password', active: null, lapse: false, reauth: false, setupStepUp: false, retryFails: false }); });
 async function start() {
 	render(AccountSettings);
 	await fireEvent.click(await screen.findByRole('button', { name: 'Enable 2FA' }));
@@ -91,4 +94,31 @@ it('renews an expired grant and retries the same code and secret', async () => {
 	expect(api.auth.totp.verify).toHaveBeenNthCalledWith(1, '654321', 'pending-secret');
 	expect(api.auth.totp.verify).toHaveBeenNthCalledWith(2, '654321', 'pending-secret');
 	expect(api.auth.totp.setup).toHaveBeenCalledOnce();
+});
+it('prompts when setup is refused although this clock reads the grant as live', async () => {
+	state.active = new Date(Date.now()+600000).toISOString(); state.setupStepUp = true;
+	await start();
+	await waitFor(() => expect(api.auth.totp.setup).toHaveBeenCalledOnce());
+	await confirmPassword();
+	await waitFor(() => expect(api.auth.totp.setup).toHaveBeenCalledTimes(2));
+	expect(await screen.findByLabelText('Verification code')).toBeInTheDocument();
+	expect(screen.queryByText('Verify your identity before turning on two-factor authentication')).toBeNull();
+});
+it('draws the QR code again when the retry after renewal fails', async () => {
+	state.active = new Date(Date.now()+600000).toISOString(); state.lapse = true;
+	await start();
+	await fireEvent.input(await screen.findByLabelText('Verification code'), {target:{value:'654321'}});
+	const draws = vi.mocked(QRCode.toCanvas);
+	await waitFor(() => expect(draws).toHaveBeenCalled());
+	// Settle the first draw (setup waits 50ms before it), then count from here.
+	await new Promise((r) => setTimeout(r, 100));
+	const before = draws.mock.calls.length;
+	state.active = null; state.retryFails = true;
+	await fireEvent.click(screen.getByRole('button', {name:'Verify & Enable'}));
+	await confirmPassword();
+	expect(await screen.findByText('Invalid TOTP code. Please try again.')).toBeInTheDocument();
+	await waitFor(() => expect(draws.mock.calls.length).toBeGreaterThan(before));
+	const canvas = document.getElementById('qr-canvas');
+	expect(canvas).not.toBeNull();
+	expect(draws.mock.calls.at(-1)![0]).toBe(canvas);
 });
