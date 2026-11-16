@@ -116,6 +116,19 @@ func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminde
 		return nil, err
 	}
 	defer tx.Rollback()
+	r, err := s.retargetSimpleReminderTx(tx, sc, at)
+	if err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return r, nil
+}
+
+// retargetSimpleReminderTx requires the caller to pin and check the simple
+// run-once shape. An ended commitment has no alarm, so rearming creates one.
+func (s *Store) retargetSimpleReminderTx(tx *sql.Tx, sc *models.ItemSchedule, at string) (*models.Reminder, error) {
 	before, err := s.scheduleSnapshotTx(tx, sc.ID)
 	if err != nil {
 		return nil, err
@@ -127,20 +140,21 @@ func (s *Store) RearmReminder(workspaceID, id, remindAt string) (*models.Reminde
 	if _, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=?`), sc.ID); err != nil {
 		return nil, err
 	}
-	if _, err := s.rearmManagedReminderTx(tx, sc.ID, at); err != nil {
+	if sc.ReminderID == nil {
+		if err := s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, at); err != nil {
+			return nil, err
+		}
+	} else if _, err := s.rearmManagedReminderTx(tx, sc.ID, at); err != nil {
 		return nil, err
 	}
 	if err := s.journalScheduleAfterTx(tx, sc.ID, "update", at+"|"+wall, "target", before, "system"); err != nil {
 		return nil, err
 	}
-	r, err := s.reminderQ(tx, workspaceID, id)
+	cur, err := s.getScheduleQ(tx, sc.WorkspaceID, sc.ItemID, false)
 	if err != nil {
 		return nil, err
 	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	return r, nil
+	return s.reminderQ(tx, sc.WorkspaceID, *cur.ReminderID)
 }
 
 func (s *Store) AckReminder(workspaceID, id string) (*models.Reminder, error) {

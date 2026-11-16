@@ -448,7 +448,9 @@ type scheduleCreateOptions struct {
 	// AllowPastSingleOccurrence retains an exact timed target for reminder adapters.
 	// Native commitment entry points never set it.
 	AllowPastSingleOccurrence bool
-	Reminder                  *models.Reminder
+	// ReuseEndedSimple is set only by the reminder-entry create adapter.
+	ReuseEndedSimple bool
+	Reminder         *models.Reminder
 }
 
 // createScheduleRolesAt creates the schedule with the legacy roles derived from
@@ -516,6 +518,43 @@ func (s *Store) createScheduleRolesOptionsAt(workspaceID, itemID string, in mode
 		return nil, fmt.Errorf("create schedule: %w", err)
 	}
 	defer tx.Rollback()
+
+	// Take mutation locks before any shared creation locks: reuse must not
+	// upgrade a shared item lock while another creator does the same.
+	if options.ReuseEndedSimple {
+		err := s.pinScheduleTx(tx, workspaceID, itemID)
+		if err != nil && !errors.Is(err, ErrScheduleNotFound) {
+			return nil, err
+		}
+		if err == nil {
+			existing, err := s.getScheduleQ(tx, workspaceID, itemID, false)
+			if err != nil {
+				return nil, err
+			}
+			if existing == nil || existing.EndedAt == nil || existing.ReminderID != nil {
+				return nil, ErrScheduleExists
+			}
+			simple, err := s.simpleReminderCommitmentQ(tx, existing)
+			if err != nil {
+				return nil, err
+			}
+			if !simple {
+				return nil, ErrScheduleExists
+			}
+			options.Reminder, err = s.retargetSimpleReminderTx(tx, existing, NormalizeInstant(arm.RemindAt))
+			if err != nil {
+				return nil, err
+			}
+			sc, err := s.getScheduleQ(tx, workspaceID, itemID, false)
+			if err != nil {
+				return nil, err
+			}
+			if err := tx.Commit(); err != nil {
+				return nil, err
+			}
+			return sc, nil
+		}
+	}
 
 	if err := s.requireLiveItemTx(tx, workspaceID, itemID); err != nil {
 		return nil, err

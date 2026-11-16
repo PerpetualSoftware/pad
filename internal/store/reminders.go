@@ -147,7 +147,7 @@ func (s *Store) CreateReminder(workspaceID, itemID, remindAt string) (*models.Re
 	if err != nil {
 		return nil, err
 	}
-	options := &scheduleCreateOptions{AllowPastSingleOccurrence: true}
+	options := &scheduleCreateOptions{AllowPastSingleOccurrence: true, ReuseEndedSimple: true}
 	_, err = s.createScheduleRolesOptionsAt(workspaceID, itemID, models.ScheduleCreate{
 		Dtstart: at[:len(at)-1], Tz: "UTC", Anchor: "calendar", Audience: "both",
 	}, &scheduleRoles{Origin: "native"}, time.Now(), options)

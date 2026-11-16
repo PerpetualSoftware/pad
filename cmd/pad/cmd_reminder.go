@@ -53,7 +53,8 @@ item.reminder_due webhook event. The poll surface is not optional: an instance
 with no webhook configured delivers reminders that way and only that way.
 
 Commitments pause while their item is closed and resume when reopened.
-An existing commitment refuses creation; use move or edit to change it.
+--remind-at reuses an ended simple run-once commitment with no alarm.
+Other existing commitments refuse creation; use move or edit to change them.
 --remind-at and --rearm preserve past instants and fire on the next eligible tick.
 Native --start creation still refuses an already-passed run-once target.
 

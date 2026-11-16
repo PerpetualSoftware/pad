@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -16,7 +17,7 @@ const postgresReminderMigration = "143_reminders_require_commitment.sql"
 // resolveReminderCollisions selects one row per unscheduled item after preflight.
 // State outranks chronology. Equal instants use ID for database rows and the
 // later array position for bundles, whose reminder entries have no identity.
-func resolveReminderCollisions(reminders []*models.Reminder, scheduled map[string]string, bundle bool) map[string]int {
+func resolveReminderCollisions(reminders []*models.Reminder, scheduled map[string]string, unreadable []string, bundle bool) map[string]int {
 	winners := map[string]int{}
 	rank := func(r *models.Reminder) int {
 		if r.FiredAt == nil {
@@ -41,7 +42,7 @@ func resolveReminderCollisions(reminders []*models.Reminder, scheduled map[strin
 		return bundle || a.ID > b.ID
 	}
 	for i, r := range reminders {
-		if scheduled[r.ItemID] != "" {
+		if scheduled[r.ItemID] != "" || unreadable[i] != "" {
 			continue
 		}
 		previous, ok := winners[r.ItemID]
@@ -53,6 +54,7 @@ func resolveReminderCollisions(reminders []*models.Reminder, scheduled map[strin
 }
 
 const legacyReminderHistoryReason = "one-shot reminder kept as history"
+const legacyReminderCarrierReason = "Created ended run-once history carrier using migration time for target and creation"
 
 // Keep every legacy column, including NULL marks, independently of the public
 // Reminder JSON shape, which omits NULLs and includes derived fields.
@@ -64,13 +66,15 @@ func legacyReminderHistoryJSON(r *models.Reminder) ([]byte, error) {
 	})
 }
 
-func validateLegacyReminder(r *models.Reminder) (string, error) {
+// validateLegacyReminder returns the normalized target or the unreadable field.
+// Unreadable data is preserved as history, never considered for winner selection.
+func validateLegacyReminder(r *models.Reminder) (target, unreadable string) {
 	if r.FiredAt == nil && r.AckedAt != nil {
-		return "", fmt.Errorf("reminder %s: acknowledgement without fire", r.ID)
+		return "", "acked_at"
 	}
 	for _, field := range []struct{ name, value string }{{"remind_at", r.RemindAt}, {"created_at", r.CreatedAt}, {"updated_at", r.UpdatedAt}} {
 		if _, err := time.Parse(time.RFC3339, field.value); err != nil {
-			return "", fmt.Errorf("reminder %s: invalid %s", r.ID, field.name)
+			return "", field.name
 		}
 	}
 	for _, field := range []struct {
@@ -79,15 +83,15 @@ func validateLegacyReminder(r *models.Reminder) (string, error) {
 	}{{"fired_at", r.FiredAt}, {"acked_at", r.AckedAt}} {
 		if field.value != nil {
 			if _, err := time.Parse(time.RFC3339, *field.value); err != nil {
-				return "", fmt.Errorf("reminder %s: invalid %s", r.ID, field.name)
+				return "", field.name
 			}
 		}
 	}
 	at, _ := normalizeRemindAt(r.RemindAt)
 	if _, err := compileScheduleSpec(scheduleSpecInput{Dtstart: strings.TrimSuffix(at, "Z"), Tz: "UTC"}); err != nil {
-		return "", fmt.Errorf("reminder %s: unrepresentable target", r.ID)
+		return "", "remind_at"
 	}
-	return at, nil
+	return at, ""
 }
 
 // prepareReminderMigrationTx runs before the constraint SQL on the migration
@@ -136,12 +140,14 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 	}
 	scheduled := map[string]string{}
 	targets := map[string]string{}
-	for _, r := range reminders {
-		at, err := validateLegacyReminder(r)
-		if err != nil {
-			return err
+	unreadable := make([]string, len(reminders))
+	counts := map[string]int{}
+	migrationTime := now()
+	for i, r := range reminders {
+		targets[r.ID], unreadable[i] = validateLegacyReminder(r)
+		if unreadable[i] != "" {
+			counts[unreadable[i]]++
 		}
-		targets[r.ID] = at
 		var owner string
 		err = tx.QueryRow(s.q(`SELECT i.workspace_id FROM items i JOIN workspaces w ON w.id=i.workspace_id WHERE i.id=?`), r.ItemID).Scan(&owner)
 		if err == sql.ErrNoRows || (err == nil && owner != r.WorkspaceID) {
@@ -162,7 +168,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 			scheduled[r.ItemID] = scheduleID
 		}
 	}
-	winners := resolveReminderCollisions(reminders, scheduled, false)
+	winners := resolveReminderCollisions(reminders, scheduled, unreadable, false)
 	converted := 0
 	for i, r := range reminders {
 		if winner, ok := winners[r.ItemID]; !ok || winner != i {
@@ -211,6 +217,25 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		if winner, ok := winners[r.ItemID]; ok && winner == i {
 			continue
 		}
+		if scheduled[r.ItemID] == "" {
+			wall := strings.TrimSuffix(migrationTime, "Z")
+			sc := &models.ItemSchedule{ID: newID(), WorkspaceID: r.WorkspaceID, ItemID: r.ItemID, Kind: "check", Dtstart: wall, Tz: ptr("UTC"), Anchor: "calendar", Audience: "both", RDates: []string{}, ExDates: []string{}, EndedAt: ptr(migrationTime), CreatedAt: migrationTime, UpdatedAt: migrationTime}
+			if err := s.insertScheduleTx(tx, sc, &scheduleRoles{Origin: "native"}); err != nil {
+				return err
+			}
+			after, err := s.scheduleSnapshotTx(tx, sc.ID)
+			if err != nil {
+				return err
+			}
+			if err := s.journalScheduleChangeReasonTx(tx, sc.ID, "import", "", "", "", after, "", legacyReminderCarrierReason, "system"); err != nil {
+				return err
+			}
+			scheduled[r.ItemID] = sc.ID
+		}
+		reason := legacyReminderHistoryReason
+		if unreadable[i] != "" {
+			reason = "reminder kept as history: unreadable " + unreadable[i]
+		}
 		before, err := legacyReminderHistoryJSON(r)
 		if err != nil {
 			return err
@@ -218,7 +243,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		changeID := newID()
 		// History does not change the existing commitment or invalidate its undo.
 		if _, err := tx.Exec(s.q(`INSERT INTO schedule_changes (id,workspace_id,item_id,schedule_id,change_type,before_json,actor,reason,reason_source,root_change_id,recorded_at)
- VALUES (?,?,?,?,'import',?,'',?,'system',?,?)`), changeID, r.WorkspaceID, r.ItemID, scheduled[r.ItemID], string(before), legacyReminderHistoryReason, changeID, nowNano()); err != nil {
+ VALUES (?,?,?,?,'import',?,'',?,'system',?,?)`), changeID, r.WorkspaceID, r.ItemID, scheduled[r.ItemID], string(before), reason, changeID, nowNano()); err != nil {
 			return err
 		}
 		result, err := tx.Exec(s.q(`DELETE FROM item_reminders WHERE id=? AND workspace_id=? AND item_id=? AND schedule_id IS NULL`), r.ID, r.WorkspaceID, r.ItemID)
@@ -238,7 +263,13 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 		return fmt.Errorf("reminder conversion count mismatch")
 	}
 
-	return s.checkReminderMigrationTx(tx)
+	if err := s.checkReminderMigrationTx(tx); err != nil {
+		return err
+	}
+	if len(counts) > 0 {
+		slog.Info("reminder migration kept unreadable rows as history", "remind_at", counts["remind_at"], "created_at", counts["created_at"], "updated_at", counts["updated_at"], "fired_at", counts["fired_at"], "acked_at", counts["acked_at"])
+	}
+	return nil
 }
 
 func (s *Store) checkReminderMigrationTx(tx *sql.Tx) error {

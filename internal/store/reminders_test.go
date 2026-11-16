@@ -1372,7 +1372,7 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 	}
 }
 
-// Invalid legacy reminders refuse the entire bundle before writing.
+// Legacy reminders with missing owners refuse the entire bundle before writing.
 func TestOrphanedReminderRefusesImport(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -1405,42 +1405,6 @@ func TestOrphanedReminderRefusesImport(t *testing.T) {
 	}
 	if s.countRows(t, `SELECT COUNT(*) FROM workspaces`) != before {
 		t.Fatal("orphan refusal wrote rows")
-	}
-}
-
-// TestImportRefusesAckWithoutFire
-//
-// The lifecycle has three states; acked-without-fired is not one of them. A
-// bundle carrying it — which this server's export cannot produce, but a
-// hand-edited or foreign one can — would import a reminder that fires, is
-// excluded from the pending surface because it is already acked, and can
-// never be acknowledged because AckReminder requires acked_at IS NULL. It
-// emits an event and is then invisible forever.
-//
-// MUTANT: assign ackedAt unconditionally and the imported row comes back
-// neither armed nor pending.
-func TestImportRefusesAckWithoutFire(t *testing.T) {
-	t.Parallel()
-	s := testStore(t)
-	owner := createTestUser(t, s, "ackfire@test.com", "Ack Fire", "password123")
-	src := createTestWorkspace(t, s, "Ack Fire")
-	col := createTestCollection(t, s, src.ID, "Tasks")
-	item := createTestItem(t, s, src.ID, col.ID, "Ship it", "")
-	armReminder(t, s, src.ID, item.ID, future)
-
-	exp, err := s.ExportWorkspace(src.Slug)
-	if err != nil {
-		t.Fatalf("ExportWorkspace: %v", err)
-	}
-	exp.Schedules = nil
-	exp.ScheduleChanges = nil
-	exp.Reminders = []models.ReminderExport{{ItemID: item.ID, RemindAt: future, AckedAt: past, CreatedAt: now(), UpdatedAt: now()}}
-	before := s.countRows(t, `SELECT COUNT(*) FROM workspaces`)
-	if _, err := s.ImportWorkspace(exp, "ack-fire-target", owner.ID, ""); err == nil {
-		t.Fatal("ack without fire accepted")
-	}
-	if s.countRows(t, `SELECT COUNT(*) FROM workspaces`) != before {
-		t.Fatal("invalid state wrote rows")
 	}
 }
 

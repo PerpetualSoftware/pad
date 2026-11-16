@@ -2343,7 +2343,8 @@ const CmdhelpVersion = "0.1"
 // v0.119 — TASK-4522: target moves past their own hard deadline now require
 // confirm_past_deadline; previously successful moves refuse without consent.
 // v0.120: instant reminders create run-once commitments. Legacy ack keeps
-// work outstanding; existing commitments refuse creation and closed items pause.
+// work outstanding; closed items pause. Reminder create reuses an ended simple
+// run-once commitment without an alarm; other existing commitments refuse.
 const ToolSurfaceVersion = "0.120"
 
 // MetaVersionURI is the canonical URI of the queryable version document.

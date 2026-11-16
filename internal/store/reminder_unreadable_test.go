@@ -121,7 +121,7 @@ func TestUnreadableReminderHistory(t *testing.T) {
 								t.Fatal("missing carrier choice journal")
 							}
 							var choice string
-							if err := s.db.QueryRow(s.q(`SELECT reason FROM schedule_changes WHERE schedule_id=? AND reason<>? AND change_type='import' LIMIT 1`), sc.ID, "reminder kept as history: unreadable "+reasonField).Scan(&choice); err != nil || !strings.Contains(choice, "migration time") {
+							if err := s.db.QueryRow(s.q(`SELECT reason FROM schedule_changes WHERE schedule_id=? AND reason LIKE '%migration time%' AND change_type='import'`), sc.ID).Scan(&choice); err != nil || !strings.Contains(choice, "migration time") {
 								t.Fatalf("choice journal: %q %v", choice, err)
 							}
 						} else if sc.ReminderID == nil || sc.EndedAt != nil {
@@ -221,8 +221,16 @@ func TestUnreadableReminderReuse(t *testing.T) {
 			s, name, body := reminderMigrationStore(t, pg)
 			ws, item, id := legacyReminderRow(t, s, "armed")
 			s.mustExec(t, `UPDATE item_reminders SET remind_at='unreadable' WHERE id=?`, id)
+			otherWS, otherItem, otherID := legacyReminderRow(t, s, "armed")
+			s.mustExec(t, `UPDATE item_reminders SET remind_at='unreadable' WHERE id=?`, otherID)
 			if err := runReminderMigration(s, name, body); err != nil {
 				t.Fatal(err)
+			}
+			if ok, err := s.DeleteScheduleChecked(otherWS, otherItem, true, nil); err != nil || !ok {
+				t.Fatalf("delete ended carrier=%t %v", ok, err)
+			}
+			if r, err := s.CreateReminder(otherWS, otherItem, "2100-01-01T00:00:00Z"); err != nil || r == nil {
+				t.Fatalf("create after ended delete=%+v %v", r, err)
 			}
 			sc, err := s.GetSchedule(ws, item)
 			if err != nil || sc == nil {

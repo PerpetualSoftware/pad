@@ -37,6 +37,8 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 	}
 	reminders := make([]*models.Reminder, 0, len(data.Reminders))
 	targets := make([]string, 0, len(data.Reminders))
+	unreadable := make([]string, 0, len(data.Reminders))
+	migrationTime := now()
 	for _, rm := range data.Reminders {
 		if !items[rm.ItemID] {
 			return nil, fmt.Errorf("legacy reminder item %s: missing owner", rm.ItemID)
@@ -48,14 +50,12 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		if rm.AckedAt != "" {
 			r.AckedAt = &rm.AckedAt
 		}
-		at, err := validateLegacyReminder(r)
-		if err != nil {
-			return nil, err
-		}
+		at, field := validateLegacyReminder(r)
+		unreadable = append(unreadable, field)
 		reminders = append(reminders, r)
 		targets = append(targets, at)
 	}
-	winners := resolveReminderCollisions(reminders, scheduled, true)
+	winners := resolveReminderCollisions(reminders, scheduled, unreadable, true)
 	for i, rm := range data.Reminders {
 		if winner, ok := winners[rm.ItemID]; !ok || winner != i {
 			continue
@@ -77,6 +77,21 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		if winner, ok := winners[rm.ItemID]; ok && winner == i {
 			continue
 		}
+		if scheduled[rm.ItemID] == "" {
+			sx := models.ScheduleExport{ID: newID(), ItemID: rm.ItemID, Kind: "check", Dtstart: strings.TrimSuffix(migrationTime, "Z"), Tz: "UTC", Anchor: "calendar", Audience: "both", EndedAt: migrationTime, CreatedAt: migrationTime, UpdatedAt: migrationTime, Roles: &models.ScheduleRolesExport{RolesOrigin: "native"}}
+			out.Schedules = append(out.Schedules, sx)
+			scheduled[rm.ItemID] = sx.ID
+			after, err := json.Marshal(sx)
+			if err != nil {
+				return nil, err
+			}
+			id := newID()
+			out.ScheduleChanges = append(out.ScheduleChanges, models.ScheduleChangeExport{ID: id, ItemID: rm.ItemID, ScheduleID: sx.ID, ChangeType: "import", AfterJSON: ptr(string(after)), Reason: legacyReminderCarrierReason, ReasonSource: "system", RootChangeID: id, RecordedAt: migrationTime})
+		}
+		reason := legacyReminderHistoryReason
+		if unreadable[i] != "" {
+			reason = "reminder kept as history: unreadable " + unreadable[i]
+		}
 		before, err := json.Marshal(map[string]any{
 			"item_id": rm.ItemID, "remind_at": rm.RemindAt,
 			"fired_at": rm.FiredAt, "acked_at": rm.AckedAt,
@@ -88,7 +103,7 @@ func convertLegacyReminderBundle(data *models.WorkspaceExport) (*models.Workspac
 		id := newID()
 		out.ScheduleChanges = append(out.ScheduleChanges, models.ScheduleChangeExport{
 			ID: id, ItemID: rm.ItemID, ScheduleID: scheduled[rm.ItemID], ChangeType: "import",
-			BeforeJSON: ptr(string(before)), Reason: legacyReminderHistoryReason, ReasonSource: "system",
+			BeforeJSON: ptr(string(before)), Reason: reason, ReasonSource: "system",
 			RootChangeID: id, RecordedAt: nowNano(),
 		})
 	}

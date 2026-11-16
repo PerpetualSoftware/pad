@@ -289,7 +289,7 @@ func TestLegacyReminderBundlePreflightRollback(t *testing.T) {
 			}
 			for _, invalid := range []string{"orphan"} {
 				t.Run(invalid, func(t *testing.T) {
-					good := models.ReminderExport{ItemID: data.Items[0].ID, RemindAt: past, CreatedAt: past, UpdatedAt: past}
+					good := models.ReminderExport{ItemID: data.Items[0].ID, RemindAt: "unreadable", CreatedAt: past, UpdatedAt: past}
 					bad := good
 					bad.ItemID = "missing"
 					data.Reminders = []models.ReminderExport{good, bad}

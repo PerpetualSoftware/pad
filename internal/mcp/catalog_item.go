@@ -461,7 +461,7 @@ Actions:
     Replaces any previous link; returns the item.
   unlink-pr — Remove PR link. Required: ref.
   remind — Create a commitment. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused).
-    Existing commitment: schedule_exists; use move/edit. Closed items pause firing.
+    Ended simple run-once without alarm: reuse; else schedule_exists. Closed items pause firing.
     start replaces remind_at for wall time; optional every, deadline, window,
     anchor, audience, tz, floating. Past remind_at fires next tick.
   schedule — Read the item's schedule. Required: ref.
