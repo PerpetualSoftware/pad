@@ -195,6 +195,7 @@ func TestBUG4019_EnableOnAnUndecryptableStoredSecretRefuses(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	task3867Want(t, doRequestWithCookie(srv, "POST", "/api/v1/auth/step-up/verify", map[string]string{"password": "pw-test-12345"}, tok), 200, "")
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/auth/2fa/verify", map[string]any{"code": validTOTPCode(t, bug4019Secret), "secret": bug4019Secret}, tok)
 	if rr.Code != http.StatusConflict {
 		t.Fatalf("enable: %d %s, want 409", rr.Code, rr.Body.String())
@@ -364,6 +365,7 @@ func TestBUG4019_RecoveryCodeRecoversAnUndecryptableSecret(t *testing.T) {
 	if dis.Token != "" {
 		token = dis.Token
 	}
+	task3867Want(t, doRequestWithCookie(srv, "POST", "/api/v1/auth/step-up/verify", map[string]string{"password": "pw-test-12345"}, token), 200, "")
 	rr = doRequestWithCookie(srv, "POST", "/api/v1/auth/2fa/setup", map[string]any{}, token)
 	var setup struct {
 		Secret string `json:"secret"`
