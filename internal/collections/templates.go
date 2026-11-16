@@ -967,6 +967,8 @@ var templates = []WorkspaceTemplate{
 		Collections: Defaults(),
 		SeedItems:   demoSeedItems(),
 	},
+	familySharedTemplate(),
+	familyPersonalTemplate(),
 }
 
 func demoSeedItems() []SeedItem {
