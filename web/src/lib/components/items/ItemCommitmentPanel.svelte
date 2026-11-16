@@ -1,7 +1,7 @@
 <script lang="ts">
  import { onDestroy, onMount, untrack } from 'svelte';
  import { api } from '$lib/api/client';
- import type { Collection, Item } from '$lib/types';
+ import { formatItemRef, type Collection, type Item } from '$lib/types';
  import { authStore } from '$lib/stores/auth.svelte';
  import { sseService } from '$lib/services/sse.svelte';
  import { browserZone } from '$lib/timezone';
@@ -175,7 +175,7 @@
   <p class="sr-only" role="status" aria-live="polite" aria-atomic="true">{actions.announcement || added}</p>
  </section>
 {/if}{#if editable}
- <ItemCommitmentDateDialog open={adding} {wsSlug} {itemSlug} itemTitle={item.title} {mobile} onclose={() => adding = false} oncreated={() => void created()} />
+ <ItemCommitmentDateDialog open={adding} {wsSlug} {itemSlug} itemRef={formatItemRef(item) ?? ''} itemTitle={item.title} {mobile} onclose={() => adding = false} oncreated={() => void created()} />
  <ForecastDialog open={!!actions.forecastEntry} entry={actions.forecastEntry} {zone} {mobile} {permissionCopy} onclose={actions.closeForecast} onsaved={actions.forecastSaved} />
  <ResolveOccurrenceDialog open={!!actions.dialogEntry} mode={actions.dialogMode} entry={actions.dialogEntry} {zone} {mobile}
   pending={actions.dialogEntry ? !!actions.pending[entryKey(actions.dialogEntry)] : false} error={actions.actionError}

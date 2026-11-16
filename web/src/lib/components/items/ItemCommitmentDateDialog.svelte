@@ -16,8 +16,8 @@
 	import { buildCommitmentCreate, COMMITMENT_RECURRENCES, describeRecurrence, type CommitmentRecurrence } from '$lib/commitment';
 	import { todayIn } from '$lib/calendar/presentation';
 
-	let { open, wsSlug, itemSlug, itemTitle = '', mobile, onclose, oncreated }: {
-		open: boolean; wsSlug: string; itemSlug: string; itemTitle?: string; mobile: boolean;
+	let { open, wsSlug, itemSlug, itemRef = '', itemTitle = '', mobile, onclose, oncreated }: {
+		open: boolean; wsSlug: string; itemSlug: string; itemRef?: string; itemTitle?: string; mobile: boolean;
 		onclose: () => void; oncreated: () => void;
 	} = $props();
 	const id = $props.id();
@@ -76,7 +76,7 @@
 	const invalid = (field: string) => errorField === field || (field === 'date' && errorField === 'dtstart');
 </script>
 
-<DialogShell {open} {mobile} {pending} title="Add date" subject={itemTitle} subjectRef={itemSlug} {onclose}>
+<DialogShell {open} {mobile} {pending} title="Add date" subject={itemTitle} subjectRef={itemRef || itemSlug} {onclose}>
 	<form id={`${id}-form`} onsubmit={submit} novalidate>
 		<div class="two">
 			<div class="field">

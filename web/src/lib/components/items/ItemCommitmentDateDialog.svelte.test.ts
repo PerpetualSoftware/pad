@@ -12,6 +12,11 @@ const submit = () => fireEvent.click(screen.getByRole('button', { name: 'Add dat
 beforeEach(() => { vi.resetAllMocks(); h.auth.identityEpoch = 0; h.auth.user = { timezone: 'America/New_York' }; h.create.mockResolvedValue({}); vi.spyOn(Date, 'now').mockReturnValue(Date.parse('2031-03-01T12:00:00Z')); });
 afterEach(() => { cleanup(); vi.restoreAllMocks(); });
 
+it('names the item by its issue ID, never its URL slug', async () => {
+ render(ItemCommitmentDateDialog, { open: true, wsSlug: 'work', itemSlug: 'draft-the-guide', itemRef: 'BACK-11', itemTitle: 'Draft the guide', mobile: false, onclose: vi.fn(), oncreated: vi.fn() });
+ await screen.findByText('BACK-11');
+ expect(screen.queryByText('draft-the-guide')).toBeNull();
+});
 it('posts a date-only once commitment and reports success', async () => {
  const { oncreated } = mount();
  await input('Target date', '2031-03-10'); await submit();
