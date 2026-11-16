@@ -1,9 +1,12 @@
 package store
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -1372,39 +1375,86 @@ func TestImportNormalizesRemindAt(t *testing.T) {
 	}
 }
 
-// Legacy reminders with missing owners refuse the entire bundle before writing.
-func TestOrphanedReminderRefusesImport(t *testing.T) {
-	t.Parallel()
-	s := testStore(t)
-	owner := createTestUser(t, s, "orphan-import@test.com", "Orphan Import", "password123")
-	src := createTestWorkspace(t, s, "Orphan Source")
-	col := createTestCollection(t, s, src.ID, "Tasks")
-	item := createTestItem(t, s, src.ID, col.ID, "Real item", "")
-	armReminder(t, s, src.ID, item.ID, future)
+// Orphans must not abort a restore or disturb the other reminders' bundle positions.
+func TestOrphanedReminderSkippedImport(t *testing.T) {
+	for _, missing := range []string{"item", "collection"} {
+		t.Run(missing, func(t *testing.T) {
+			s := testStore(t) // Also exercises Postgres under make test-pg.
+			owner := createTestUser(t, s, "orphan-import@test.com", "Orphan Import", "password123")
+			src := createTestWorkspace(t, s, "Orphan Source")
+			col := createTestCollection(t, s, src.ID, "Tasks")
+			item := createTestItem(t, s, src.ID, col.ID, "Real item", "")
+			unreadableItem := createTestItem(t, s, src.ID, col.ID, "Unreadable reminder", "")
+			exp, err := s.ExportWorkspace(src.Slug)
+			if err != nil {
+				t.Fatal(err)
+			}
+			orphanID := "orphan-item-id"
+			if missing == "collection" {
+				exp.Items = append(exp.Items, models.ItemExport{
+					ID: orphanID, CollectionID: "missing-collection", Title: "Orphan", Slug: "orphan",
+					Fields: "{}", Tags: "[]", CreatedAt: past, UpdatedAt: past,
+				})
+			}
+			orphan := models.ReminderExport{ItemID: orphanID, RemindAt: "unreadable orphan", CreatedAt: past, UpdatedAt: past}
+			good := models.ReminderExport{ItemID: item.ID, RemindAt: future, CreatedAt: past, UpdatedAt: past}
+			bad := models.ReminderExport{ItemID: unreadableItem.ID, RemindAt: "unreadable target", CreatedAt: past, UpdatedAt: past}
+			winner := good
+			winner.UpdatedAt = future // Equal-ranked rows still select the later bundle position.
+			exp.Reminders = []models.ReminderExport{orphan, good, bad, orphan, winner}
 
-	exp, err := s.ExportWorkspace(src.Slug)
-	if err != nil {
-		t.Fatalf("ExportWorkspace: %v", err)
-	}
-
-	// Add an item whose collection is NOT in the bundle, and a reminder on it.
-	orphanID := "orphan-item-id"
-	exp.Items = append(exp.Items, models.ItemExport{
-		ID: orphanID, CollectionID: "collection-that-is-not-here",
-		Title: "Orphan", Slug: "orphan", Fields: "{}", Tags: "[]",
-		CreatedAt: exp.Items[0].CreatedAt, UpdatedAt: exp.Items[0].UpdatedAt,
-	})
-	exp.Reminders = append(exp.Reminders, models.ReminderExport{
-		ItemID: orphanID, RemindAt: future,
-		CreatedAt: exp.Items[0].CreatedAt, UpdatedAt: exp.Items[0].UpdatedAt,
-	})
-
-	before := s.countRows(t, `SELECT COUNT(*) FROM workspaces`)
-	if _, err := s.ImportWorkspace(exp, "orphan-import-target", owner.ID, ""); err == nil {
-		t.Fatal("orphaned reminder accepted")
-	}
-	if s.countRows(t, `SELECT COUNT(*) FROM workspaces`) != before {
-		t.Fatal("orphan refusal wrote rows")
+			var logs bytes.Buffer
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewJSONHandler(&logs, nil)))
+			defer slog.SetDefault(old)
+			ws, report, err := s.ImportWorkspaceWithReport(exp, "orphan-import-target", owner.ID, "")
+			if err != nil {
+				t.Fatalf("orphan aborted import: %v", err)
+			}
+			if len(report.ItemIDs) != 2 || report.ItemIDs[orphanID] != "" || len(report.DroppedSchedules) != 0 {
+				t.Fatalf("import report: %+v", report)
+			}
+			if n := s.countRows(t, `SELECT COUNT(*) FROM item_schedules WHERE workspace_id=?`, ws.ID); n != 2 {
+				t.Fatalf("schedules=%d, want winner and unreadable history carrier only", n)
+			}
+			alarms, err := s.ListRemindersForItem(ws.ID, report.ItemIDs[item.ID])
+			if err != nil || len(alarms) != 1 || alarms[0].RemindAt != future || alarms[0].UpdatedAt != winner.UpdatedAt {
+				t.Fatalf("converted winner=%+v, err=%v", alarms, err)
+			}
+			if n := s.countRows(t, `SELECT COUNT(*) FROM item_reminders WHERE workspace_id=?`, ws.ID); n != 1 {
+				t.Fatalf("alarms=%d, want only readable winner", n)
+			}
+			for index, reason := range map[int]string{1: legacyReminderHistoryReason, 2: "reminder kept as history: unreadable remind_at"} {
+				var before string
+				if err := s.db.QueryRow(s.q(`SELECT before_json FROM schedule_changes WHERE workspace_id=? AND reason=?`), ws.ID, reason).Scan(&before); err != nil {
+					t.Fatal(err)
+				}
+				var got map[string]any
+				if err := json.Unmarshal([]byte(before), &got); err != nil {
+					t.Fatal(err)
+				}
+				if got["bundle_index"] != float64(index) || got["item_id"] != exp.Reminders[index].ItemID || got["remind_at"] != exp.Reminders[index].RemindAt {
+					t.Fatalf("history at original position %d: %s", index, before)
+				}
+			}
+			warnings := 0
+			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				var entry map[string]any
+				if err := json.Unmarshal([]byte(line), &entry); err != nil {
+					t.Fatal(err)
+				}
+				if entry["msg"] != "workspace import: skipped orphaned reminders" {
+					continue
+				}
+				warnings++
+				if entry["skipped"] != float64(2) || len(entry) != 4 { // time, level, msg, count only
+					t.Fatalf("orphan warning must contain only the count: %s", line)
+				}
+			}
+			if warnings != 1 {
+				t.Fatalf("orphan warnings=%d, want 1: %s", warnings, logs.String())
+			}
+		})
 	}
 }
 

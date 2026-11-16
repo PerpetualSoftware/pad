@@ -1,7 +1,9 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -185,6 +187,57 @@ func TestReminderPostReusesEndedSimpleCommitment(t *testing.T) {
 			fresh := armViaAPI(t, srv, ws, item, futureInstant)
 			if *fresh.ScheduleID == *r.ScheduleID {
 				t.Fatal("fresh create reused deleted schedule")
+			}
+		})
+	}
+}
+
+func TestReminderCreateActivity(t *testing.T) {
+	for _, reuse := range []bool{false, true} {
+		name, wantAction := "fresh", "schedule_created"
+		var wantFields []string
+		if reuse {
+			name, wantAction, wantFields = "reuse", "schedule_updated", []string{"dtstart"}
+		}
+		t.Run(name, func(t *testing.T) {
+			srv := testServer(t)
+			ws := createWSWithCollections(t, srv)
+			item := createItem(t, srv, ws, "tasks", map[string]interface{}{"title": "Reminder activity"})
+			var scheduleID string
+			if reuse {
+				r, err := srv.store.CreateReminder(item.WorkspaceID, item.ID, futureInstant)
+				if err != nil {
+					t.Fatal(err)
+				}
+				scheduleID = *r.ScheduleID
+				if _, err := srv.store.DB().Exec(`DELETE FROM item_reminders WHERE id=?`, r.ID); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := srv.store.DB().Exec(`UPDATE item_schedules SET ended_at=?,next_at=NULL,next_wall=NULL WHERE id=?`, pastInstant, scheduleID); err != nil {
+					t.Fatal(err)
+				}
+			}
+			r := armViaAPI(t, srv, ws, item, futureInstant)
+			if r.ID == "" || r.ScheduleID == nil || r.RemindAt != futureInstant || (reuse && *r.ScheduleID != scheduleID) {
+				t.Fatalf("flat Reminder response: %+v", r)
+			}
+			var count int
+			if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM activities WHERE document_id=? AND action IN ('schedule_created','schedule_updated')`, item.ID).Scan(&count); err != nil || count != 1 {
+				t.Fatalf("schedule activities=%d, err=%v", count, err)
+			}
+			var action, metadata string
+			if err := srv.store.DB().QueryRow(`SELECT action,metadata FROM activities WHERE document_id=? AND action IN ('schedule_created','schedule_updated')`, item.ID).Scan(&action, &metadata); err != nil {
+				t.Fatal(err)
+			}
+			var meta struct {
+				Kind   string   `json:"kind"`
+				Fields []string `json:"fields"`
+			}
+			if err := json.Unmarshal([]byte(metadata), &meta); err != nil {
+				t.Fatal(err)
+			}
+			if action != wantAction || meta.Kind != "check" || !reflect.DeepEqual(meta.Fields, wantFields) {
+				t.Fatalf("activity=%s %s, want %s fields=%v", action, metadata, wantAction, wantFields)
 			}
 		})
 	}
