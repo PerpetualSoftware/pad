@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { commitmentDisplayState, describeGate, describeLinkOffset, describeRecurrence } from './commitment';
-import { gate, item, link, otherId, view } from './test/commitmentFixtures';
+import { buildCommitmentCreate, COMMITMENT_RECURRENCES, commitmentAgendaEntry, commitmentDisplayState, describeGate, describeLinkOffset, describeRecurrence } from './commitment';
+import { collection, gate, item, link, otherId, view } from './test/commitmentFixtures';
 
 const now = new Date('2031-03-10T12:00:00Z');
 describe('recurrence', () => {
@@ -86,4 +86,63 @@ describe('incoming gates', () => {
   expect(describeGate(gate({ outcome }), 'Prep')).toBe(text);
  });
  it('opened_at is evidence of release', () => expect(describeGate(gate({ opened_at: '2031-03-09' }), 'Prep')).toBe('Released by Prep'));
+});
+describe('agenda entry adapter', () => {
+ const ctx = { wsSlug: 'work', item, collection, zone: 'UTC' };
+ it('maps the authoritative fields and omits what has no source', () => {
+  const v = view({ occurrence_key: '2031-03-09T10:30:00Z|x', snoozed_until: '2031-03-11T00:00:00Z', missed_count: 1, stale: false,
+   next_occurrence: { at: '2031-03-09T10:30:00Z', wall: '2031-03-10T00:30:00', state: 'acknowledged', acknowledged_at: '2031-03-09T11:00:00Z', acknowledged_by: { user_id: 'u', name: 'Alex', actor: 'user' } } });
+  expect(commitmentAgendaEntry(v, ctx)).toEqual({
+   type: 'schedule', at: '2031-03-09T10:00:00.000Z', day: '2031-03-10', wall: '2031-03-10T00:30:00', state: 'acknowledged',
+   item_ref: 'TASK-1', item_title: 'Work', collection: 'tasks', workspace: 'work', all_day: true, floating: false,
+   schedule_id: 'schedule', audience: 'both', roles: v.roles, roles_origin: 'native', occurrence_key: '2031-03-09T10:30:00Z|x',
+   snoozed_until: '2031-03-11T00:00:00Z', missed_count: 1, stale: false,
+   acknowledged_at: '2031-03-09T11:00:00Z', acknowledged_by: { user_id: 'u', name: 'Alex', actor: 'user' },
+   forecast: { value: '2031-03-12', set_by: 'user', set_by_name: 'Alex', set_by_kind: 'user', set_at: '2031-03-01T09:00:00Z', source: 'Estimate' }
+  });
+ });
+ it('preserves omission and never claims the reminder fired', () => {
+  const entry = commitmentAgendaEntry(view({ forecast: null }), ctx)!;
+  for (const key of ['fired', 'overdue', 'owner_username', 'workspace_name', 'snoozed_until', 'missed_count', 'stale', 'forecast', 'acknowledged_at', 'acknowledged_by', 'occurrence_key', 'agent_role_name', 'field', 'date', 'resolved_at', 'actor', 'comment_id']) expect(entry).not.toHaveProperty(key);
+ });
+ it('uses an instant target, or the next occurrence when there is no target', () => {
+  expect(commitmentAgendaEntry(view({ roles: { ...view().roles, target: '2031-03-10T09:00:00Z' } }), ctx)).toMatchObject({ at: '2031-03-10T09:00:00Z', all_day: false, day: '2031-03-10' });
+  expect(commitmentAgendaEntry(view({ roles: { ...view().roles, target: null } }), ctx)).toMatchObject({ at: '2031-03-09T10:30:00Z', all_day: false, day: '2031-03-09' });
+ });
+ it.each([[{ next_occurrence: undefined }], [{ ended_at: '2031-03-09' }], [{ error_code: 'bad_rule' }]])('returns null for %j', extra => {
+  expect(commitmentAgendaEntry(view(extra), ctx)).toBeNull();
+ });
+});
+describe('create body', () => {
+ const keys = (body: object) => Object.keys(body).sort();
+ it('sends a date-only once commitment with no rrule and no legacy members', () => {
+  const body = buildCommitmentCreate({ date: '2031-03-10', time: '', rule: 'once' });
+  expect(body).toEqual({ dtstart: '2031-03-10', roles: { target_days: 0, target_secs: 0 } });
+  for (const key of ['kind', 'dtend', 'every', 'tz', 'floating', 'rrule']) expect(body).not.toHaveProperty(key);
+ });
+ it('sends a timed wall, never a UTC conversion', () => {
+  expect(buildCommitmentCreate({ date: '2031-03-10', time: '09:30', rule: 'once' })).toEqual({ dtstart: '2031-03-10T09:30', roles: { target_days: 0, target_secs: 0 } });
+ });
+ it.each(COMMITMENT_RECURRENCES.filter(([value]) => value !== 'once'))('%s sends its canonical rule', (value, rrule) => {
+  const body = buildCommitmentCreate({ date: '2031-03-10', rule: value });
+  expect(body).toMatchObject({ rrule });
+  expect(describeRecurrence({ rrule, rdates: [], dtstart: '2031-03-10', anchor: 'calendar' })).not.toBe(rrule);
+ });
+ it('counts deadline days on the calendar, so a DST change adds no seconds', () => {
+  expect(buildCommitmentCreate({ date: '2031-03-08', time: '09:00', rule: 'once', deadline: { date: '2031-03-09', time: '09:00', behavior: 'lapses' } }))
+   .toEqual({ dtstart: '2031-03-08T09:00', roles: { target_days: 0, target_secs: 0, deadline_days: 1, deadline_secs: 0, deadline_behavior: 'lapses' } });
+  expect(buildCommitmentCreate({ date: '2031-03-08', rule: 'once', deadline: { date: '2031-04-08', behavior: 'stays_owed' } }))
+   .toMatchObject({ roles: { deadline_days: 31, deadline_secs: 0, deadline_behavior: 'stays_owed' } });
+ });
+ it('keeps a signed clock difference for a timed deadline', () => {
+  expect(buildCommitmentCreate({ date: '2031-03-10', time: '17:00', rule: 'once', deadline: { date: '2031-03-11', time: '09:00', behavior: 'lapses' } }))
+   .toMatchObject({ roles: { deadline_days: 1, deadline_secs: -28800 } });
+ });
+ it('refuses a missing date, a deadline before the target and a timed deadline without a time', () => {
+  expect(buildCommitmentCreate({ date: '', rule: 'once' })).toEqual({ field: 'date', message: 'Choose a target date.' });
+  expect(buildCommitmentCreate({ date: '2031-03-10', rule: 'once', deadline: { date: '2031-03-09', behavior: 'lapses' } })).toEqual({ field: 'deadline', message: 'The deadline cannot be before the target.' });
+  expect(buildCommitmentCreate({ date: '2031-03-10', time: '10:00', rule: 'once', deadline: { date: '2031-03-10', time: '09:59', behavior: 'lapses' } })).toEqual({ field: 'deadline', message: 'The deadline cannot be before the target.' });
+  expect(buildCommitmentCreate({ date: '2031-03-10', time: '10:00', rule: 'once', deadline: { date: '2031-03-11', time: '', behavior: 'lapses' } })).toEqual({ field: 'deadline', message: 'Choose a deadline time.' });
+  expect(keys(buildCommitmentCreate({ date: '2031-03-10', rule: 'once', deadline: { date: '2031-03-10', behavior: 'lapses' } }))).toEqual(['dtstart', 'roles']);
+ });
 });
