@@ -1,0 +1,167 @@
+package store
+
+import (
+	"fmt"
+	"os"
+	"strings"
+	"testing"
+	"time"
+)
+
+func reminderMigrationStore(t *testing.T, pg bool) (*Store, string, string) {
+	t.Helper()
+	var s *Store
+	name := "183_reminders_require_commitment.sql"
+	fs, dir := migrationsFS, "migrations/"
+	if pg {
+		url := os.Getenv("PAD_TEST_POSTGRES_URL")
+		if url == "" {
+			t.Skip("PAD_TEST_POSTGRES_URL not set")
+		}
+		s = testStorePostgres(t, url)
+		s.mustExec(t, `ALTER TABLE item_reminders ALTER COLUMN schedule_id DROP NOT NULL`)
+		name = "143_reminders_require_commitment.sql"
+		fs, dir = pgMigrationsFS, "pgmigrations/"
+		s.mustExec(t, `DELETE FROM schema_migrations WHERE version=?`, name)
+	} else {
+		db, _ := preMigrationDB(t, "183")
+		s = &Store{db: db, dialect: &sqliteDialect{}}
+	}
+	body, err := fs.ReadFile(dir + name)
+	if err != nil {
+		t.Fatalf("missing paired migration: %v", err)
+	}
+	return s, name, string(body)
+}
+
+func runReminderMigration(s *Store, name, body string) error {
+	if s.dialect.Driver() == DriverPostgres {
+		return applyPostgresMigration(s.db, name, body)
+	}
+	return applySQLiteMigration(s.db, name, body)
+}
+
+func legacyReminderRow(t *testing.T, s *Store, state string) (string, string, string) {
+	t.Helper()
+	ws := createTestWorkspace(t, s, "Legacy reminders")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item := createTestItem(t, s, ws.ID, col.ID, "Legacy", "open")
+	id := newID()
+	var fired, acked any
+	if state == "fired" || state == "acked" {
+		fired = past
+	}
+	if state == "acked" {
+		acked = past
+	}
+	s.mustExec(t, `INSERT INTO item_reminders(id,workspace_id,item_id,remind_at,fired_at,acked_at,created_at,updated_at) VALUES(?,?,?,?,?,?,?,?)`, id, ws.ID, item.ID, past, fired, acked, past, past)
+	return ws.ID, item.ID, id
+}
+
+func testReminderMigrationLifecycle(t *testing.T, state string) {
+	for _, pg := range []bool{false, true} {
+		t.Run(fmt.Sprint(pg), func(t *testing.T) {
+			s, name, body := reminderMigrationStore(t, pg)
+			ws, item, id := legacyReminderRow(t, s, state)
+			before, err := s.GetReminder(ws, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := runReminderMigration(s, name, body); err != nil {
+				t.Fatal(err)
+			}
+			if err := runReminderMigration(s, name, body); err != nil {
+				t.Fatalf("second upgrade: %v", err)
+			}
+			r, err := s.GetReminder(ws, id)
+			if err != nil || r == nil || r.ScheduleID == nil || derefStr(r.FiredAt) != derefStr(before.FiredAt) || derefStr(r.AckedAt) != derefStr(before.AckedAt) || r.CreatedAt != before.CreatedAt || r.UpdatedAt != before.UpdatedAt {
+				t.Fatalf("lost identity or state: %+v %v", r, err)
+			}
+			if s.countRows(t, `SELECT COUNT(*) FROM schedule_changes WHERE item_id=? AND change_type='import'`, item) != 1 || s.countRows(t, `SELECT COUNT(*) FROM schedule_occurrences`) != 0 {
+				t.Fatal("conversion journal or invented resolution")
+			}
+			for tick := 0; tick < 2; tick++ {
+				fired, err := s.FireDueReminders(nowTS(), 0)
+				want := 0
+				if state == "armed" && tick == 0 {
+					want = 1
+				}
+				if err != nil || len(fired) != want {
+					t.Fatalf("tick %d fired=%d want=%d err=%v", tick, len(fired), want, err)
+				}
+			}
+		})
+	}
+}
+func TestReminderMigrationFiredNeverReplays(t *testing.T) { testReminderMigrationLifecycle(t, "fired") }
+func TestReminderMigrationAckedNeverReplays(t *testing.T) { testReminderMigrationLifecycle(t, "acked") }
+func TestReminderMigrationArmedPastFiresOnce(t *testing.T) {
+	testReminderMigrationLifecycle(t, "armed")
+}
+
+func TestReminderMigrationConflictRollback(t *testing.T) {
+	for _, pg := range []bool{false, true} {
+		for _, mode := range []string{"multiple", "existing", "ended", "invalid_time", "invalid_state", "after_backfill", "constraint"} {
+			t.Run(fmt.Sprint(pg)+"/"+mode, func(t *testing.T) {
+				s, name, body := reminderMigrationStore(t, pg)
+				ws, item, id := legacyReminderRow(t, s, "armed")
+				switch mode {
+				case "multiple":
+					s.mustExec(t, `INSERT INTO item_reminders(id,workspace_id,item_id,remind_at,created_at,updated_at) VALUES(?,?,?,?,?,?)`, newID(), ws, item, past, past, past)
+				case "existing", "ended":
+					var ended any
+					if mode == "ended" {
+						ended = past
+					}
+					s.mustExec(t, `INSERT INTO item_schedules(id,workspace_id,item_id,kind,dtstart,tz,ended_at,created_at,updated_at) VALUES(?,?,?,'check','2020-01-01T00:00:00','UTC',?,?,?)`, newID(), ws, item, ended, past, past)
+				case "invalid_time":
+					s.mustExec(t, `UPDATE item_reminders SET remind_at='invalid' WHERE id=?`, id)
+				case "invalid_state":
+					s.mustExec(t, `UPDATE item_reminders SET acked_at=? WHERE id=?`, past, id)
+				case "after_backfill":
+					body = "SELECT * FROM absent_conversion_table;"
+				case "constraint":
+					body += "\nINSERT INTO item_reminders(id,workspace_id,item_id,remind_at,created_at,updated_at) SELECT id||'bad',workspace_id,item_id,remind_at,created_at,updated_at FROM item_reminders;"
+				}
+				before := renegotiateRows(t, s, "item_reminders", "") + renegotiateRows(t, s, "item_schedules", "") + renegotiateRows(t, s, "schedule_changes", "")
+				err := runReminderMigration(s, name, body)
+				if err == nil {
+					t.Fatal("migration accepted invalid population")
+				}
+				if (mode == "multiple" || mode == "existing" || mode == "ended") && !strings.Contains(err.Error(), item) {
+					t.Fatalf("collision must identify item and reason: %v", err)
+				}
+				after := renegotiateRows(t, s, "item_reminders", "") + renegotiateRows(t, s, "item_schedules", "") + renegotiateRows(t, s, "schedule_changes", "")
+				if before != after || s.countRows(t, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, name) != 0 {
+					t.Fatal("refusal was not atomic")
+				}
+			})
+		}
+	}
+}
+
+func TestReminderMigrationLockTimeoutRollback(t *testing.T) {
+	s, name, body := reminderMigrationStore(t, true)
+	_, _, _ = legacyReminderRow(t, s, "armed")
+	before := renegotiateRows(t, s, "item_reminders", "")
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.Exec(`LOCK TABLE items IN ROW EXCLUSIVE MODE`); err != nil {
+		t.Fatal(err)
+	}
+	started := time.Now()
+	err = runReminderMigration(s, name, body)
+	if err == nil || !strings.Contains(err.Error(), "lock timeout") {
+		t.Fatalf("expected lock timeout: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 29*time.Second || elapsed > 45*time.Second {
+		t.Fatalf("unexpected lock timeout: %v", elapsed)
+	}
+	tx.Rollback()
+	if renegotiateRows(t, s, "item_reminders", "") != before || s.countRows(t, `SELECT COUNT(*) FROM item_schedules`) != 0 || s.countRows(t, `SELECT COUNT(*) FROM schema_migrations WHERE version=?`, name) != 0 {
+		t.Fatal("lock timeout changed migration state")
+	}
+}
