@@ -185,6 +185,9 @@ const POPULATION: string[] = [
 	// SPEC-6 U9d (TASK-3413): installed apps' item actions; its list load and
 	// its mint each fence with authStore.identityFence() after the await.
 	'lib/components/items/ItemAppActions.svelte',
+	// TASK-4600: read-only loads fence identity and item generation after awaits.
+	'lib/components/items/ItemCommitmentPanel.svelte',
+	'lib/components/items/ItemCommitmentLinks.svelte',
 	'lib/components/attachments/AttachmentSurfaceHost.svelte',
 	'lib/components/common/QuickActionsMenu.svelte',
 	'lib/components/common/Menu.svelte',

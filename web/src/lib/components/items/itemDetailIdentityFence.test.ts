@@ -107,6 +107,7 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		QuickActionsMenu: ['oncollectionupdated'],
 		ChildItems: ['onChildrenChange'],
 		BacklinksPanel: ['onCountChange'],
+		ItemCommitmentPanel: ['onSnapshot'],
 		EditCollectionModal: ['onupdated', 'onclose'],
 		CopyItemDialog: ['onmove', 'oncopied'],
 		BuiltinUpdateNotice: ['onAccepted'],
@@ -169,7 +170,8 @@ describe('ItemDetail: children calling back after their own awaits (class C, par
 		// is bumped by the cleanup that runs when the identity key remounts it.
 		// A new child tag with a callback prop must be read and either added
 		// above or added here with its reason.
-		const SYNC_OR_AWARE = new Set(['FieldEditor', 'TagInput', 'RawMarkdownEditor', 'Editor', 'Menu', 'MenuItem', 'ContentError', 'EditorLinkPopover', 'Graph', 'ItemPicker', 'EditorBubbleMenu', 'PushToAgentDialog', 'RefusedRawDraftNotice', 'RestoredDraftResult']);
+		// TASK-4600: ItemCommitmentLinks calls onOpenTarget synchronously on a link click.
+		const SYNC_OR_AWARE = new Set(['FieldEditor', 'TagInput', 'RawMarkdownEditor', 'Editor', 'Menu', 'MenuItem', 'ContentError', 'EditorLinkPopover', 'Graph', 'ItemPicker', 'EditorBubbleMenu', 'PushToAgentDialog', 'RefusedRawDraftNotice', 'RestoredDraftResult', 'ItemCommitmentLinks']);
 		const tags = new Set([...MARKUP.matchAll(/<([A-Z]\w+)\b[^>]*?\bon[a-zA-Z]+=\{/gs)].map((m) => m[1]!));
 		const unknown = [...tags].filter((t) => !(t in CALLBACK_CHILDREN) && !SYNC_OR_AWARE.has(t));
 		expect(unknown).toEqual([]);
