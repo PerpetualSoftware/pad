@@ -52,3 +52,11 @@ it('discards stale item hydration when the snapshot switches', async () => {
  await rerender(props(view())); resolve({ ...item, id: otherId, title: 'Old secret title' });
  await Promise.resolve(); expect(container.textContent).toBe('');
 });
+it('keeps rows and reuses names when the same item refreshes', async () => {
+ const p = props(); const { rerender } = render(ItemCommitmentLinks, p);
+ await screen.findAllByRole('link', { name: 'TASK-2 · Prepare release' });
+ await rerender({ ...p, snapshot: { ...p.snapshot } });
+ expect(screen.getAllByRole('link', { name: 'TASK-2 · Prepare release' }).length).toBeGreaterThan(0);
+ await waitFor(() => expect(screen.getAllByRole('link', { name: 'TASK-2 · Prepare release' })).toHaveLength(3));
+ expect(h.get).toHaveBeenCalledTimes(1);
+});

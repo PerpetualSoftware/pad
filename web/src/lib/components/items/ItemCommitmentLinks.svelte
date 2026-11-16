@@ -23,7 +23,10 @@
  let disposed = false;
  const source = $derived(snapshot && snapshot.wsSlug === wsSlug && snapshot.itemId === itemId && snapshot.itemSlug === itemSlug
   && snapshot.authEpoch === authStore.identityEpoch && snapshot.zone === zone ? snapshot : null);
- const result = $derived(loaded?.source === source ? loaded : null);
+ const sameIdentity = (a: ItemCommitmentSnapshot, b: ItemCommitmentSnapshot) => a.wsSlug === b.wsSlug && a.itemId === b.itemId
+  && a.itemSlug === b.itemSlug && a.authEpoch === b.authEpoch && a.zone === b.zone;
+ // A refresh of the same identity keeps the shown rows until its answer arrives.
+ const result = $derived(loaded && source && sameIdentity(loaded.source, source) ? loaded : null);
  const links = $derived(result?.source.view?.links ?? []);
  const gates = $derived(result?.gates);
  const hasGates = $derived(gates && (gates.gates.length > 0 || gates.state !== 'released'));
@@ -32,7 +35,8 @@
   const ticket = ++generation;
   const isSameIdentity = authStore.identityFence();
   const target = source;
-  loaded = null;
+  const previous = loaded && target && sameIdentity(loaded.source, target) ? loaded : null;
+  if (!previous) loaded = null;
   failed = null;
   if (!target || target.view === undefined) return;
   const current = () => !disposed && ticket === generation && target === source;
@@ -44,6 +48,8 @@
     ...gateView.gates.map(gate => gate.blocker_item_id)
    ]);
    const entries = await Promise.all([...ids].map(async id => {
+    const known = previous?.items[id];
+    if (known) return [id, known] as const;
     try { return [id, await api.items.get(target.wsSlug, id)] as const; }
     catch { return null; }
    }));

@@ -74,10 +74,9 @@ export function commitmentDisplayState(view: ItemCommitmentView & { itemClosed?:
 
 export function describeLinkOffset(link: CommitmentLink, thisItemId: string, otherLabel: string): string {
  const role = (name: string) => name === 'occupied_until' ? 'occupied end' : name;
- const child = link.child_item_id === thisItemId ? "This item's" : `${otherLabel}'s`;
- const parent = link.child_item_id === thisItemId ? `${otherLabel}'s` : "this item's";
- const subject = `${child} ${role(link.child_role)} is`;
- const object = `${parent} ${role(link.parent_role)}`;
+ const thisIsChild = link.child_item_id === thisItemId;
+ const subject = thisIsChild ? `This item's ${role(link.child_role)} is` : `The ${role(link.child_role)} of ${otherLabel} is`;
+ const object = thisIsChild ? `the ${role(link.parent_role)} of ${otherLabel}` : `this item's ${role(link.parent_role)}`;
  const offset = link.offset;
  if (offset.mode === 'elapsed') {
   const seconds = offset.elapsed_secs ?? 0;
@@ -89,15 +88,16 @@ export function describeLinkOffset(link: CommitmentLink, thisItemId: string, oth
    if (count) duration.push(`${count} ${unit}${count === 1 ? '' : 's'}`);
    remainder %= size;
   }
-  return `${subject} ${duration.join(' ')} elapsed ${seconds < 0 ? 'before' : 'after'} ${object} (1 day = 24 hours)`;
+  // Elapsed time: a day here is 24 hours, not a calendar day.
+  return `${subject} ${duration.join(' ')} ${seconds < 0 ? 'before' : 'after'} ${object} (elapsed time)`;
  }
  const days = offset.days ?? 0;
  const clock = offset.clock_secs ?? 0;
  const pad = (n: number) => String(n).padStart(2, '0');
  const time = `${pad(Math.floor(clock / 3600))}:${pad(Math.floor(clock % 3600 / 60))}${clock % 60 ? `:${pad(clock % 60)}` : ''}`;
  const when = offset.all_day ? `all day (${offset.zone})` : `at ${time} ${offset.zone}`;
- return days === 0 ? `${subject} on the same date as ${object} ${when}`
-  : `${subject} ${Math.abs(days)} calendar day${Math.abs(days) === 1 ? '' : 's'} ${days < 0 ? 'before' : 'after'} ${object}'s date ${when}`;
+ return days === 0 ? `${subject} on the same date as ${object}, ${when}`
+  : `${subject} ${Math.abs(days)} calendar day${Math.abs(days) === 1 ? '' : 's'} ${days < 0 ? 'before' : 'after'} ${object}, ${when}`;
 }
 
 export function describeGate(gate: CommitmentGateView | CommitmentGate, otherLabel = 'Linked item'): string {

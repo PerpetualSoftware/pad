@@ -62,20 +62,20 @@ describe('display state', () => {
 });
 describe('directed links', () => {
  it.each([
-  [{ mode: 'elapsed' as const, elapsed_secs: 90061 }, '1 day 1 hour 1 minute 1 second elapsed after', ' (1 day = 24 hours)'],
-  [{ mode: 'elapsed' as const, elapsed_secs: -3600 }, '1 hour elapsed before', ' (1 day = 24 hours)'],
+  [{ mode: 'elapsed' as const, elapsed_secs: 90061 }, '1 day 1 hour 1 minute 1 second after', ' (elapsed time)'],
+  [{ mode: 'elapsed' as const, elapsed_secs: -3600 }, '1 hour before', ' (elapsed time)'],
   [{ mode: 'elapsed' as const }, 'at the same instant as', ''],
-  [{ mode: 'civil' as const, days: 2, clock_secs: 34215, zone: 'Europe/London' }, '2 calendar days after', "'s date at 09:30:15 Europe/London"],
-  [{ mode: 'civil' as const, days: -1, clock_secs: 32400, zone: 'Europe/London' }, '1 calendar day before', "'s date at 09:00 Europe/London"],
-  [{ mode: 'civil' as const, zone: 'UTC' }, 'on the same date as', " at 00:00 UTC"],
-  [{ mode: 'civil' as const, days: 1, all_day: true, zone: 'UTC' }, '1 calendar day after', "'s date all day (UTC)"]
+  [{ mode: 'civil' as const, days: 2, clock_secs: 34215, zone: 'Europe/London' }, '2 calendar days after', ', at 09:30:15 Europe/London'],
+  [{ mode: 'civil' as const, days: -1, clock_secs: 32400, zone: 'Europe/London' }, '1 calendar day before', ', at 09:00 Europe/London'],
+  [{ mode: 'civil' as const, zone: 'UTC' }, 'on the same date as', ', at 00:00 UTC'],
+  [{ mode: 'civil' as const, days: 1, all_day: true, zone: 'UTC' }, '1 calendar day after', ', all day (UTC)']
  ])('keeps both directions for %j', (offset, phrase, suffix) => {
   const l = link({ offset });
-  expect(describeLinkOffset(l, item.id, 'TASK-2 · Prep')).toBe(`This item's deadline is ${phrase} TASK-2 · Prep's target${suffix}`);
-  expect(describeLinkOffset(l, otherId, 'TASK-1 · Work')).toBe(`TASK-1 · Work's deadline is ${phrase} this item's target${suffix}`);
+  expect(describeLinkOffset(l, item.id, 'TASK-2 · Prep')).toBe(`This item's deadline is ${phrase} the target of TASK-2 · Prep${suffix}`);
+  expect(describeLinkOffset(l, otherId, 'TASK-1 · Work')).toBe(`The deadline of TASK-1 · Work is ${phrase} this item's target${suffix}`);
  });
  it('names earliest and occupied end', () => {
-  expect(describeLinkOffset(link({ child_role: 'earliest', parent_role: 'occupied_until', offset: { mode: 'elapsed' } }), item.id, 'Prep')).toBe("This item's earliest is at the same instant as Prep's occupied end");
+  expect(describeLinkOffset(link({ child_role: 'earliest', parent_role: 'occupied_until', offset: { mode: 'elapsed' } }), item.id, 'Prep')).toBe("This item's earliest is at the same instant as the occupied end of Prep");
  });
 });
 describe('incoming gates', () => {

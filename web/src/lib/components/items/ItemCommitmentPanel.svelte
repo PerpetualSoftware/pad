@@ -41,8 +41,12 @@
   const isSameIdentity = authStore.identityFence();
   const target: ItemCommitmentSnapshot = { wsSlug, itemId: item.id, itemSlug, authEpoch: authStore.identityEpoch, zone, view: undefined };
   failed = false;
-  snapshot = target;
-  onSnapshot(target);
+  // A background refresh of the same identity keeps the shown view until its
+  // answer arrives, so an edit to the item doesn't blank the section.
+  if (!(snapshot && current(snapshot) && snapshot.view !== undefined)) {
+   snapshot = target;
+   onSnapshot(target);
+  }
   try {
    const loaded = await api.getCommitment(target.wsSlug, target.itemSlug);
    if (!isSameIdentity() || ticket !== generation || !current(target)) return;
@@ -89,7 +93,7 @@
    {:else if view.next_occurrence}
     <div class="date-row primary"><span class="label">Next occurrence</span><span>{isDateOnly(view.dtstart) ? roleText(view.next_occurrence.wall.slice(0, 10), zone) : dateTime(view.next_occurrence.at, zone)}</span></div>
    {/if}
-   <p class="recurrence">{describeRecurrence(view)}</p>
+   <div class="date-row"><span class="label">Repeats</span><span class="recurrence">{describeRecurrence(view)}</span></div>
    {#if view.rdates.length}<details><summary>Additional dates</summary>{#each view.rdates as date}<div>{date}</div>{/each}</details>{/if}
    {#if view.exdates.length}<details><summary>Excluded dates</summary>{#each view.exdates as date}<div>{date}</div>{/each}</details>{/if}
    {#if view.roles.deadline}

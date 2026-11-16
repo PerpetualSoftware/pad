@@ -67,3 +67,15 @@ it('keeps specific dates expandable and date-only values out of timezone convers
  expect(screen.getByText('Additional dates').closest('details')).toHaveTextContent('2031-03-12');
  expect(screen.getByText('Excluded dates').closest('details')).toHaveTextContent('2031-03-13');
 });
+it('keeps the shown view while an item_updated refresh is in flight', async () => {
+ const p = props(); render(ItemCommitmentPanel, p); await screen.findByText('every Monday');
+ const published = p.onSnapshot.mock.calls.length;
+ let resolve!: (value: ItemCommitmentView) => void;
+ h.get.mockReturnValueOnce(new Promise<ItemCommitmentView>(r => { resolve = r; }));
+ h.subscribe.mock.calls[0][0]({ type: 'item_updated', item_id: item.id });
+ await waitFor(() => expect(h.get).toHaveBeenCalledTimes(2));
+ flushSync();
+ expect(screen.getByText('every Monday')).toBeTruthy();
+ expect(p.onSnapshot.mock.calls.slice(published).some(([s]) => s.view === undefined)).toBe(false);
+ resolve(view({ rrule: 'FREQ=DAILY' })); await screen.findByText('every day');
+});
