@@ -1115,30 +1115,31 @@ type fkCheckResult struct {
 // make the listing itself fail.
 var fkCheckTablesQuery = `SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`
 
-// foreignKeyViolations runs PRAGMA foreign_key_check on tx for each table.
-// Only listing the tables is fatal; a table whose check fails is recorded as
-// unavailable.
-func foreignKeyViolations(ctx context.Context, tx *sql.Tx) (fkCheckResult, error) {
+// foreignKeyViolations runs PRAGMA foreign_key_check on tx for the supplied
+// tables, or every table if none are supplied. Only listing the tables is fatal;
+// a table whose check fails is recorded as unavailable.
+func foreignKeyViolations(ctx context.Context, tx *sql.Tx, tables ...string) (fkCheckResult, error) {
 	res := fkCheckResult{counts: map[string]int{}, checked: map[string]bool{}, unavailable: map[string]error{}}
-	var tables []string
-	rows, err := tx.QueryContext(ctx, fkCheckTablesQuery)
-	if err != nil {
-		return res, err
-	}
-	for rows.Next() {
-		var t string
-		if err := rows.Scan(&t); err != nil {
+	if len(tables) == 0 {
+		rows, err := tx.QueryContext(ctx, fkCheckTablesQuery)
+		if err != nil {
+			return res, err
+		}
+		for rows.Next() {
+			var t string
+			if err := rows.Scan(&t); err != nil {
+				rows.Close()
+				return res, err
+			}
+			tables = append(tables, t)
+		}
+		if err := rows.Err(); err != nil {
 			rows.Close()
 			return res, err
 		}
-		tables = append(tables, t)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return res, err
-	}
-	if err := rows.Close(); err != nil {
-		return res, err
+		if err := rows.Close(); err != nil {
+			return res, err
+		}
 	}
 	for _, t := range tables {
 		counts, err := foreignKeyViolationsOf(ctx, tx, t)
@@ -1315,8 +1316,15 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 	// A failure to list the tables at all skips the check, on either side.
 	var fkBefore fkCheckResult
 	fkCheck := fkOff
+	var fkTables []string
+	if name == sqliteReminderMigration && !fkOff {
+		// This child-table rebuild keeps FK enforcement on. Still compare the
+		// conversion tables before/after, without refusing legacy violations.
+		fkCheck = true
+		fkTables = []string{"item_reminders", "item_schedules", "schedule_changes"}
+	}
 	if fkCheck {
-		if fkBefore, err = foreignKeyViolations(ctx, tx); err != nil {
+		if fkBefore, err = foreignKeyViolations(ctx, tx, fkTables...); err != nil {
 			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "before", "error", err)
 			fkCheck = false
 		}
@@ -1335,7 +1343,7 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 		return fmt.Errorf("apply migration %s: %w", name, err)
 	}
 	if fkCheck {
-		after, err := foreignKeyViolations(ctx, tx)
+		after, err := foreignKeyViolations(ctx, tx, fkTables...)
 		if err != nil {
 			slog.Warn("migration foreign key check unavailable; skipped", "migration", name, "stage", "after", "error", err)
 		}

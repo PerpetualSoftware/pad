@@ -280,16 +280,7 @@ func (s *Store) checkReminderMigrationTx(tx *sql.Tx) error {
 	if invalid != 0 {
 		return fmt.Errorf("reminder conversion left %d invalid attachments", invalid)
 	}
-	if s.dialect.Driver() == DriverSQLite {
-		rows, err := tx.Query(`PRAGMA foreign_key_check`)
-		if err != nil {
-			return err
-		}
-		defer rows.Close()
-		if rows.Next() {
-			return fmt.Errorf("reminder conversion left foreign key violations")
-		}
-		return rows.Err()
-	}
+	// SQLite FK integrity is checked against the pre-conversion baseline by
+	// applySQLiteMigration; legacy violations must not block this upgrade.
 	return nil
 }
