@@ -399,9 +399,17 @@ func TestCommitmentCRUDHTTP(t *testing.T) {
 	if created["reminder_id"] == nil {
 		t.Error("no reminder_id")
 	}
+	// GET reproduces the POST body plus its GET-only `editable` hint (TASK-4600).
 	got := f.do("GET", nil)
-	if got.Code != 200 || !schedJSONEqual(t, got.Body.Bytes(), created) {
-		t.Errorf("GET %d differs from the POST body:\n%s\n%v", got.Code, got.Body.String(), created)
+	if _, ok := created["editable"]; ok {
+		t.Errorf("POST body carries the GET-only editable hint")
+	}
+	wantGet := map[string]any{"editable": true}
+	for k, v := range created {
+		wantGet[k] = v
+	}
+	if got.Code != 200 || !schedJSONEqual(t, got.Body.Bytes(), wantGet) {
+		t.Errorf("GET %d differs from the POST body plus editable:\n%s\n%v", got.Code, got.Body.String(), created)
 	}
 	lr := f.as(f.token(f.owner, ""), "GET", "/api/v1/workspaces/"+f.ws.Slug+"/items/"+f.item.Slug+"/reminders", nil)
 	if !strings.Contains(lr.Body.String(), `"schedule_id":"`+created["id"].(string)+`"`) {
