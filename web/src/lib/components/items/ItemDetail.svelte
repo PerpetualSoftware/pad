@@ -1,6 +1,9 @@
 <script lang="ts">
 	import { viaAppTitle } from '$lib/utils/viaApp';
 	import ItemAppActions from './ItemAppActions.svelte';
+	import ItemCommitmentPanel from './ItemCommitmentPanel.svelte';
+	import ItemCommitmentLinks from './ItemCommitmentLinks.svelte';
+	import type { ItemCommitmentSnapshot } from '$lib/commitment';
 	import { LINK_DIRECTIONS, linkDirection, linkEnds, linkSentence } from '$lib/items/linkDirections';
 	import { safeString, safeText } from '$lib/fields/fieldShape';
 	import { page, navigating } from '$app/state';
@@ -1063,6 +1066,7 @@
 	// panel stay consistent — when the panel loads zero rows it
 	// notifies us and the badge hides.
 	let backlinksCount = $state(0);
+	let commitmentSnapshot = $state.raw<{ identity: number; snapshot: ItemCommitmentSnapshot } | null>(null);
 
 	// Drives BottomSheet vs popover branching for mobile-only surfaces on this
 	// page (currently the "Move to…" menu) via the shared breakpoint store
@@ -7291,6 +7295,17 @@
 			     the instant the ref changes. -->
 			{#key itemSlug}
 			<div class="fields-panel">
+				{#if item && itemMatchesRef && visibility.seenVisible}
+					{#key identityKey}
+					{@const handedDown = identityKey}
+					<ItemCommitmentPanel {wsSlug} {itemSlug} {item} {collection}
+						onSnapshot={(snapshot) => {
+							if (handedDown !== identityKey || !itemMatchesRef || snapshot.wsSlug !== wsSlug || snapshot.itemId !== item?.id || snapshot.itemSlug !== itemSlug || snapshot.authEpoch !== authStore.identityEpoch) return;
+							commitmentSnapshot = { identity: handedDown, snapshot };
+						}}
+					/>
+					{/key}
+				{/if}
 				<div class="fields-header">Properties</div>
 				{#each schema.fields as field (field.key)}
 					{#if field.computed}
@@ -7989,6 +8004,10 @@
 					{/each}
 				</div>
 			</div>
+		{/if}
+
+		{#if item && itemMatchesRef && visibility.seenVisible}
+			<ItemCommitmentLinks {wsSlug} {username} {itemSlug} itemId={item.id} snapshot={commitmentSnapshot?.identity === identityKey ? commitmentSnapshot.snapshot : null} onOpenTarget={paneOpenTarget} />
 		{/if}
 
 		<!-- Add Relationship — a source-item-scoped REST link create, side-independent,
