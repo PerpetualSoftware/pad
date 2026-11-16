@@ -1,5 +1,6 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
+import { stripPointer, swipeStrip } from '../../../test/weekStripGesture';
 import AgendaWeekStrip from './AgendaWeekStrip.svelte';
 import type { AgendaEntry } from '$lib/types';
 
@@ -96,4 +97,118 @@ describe('AgendaWeekStrip', () => {
 		await fireEvent.dragEnter(buttons[3]); expect(onenter).toHaveBeenCalledWith('2031-03-13');
 		await fireEvent.drop(buttons[3]); expect(ondrop).toHaveBeenCalledWith('2031-03-13');
 	});
+});
+
+describe('week strip touch swipes', () => {
+	it('moves next on a left swipe and previous on a right swipe', async () => {
+		const onswipe = vi.fn(); mount({ onswipe });
+		const root = screen.getByRole('group', { name: 'Days' });
+		expect(root.style.touchAction).toBe('pan-y');
+		await swipeStrip(root); await swipeStrip(root, 80);
+		expect(onswipe.mock.calls).toEqual([[1], [-1]]);
+	});
+	it('rejects a short slow swipe but accepts a short fast flick', async () => {
+		const onswipe = vi.fn(); mount({ onswipe });
+		const root = screen.getByRole('group', { name: 'Days' });
+		await swipeStrip(root, -30); expect(onswipe).not.toHaveBeenCalled();
+		await swipeStrip(root, -30, 0, 40); expect(onswipe).toHaveBeenCalledWith(1);
+	});
+	it('leaves vertical movement and a later tap alone', async () => {
+		const onswipe = vi.fn(); const { onselect } = mount({ onswipe });
+		await swipeStrip(button(days[0]), 30, 80);
+		await fireEvent.click(button(days[0]));
+		expect(onswipe).not.toHaveBeenCalled(); expect(onselect).toHaveBeenCalledWith(days[0]);
+	});
+	it.each([-80, -30])('swallows the click after a horizontal swipe (%s px), but preserves a new tap', async dx => {
+		const { onselect } = mount({ onswipe: vi.fn() });
+		await swipeStrip(button(days[0]), dx);
+		await fireEvent.click(button(days[0])); expect(onselect).not.toHaveBeenCalled();
+		await stripPointer(button(days[1]), 'pointerdown', 200);
+		await stripPointer(button(days[1]), 'pointerup', 200);
+		await fireEvent.click(button(days[1])); expect(onselect).toHaveBeenCalledWith(days[1]);
+	});
+	it.each(['mouse', 'pen'])('ignores %s drags', async pointerType => {
+		const onswipe = vi.fn(); mount({ onswipe });
+		await swipeStrip(button(days[0]), -80, 0, 300, 200, pointerType);
+		expect(onswipe).not.toHaveBeenCalled();
+	});
+	it.each(['left', 'right'])('leaves the %s viewport edge to back navigation', async edge => {
+		const onswipe = vi.fn(); mount({ onswipe });
+		await swipeStrip(button(days[0]), edge === 'left' ? 80 : -80, 0, 300, edge === 'left' ? 12 : window.innerWidth - 12);
+		expect(onswipe).not.toHaveBeenCalled();
+	});
+	it('reverses swipes in an RTL container', async () => {
+		const onswipe = vi.fn(); const { container } = mount({ onswipe }); container.dir = 'rtl';
+		const root = screen.getByRole('group', { name: 'Days' });
+		// jsdom does not inherit direction from dir; supply the browser computed value.
+		const computed = window.getComputedStyle.bind(window);
+		vi.spyOn(window, 'getComputedStyle').mockImplementation(element => element === root ? Object.assign(computed(element), { direction: 'rtl' }) : computed(element));
+		try { await swipeStrip(root); expect(onswipe).toHaveBeenCalledWith(-1); }
+		finally { vi.restoreAllMocks(); }
+	});
+	it('has no touch-action override without an onswipe callback', async () => {
+		const { onselect } = mount(); const root = screen.getByRole('group', { name: 'Days' });
+		expect(root.style.touchAction).not.toBe('pan-y');
+		await swipeStrip(button(days[0])); await fireEvent.click(button(days[0]));
+		expect(onselect).toHaveBeenCalledWith(days[0]);
+	});
+	it('cancels without committing and ignores swipes during desktop drag-and-drop', async () => {
+		const onswipe = vi.fn(); const view = mount({ onswipe }); const root = screen.getByRole('group', { name: 'Days' });
+		await stripPointer(root, 'pointerdown', 200);
+		await stripPointer(root, 'pointermove', 100, 100, 100);
+		await stripPointer(root, 'pointercancel', 100, 100, 110);
+		expect(onswipe).not.toHaveBeenCalled();
+		await view.rerender({ dragging: entry() }); await swipeStrip(root);
+		expect(onswipe).not.toHaveBeenCalled();
+	});
+});
+
+it('tracks only	the first touch and keeps a vertical gesture vertical', async () => {
+	const onswipe = vi.fn(); mount({ onswipe }); const root = screen.getByRole('group', { name: 'Days' });
+	await stripPointer(root, 'pointerdown', 200);
+	await stripPointer(root, 'pointerdown', 250, 100, 0, 'touch', 2);
+	await stripPointer(root, 'pointermove', 100, 100, 50, 'touch', 2);
+	await stripPointer(root, 'pointerup', 100, 100, 60, 'touch', 2);
+	expect(onswipe).not.toHaveBeenCalled();
+	await stripPointer(root, 'pointermove', 230, 180, 100);
+	await stripPointer(root, 'pointermove', 100, 180, 200);
+	await stripPointer(root, 'pointerup', 100, 180, 210);
+	expect(onswipe).not.toHaveBeenCalled();
+});
+
+it('uses recent velocity in the displacement direction, not an earlier flick or a reversal', async () => {
+	const onswipe = vi.fn(); mount({ onswipe }); const root = screen.getByRole('group', { name: 'Days' });
+	await stripPointer(root, 'pointerdown', 200);
+	await stripPointer(root, 'pointermove', 170, 100, 40);
+	await stripPointer(root, 'pointerup', 170, 100, 400);
+	expect(onswipe).not.toHaveBeenCalled();
+	await stripPointer(root, 'pointerdown', 200);
+	await stripPointer(root, 'pointermove', 130, 100, 200);
+	await stripPointer(root, 'pointermove', 175, 100, 250);
+	await stripPointer(root, 'pointerup', 175, 100, 260);
+	expect(onswipe).not.toHaveBeenCalled();
+});
+
+it('damps and clamps the row, springs back, and slides a changed week in from the swipe side', async () => {
+	const view = mount({ onswipe: vi.fn() }); const root = screen.getByRole('group', { name: 'Days' });
+	vi.spyOn(root, 'getBoundingClientRect').mockReturnValue({ width: 300 } as DOMRect);
+	const motion = () => root.querySelector<HTMLElement>('.motion')!;
+	await stripPointer(root, 'pointerdown', 200);
+	await stripPointer(root, 'pointermove', 170, 100, 300);
+	expect(motion().style.transform).toBe('translateX(-18px)');
+	await stripPointer(root, 'pointerup', 170, 100, 310);
+	expect(motion().style.transform).toBe('');
+	await stripPointer(root, 'pointerdown', 300);
+	await stripPointer(root, 'pointermove', 50, 100, 300);
+	expect(motion().style.transform).toBe('translateX(-120px)');
+	await stripPointer(root, 'pointerup', 50, 100, 310);
+	await view.rerender({ days: days.map(day => `2031-03-${Number(day.slice(8)) + 7}`) });
+	expect(root.querySelector('.days')).toHaveClass('slide-right');
+	await swipeStrip(root, 80);
+	await view.rerender({ days });
+	expect(root.querySelector('.days')).toHaveClass('slide-left');
+	// Other period controls do not reuse the last swipe's animation.
+	await view.rerender({ days: days.map(day => `2031-03-${Number(day.slice(8)) + 7}`) });
+	expect(root.querySelector('.days')).not.toHaveClass('slide-left', 'slide-right');
+	vi.restoreAllMocks();
 });

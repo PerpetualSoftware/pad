@@ -1,7 +1,7 @@
 <script lang="ts">
 	import Button from '$lib/components/common/Button.svelte';
 	import { avatarColor } from '$lib/utils/avatar';
-	import { onMount } from 'svelte';
+	import { onMount, onDestroy } from 'svelte';
 	import { goto } from '$app/navigation';
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
@@ -17,8 +17,8 @@
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import AgendaCompleted from '$lib/components/calendar/AgendaCompleted.svelte';
 	import { audienceCounts, filterAudience, type AudienceView } from '$lib/calendar/audience';
-	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
-	import type { AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
+	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, dayWindow, weekLabel, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import type { AgendaResponse, AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
 	// The agenda's Show completed preference, per user: hidden there means hidden here.
@@ -34,8 +34,39 @@
 	let busy = $state<Record<string, boolean>>({});
 	const zone = $derived(homeOverview.zone);
 	const today = $derived(homeOverview.today);
-	const days = $derived(Array.from({ length: 7 }, (_, i) => shiftDay(homeOverview.monday, i)));
+	let weekOffset = $state(0);
+	let stripAgenda = $state<AgendaResponse | null>(null);
+	let stripRequest = 0;
+	const firstDay = $derived(shiftDay(homeOverview.monday, 7 * weekOffset));
+	const days = $derived(Array.from({ length: 7 }, (_, i) => shiftDay(firstDay, i)));
 	const entries = $derived(filterEntries(homeOverview.agenda?.entries ?? [], false));
+	const stripEntries = $derived(weekOffset === 0 ? entries : filterEntries(stripAgenda?.entries ?? [], false));
+	const stripLoad = () => weekOffset === 0
+		? homeOverview.loading ? 'none' : homeOverview.agenda?.window_complete === false ? 'partial' : 'full'
+		: !stripAgenda ? 'none' : stripAgenda.window_complete === false ? 'partial' : 'full';
+	function thisWeek() {
+		stripRequest++;
+		weekOffset = 0;
+		stripAgenda = null;
+	}
+	// Identity changes clear already-loaded local counts as well as fencing pending requests.
+	$effect(() => { authStore.identityEpoch; thisWeek(); });
+	onDestroy(() => { stripRequest++; });
+	async function swipeWeek(delta: 1 | -1) {
+		weekOffset += delta;
+		stripAgenda = null;
+		const request = ++stripRequest;
+		if (weekOffset === 0) return;
+		const sameIdentity = authStore.identityFence();
+		const from = dayWindow(firstDay, zone).from;
+		const to = dayWindow(shiftDay(firstDay, 6), zone).to;
+		try {
+			const response = await api.getMyAgenda(from, to, zone, undefined, ['completed'], 'omit');
+			if (sameIdentity() && request === stripRequest) stripAgenda = response;
+		} catch {
+			if (sameIdentity() && request === stripRequest) stripAgenda = null;
+		}
+	}
 	const todayCompleted = $derived(filterAudience((homeOverview.agenda?.entries ?? []).filter(e => isCompleted(e) && e.day === today), audience));
 	const todayEntries = $derived(entries.filter(e => e.day === today && (e.type === 'schedule' || e.type === 'date')));
 	const counts = $derived(audienceCounts(todayEntries));
@@ -107,7 +138,10 @@
 	</header>
 	{#if homeOverview.error}<p role="alert">{homeOverview.error} <button onclick={() => homeOverview.load('/', true)}>Retry</button></p>{/if}
 	{#if actionError}<p role="alert">{actionError}</p>{/if}
-	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} {entries} {zone} dragging={null} hoverDay="" onselect={openAgenda} onenter={() => {}} ondrop={() => {}} loadState={() => homeOverview.loading ? 'none' : homeOverview.agenda?.window_complete === false ? 'partial' : 'full'} />
+	{#if weekOffset !== 0}
+		<div class="strip-week"><span>{weekLabel(firstDay, viewport.isMobile)}</span><button type="button" class="invitations-toggle" onclick={thisWeek}>This week</button></div>
+	{/if}
+	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripEntries} {zone} dragging={null} hoverDay="" onselect={openAgenda} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} />
 	<div class="overview-columns">
 		<section class="panel needs-panel" aria-label="Needs you">
 			<header><h2>Needs you <span class="badge">{homeOverview.needs?.total ?? '…'}</span></h2><span class="sort">Oldest waiting</span></header>
@@ -150,6 +184,7 @@
 	/* Closing the last tab highlights the way back in (PLAN-3002 Q2). */
 	.workspaces :global(.btn.add-highlighted) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 35%, transparent); }
 	.workspaces > header > span { flex: 1; }
+	.strip-week { display: flex; align-items: center; justify-content: space-between; color: var(--text-muted); font-size: 12px; }
 	.invitations-toggle { color: var(--accent-blue); background: none; border: none; font: inherit; cursor: pointer; padding: 0; }
 	.home-invitations { border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--bg-secondary); overflow: hidden; margin: 0 0 var(--space-3); }
 	.home :global(.strip) { margin-top: 0; }

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { on } from 'svelte/events';
 	import { isSnoozed, deadlineTone, isOpenState, longDay, roleDay } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
@@ -21,11 +22,12 @@
 		/** The day the drag is over. */
 		hoverDay: string;
 		onselect: (day: string) => void;
+		onswipe?: (delta: 1 | -1) => void;
 		onenter: (day: string) => void;
 		ondrop: (day: string) => void;
 	}
 
-	let { days, today, selected, entries, loadState = () => 'full', zone, now = new Date(Date.now()), compact = false, dragging, hoverDay, onselect, onenter, ondrop }: Props = $props();
+	let { days, today, selected, entries, loadState = () => 'full', zone, now = new Date(Date.now()), compact = false, dragging, hoverDay, onselect, onenter, ondrop, onswipe }: Props = $props();
 
 	type Tone = 'bad' | 'owed' | 'quiet' | 'done';
 	const ORDER: Tone[] = ['bad', 'owed', 'quiet', 'done'];
@@ -34,6 +36,90 @@
 	const MAX_PIPS_COMPACT = 4;
 	let root = $state<HTMLDivElement>();
 	let focused = $state('');
+	let translation = $state(0);
+	let tracking = $state(false);
+	// Plain bookkeeping: consumed only when a changed first day recreates the row.
+	let lastSwipe: { firstDay: string; delta: 1 | -1; side: 'left' | 'right' } | null = null;
+	function slideFor(firstDay: string) {
+		const swipe = lastSwipe;
+		lastSwipe = null;
+		return swipe && (swipe.delta === 1 ? firstDay > swipe.firstDay : firstDay < swipe.firstDay) ? swipe.side : '';
+	}
+
+	$effect(() => {
+		const node = root;
+		const swipe = onswipe;
+		if (!node || !swipe || dragging) return;
+		let pointer: { id: number; x: number; y: number; axis: 'pending' | 'horizontal' | 'vertical'; samples: { x: number; time: number }[] } | null = null;
+		let suppressClick = false;
+		let clickTimer: ReturnType<typeof setTimeout> | undefined;
+		function clearClick() { suppressClick = false; clearTimeout(clickTimer); }
+		function suppressNextClick() {
+			clearClick();
+			suppressClick = true;
+			clickTimer = setTimeout(clearClick, 400);
+		}
+		function down(event: PointerEvent) {
+			clearClick();
+			if (event.pointerType !== 'touch' || pointer) return;
+			lastSwipe = null;
+			if (event.clientX < 24 || event.clientX > window.innerWidth - 24) return;
+			pointer = { id: event.pointerId, x: event.clientX, y: event.clientY, axis: 'pending', samples: [{ x: event.clientX, time: event.timeStamp }] };
+		}
+		function matches(event: PointerEvent) { return event.pointerType === 'touch' && pointer?.id === event.pointerId; }
+		function sample(event: PointerEvent) {
+			if (!pointer) return;
+			pointer.samples.push({ x: event.clientX, time: event.timeStamp });
+			pointer.samples = pointer.samples.filter(point => point.time >= event.timeStamp - 100);
+		}
+		function move(event: PointerEvent) {
+			if (!matches(event) || !pointer) return;
+			const dx = event.clientX - pointer.x;
+			const dy = event.clientY - pointer.y;
+			if (pointer.axis === 'pending' && Math.hypot(dx, dy) > 10) {
+				pointer.axis = Math.abs(dx) > Math.abs(dy) * 1.5 ? 'horizontal' : 'vertical';
+			}
+			if (pointer.axis === 'vertical') return;
+			sample(event);
+			if (pointer.axis === 'horizontal') {
+				tracking = true;
+				const limit = node!.getBoundingClientRect().width * 0.4;
+				translation = Math.max(-limit, Math.min(limit, dx * 0.6));
+			}
+		}
+		function finish(event: PointerEvent) {
+			if (!matches(event) || !pointer) return;
+			const gesture = pointer;
+			sample(event);
+			pointer = null;
+			tracking = false;
+			translation = 0;
+			if (gesture.axis !== 'horizontal') return;
+			suppressNextClick();
+			if (event.type === 'pointercancel') return;
+			const dx = event.clientX - gesture.x;
+			const first = gesture.samples[0];
+			const elapsed = event.timeStamp - first.time;
+			const velocity = elapsed > 0 ? (event.clientX - first.x) / elapsed : 0;
+			if (Math.abs(dx) < 48 && !(Math.abs(velocity) > 0.4 && Math.sign(velocity) === Math.sign(dx))) return;
+			const rtl = getComputedStyle(node!).direction === 'rtl';
+			const delta = rtl ? (dx < 0 ? -1 : 1) : (dx < 0 ? 1 : -1);
+			lastSwipe = { firstDay: days[0], delta, side: dx < 0 ? 'right' : 'left' };
+			swipe!(delta);
+		}
+		const remove = [
+			on(node, 'pointerdown', down), on(node, 'pointermove', move),
+			on(node, 'pointerup', finish), on(node, 'pointercancel', finish),
+			on(node, 'click', event => {
+				if (!suppressClick) return;
+				clearClick(); event.preventDefault(); event.stopPropagation();
+			}, { capture: true })
+		];
+		return () => {
+			remove.forEach(off => off()); clearClick();
+			tracking = false; translation = 0; lastSwipe = null;
+		};
+	});
 
 	function tone(entry: AgendaEntry): Tone {
 		if (entry.type === 'date') return entry.overdue ? 'bad' : 'quiet';
@@ -87,30 +173,49 @@
 	}
 </script>
 
-<div bind:this={root} class="strip" role="group" aria-label="Days">
-	{#each days as day, index (day)}
-		{@const info = load.get(day)!}
-		{@const pinned = pin(day)}
-		{@const over = !!dragging && hoverDay === day}
-		<button type="button" class="day" class:today={day === today} class:quiet={info.state === 'full' && info.count === 0} class:over class:pinned={pinned === 'Deadline'}
-			data-strip-day={day} data-load={info.state === 'full' ? undefined : info.state} data-drop={dragging ? 'true' : undefined}
-			aria-label={label(day)} aria-current={day === today ? 'date' : undefined} aria-pressed={selected ? day === selected : undefined}
-			tabindex={day === stop ? 0 : -1}
-			onclick={() => onselect(day)} onfocus={() => focused = day} onkeydown={event => onkeydown(event, index)}
-			ondragenter={event => { if (dragging) { event.preventDefault(); onenter(day); } }}
-			ondragover={event => { if (dragging) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; } }}
-			ondrop={event => { event.preventDefault(); ondrop(day); }}>
-			<span class="date"><span class="dow">{weekday(day)}</span><span class="num">{+day.slice(8)}</span></span>
-			<span class="load">
-				<span class="n">{over && !pinned ? 'Move here' : pinned || figure(day)}</span>
-				<span class="pips">{#each info.tones as pip, at (at)}<span class="pip" data-tone={pip}></span>{/each}</span>
-			</span>
-		</button>
-	{/each}
+<div bind:this={root} class="strip" class:swipe-enabled={!!onswipe} role="group" aria-label="Days" style:touch-action={onswipe ? 'pan-y' : undefined}>
+	{#key onswipe ? days[0] : ''}
+		{@const slide = slideFor(days[0])}
+		<div class="motion" class:tracking style:transform={translation ? `translateX(${translation}px)` : undefined}>
+			<div class="days" class:slide-left={slide === 'left'} class:slide-right={slide === 'right'}>
+				{#each days as day, index (day)}
+					{@const info = load.get(day)!}
+					{@const pinned = pin(day)}
+					{@const over = !!dragging && hoverDay === day}
+					<button type="button" class="day" class:today={day === today} class:quiet={info.state === 'full' && info.count === 0} class:over class:pinned={pinned === 'Deadline'}
+						data-strip-day={day} data-load={info.state === 'full' ? undefined : info.state} data-drop={dragging ? 'true' : undefined}
+						aria-label={label(day)} aria-current={day === today ? 'date' : undefined} aria-pressed={selected ? day === selected : undefined}
+						tabindex={day === stop ? 0 : -1}
+						onclick={() => onselect(day)} onfocus={() => focused = day} onkeydown={event => onkeydown(event, index)}
+						ondragenter={event => { if (dragging) { event.preventDefault(); onenter(day); } }}
+						ondragover={event => { if (dragging) { event.preventDefault(); if (event.dataTransfer) event.dataTransfer.dropEffect = 'move'; } }}
+						ondrop={event => { event.preventDefault(); ondrop(day); }}>
+						<span class="date"><span class="dow">{weekday(day)}</span><span class="num">{+day.slice(8)}</span></span>
+						<span class="load">
+							<span class="n">{over && !pinned ? 'Move here' : pinned || figure(day)}</span>
+							<span class="pips">{#each info.tones as pip, at (at)}<span class="pip" data-tone={pip}></span>{/each}</span>
+						</span>
+					</button>
+				{/each}
+			</div>
+		</div>
+	{/key}
 </div>
 
 <style>
-	.strip { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--space-2); margin-top: var(--space-4); }
+	.strip { margin-top: var(--space-4); }
+	.swipe-enabled { overflow: clip; overflow-clip-margin: 4px; }
+	.motion { transition: transform 180ms ease-out; }
+	.motion.tracking { transition: none; }
+	.days { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: var(--space-2); }
+	.slide-left { animation: slide-left 180ms ease-out; }
+	.slide-right { animation: slide-right 180ms ease-out; }
+	@keyframes slide-left { from { transform: translateX(-24%); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }
+	@keyframes slide-right { from { transform: translateX(24%); opacity: 0.4; } to { transform: translateX(0); opacity: 1; } }
+	@media (prefers-reduced-motion: reduce) {
+		.motion { transform: none !important; transition: none; }
+		.days { animation: none; }
+	}
 	.day { display: flex; align-items: center; gap: var(--space-3); min-width: 0; min-height: 52px; padding: 8px 12px; overflow: hidden; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg-secondary); color: var(--text-primary); font: inherit; text-align: left; cursor: pointer; }
 	.day:hover { background: var(--bg-hover); }
 	.day:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 2px; }
@@ -137,7 +242,8 @@
 		.day:not([data-drop]) .n { display: none; }
 	}
 	@media (max-width: 768px) {
-		.strip { gap: 4px; margin-top: var(--space-3); }
+		.strip { margin-top: var(--space-3); }
+		.days { gap: 4px; }
 		.day { flex-direction: column; align-items: center; gap: 1px; min-height: 58px; padding: 6px 0 7px; }
 		.date { align-items: center; }
 		.num { font-size: 16px; }
