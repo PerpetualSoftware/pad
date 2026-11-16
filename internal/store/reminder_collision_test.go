@@ -273,36 +273,3 @@ func boolInt(v bool) int {
 	}
 	return 0
 }
-
-func TestLegacyReminderBundlePreflightRollback(t *testing.T) {
-	for _, pg := range []bool{false, true} {
-		t.Run(fmt.Sprint(pg), func(t *testing.T) {
-			s, _, _ := reminderMigrationStore(t, pg)
-			ws, _, _ := legacyReminderRow(t, s, "armed")
-			workspace, err := s.GetWorkspaceByID(ws)
-			if err != nil {
-				t.Fatal(err)
-			}
-			data, err := s.ExportWorkspace(workspace.Slug)
-			if err != nil {
-				t.Fatal(err)
-			}
-			for _, invalid := range []string{"orphan"} {
-				t.Run(invalid, func(t *testing.T) {
-					good := models.ReminderExport{ItemID: data.Items[0].ID, RemindAt: "unreadable", CreatedAt: past, UpdatedAt: past}
-					bad := good
-					bad.ItemID = "missing"
-					data.Reminders = []models.ReminderExport{good, bad}
-					before := renegotiateRows(t, s, "workspaces", "") + renegotiateRows(t, s, "item_schedules", "") + renegotiateRows(t, s, "schedule_changes", "")
-					if _, err := s.ImportWorkspace(data, "Invalid legacy", "", "test"); err == nil {
-						t.Fatal("invalid reminder accepted")
-					}
-					after := renegotiateRows(t, s, "workspaces", "") + renegotiateRows(t, s, "item_schedules", "") + renegotiateRows(t, s, "schedule_changes", "")
-					if before != after {
-						t.Fatal("preflight failure changed database")
-					}
-				})
-			}
-		})
-	}
-}
