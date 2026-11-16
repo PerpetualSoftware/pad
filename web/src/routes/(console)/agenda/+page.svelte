@@ -252,6 +252,12 @@
 		if (mode === 'day') stripAnchor = stripStart;
 		selectedDay = mode === 'month' ? moveMonth(day, delta) : shiftDay(day, delta * (mode === 'week' ? 7 : 1));
 	}
+	function swipeWeek(delta: 1 | -1) {
+		if (mode !== 'day') { movePeriod(delta); return; }
+		clearDrag();
+		stripAnchor = shiftDay(stripStart, 7 * delta);
+		selectedDay = shiftDay(day, 7 * delta);
+	}
 	async function dayAction(entry: AgendaEntry, state: AgendaAction) {
 		const sameIdentity = authStore.identityFence();
 		if (state === 'snooze' || state === 'move' || state === 'forecast') {
@@ -964,7 +970,7 @@
 	<div id={`${surfaceId}-surface`} role={switching ? 'tabpanel' : undefined} aria-labelledby={switching ? `${surfaceId}-tab-${surface}` : undefined}>
 		{#if schedule}
 			<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} loadState={stripLoad} {zone} {now} compact={mobile}
-				{dragging} {hoverDay} onselect={pickDay} onenter={enterDay} ondrop={dropDay} />
+				{dragging} {hoverDay} onselect={pickDay} onswipe={swipeWeek} onenter={enterDay} ondrop={dropDay} />
 		{/if}
 		<div class="layout">
 			{#if schedule}

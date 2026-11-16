@@ -18,7 +18,7 @@ class HomeOverview {
 	get today() { return todayIn(this.zone); }
 	get monday() { const day = this.today; return shiftDay(day, -((new Date(day + 'T12:00Z').getUTCDay() + 6) % 7)); }
 	load(path: string, force = false): Promise<void> {
-		const key = `${authStore.userId}:${path}:${this.today}`;
+		const key = `${authStore.userId}:${path}:${this.zone}:${this.today}`;
 		if (!force && key === this.key) return this.pending ?? Promise.resolve();
 		this.key = key;
 		const sameIdentity = authStore.identityFence();

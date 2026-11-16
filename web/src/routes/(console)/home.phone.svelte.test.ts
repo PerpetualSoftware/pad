@@ -1,14 +1,16 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
+import { stripPointer, swipeStrip } from '../../test/weekStripGesture';
+import type { AgendaEntry, AgendaResponse } from '$lib/types';
 import { tick } from 'svelte';
 import { page } from '$app/state';
 
-const h = vi.hoisted(() => ({ needs: vi.fn(), agenda: vi.fn(), snooze: vi.fn(async () => ({})), load: vi.fn(async () => {}), invitations: vi.fn(async () => {}), listMyInvitations: vi.fn(), acceptMyInvitation: vi.fn(), tabsOpen: vi.fn(async () => {}), reset: () => {} }));
+const h = vi.hoisted(() => ({ needs: vi.fn(), agenda: vi.fn(), snooze: vi.fn(async () => ({})), load: vi.fn(async () => {}), invitations: vi.fn(async () => {}), listMyInvitations: vi.fn(), acceptMyInvitation: vi.fn(), tabsOpen: vi.fn(async () => {}), reset: () => {}, epoch: 0 }));
 vi.mock('$lib/api/client', () => ({ api: { needs: { list: h.needs, snooze: h.snooze }, getMyAgenda: h.agenda, members: { listMyInvitations: h.listMyInvitations, acceptMyInvitation: h.acceptMyInvitation } } }));
 vi.mock('$app/state', () => import('../../test/mocks/app-state-reactive.svelte'));
 vi.mock('$app/navigation', () => ({ goto: vi.fn(), afterNavigate: vi.fn() }));
 vi.mock('$lib/stores/breakpoint.svelte', () => ({ MOBILE_MEDIA_QUERY: '(max-width: 768px)', viewport: { isMobile: true } }));
-vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { authenticated: true, userId: 'u', user: { name: 'Mara', timezone: 'UTC' }, identityFence: () => () => true, onIdentityChange: (reset: () => void) => { h.reset = reset; return () => {}; } } }));
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { authenticated: true, userId: 'u', user: { name: 'Mara', timezone: 'UTC' }, identityFence: () => { const epoch = h.epoch; return () => epoch === h.epoch; }, onIdentityChange: (reset: () => void) => { h.reset = reset; return () => {}; } } }));
 vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { current: null, workspaces: [], ensureAll: h.load, loadAll: h.load } }));
 vi.mock('$lib/stores/tabs.svelte', () => ({ tabsStore: { open: h.tabsOpen } }));
 vi.mock('$lib/stores/chatSetting.svelte', () => ({ chatSetting: { enabled: false } }));
@@ -28,7 +30,7 @@ const invitation = {
 };
 
 beforeEach(() => {
-	vi.clearAllMocks();
+	vi.clearAllMocks(); h.epoch = 0;
 	h.reset();
 	pendingInvitations.set([invitation], pendingInvitations.reserve());
 	vi.spyOn(pendingInvitations, 'refresh').mockImplementation(h.invitations);
@@ -128,4 +130,84 @@ it('refreshes the phone overview once per You-page arrival', async () => {
 		await vi.waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(calls));
 		expect(h.needs).toHaveBeenCalledTimes(calls);
 	}
+});
+
+const weekEntry =	(day: string, extra: Partial<AgendaEntry> = {}): AgendaEntry => ({
+	type: 'schedule', state: 'outstanding', day, at: `${day}T16:00:00Z`, item_ref: 'TASK-42', item_title: 'Today work', collection: 'tasks', workspace: 'ws', ...extra
+});
+const weekResponse = (entries: AgendaEntry[] = [], window_complete = true): AgendaResponse => ({
+	from: '', to: '', tz: 'UTC', entries, window_complete, priority_list: [], priority_list_complete: true, waiting_on: [], waiting_on_complete: true, no_date: [], no_date_complete: true
+});
+const deferredWeek = () => {
+	let resolve!: (value: AgendaResponse) => void;
+	const promise = new Promise<AgendaResponse>(r => resolve = r);
+	return { promise, resolve };
+};
+const firstStripDay = () => document.querySelector<HTMLButtonElement>('[data-strip-day]')!;
+async function mountSwipeHome() {
+	h.agenda.mockResolvedValueOnce(weekResponse([weekEntry('2026-11-13')]));
+	await homeOverview.load('/', true);
+	render(Home);
+	await tick();
+}
+
+it('swipes Home to next week, fetches only the strip and returns to This week without a request', async () => {
+	await mountSwipeHome();
+	const today = screen.getByRole('region', { name: 'Today' }).textContent;
+	const needs = screen.getByRole('region', { name: 'Needs you' }).textContent;
+	const summary = document.querySelector('.summary')!.textContent;
+	expect(firstStripDay().dataset.stripDay).toBe('2026-11-09');
+	expect(screen.queryByRole('button', { name: 'This week' })).not.toBeInTheDocument();
+	h.agenda.mockResolvedValueOnce(weekResponse([weekEntry('2026-11-16'), weekEntry('2026-11-16', { type: 'completed' }), weekEntry('2026-11-16', { type: 'created' })]));
+	await swipeStrip(screen.getByRole('group', { name: 'Days' }));
+	expect(firstStripDay().dataset.stripDay).toBe('2026-11-16');
+	expect(h.agenda).toHaveBeenCalledTimes(2);
+	expect(h.agenda).toHaveBeenLastCalledWith('2026-11-16T00:00:00.000Z', '2026-11-23T00:00:00.000Z', 'UTC', undefined, ['completed'], 'omit');
+	expect(firstStripDay()).toHaveAccessibleName(/1 entry, 1 owed/);
+	expect(screen.getByText('16–22 Nov')).toBeInTheDocument();
+	expect(screen.getByRole('region', { name: 'Today' }).textContent).toBe(today);
+	expect(screen.getByRole('region', { name: 'Needs you' }).textContent).toBe(needs);
+	expect(document.querySelector('.summary')!.textContent).toBe(summary);
+	await fireEvent.click(screen.getByRole('button', { name: 'This week' }));
+	expect(firstStripDay().dataset.stripDay).toBe('2026-11-09');
+	expect(h.agenda).toHaveBeenCalledTimes(2);
+	expect(screen.queryByRole('button', { name: 'This week' })).not.toBeInTheDocument();
+	await vi.waitFor(() => expect(document.activeElement).toHaveAttribute('data-strip-day'));
+	expect(document.activeElement).toHaveAttribute('tabindex', '0');
+	const { goto } = await import('$app/navigation');
+	await stripPointer(firstStripDay(), 'pointerdown', 200);
+	await stripPointer(firstStripDay(), 'pointerup', 200);
+	await fireEvent.click(firstStripDay()); expect(goto).toHaveBeenCalledWith('/agenda');
+});
+
+it('keeps the second swipe response when the first response arrives late', async () => {
+	await mountSwipeHome();
+	const first = deferredWeek(); const second = deferredWeek();
+	h.agenda.mockReturnValueOnce(first.promise).mockReturnValueOnce(second.promise);
+	const root = screen.getByRole('group', { name: 'Days' });
+	await swipeStrip(root);
+	expect(firstStripDay()).toHaveAttribute('data-load', 'none');
+	await swipeStrip(root);
+	expect(firstStripDay().dataset.stripDay).toBe('2026-11-23');
+	expect(h.agenda).toHaveBeenCalledTimes(3);
+	second.resolve(weekResponse([weekEntry('2026-11-23')], false)); await tick();
+	expect(firstStripDay()).toHaveAttribute('data-load', 'partial');
+	expect(firstStripDay().querySelectorAll('.pip')).toHaveLength(1);
+	first.resolve(weekResponse([weekEntry('2026-11-16')])); await tick();
+	expect(firstStripDay()).toHaveAttribute('data-load', 'partial');
+	expect(firstStripDay().querySelectorAll('.pip')).toHaveLength(1);
+});
+
+it('shows no strip counts or banner on failure and ignores a response from an old identity', async () => {
+	await mountSwipeHome();
+	h.agenda.mockRejectedValueOnce(new Error('offline'));
+	await swipeStrip(screen.getByRole('group', { name: 'Days' }));
+	expect(firstStripDay()).toHaveAttribute('data-load', 'none');
+	expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+	const pending = deferredWeek(); h.agenda.mockReturnValueOnce(pending.promise);
+	await swipeStrip(screen.getByRole('group', { name: 'Days' }));
+	h.epoch++;
+	pending.resolve(weekResponse([weekEntry('2026-11-23')])); await tick();
+	expect(firstStripDay()).toHaveAttribute('data-load', 'none');
+	expect(firstStripDay().querySelectorAll('.pip')).toHaveLength(0);
 });

@@ -1,5 +1,6 @@
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor, cleanup, within } from '@testing-library/svelte';
+import { swipeStrip } from '../../../test/weekStripGesture';
 import { flushSync } from 'svelte';
 import type { AgendaEntry, AgendaResponse, AgendaWorkEntry, CommitmentMoveResult, WorkspaceGroup, WorkspaceGroupsResponse } from '$lib/types';
 
@@ -2179,5 +2180,28 @@ describe('independent agenda counts (TASK-4587)', () => {
   expect(screen.queryByText('Loading counts')).toBeNull();
   next.resolve(response([], { counts_truncated: true }));
   expect(await screen.findByText('Counts unavailable for this window: too much activity to count.')).toBeTruthy();
+ });
+});
+
+
+describe('week strip swipe navigation', () => {
+ it.each(['week', 'day'])('%s swipes move the strip and selected period seven days through the existing loader', async mode => {
+  localStorage.setItem('pad-agenda-mode:user-a', mode);
+  await mount();
+  if (mode === 'day') {
+   await fireEvent.click(screen.getByRole('button', { name: 'Next day' }));
+   await waitFor(() => expect(stripDay('2026-11-06')).toHaveAttribute('aria-pressed', 'true'));
+  }
+  const calls = h.agenda.mock.calls.length;
+  await swipeStrip(screen.getByRole('group', { name: 'Days' }));
+  expect(stripDays().map(b => b.dataset.stripDay)).toEqual(['2026-11-12', '2026-11-13', '2026-11-14', '2026-11-15', '2026-11-16', '2026-11-17', '2026-11-18']);
+  if (mode === 'day') expect(stripDay('2026-11-13')).toHaveAttribute('aria-pressed', 'true');
+  await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(calls + 1));
+  expect(h.agenda.mock.calls.at(-1)?.slice(0, 2)).toEqual(mode === 'day'
+   ? ['2026-11-13T05:00:00.000Z', '2026-11-14T05:00:00.000Z']
+   : ['2026-11-12T05:00:00.000Z', '2026-11-19T05:00:00.000Z']);
+  await swipeStrip(screen.getByRole('group', { name: 'Days' }), 80);
+  expect(stripDays()[0].dataset.stripDay).toBe('2026-11-05');
+  if (mode === 'day') expect(stripDay('2026-11-06')).toHaveAttribute('aria-pressed', 'true');
  });
 });

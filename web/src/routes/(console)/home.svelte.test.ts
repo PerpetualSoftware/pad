@@ -169,3 +169,21 @@ it('hands a lapsed occurrence to the full agenda instead of resolving it (TASK-4
 	expect(h.getCommitment).not.toHaveBeenCalled();
 	expect(h.resolve).not.toHaveBeenCalled();
 });
+it('refetches the overview when the time zone changes on the same date (TASK-4595 review)', async () => {
+	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
+	h.needs.mockResolvedValue({ rows: [], total: 0, hidden: 0, workspaces: [] });
+	h.agenda.mockResolvedValue({ entries: [], priority_list: [], window_complete: true });
+	const { authStore } = await import('$lib/stores/auth.svelte');
+	const { homeOverview } = await import('$lib/stores/homeOverview.svelte');
+	await homeOverview.load('/', true);
+	h.agenda.mockClear();
+	await homeOverview.load('/');
+	expect(h.agenda).not.toHaveBeenCalled();
+	const user = authStore.user as { timezone: string };
+	user.timezone = 'Europe/Berlin';
+	try {
+		await homeOverview.load('/');
+		expect(h.agenda).toHaveBeenCalledTimes(1);
+		expect(h.agenda).toHaveBeenCalledWith(expect.any(String), expect.any(String), 'Europe/Berlin', undefined, ['completed'], 'omit');
+	} finally { user.timezone = 'UTC'; }
+});
