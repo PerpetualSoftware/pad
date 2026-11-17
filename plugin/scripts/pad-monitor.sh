@@ -64,16 +64,22 @@ pad session register >/dev/null 2>&1 || true
 
 # --- 0.75. Bounded consent wait, connect monitor only (BUG-4511). Only a
 # first argument of --await-consent enables it; any other argument is
-# ignored so the script stays silent. A non-numeric override falls back to
-# the default rather than erroring.
+# ignored so the script stays silent. An override is used only when it is a
+# plain decimal of one to four digits with no leading zero; anything else
+# takes the default rather than erroring. That one rule excludes zero (the
+# counter would never advance), a leading zero (shell arithmetic reads 08 as
+# bad octal) and an over-long number (it overflows the test builtin).
 if [ "${1:-}" = "--await-consent" ]; then
 	wait_max="${PAD_MONITOR_CONSENT_WAIT:-60}"
 	poll="${PAD_MONITOR_CONSENT_POLL:-2}"
-	case "$wait_max" in '' | *[!0-9]*) wait_max=60 ;; esac
-	case "$poll" in '' | *[!0-9]*) poll=2 ;; esac
-	# Compared as a number, so 00 counts as zero: a zero poll never advances
-	# the counter and would wait forever.
-	[ "$poll" -gt 0 ] || poll=2
+	case "$wait_max" in
+	[1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9]) ;;
+	*) wait_max=60 ;;
+	esac
+	case "$poll" in
+	[1-9] | [1-9][0-9] | [1-9][0-9][0-9] | [1-9][0-9][0-9][0-9]) ;;
+	*) poll=2 ;;
+	esac
 	waited=0
 	while ! pad session should-arm >/dev/null 2>&1; do
 		if [ "$waited" -ge "$wait_max" ]; then

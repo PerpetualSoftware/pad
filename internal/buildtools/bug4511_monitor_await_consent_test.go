@@ -160,20 +160,47 @@ func TestBUG4511_AwaitConsent_ExitsSilentlyWhenConsentNeverArrives(t *testing.T)
 	}
 }
 
-// A zero poll spelled with leading zeros must fall back to the default too;
-// otherwise the counter never advances and the wait has no bound.
-func TestBUG4511_AwaitConsent_ZeroPaddedZeroPollStillBounded(t *testing.T) {
-	r := runMonitor(t, []string{"--await-consent"},
-		[]string{"PAD_MONITOR_CONSENT_WAIT=2", "PAD_MONITOR_CONSENT_POLL=00"},
-		-1)
-	if r.err != nil {
-		t.Fatalf("exit: %v (stderr %q, took %v)", r.err, r.stderr, r.elapsed)
+// Overrides other than a plain decimal of one to four digits with no leading
+// zero fall back to the default: a zero poll never advances the counter, a
+// leading zero reads as octal in shell arithmetic (08 is an error), and an
+// over-long number overflows the test builtin. Each must stay silent and
+// bounded. POLL takes its default (2s) here, so WAIT=2 ends in about 2s; a
+// bad WAIT takes its default (60s), so those cases arm at 1s and must stream.
+func TestBUG4511_AwaitConsent_MalformedOverridesFallBack(t *testing.T) {
+	for _, poll := range []string{"00", "0", "08", "010", "99999999999999999999999"} {
+		t.Run("poll="+poll, func(t *testing.T) {
+			r := runMonitor(t, []string{"--await-consent"},
+				[]string{"PAD_MONITOR_CONSENT_WAIT=2", "PAD_MONITOR_CONSENT_POLL=" + poll},
+				-1)
+			if r.err != nil {
+				t.Fatalf("exit: %v (stderr %q, took %v)", r.err, r.stderr, r.elapsed)
+			}
+			if r.streamed {
+				t.Fatal("streamed without consent")
+			}
+			if r.stdout != "" || r.stderr != "" {
+				t.Fatalf("script printed output: stdout %q stderr %q", r.stdout, r.stderr)
+			}
+			if r.elapsed > 6*time.Second {
+				t.Fatalf("wait took %v, want it bounded near 2s", r.elapsed)
+			}
+		})
 	}
-	if r.streamed {
-		t.Fatal("streamed without consent")
-	}
-	if r.elapsed > 6*time.Second {
-		t.Fatalf("wait with POLL=00 took %v, want it bounded near 2s", r.elapsed)
+	for _, wait := range []string{"08", "99999999999999999999999"} {
+		t.Run("wait="+wait, func(t *testing.T) {
+			r := runMonitor(t, []string{"--await-consent"},
+				[]string{"PAD_MONITOR_CONSENT_WAIT=" + wait, "PAD_MONITOR_CONSENT_POLL=1"},
+				time.Second)
+			if r.err != nil {
+				t.Fatalf("exit: %v (stderr %q, took %v)", r.err, r.stderr, r.elapsed)
+			}
+			if !r.streamed {
+				t.Fatalf("never streamed after consent arrived; calls:\n%s", r.calls(t))
+			}
+			if r.stdout != "" || r.stderr != "" {
+				t.Fatalf("script printed output: stdout %q stderr %q", r.stdout, r.stderr)
+			}
+		})
 	}
 }
 
