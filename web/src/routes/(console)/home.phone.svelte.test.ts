@@ -177,7 +177,22 @@ it('swipes Home to next week, fetches only the strip and returns to This week wi
 	const { goto } = await import('$app/navigation');
 	await stripPointer(firstStripDay(), 'pointerdown', 200);
 	await stripPointer(firstStripDay(), 'pointerup', 200);
-	await fireEvent.click(firstStripDay()); expect(goto).toHaveBeenCalledWith('/agenda');
+	await fireEvent.click(firstStripDay()); expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-09');
+});
+
+it('opens the agenda on the tapped day after swiping to another week (BUG-4569)', async () => {
+	await mountSwipeHome();
+	h.agenda.mockResolvedValueOnce(weekResponse([weekEntry('2026-11-18')]));
+	await swipeStrip(screen.getByRole('group', { name: 'Days' }));
+	expect(firstStripDay().dataset.stripDay).toBe('2026-11-16');
+	const { goto } = await import('$app/navigation');
+	vi.mocked(goto).mockClear();
+	const target = document.querySelector<HTMLButtonElement>('[data-strip-day="2026-11-18"]')!;
+	await stripPointer(target, 'pointerdown', 200);
+	await stripPointer(target, 'pointerup', 200);
+	await fireEvent.click(target);
+	expect(goto).toHaveBeenCalledTimes(1);
+	expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-18');
 });
 
 it('keeps the second swipe response when the first response arrives late', async () => {
