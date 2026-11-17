@@ -160,6 +160,22 @@ describe('CommandPalette comment matches', () => {
 			expect(marker.closest('[role="option"]')?.textContent).toContain('Pelican notes');
 		});
 
+		for (const [matched_in, entry_id] of [
+			['note', 'note-one'],
+			['decision', 'decision-one'],
+		] as const) {
+			it(`shows the ${matched_in} marker beside the snippet with a ${index} local index`, async () => {
+				state.ready = ready;
+				vi.mocked(api.search).mockResolvedValueOnce({ results: [{ ...hit, matched_in, entry_id }], total: 1, limit: 20, offset: 0 } as never);
+				const view = await typeAndSettle('pelican');
+				const line = view.getByText('about pelicans').closest('.result-snippet') as HTMLElement;
+				expect(line).toBeTruthy();
+				expect(within(line).getByTestId('match-marker').textContent).toContain(`in ${matched_in}`);
+				expect(line.textContent).toMatch(new RegExp(`about pelicans.*in ${matched_in}`));
+				expect(view.getAllByTestId('match-marker')).toHaveLength(1);
+			});
+		}
+
 		it(`marks no other match source with a ${index} local index`, async () => {
 			state.ready = ready;
 			const results = (['title', 'tags', 'ref'] as const).map((matched_in, i) => ({

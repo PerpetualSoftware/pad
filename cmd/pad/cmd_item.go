@@ -3966,8 +3966,9 @@ func searchCmd() *cobra.Command {
 				fmt.Printf("%s %s (%s)\n", icon, r.Item.Title, r.Item.CollectionName)
 				if r.Snippet != "" {
 					marker := ""
-					if r.MatchedIn == "comment" {
-						marker = " (in comment)"
+					switch r.MatchedIn {
+					case "comment", "note", "decision":
+						marker = " (in " + r.MatchedIn + ")"
 					}
 					fmt.Printf("  %s%s\n", r.Snippet, marker)
 					// BUG-3033. The JSON form carries the marker on the embedded

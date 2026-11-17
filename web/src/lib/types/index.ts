@@ -2406,9 +2406,14 @@ export interface SearchResult {
 	 * The field the match was found in, and the one `snippet` is cut from
 	 * (a `ref` hit carries the title). The server always sends it.
 	 */
-	matched_in: 'title' | 'content' | 'tags' | 'comment' | 'ref';
+	matched_in: 'title' | 'content' | 'tags' | 'comment' | 'note' | 'decision' | 'ref';
 	/** On a `comment` match only: the best-ranked live comment that matched. */
 	comment_id?: string;
+	/**
+	 * On a `note` or `decision` match only: the stored id of the matching
+	 * implementation note or decision-log entry (TASK-4491).
+	 */
+	entry_id?: string;
 	snippet: string;
 	rank: number;
 	/** The workspace the item is in, from the server's access check (TASK-3604). */

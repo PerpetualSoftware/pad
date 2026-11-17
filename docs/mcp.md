@@ -630,13 +630,16 @@ The schedule-edit/delete/agenda/reminders descriptions were condensed in v0.112 
 
 ## Search result sources
 
-`pad_search` searches item fields and live comment bodies by default. Each result
-adds `matched_in` (`title | content | tags | comment | ref`); a comment match
-also includes `comment_id` and a snippet from that comment. An item appears once,
-with item-field matches ahead of comment-only matches. Totals, pagination and
-facets use the same deduplicated items. These fields also pass through the
-ChatGPT search result projection. This additive result change leaves tool names,
-actions, parameters, and the catalog version unchanged.
+`pad_search` searches item fields, live comment bodies, implementation notes and
+decision-log entries by default. Each result adds `matched_in`
+(`title | content | tags | comment | note | decision | ref`); a comment match
+also includes `comment_id` and a snippet from that comment, and a note or
+decision match includes `entry_id` (the entry's stored id) and a snippet from
+that entry. An item appears once, with item-field matches ahead of comment, note
+and decision matches. Totals, pagination and facets use the same deduplicated
+items. These fields also pass through the ChatGPT search result projection. This
+additive result change leaves tool names, actions, parameters, and the catalog
+version unchanged.
 
 
 ## Acknowledged occurrences (v0.115)
