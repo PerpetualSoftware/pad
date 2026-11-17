@@ -14,6 +14,7 @@ vi.mock('$app/navigation', () => ({
 
 import ToastContainer from './ToastContainer.svelte';
 import { toastStore } from '$lib/stores/toast.svelte';
+import toastSource from './ToastContainer.svelte?raw';
 
 const regions = (c: HTMLElement) => ({
 	polite: c.querySelector('[aria-live="polite"]') as HTMLElement | null,
@@ -138,5 +139,88 @@ describe('ToastContainer hold and keys (TASK-2202)', () => {
 		const dismiss = container.querySelector(`[data-toast-id="${id}"] .toast-dismiss`) as HTMLElement;
 		await fireEvent.keyDown(dismiss, { key: 'Enter' });
 		expect(nav.goto).toEqual([]);
+	});
+});
+
+// TASK-4581 — on a phone the bottom tab bar showed through a new toast. The
+// toast slid in with Svelte's `fly`, whose default fades opacity up from 0,
+// so for the whole intro the toast was translucent over whatever lay under
+// it. The slide stays; the toast is opaque from its first frame.
+describe('ToastContainer opacity and phone placement (TASK-4581)', () => {
+	it('a toast is fully opaque on every frame of its entrance', async () => {
+		const frames: Keyframe[][] = [];
+		const original = Element.prototype.animate;
+		const spy = vi
+			.spyOn(Element.prototype, 'animate')
+			.mockImplementation(function (this: Element, keyframes, options) {
+				if (this instanceof HTMLElement && this.classList.contains('toast')) {
+					frames.push(Array.isArray(keyframes) ? (keyframes as Keyframe[]) : []);
+				}
+				return original.call(this, keyframes, options);
+			});
+		try {
+			render(ToastContainer);
+			toastStore.show('Occurrence marked done.', 'success', 3000, undefined, {
+				label: 'Undo',
+				onAction: () => {}
+			});
+			flushSync();
+			// The stand-in finishes on a microtask; let the real intro start.
+			await Promise.resolve();
+			await Promise.resolve();
+			const all = frames.flat();
+			const withOpacity = all.filter((k) => k.opacity !== undefined);
+			expect(withOpacity.length, 'the entrance animates and its frames were seen').toBeGreaterThan(0);
+			for (const k of withOpacity) expect(Number(k.opacity)).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	// Placement is CSS that jsdom cannot lay out, so this reads the component's
+	// style source: on a phone with the bottom bar shown (`body.has-bottom-nav`)
+	// the stack clears the bar and its safe-area inset; desktop keeps 20px.
+	it('the phone stack sits above the bottom bar while the bar is shown', () => {
+		const style = (toastSource.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+		const squash = (s: string) => s.replace(/\s+/g, ' ');
+		const mobile = squash(style.slice(style.indexOf('@media (max-width: 768px)')));
+		expect(mobile).toMatch(
+			/:global\(body\.has-bottom-nav\) \.toast-container \{[^}]*bottom: calc\(var\(--bottom-nav-height\) \+ env\(safe-area-inset-bottom, 0px\) \+ 12px\);/
+		);
+		// Without the bar (or with the keyboard up) the phone keeps 12px.
+		expect(mobile).toMatch(/\.toast-container \{ bottom: 12px;/);
+		// Desktop placement is unchanged.
+		expect(squash(style)).toMatch(/^ ?\.toast-container \{ position: fixed; bottom: 20px; right: 20px;/);
+	});
+
+	// While a bottom-anchored phone surface with controls is open, a toast at
+	// the bottom lands on its controls (the Quick capture sheet's "Add and
+	// open" was intercepted by an "Added" toast). The stack moves to the top,
+	// below the safe area and the context bar when that bar is shown.
+	// The members: DockedSheet's panel (Quick capture, Workspace, Account, the
+	// phone chat), BottomSheet's sheet (DialogShell and Menu sheet modes, and
+	// direct users), and the editor's keyboard toolbar.
+	it('the phone stack moves to the top while a bottom-anchored sheet is open', () => {
+		const style = (toastSource.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+		const squash = (s: string) => s.replace(/\s+/g, ' ');
+		const media = style.indexOf('@media (max-width: 768px)');
+		expect(media).toBeGreaterThan(-1);
+		const mobile = squash(style.slice(media));
+		const desktop = squash(style.slice(0, media));
+		const rule = mobile.match(/((?::global\(body:has\([^)]*\)\) \.toast-container, ?)*:global\(body:has\([^)]*\)\) \.toast-container) \{([^}]*)\}/);
+		expect(rule, 'a top-placement rule keyed on open sheets').not.toBeNull();
+		const selectors = rule![1].split(',').map((s) => s.trim());
+		for (const member of ['.ds-panel', '.bs-sheet', '.mobile-toolbar']) {
+			expect(selectors, `covers ${member}`).toContain(`:global(body:has(${member})) .toast-container`);
+		}
+		const body = rule![2];
+		expect(body).toMatch(/top: calc\(env\(safe-area-inset-top, 0px\) \+ 12px \+ var\(--toast-top-offset, 0px\)\);/);
+		expect(body).toMatch(/bottom: auto;/);
+		// The context bar, when shown, pushes the top placement below it.
+		expect(mobile).toMatch(/:global\(body\.has-context-bar\) \.toast-container \{[^}]*--toast-top-offset: var\(--context-bar-height\);/);
+		// The sheet rule comes after the bottom-bar rule, so it wins at equal specificity.
+		expect(mobile.indexOf(rule![0])).toBeGreaterThan(mobile.indexOf(':global(body.has-bottom-nav) .toast-container {'));
+		// None of this reaches the desktop rules.
+		expect(desktop).not.toMatch(/body:has|--toast-top-offset/);
 	});
 });
