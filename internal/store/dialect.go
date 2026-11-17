@@ -117,6 +117,16 @@ type Dialect interface {
 	// PostgreSQL uses the same tsquery as FTSMatch; SQLite uses the MATCH context.
 	FTSSnippet(ftsTable string, colIndex int, sourceColumn, query string) (string, []interface{})
 
+	// FTSColumnMatched returns SQL that is 1 when one indexed column matches
+	// the query and 0 otherwise, so a search can say which column matched
+	// without reading the snippet text, which stored text can imitate.
+	// SQLite compares the column snippet with and without highlight markers
+	// inside the MATCH context: they differ in length only when a marker was
+	// inserted. PostgreSQL does the same with two headlines whose markers
+	// differ in length, using the same tsquery as FTSMatch; sourceColumn must
+	// be the expression the search vector indexes for that column.
+	FTSColumnMatched(ftsTable string, colIndex int, sourceColumn, query string) (string, []interface{})
+
 	// FTSRank returns relevance SQL and its arguments.
 	// PostgreSQL uses the same tsquery as FTSMatch; SQLite uses the MATCH context.
 	FTSRank(table, column, query string) (string, []interface{})
@@ -220,6 +230,10 @@ func (d *sqliteDialect) FTSMatch(table, _, query string) (string, []interface{})
 
 func (d *sqliteDialect) FTSSnippet(ftsTable string, colIndex int, _, _ string) (string, []interface{}) {
 	return fmt.Sprintf("snippet(%s, %d, '<mark>', '</mark>', '...', 32)", ftsTable, colIndex), nil
+}
+
+func (d *sqliteDialect) FTSColumnMatched(ftsTable string, colIndex int, _, _ string) (string, []interface{}) {
+	return fmt.Sprintf("(length(snippet(%[1]s, %[2]d, '<mark>', '</mark>', '...', 32)) <> length(snippet(%[1]s, %[2]d, '', '', '...', 32)))", ftsTable, colIndex), nil
 }
 
 func (d *sqliteDialect) FTSRank(_, _, _ string) (string, []interface{}) {
@@ -345,6 +359,24 @@ func (d *postgresDialect) FTSSnippet(_ string, _ int, sourceColumn, query string
 		"ts_headline('english', %s, %s, 'StartSel=<mark>,StopSel=</mark>,MaxFragments=1,MaxWords=32')",
 		sourceColumn, tsquery,
 	), args
+}
+
+// The PostgreSQL flag compares two headlines of the column that differ only in
+// the length of their markers. The fragment chosen does not depend on the
+// markers, so the lengths differ exactly when a query word was highlighted in
+// this column. That is a per-word hit, as on SQLite: a query whose words fall
+// in different columns still names the column holding one of them, which a
+// whole-query `@@` on the column alone would not.
+func (d *postgresDialect) FTSColumnMatched(_ string, _ int, sourceColumn, query string) (string, []interface{}) {
+	tsquery, args := postgresFTSQuery(query)
+	headline := func(start, stop string) string {
+		return fmt.Sprintf(
+			"ts_headline('english', %s, %s, 'StartSel=%s,StopSel=%s,MaxFragments=1,MaxWords=32')",
+			sourceColumn, tsquery, start, stop,
+		)
+	}
+	return fmt.Sprintf("(CASE WHEN length(%s) <> length(%s) THEN 1 ELSE 0 END)",
+		headline("<mark>", "</mark>"), headline("<b>", "</b>")), append(append([]interface{}{}, args...), args...)
 }
 
 func (d *postgresDialect) FTSRank(table, column, query string) (string, []interface{}) {
