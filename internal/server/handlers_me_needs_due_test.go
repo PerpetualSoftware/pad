@@ -22,7 +22,7 @@ func TestMeNeedsDueHumanOccurrence(t *testing.T) {
 		{name: "done", audience: "human", action: "done"},
 		{name: "skip", audience: "human", action: "skip"},
 		{name: "move", audience: "human", action: "move"},
-		{name: "snooze", audience: "human", action: "snooze", want: true},
+		{name: "snooze", audience: "human", action: "snooze"}, // deferred until the snooze ends (TASK-4591)
 		{name: "creator", audience: "human", creator: true, want: true},
 		{name: "assigned away", audience: "human", creator: true, away: true},
 		{name: "terminal", audience: "human", terminal: true},

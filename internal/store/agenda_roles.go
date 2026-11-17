@@ -354,7 +354,9 @@ func agendaSeedWindows(roles scheduleRoles, loc *time.Location, from, to time.Ti
 type AgendaWorkCandidate struct {
 	AgentRoleName, AgentRoleSlug                           string
 	ItemID, ItemRef, ItemTitle, Collection, Fields, Schema string
-	CanCloseItem                                           bool
+	// TracksWork is false on a reference collection, whose items are not
+	// unplaced work when their schedule has no current occurrence.
+	CanCloseItem, TracksWork bool
 }
 
 // ListAgendaWork applies visibility and recipient admission before the scan cap.
@@ -369,10 +371,12 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 	}
 	var workIDs []any
 	canClose := make(map[string]bool, len(collections))
+	tracks := make(map[string]bool, len(collections))
 	for _, c := range collections {
 		filter := resolveCollectionDoneFilter(c.ID, c.Schema, c.Settings)
 		canClose[c.Slug] = len(filter.writableTerminals) > 0
-		if listNoDate && models.CollectionTracksWorkJSON(c.Settings) {
+		tracks[c.Slug] = models.CollectionTracksWorkJSON(c.Settings)
+		if listNoDate && tracks[c.Slug] {
 			workIDs = append(workIDs, c.ID)
 		}
 	}
@@ -407,7 +411,7 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 		if num != nil {
 			c.ItemRef = fmt.Sprintf("%s-%d", prefix, *num)
 		}
-		c.CanCloseItem = canClose[c.Collection]
+		c.CanCloseItem, c.TracksWork = canClose[c.Collection], tracks[c.Collection]
 		out = append(out, c)
 	}
 	if err := rows.Err(); err != nil {

@@ -118,11 +118,12 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 		if sc.EndedAt != nil {
 			// An open item whose schedule ended (TASK-4537): Outstanding until it
 			// is closed or an editor dismisses the ending. A dismissed one, or
-			// an item with no writable terminal, is ordinary undated work.
+			// an item with no writable terminal, is ordinary undated work,
+			// unless it sits in a reference collection (TASK-4554).
 			if sc.EndedDismissedAt == nil && c.CanCloseItem {
 				e.Reason, e.ScheduleID, e.EndedAt, e.Rank = "schedule_ended", sc.ID, *sc.EndedAt, agendaPriority(c)
 				resp.PriorityList = append(resp.PriorityList, e)
-			} else if run.listNoDate {
+			} else if run.listNoDate && c.TracksWork {
 				e.Reason, e.ScheduleID = "unplaced", sc.ID
 				resp.NoDate = append(resp.NoDate, e)
 			}
@@ -138,11 +139,12 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 			continue
 		}
 		if current == nil {
-			if run.listNoDate {
+			// A reference document is not unplaced work (TASK-4554).
+			if !run.listNoDate {
+				resp.PriorityListComplete = false
+			} else if c.TracksWork {
 				e.Reason, e.ScheduleID = "unplaced", sc.ID
 				resp.NoDate = append(resp.NoDate, e)
-			} else {
-				resp.PriorityListComplete = false
 			}
 			continue
 		}

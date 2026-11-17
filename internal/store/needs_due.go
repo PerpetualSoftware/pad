@@ -10,7 +10,9 @@ import (
 // NeedsDueOccurrences returns the earliest outstanding human-audience claim
 // per open item received by userID. BootstrapAgenda applies visibility,
 // recipient, audience and terminal filters in SQL before its schedule scan cap.
-// A capped read returns its partial set and logs the cap.
+// A capped read returns its partial set and logs the cap. A moved occurrence
+// claims from its moved instant, and a snoozed one waits until the snooze
+// ends (TASK-4591): the person asked to hear about it later.
 func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, userID string, now time.Time) (map[string]time.Time, error) {
 	out := map[string]time.Time{}
 	if scope.seesNothing() {
@@ -36,7 +38,7 @@ func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, user
 	}
 	for _, rows := range [][]BootstrapAgendaRow{set.DueToday, set.Carried, set.Stale} {
 		for _, row := range rows {
-			if row.Schedule.ReminderAckedAt != nil || row.Due.After(now) {
+			if row.Schedule.ReminderAckedAt != nil || row.Due.After(now) || row.SnoozedUntil != nil {
 				continue
 			}
 			id := row.Schedule.ItemID
