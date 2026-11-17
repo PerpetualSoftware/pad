@@ -228,3 +228,35 @@ func TestOpenChildrenScheduleActiveDetails(t *testing.T) {
 		}
 	}
 }
+
+// TASK-4601: a schedule with RDATEs and no RRULE still has future occurrences,
+// so closing its item is refused the same way an RRULE schedule is.
+func TestScheduleActiveRDateOnly(t *testing.T) {
+	t.Parallel()
+	for _, mode := range []string{"rdates-added", "rrule-cleared"} {
+		t.Run(mode, func(t *testing.T) {
+			f := endGuardHTTP(t)
+			patch := map[string]any{"rdates": []string{"2099-01-05T09:00"}}
+			if mode == "rrule-cleared" {
+				readCommitment(t, commitmentCall(f, "PATCH", map[string]any{"rrule": "FREQ=DAILY", "rdates": []string{"2099-01-05T09:00"}}), 200)
+				patch = map[string]any{"rrule": nil}
+			}
+			readCommitment(t, commitmentCall(f, "PATCH", patch), 200)
+			sc, _ := f.srv.store.GetSchedule(f.ws.ID, f.item.ID)
+			if sc.Rrule != nil && *sc.Rrule != "" || len(sc.RDates) != 1 || sc.EndedAt != nil {
+				t.Fatalf("fixture schedule = %+v", sc)
+			}
+			path := strings.TrimSuffix(f.path(f.item), "/commitment")
+			body := map[string]any{"fields_patch": map[string]any{"status": "done"}}
+			rr := f.as(f.token(f.owner, ""), "PATCH", path, body)
+			d := f.expectErr(rr, 409, "schedule_active", "")
+			if d["schedule_id"] != sc.ID {
+				t.Fatalf("refusal = %s", rr.Body.String())
+			}
+			body["force"] = true
+			if rr = f.as(f.token(f.owner, ""), "PATCH", path, body); rr.Code != 200 {
+				t.Fatalf("force: %d %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}

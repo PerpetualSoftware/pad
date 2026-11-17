@@ -26,7 +26,9 @@ func (s *Store) LiveRecurringScheduleTx(tx *sql.Tx, workspaceID, itemID string) 
 	if err != nil {
 		return nil, err
 	}
-	if sc == nil || sc.EndedAt != nil || sc.Rrule == nil || *sc.Rrule == "" {
+	// Recurring means an RRULE or any RDATE: an RDATE-only schedule still has
+	// occurrences after the next one. An exhausted series has EndedAt set.
+	if sc == nil || sc.EndedAt != nil || ((sc.Rrule == nil || *sc.Rrule == "") && len(sc.RDates) == 0) {
 		return nil, nil
 	}
 	return sc, nil
