@@ -409,6 +409,42 @@ func TestItemEntriesMalformed(t *testing.T) {
 	}
 }
 
+// An object entry replaced in place by a non-object reaches the update
+// trigger's DELETE subquery, whose join evaluates json_type on je.value. On a
+// bare string element that call would raise malformed JSON if the
+// je.type = 'object' test did not run first, so each case must land.
+func TestItemEntriesObjectReplacedByNonObject(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Entries replaced")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	it := createTestItem(t, s, ws.ID, col.ID, "Replaced", "")
+	const tail = `{"id":"n1","summary":"kept note"}`
+	const dtail = `{"id":"d1","decision":"kept decision"}`
+	objects := `{"implementation_notes":[{"id":"n0","summary":"first note"},` + tail + `],"decision_log":[{"id":"d0","decision":"first decision"},` + dtail + `]}`
+	for _, c := range []struct{ name, elem string }{
+		{"string", `"plain text"`},
+		{"number", `3`},
+		{"broken JSON string", `"{\"id\":"`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if _, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ?`), objects, it.ID); err != nil {
+				t.Fatalf("fixture write: %v", err)
+			}
+			if got := storedItemEntries(t, s, it.ID); len(got) != 4 {
+				t.Fatalf("fixture: want 4 rows before the replacement, got %+v", got)
+			}
+			replaced := `{"implementation_notes":[` + c.elem + `,` + tail + `],"decision_log":[` + c.elem + `,` + dtail + `]}`
+			if _, err := s.db.Exec(s.q(`UPDATE items SET fields = ? WHERE id = ?`), replaced, it.ID); err != nil {
+				t.Fatalf("the write was refused: %v", err)
+			}
+			want := []itemEntryRow{{"decision", 1, "d1", "kept decision", ""}, {"note", 1, "n1", "kept note", ""}}
+			if got := storedItemEntries(t, s, it.ID); !reflect.DeepEqual(got, want) {
+				t.Errorf("rows = %+v, want %+v", got, want)
+			}
+		})
+	}
+}
+
 // A legacy row can hold a NUL that items.fields now refuses (084). The index
 // cuts each value at its first NUL, so the NUL triggers on item_entries (185) never refuse that row's
 // next write (condition 1). The items.fields triggers are dropped to write
