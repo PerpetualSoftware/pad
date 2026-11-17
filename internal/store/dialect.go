@@ -122,9 +122,9 @@ type Dialect interface {
 	// without reading the snippet text, which stored text can imitate.
 	// SQLite compares the column snippet with and without highlight markers
 	// inside the MATCH context: they differ in length only when a marker was
-	// inserted. PostgreSQL tests the column on its own with the same tsquery
-	// as FTSMatch; sourceColumn must be the expression the search vector
-	// indexes for that column.
+	// inserted. PostgreSQL does the same with two headlines whose markers
+	// differ in length, using the same tsquery as FTSMatch; sourceColumn must
+	// be the expression the search vector indexes for that column.
 	FTSColumnMatched(ftsTable string, colIndex int, sourceColumn, query string) (string, []interface{})
 
 	// FTSRank returns relevance SQL and its arguments.
@@ -361,9 +361,22 @@ func (d *postgresDialect) FTSSnippet(_ string, _ int, sourceColumn, query string
 	), args
 }
 
+// The PostgreSQL flag compares two headlines of the column that differ only in
+// the length of their markers. The fragment chosen does not depend on the
+// markers, so the lengths differ exactly when a query word was highlighted in
+// this column. That is a per-word hit, as on SQLite: a query whose words fall
+// in different columns still names the column holding one of them, which a
+// whole-query `@@` on the column alone would not.
 func (d *postgresDialect) FTSColumnMatched(_ string, _ int, sourceColumn, query string) (string, []interface{}) {
 	tsquery, args := postgresFTSQuery(query)
-	return fmt.Sprintf("(CASE WHEN to_tsvector('english', COALESCE(%s, '')) @@ (%s) THEN 1 ELSE 0 END)", sourceColumn, tsquery), args
+	headline := func(start, stop string) string {
+		return fmt.Sprintf(
+			"ts_headline('english', %s, %s, 'StartSel=%s,StopSel=%s,MaxFragments=1,MaxWords=32')",
+			sourceColumn, tsquery, start, stop,
+		)
+	}
+	return fmt.Sprintf("(CASE WHEN length(%s) <> length(%s) THEN 1 ELSE 0 END)",
+		headline("<mark>", "</mark>"), headline("<b>", "</b>")), append(append([]interface{}{}, args...), args...)
 }
 
 func (d *postgresDialect) FTSRank(table, column, query string) (string, []interface{}) {

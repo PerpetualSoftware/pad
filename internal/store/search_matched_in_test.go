@@ -73,6 +73,30 @@ func TestSearchLiteralMarkInBodyTagsMatch(t *testing.T) {
 	}
 }
 
+// A query whose words sit in different columns still names the column that
+// carries a hit: here the title, with the other word only in the tags. A
+// column flag that needs the whole query to match one column would find none.
+func TestSearchSplitQueryNamesTheColumnWithAHit(t *testing.T) {
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Split query")
+	col := createTestCollection(t, s, ws.ID, "Tasks")
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{
+		Title:   "nebulaquartz title context",
+		Content: "Plain body",
+		Tags:    `["zirconflux"]`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hit := searchOne(t, s, ws, item.ID, "nebulaquartz zirconflux")
+	if hit.MatchedIn != "title" {
+		t.Errorf("matched_in = %q, want title", hit.MatchedIn)
+	}
+	if !strings.Contains(hit.Snippet, "<mark>nebulaquartz</mark>") {
+		t.Errorf("snippet = %q, want the highlighted title", hit.Snippet)
+	}
+}
+
 func TestSearchLiteralMarkInBodyContentMatch(t *testing.T) {
 	s := testStore(t)
 	ws := createTestWorkspace(t, s, "Literal mark content")
