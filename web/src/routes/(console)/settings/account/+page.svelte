@@ -1863,9 +1863,12 @@
 	}
 
 	/* Keeps the ghost helper action at its natural width, start-aligned,
-	   instead of stretching across the column-flex .field. */
+	   instead of stretching across the column-flex .field. The negative
+	   margin matches the sm Button's horizontal padding, so its label lines
+	   up with the field's left edge and the hover fill sits in the gutter. */
 	.timezone-helper {
 		display: flex;
+		margin-left: -10px;
 	}
 
 	.token-create-row {
