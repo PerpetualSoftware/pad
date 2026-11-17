@@ -253,6 +253,33 @@ describe('short dates', () => {
   expect(shortRoleDate('2027-01-01T03:30:00Z', 'America/New_York', new Date('2026-12-30T12:00:00Z'))).toBe('Thu 31, 22:30');
   expect(shortRoleDate('2027-02-01T12:00:00Z', 'America/New_York', new Date('2026-12-30T12:00:00Z'))).toBe('Mon 1 Feb 2027, 07:00');
  });
+ it.each([
+  ['2026-11-16', '2026-11-12', 'Mon 16 Nov'],
+  ['2026-11-12', '2026-11-12', 'Thu 12 Nov'],
+  ['2026-11-05', '2026-11-12', 'Thu 5 Nov'],
+  ['2027-01-02', '2026-12-30', 'Sat 2 Jan'],
+  ['2026-12-28', '2027-01-02', 'Mon 28 Dec'],
+  ['2026-11-20', '2026-11-12', 'Fri 20 Nov'],
+  ['2027-01-20', '2026-12-30', 'Wed 20 Jan 2027']
+ ])('shortDay %s seen from %s with the month always shown is "%s"', (day, today, text) => {
+  expect(shortDay(day, today, { month: true })).toBe(text);
+ });
+ it('keeps the month off a near day by default and with month: false', () => {
+  expect(shortDay('2026-11-16', '2026-11-12')).toBe('Mon 16');
+  expect(shortDay('2026-11-16', '2026-11-12', {})).toBe('Mon 16');
+  expect(shortDay('2026-11-16', '2026-11-12', { month: false })).toBe('Mon 16');
+ });
+ it('passes the month option through role dates and both pills', () => {
+  const now = new Date('2026-11-12T18:00:00Z');
+  expect(shortRoleDate('2026-11-16', 'UTC', now, { month: true })).toBe('Mon 16 Nov');
+  expect(shortRoleDate('2026-11-16T10:00:00Z', 'Europe/London', now, { month: true })).toBe('Mon 16 Nov, 10:00');
+  expect(shortRoleDate('2026-11-16T10:00:00Z', 'Europe/London', now)).toBe('Mon 16, 10:00');
+  expect(shortRoleDate('2027-02-01T12:00:00Z', 'America/New_York', new Date('2026-12-30T12:00:00Z'), { month: true })).toBe('Mon 1 Feb 2027, 07:00');
+  expect(deadlinePill('2026-11-16T15:00:00Z', 'lapses', 'America/New_York', new Date('2026-11-16T03:00:00Z'), { month: true })).toEqual({ tone: 'soon', text: 'Mon 16 Nov, 10:00 · lapses' });
+  expect(deadlinePill('2026-11-16T15:00:00Z', null, 'America/New_York', new Date('2026-11-12T17:00:00Z'))).toEqual({ tone: 'far', text: 'Mon 16, 10:00' });
+  expect(forecastPill('2026-11-19', '2026-11-17', 'America/New_York', now, { month: true })).toEqual({ late: true, text: 'Thu 19 Nov · 2 days late' });
+  expect(forecastPill('2026-11-15', null, 'America/New_York', now)).toEqual({ late: false, text: 'Sun 15' });
+ });
 });
 
 describe('deadline and forecast tone outside UTC', () => {

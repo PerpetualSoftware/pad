@@ -17,6 +17,12 @@ describe('RolePill deadline', () => {
 		expect(el).toHaveAttribute('data-tone', 'far');
 		expect(text(el)).toBe('Deadline Mon 16, 10:00');
 	});
+	it('prints the month of a near date when asked, and not by default', () => {
+		const now = new Date('2026-11-12T17:00:00Z');
+		expect(text(pill({ kind: 'deadline', value: deadline, now, month: true }))).toBe('Deadline Mon 16 Nov, 10:00');
+		expect(text(pill({ kind: 'forecast', value: '2026-11-15', now, month: true }))).toBe('Forecast Sun 15 Nov');
+		expect(text(pill({ kind: 'forecast', value: '2026-11-15', now }))).toBe('Forecast Sun 15');
+	});
 	it('is amber within 48 hours and says what happens', () => {
 		const el = pill({ kind: 'deadline', value: deadline, behavior: 'lapses', now: new Date('2026-11-16T03:00:00Z') });
 		expect(el).toHaveAttribute('data-tone', 'soon');
