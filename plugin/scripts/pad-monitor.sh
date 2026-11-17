@@ -70,7 +70,10 @@ if [ "${1:-}" = "--await-consent" ]; then
 	wait_max="${PAD_MONITOR_CONSENT_WAIT:-60}"
 	poll="${PAD_MONITOR_CONSENT_POLL:-2}"
 	case "$wait_max" in '' | *[!0-9]*) wait_max=60 ;; esac
-	case "$poll" in '' | *[!0-9]* | 0) poll=2 ;; esac
+	case "$poll" in '' | *[!0-9]*) poll=2 ;; esac
+	# Compared as a number, so 00 counts as zero: a zero poll never advances
+	# the counter and would wait forever.
+	[ "$poll" -gt 0 ] || poll=2
 	waited=0
 	while ! pad session should-arm >/dev/null 2>&1; do
 		if [ "$waited" -ge "$wait_max" ]; then

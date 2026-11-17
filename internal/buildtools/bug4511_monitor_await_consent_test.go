@@ -160,6 +160,23 @@ func TestBUG4511_AwaitConsent_ExitsSilentlyWhenConsentNeverArrives(t *testing.T)
 	}
 }
 
+// A zero poll spelled with leading zeros must fall back to the default too;
+// otherwise the counter never advances and the wait has no bound.
+func TestBUG4511_AwaitConsent_ZeroPaddedZeroPollStillBounded(t *testing.T) {
+	r := runMonitor(t, []string{"--await-consent"},
+		[]string{"PAD_MONITOR_CONSENT_WAIT=2", "PAD_MONITOR_CONSENT_POLL=00"},
+		-1)
+	if r.err != nil {
+		t.Fatalf("exit: %v (stderr %q, took %v)", r.err, r.stderr, r.elapsed)
+	}
+	if r.streamed {
+		t.Fatal("streamed without consent")
+	}
+	if r.elapsed > 6*time.Second {
+		t.Fatalf("wait with POLL=00 took %v, want it bounded near 2s", r.elapsed)
+	}
+}
+
 func TestBUG4511_NoFlag_ExitsPromptlyWithoutWaiting(t *testing.T) {
 	// Consent lands at 3s and the script must be gone by 2.5s: wide enough
 	// margins that a loaded machine does not turn startup time into a fail.
