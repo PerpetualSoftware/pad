@@ -563,7 +563,7 @@ describe('agenda Week and priority', () => {
   expect(within(list).getAllByRole('link').slice(0, 2).map(el => el.textContent)).toEqual(['High B', 'High A']);
   for (const text of ['Your work, any date', 'Still owed', 'Deadline passed']) expect(within(list).getByText(text)).toBeTruthy();
   const normal = list.querySelector('li[data-work="EX-32"]') as HTMLElement;
-  expect(normal.querySelector('.when')?.textContent).toBe('Thu 5, 09:00'); expect(normal.querySelector('[data-kind="deadline"]')?.textContent).toContain('Fri 6, 09:00');
+  expect(normal.querySelector('.when')?.textContent).toBe('Thu 5 Nov, 09:00'); expect(normal.querySelector('[data-kind="deadline"]')?.textContent).toContain('Fri 6 Nov, 09:00');
   expect(within(list).queryByRole('button', { name: /^Done/ })).toBeNull();
   await fireEvent.click(within(list).getByRole('tab', { name: 'Waiting 2' }));
   expect(within(list).getByText('Needs a decision')).toBeTruthy(); expect(within(list).queryByRole('button', { name: /^(Done|Actions)/ })).toBeNull();

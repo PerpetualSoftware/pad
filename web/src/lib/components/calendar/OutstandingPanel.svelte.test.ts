@@ -117,7 +117,7 @@ describe('OutstandingPanel rows', () => {
 		expect(link).toHaveAttribute('href', '/alex/w/tasks/TASK-1'); expect(link).toHaveAttribute('title', 'A long title that will not fit the rail');
 		const row = rowOf('TASK-1');
 		expect(within(row).getByText('Harbor')).toBeTruthy();
-		expect(row.querySelector('.when')?.textContent).toBe('Fri 6, 09:00');
+		expect(row.querySelector('.when')?.textContent).toBe('Fri 6 Nov, 09:00');
 		expect(row.querySelector('.when')?.classList.contains('passed')).toBe(false);
 		expect(row.querySelector('[data-kind]')).toBeNull();
 	});
@@ -128,14 +128,14 @@ describe('OutstandingPanel rows', () => {
 	it('a deadline still owed reads in red as passed, with its chip', () => {
 		mount({ priority_list: [work({ reason: 'deadline_still_owed', roles: { ...roles, target: '2026-11-03T09:00:00Z', deadline: '2026-11-04T10:00:00Z', deadline_behavior: 'stays_owed' } })] });
 		const when = rowOf('TASK-1').querySelector('.when')!;
-		expect(when.textContent).toBe('Deadline passed Wed 4'); expect(when.classList.contains('passed')).toBe(true);
+		expect(when.textContent).toBe('Deadline passed Wed 4 Nov'); expect(when.classList.contains('passed')).toBe(true);
 		expect(within(rowOf('TASK-1')).getByText('Still owed')).toBeTruthy();
 	});
 	it('shows a deadline pill and a forecast pill when the row has them', () => {
 		mount({ priority_list: [work({ roles: { ...roles, deadline: '2026-11-09T10:00:00Z' }, forecast: { value: '2026-11-10', set_by: 'u1', set_by_kind: 'user', set_at: '2026-11-01T00:00:00Z', source: '' } })] });
 		const row = rowOf('TASK-1');
-		expect(row.querySelector('[data-kind="deadline"]')?.textContent).toContain('Mon 9, 10:00');
-		expect(row.querySelector('[data-kind="forecast"]')?.textContent).toContain('Tue 10 · 1 day late');
+		expect(row.querySelector('[data-kind="deadline"]')?.textContent).toContain('Mon 9 Nov, 10:00');
+		expect(row.querySelector('[data-kind="forecast"]')?.textContent).toContain('Tue 10 Nov · 1 day late');
 		expect(row.querySelector('[data-kind="forecast"]')).toHaveAttribute('data-tone', 'late');
 	});
 	it('judges pills from the clock it is given', () => {
@@ -155,7 +155,7 @@ describe('OutstandingPanel rows', () => {
 	it('a waiting row shows the roles it carries and never offers Done', async () => {
 		const { panel } = mount({ waiting_on: [work({ reason: 'waiting', roles: { ...roles, deadline: '2026-11-20T10:00:00Z' } })] });
 		await fireEvent.click(tab('Waiting 1'));
-		expect(rowOf('TASK-1').querySelector('.when')?.textContent).toBe('Fri 6, 09:00');
+		expect(rowOf('TASK-1').querySelector('.when')?.textContent).toBe('Fri 6 Nov, 09:00');
 		expect(rowOf('TASK-1').querySelector('[data-kind="deadline"]')?.textContent).toContain('Fri 20 Nov, 10:00');
 		expect(within(panel).queryByRole('button', { name: /Done/ })).toBeNull();
 		await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-1' }));
@@ -237,7 +237,7 @@ describe('OutstandingPanel schedule_ended rows (TASK-4537)', () => {
 		const ondismiss = vi.fn();
 		mount({ priority_list: [row] }, { ondismiss });
 		const li = rowOf(row.item_ref);
-		expect(li.querySelector('.m')).toHaveTextContent('Schedule ended Wed 4 · item still open');
+		expect(li.querySelector('.m')).toHaveTextContent('Schedule ended Wed 4 Nov · item still open');
 		expect(within(li).getByRole('link', { name: row.item_title })).toBeTruthy();
 		await fireEvent.click(within(li).getByRole('button', { name: `Actions for ${row.item_ref}` }));
 		expect(items()).toEqual(['Dismiss']);

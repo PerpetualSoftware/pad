@@ -362,23 +362,27 @@ function dayNumber(day: string): number {
 	return Date.parse(`${day}T00:00:00Z`) / DAY;
 }
 
+/** Options of the short date forms. `month` prints the month even within a week of today. */
+export interface ShortDateOptions { month?: boolean }
+
 /**
  * A calendar day in the fewest words that stay unambiguous from `today`:
  * "Mon 16" within a week either side, "Fri 20 Nov" in the same year, else "Wed 20 Jan 2027".
+ * With `month`, a near day reads "Mon 16 Nov": for a list that spans any month. The year rule is unchanged.
  */
-export function shortDay(day: string, today: string): string {
+export function shortDay(day: string, today: string, options: ShortDateOptions = {}): string {
 	const near = Math.abs(dayNumber(day) - dayNumber(today)) <= 7;
 	const parts = new Intl.DateTimeFormat('en-GB', {
 		timeZone: 'UTC', weekday: 'short', day: 'numeric',
-		...(near ? {} : { month: 'short' }), ...(near || day.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' })
+		...(near && !options.month ? {} : { month: 'short' }), ...(near || day.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' })
 	}).formatToParts(new Date(`${day}T12:00:00Z`));
 	const part = (type: string) => parts.find(p => p.type === type)?.value;
 	return [part('weekday'), part('day'), part('month'), part('year')].filter(Boolean).join(' ');
 }
 
 /** A role value in short form: a date-only value is its own date, an instant is read in the viewer zone. */
-export function shortRoleDate(value: string, zone: string, now = new Date(Date.now())): string {
-	const day = shortDay(roleDay(value, zone), todayIn(zone, now));
+export function shortRoleDate(value: string, zone: string, now = new Date(Date.now()), options: ShortDateOptions = {}): string {
+	const day = shortDay(roleDay(value, zone), todayIn(zone, now), options);
 	return isDateOnly(value) ? day : `${day}, ${localTime(value, zone)}`;
 }
 
@@ -404,13 +408,13 @@ function elapsedText(ms: number): string {
 }
 
 /** Tone and wording of the deadline pill. The behaviour is appended only once it matters. */
-export function deadlinePill(deadline: string, behavior: CommitmentRoles['deadline_behavior'], zone: string, now = new Date(Date.now())): { tone: DeadlineTone; text: string } {
+export function deadlinePill(deadline: string, behavior: CommitmentRoles['deadline_behavior'], zone: string, now = new Date(Date.now()), options: ShortDateOptions = {}): { tone: DeadlineTone; text: string } {
 	const tone = deadlineTone(deadline, zone, now);
 	if (tone === 'passed') {
 		return { tone, text: `Deadline passed ${elapsedText(now.getTime() - deadlineInstant(deadline, zone))} ago${behavior === 'stays_owed' ? ' · still owed' : ''}` };
 	}
 	const suffix = tone === 'soon' ? (behavior === 'lapses' ? ' · lapses' : behavior === 'stays_owed' ? ' · still owed after' : '') : '';
-	return { tone, text: `${shortRoleDate(deadline, zone, now)}${suffix}` };
+	return { tone, text: `${shortRoleDate(deadline, zone, now, options)}${suffix}` };
 }
 
 /**
@@ -425,9 +429,9 @@ export function forecastLate(forecast: string, deadline: string | null | undefin
 }
 
 /** Wording of the forecast pill, and whether it lands after the deadline. */
-export function forecastPill(forecast: string, deadline: string | null | undefined, zone: string, now = new Date(Date.now())): { late: boolean; text: string } {
+export function forecastPill(forecast: string, deadline: string | null | undefined, zone: string, now = new Date(Date.now()), options: ShortDateOptions = {}): { late: boolean; text: string } {
 	const days = forecastLate(forecast, deadline, zone);
-	const text = shortRoleDate(forecast, zone, now);
+	const text = shortRoleDate(forecast, zone, now, options);
 	if (days === null) return { late: false, text };
 	return { late: true, text: `${text} · ${days === 0 ? 'late' : `${days} day${days === 1 ? '' : 's'} late`}` };
 }

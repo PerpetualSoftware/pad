@@ -16,13 +16,15 @@
 		now?: Date;
 		/** Extra detail for the tooltip, such as who set a forecast. */
 		title?: string;
+		/** Print the month even for a date within a week, for a list that spans any month. */
+		month?: boolean;
 	}
 
-	let { kind, value, zone, behavior = null, deadline = null, now = new Date(), title }: Props = $props();
+	let { kind, value, zone, behavior = null, deadline = null, now = new Date(), title, month = false }: Props = $props();
 
 	const pill = $derived.by(() => {
-		if (kind === 'deadline') return deadlinePill(value, behavior, zone, now);
-		const forecast = forecastPill(value, deadline, zone, now);
+		if (kind === 'deadline') return deadlinePill(value, behavior, zone, now, { month });
+		const forecast = forecastPill(value, deadline, zone, now, { month });
 		return { tone: forecast.late ? 'late' : 'ontime', text: forecast.text };
 	});
 	// The icon is decorative, so the role is spoken unless the wording already opens with it.
