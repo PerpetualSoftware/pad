@@ -15,8 +15,8 @@ spec.loader.exec_module(result)
 
 def needs():
     data = {k: {'result': 'success'} for k in (
-        'changes', 'go', 'go-postgres', 'go-server-shards', 'go-web-parity',
-        'nix', 'native-smoke', 'web', 'e2e')}
+        'changes', 'go', 'go-postgres', 'go-server-shards', 'go-store-shards',
+        'go-web-parity', 'nix', 'native-smoke', 'web', 'e2e')}
     data['changes']['outputs'] = {'go': 'false', 'web': 'true', 'nix': 'false', 'parity': 'false'}
     return data
 
@@ -24,13 +24,15 @@ def needs():
 class ResultTest(unittest.TestCase):
     def test_expected_skips(self):
         data = needs()
-        for job in ('go', 'go-postgres', 'go-server-shards', 'go-web-parity', 'nix'):
+        for job in ('go', 'go-postgres', 'go-server-shards', 'go-store-shards',
+                    'go-web-parity', 'nix'):
             data[job]['result'] = 'skipped'
         self.assertEqual(result.evaluate(data, 'pull_request'), [])
 
     def test_rejects(self):
         cases = []
         for job, flag in [('go', 'go'), ('go-postgres', 'go'), ('go-server-shards', 'go'),
+                          ('go-store-shards', 'go'),
                           ('nix', 'nix'), ('go-web-parity', 'parity')]:
             data = needs()
             data['changes']['outputs'][flag] = 'true'

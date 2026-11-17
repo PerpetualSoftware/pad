@@ -6,6 +6,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -266,12 +267,38 @@ func TestCIWorkflow_PushOnlyWorkRunsOnEveryPush(t *testing.T) {
 	}
 
 	race := readWorkflow(t, "race.yml")
-	if jobs := slices.Sorted(maps.Keys(race.Jobs)); !slices.Equal(jobs, []string{"go-server-race", "go-server-race-postgres"}) {
-		t.Errorf("race.yml jobs = %v, want [go-server-race go-server-race-postgres]", jobs)
+	if jobs := slices.Sorted(maps.Keys(race.Jobs)); !slices.Equal(jobs, slices.Sorted(maps.Keys(raceShardJobs))) {
+		t.Errorf("race.yml jobs = %v, want %v", jobs, slices.Sorted(maps.Keys(raceShardJobs)))
 	}
 	for name, job := range race.Jobs {
 		if job.If != "" {
 			t.Errorf("race.yml %s if = %q; Race jobs run on every trigger", name, job.If)
+		}
+		// Each job runs one shard of its package, chosen by the same script
+		// and build flags the coverage check in ci.yml proves.
+		if pkg, ok := raceShardJobs[name]; ok {
+			want := `run=$(scripts/test-shard.sh regex ./` + pkg + `/ 3 "$SHARD" $GO_RACE_FLAGS)`
+			var shard bool
+			for _, s := range job.Steps {
+				if !strings.Contains(s.Run, "test-shard.sh") {
+					continue
+				}
+				shard = true
+				lines := strings.Split(strings.TrimSpace(s.Run), "\n")
+				if len(lines) != 2 || strings.TrimSpace(lines[0]) != want {
+					t.Errorf("race.yml %s shard step run = %q; it must be two lines, the first exactly %q", name, s.Run, want)
+					continue
+				}
+				test := strings.Fields(lines[1])
+				if len(test) < 2 || test[0] != "go" || test[1] != "test" ||
+					!slices.Contains(test, "$GO_RACE_FLAGS") || !slices.Contains(test, "-timeout=45m") ||
+					!strings.HasSuffix(fold(lines[1]), `-run "$run" ./`+pkg+"/") {
+					t.Errorf("race.yml %s shard step test line = %q; it must be go test $GO_RACE_FLAGS -timeout=45m ... -run \"$run\" ./%s/", name, lines[1], pkg)
+				}
+			}
+			if !shard {
+				t.Errorf("race.yml %s has no test-shard.sh step", name)
+			}
 		}
 		var stop bool
 		for _, s := range job.Steps {
@@ -287,6 +314,137 @@ func TestCIWorkflow_PushOnlyWorkRunsOnEveryPush(t *testing.T) {
 		}
 		if !stop {
 			t.Errorf("race.yml %s has no stop-the-line step", name)
+		}
+	}
+}
+
+// raceShardJobs are race.yml's jobs, each with the package it shards. ci.yml's
+// race steps exclude exactly these packages (TASK-4141, TASK-4648).
+var raceShardJobs = map[string]string{
+	"go-server-race":          "internal/server",
+	"go-server-race-postgres": "internal/server",
+	"go-store-race":           "internal/store",
+	"go-store-race-postgres":  "internal/store",
+}
+
+// shardChecks are ci.yml's shard coverage jobs, each with its package.
+var shardChecks = map[string]string{
+	"go-server-shards": "internal/server",
+	"go-store-shards":  "internal/store",
+}
+
+// raceExclusion is every line of ci.yml's two race steps but the last (the go
+// test line, which differs only in -count=1), whole.
+const raceExclusion = `all=$(go list ./...)
+pkgs=$(printf '%s\n' "$all" | grep -Ev '^github.com/PerpetualSoftware/pad/internal/(server|store)$')
+test -n "$pkgs"
+removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
+want=$(printf '%s\n' github.com/PerpetualSoftware/pad/internal/server github.com/PerpetualSoftware/pad/internal/store)
+[ "$removed" = "$want" ] || { printf '::error::the race step must exclude exactly internal/server and internal/store; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }`
+
+// The ./... race steps leave out exactly the packages race.yml shards, and no
+// more: internal/server/render and internal/store/storetest stay in them. The
+// exclusion is pinned whole, then run against this tree's real package list,
+// so an over-broad pattern or a moved package fails here before CI does.
+func TestCIWorkflow_RaceStepsExcludeExactlyTheShardedPackages(t *testing.T) {
+	ci := readWorkflow(t, "ci.yml")
+	wantTest := map[string]string{
+		"go":          "go test $GO_RACE_FLAGS -timeout=45m $pkgs",
+		"go-postgres": "go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs",
+	}
+	for name, test := range wantTest {
+		var run string
+		for _, s := range ci.Jobs[name].Steps {
+			if s.ID == "race" {
+				run = s.Run
+			}
+		}
+		if run == "" {
+			t.Errorf("ci.yml %s has no race step", name)
+			continue
+		}
+		if fold(run) != fold(raceExclusion+"\n"+test) {
+			t.Errorf("ci.yml %s race step run = %q, want %q", name, run, raceExclusion+"\n"+test)
+		}
+	}
+
+	sharded := map[string]bool{}
+	for _, pkg := range raceShardJobs {
+		sharded[pkg] = true
+	}
+	if got := slices.Sorted(maps.Keys(sharded)); !slices.Equal(got, []string{"internal/server", "internal/store"}) {
+		t.Errorf("race.yml shards %v; the race step exclusion names internal/server and internal/store", got)
+	}
+
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", raceExclusion+"\nprintf '%s\\n' $pkgs")
+	cmd.Dir = filepath.Join("..", "..")
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("the race step exclusion failed on this tree: %v\n%s", err, out)
+	}
+	kept := strings.Fields(string(out))
+	const mod = "github.com/PerpetualSoftware/pad/"
+	for pkg := range sharded {
+		if slices.Contains(kept, mod+pkg) {
+			t.Errorf("race step keeps %s; race.yml shards it", pkg)
+		}
+	}
+	for _, pkg := range []string{"internal/server/render", "internal/store/storetest", "cmd/pad"} {
+		if !slices.Contains(kept, mod+pkg) {
+			t.Errorf("race step drops %s; only internal/server and internal/store may go", pkg)
+		}
+	}
+}
+
+// Every sharded package has a coverage check in ci.yml that proves its 3
+// shards run each test exactly once, with the shards' build flags, and CI
+// result requires it: without one a shard bug drops tests silently.
+func TestCIWorkflow_EveryShardedPackageHasARequiredCoverageCheck(t *testing.T) {
+	ci := readWorkflow(t, "ci.yml")
+	for job, pkg := range shardChecks {
+		j, ok := ci.Jobs[job]
+		if !ok {
+			t.Errorf("ci.yml has no %s job", job)
+			continue
+		}
+		if j.If != "needs.changes.outputs.go == 'true'" {
+			t.Errorf("ci.yml %s if = %q, want needs.changes.outputs.go == 'true'", job, j.If)
+		}
+		want := "scripts/test-shard.sh check ./" + pkg + "/ 3 $GO_RACE_FLAGS"
+		var found bool
+		for _, s := range j.Steps {
+			if strings.TrimSpace(s.Run) == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("ci.yml %s has no step running exactly %q", job, want)
+		}
+	}
+	for _, pkg := range raceShardJobs {
+		if !slices.Contains(slices.Collect(maps.Values(shardChecks)), pkg) {
+			t.Errorf("race.yml shards %s but ci.yml has no coverage check for it", pkg)
+		}
+	}
+
+	raw := readRawWorkflow(t, "ci.yml")
+	jobs, _ := raw["jobs"].(map[string]any)
+	result, _ := jobs["ci-result"].(map[string]any)
+	list, _ := result["needs"].([]any)
+	var needs []string
+	for _, n := range list {
+		needs = append(needs, fmt.Sprint(n))
+	}
+	script, err := os.ReadFile(filepath.Join("..", "..", "scripts", "ci-result.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for job := range shardChecks {
+		if !slices.Contains(needs, job) {
+			t.Errorf("ci.yml ci-result needs = %v; it must include %s", needs, job)
+		}
+		if !strings.Contains(string(script), "'"+job+"': 'go'") {
+			t.Errorf("scripts/ci-result.py must list %s as a go-scoped required job", job)
 		}
 	}
 }

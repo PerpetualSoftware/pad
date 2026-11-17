@@ -6,6 +6,8 @@
 # drivers (2658s on PostgreSQL, 2519s on SQLite, against 2700s). No test or
 # family is more than ~4% of the wall; ~88% of it is serial tests. So the
 # package runs as N jobs, each with a disjoint slice of its top-level tests.
+# internal/store followed (3155s on SQLite against 3600s; TASK-4648) and is
+# split the same way.
 #
 # Usage:
 #   scripts/test-shard.sh regex <pkg> <N> <k> [go test build flags...]

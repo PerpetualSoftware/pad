@@ -22,9 +22,10 @@ permissions:
 
 env:
   # The -race build flags, in ONE place (TASK-4141). The shard coverage
-  # guard lists internal/server's tests from the binary these flags build,
-  # so the shards and the guard must use the same value or the guard checks
-  # a different binary from the one the shards run. checkptr is off for
+  # guards list internal/server's and internal/store's tests from the binary
+  # these flags build, so the shards and the guards must use the same value
+  # or a guard checks a different binary from the one the shards run (race.yml
+  # carries its own copy; keep the two identical). checkptr is off for
   # modernc.org/... only (BUG-3483; see the "Run tests with race detector"
   # step). Expanded unquoted on purpose: no spaces or glob characters inside
   # a flag.
@@ -80,16 +81,18 @@ jobs:
   go:
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    # Backstop only. A hung TEST is caught by the -timeout on the steps
-    # below (45m plain, 60m race), which fails fast AND prints the goroutine
-    # dump that tells you which test hung; this cap exists because a job
-    # with no timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
+    # below, which fails fast AND prints the goroutine dump that tells
+    # you which test hung; this cap exists because a job with no
+    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
     # that isn't a single test (a wedged service container, a stuck
-    # download) would otherwise sit there. Set above the two test-step
-    # timeouts combined (105m) so that in practice the per-binary timeout is
-    # what fires — not a guarantee, since this cap covers setup and every
-    # step, not just those two (TASK-2545, BUG-4646).
-    timeout-minutes: 120
+    # download) would otherwise sit there. Set well above the two 45m test
+    # steps so that in practice the per-binary timeout is what fires — not a
+    # guarantee, since this cap covers setup and every step, not just those
+    # two (TASK-2545). BUG-4646 raised it to 120 for a 60m race step; with
+    # internal/store sharded out (TASK-4648) the race step is back at 45m
+    # and this is back at 100.
+    timeout-minutes: 100
     name: Go
     runs-on: ubuntu-latest
     steps:
@@ -252,8 +255,13 @@ jobs:
         # reached that budget again and is now sharded out of this step
         # (TASK-4141, below). internal/store then grew into the same 45m
         # (2376s of 2700s on a green run, a timeout on most others, with no
-        # test stuck), so this step and the PostgreSQL race step run at 60m
-        # (BUG-4646).
+        # test stuck), so BUG-4646 raised this step and the PostgreSQL race
+        # step to 60m; it then took 3155.755s here on main, and timed out at
+        # 3600s on a release tip. It is now sharded out too (TASK-4648), and
+        # the budget is back at 45m. The slowest package left is cmd/pad at
+        # 1265.743s on that main run (then internal/materialize 866.944s,
+        # internal/mcp 724.694s, internal/schedule 710.870s), so 2700s
+        # leaves it more than 2x headroom.
         #
         # checkptr is OFF for modernc.org/... only (BUG-3483). -race turns on
         # checkptr, which checks unsafe.Pointer arithmetic, and modernc's
@@ -264,27 +272,30 @@ jobs:
         # included, and checkptr stays on for every other package.
         # Measured: -25% on 267 serial server tests, -40% on a 40-test probe.
         #
-        # internal/server is NOT in this step: it runs as the three
-        # go-server-race shards in race.yml (TASK-4141). Alone it took 2519.644s
-        # of this step's 2700s budget on main. The exclusion is asserted,
-        # not trusted: the step fails unless exactly one package was
-        # removed and it is internal/server. That catches a grep that
-        # over-excludes (internal/server/render must stay here) and a
-        # path move (which would exclude nothing). The PostgreSQL race
-        # step carries the same assertion.
+        # internal/server and internal/store are NOT in this step: they run
+        # as the three go-server-race shards (TASK-4141; alone it took
+        # 2519.644s of this step's 2700s budget on main) and the three
+        # go-store-race shards (TASK-4648; 3155.755s of a 3600s budget) in
+        # race.yml. The exclusion is asserted, not trusted: the step fails
+        # unless exactly those two packages were removed. That catches a
+        # pattern that over-excludes (internal/server/render and
+        # internal/store/storetest must stay here) and a path move (which
+        # would exclude less). The PostgreSQL race step carries the same
+        # assertion, and internal/buildtools pins and runs it.
         env:
           PAD_TEST_REQUIRE_PS: "1"
         run: |
           all=$(go list ./...)
-          pkgs=$(printf '%s\n' "$all" | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
+          pkgs=$(printf '%s\n' "$all" | grep -Ev '^github.com/PerpetualSoftware/pad/internal/(server|store)$')
           test -n "$pkgs"
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
-          [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
-          go test $GO_RACE_FLAGS -timeout=60m $pkgs
+          want=$(printf '%s\n' github.com/PerpetualSoftware/pad/internal/server github.com/PerpetualSoftware/pad/internal/store)
+          [ "$removed" = "$want" ] || { printf '::error::the race step must exclude exactly internal/server and internal/store; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
+          go test $GO_RACE_FLAGS -timeout=45m $pkgs
 
       # A race failure on a push is stop-the-line (TASK-4224): on main, no
       # merges until it is triaged; on release-*, no tag. The same treatment
-      # race.yml gives the internal/server shards. Keyed on the race step's own
+      # race.yml gives the internal/server and internal/store shards. Keyed on the race step's own
       # outcome, so an ordinary test failure earlier in the job (which skips
       # this step) is not reported as a race failure.
       - name: Stop the line on a race failure
@@ -527,16 +538,18 @@ jobs:
   go-postgres:
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    # Backstop only. A hung TEST is caught by the -timeout on the steps
-    # below (45m plain, 60m race), which fails fast AND prints the goroutine
-    # dump that tells you which test hung; this cap exists because a job
-    # with no timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
+    # below, which fails fast AND prints the goroutine dump that tells
+    # you which test hung; this cap exists because a job with no
+    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
     # that isn't a single test (a wedged service container, a stuck
-    # download) would otherwise sit there. Set above the two test-step
-    # timeouts combined (105m) so that in practice the per-binary timeout is
-    # what fires — not a guarantee, since this cap covers setup and every
-    # step, not just those two (TASK-2545, BUG-4646).
-    timeout-minutes: 120
+    # download) would otherwise sit there. Set well above the two 45m test
+    # steps so that in practice the per-binary timeout is what fires — not a
+    # guarantee, since this cap covers setup and every step, not just those
+    # two (TASK-2545). BUG-4646 raised it to 120 for a 60m race step; with
+    # internal/store sharded out (TASK-4648) the race step is back at 45m
+    # and this is back at 100.
+    timeout-minutes: 100
     name: Go (PostgreSQL)
     runs-on: ubuntu-latest
     services:
@@ -685,18 +698,24 @@ jobs:
         # BUG-1913: raised 30m → 45m alongside the SQLite step — the
         # suite's aggregate runtime crossed the old budget (this job
         # variant failed main at f235a04 with the same timeout panic).
+        # BUG-4646 raised it to 60m for internal/store; back at 45m now
+        # that internal/store is sharded out (TASK-4648; see the SQLite
+        # race step for what is left).
         # checkptr off for modernc.org/... only: see the SQLite race step (BUG-3483).
         # internal/server runs as the go-server-race-postgres shards in race.yml instead
-        # (TASK-4141; it took 2658.534s of 2700s here on main). The exclusion
-        # is asserted as in the SQLite race step: exactly one package
-        # removed, and it is internal/server.
+        # (TASK-4141; it took 2658.534s of 2700s here on main), and
+        # internal/store as the go-store-race-postgres shards (TASK-4648;
+        # 1843.580s here on main, on the 3600s budget). The exclusion is
+        # asserted as in the SQLite race step: exactly those two packages
+        # removed.
         run: |
           all=$(go list ./...)
-          pkgs=$(printf '%s\n' "$all" | grep -v '^github.com/PerpetualSoftware/pad/internal/server$')
+          pkgs=$(printf '%s\n' "$all" | grep -Ev '^github.com/PerpetualSoftware/pad/internal/(server|store)$')
           test -n "$pkgs"
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
-          [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
-          go test $GO_RACE_FLAGS -timeout=60m -count=1 $pkgs
+          want=$(printf '%s\n' github.com/PerpetualSoftware/pad/internal/server github.com/PerpetualSoftware/pad/internal/store)
+          [ "$removed" = "$want" ] || { printf '::error::the race step must exclude exactly internal/server and internal/store; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
+          go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
 
       # Same stop-the-line treatment as the SQLite race step in the go job.
       - name: Stop the line on a race failure
@@ -752,6 +771,32 @@ jobs:
 
       - name: Check the shards cover internal/server exactly once
         run: scripts/test-shard.sh check ./internal/server/ 3 $GO_RACE_FLAGS
+
+  go-store-shards:
+    needs: changes
+    if: needs.changes.outputs.go == 'true'
+    # As go-server-shards, for race.yml's go-store-race and
+    # go-store-race-postgres shards (TASK-4648): fails unless the 3 shard
+    # regexes are pairwise disjoint and together equal internal/store's
+    # `go test -list .` under GO_RACE_FLAGS. One check covers both drivers.
+    timeout-minutes: 30
+    name: Go internal/store shard coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # See the identical step in the `go` job.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # internal/store's test binary imports no embed, so unlike
+      # go-server-shards this job needs no web placeholders.
+      - name: Check the shards cover internal/store exactly once
+        run: scripts/test-shard.sh check ./internal/store/ 3 $GO_RACE_FLAGS
 
   web:
     name: Web
@@ -1274,7 +1319,7 @@ jobs:
   ci-result:
     name: CI result
     if: always()
-    needs: [changes, go, go-postgres, go-server-shards, go-web-parity, nix, native-smoke, web, e2e]
+    needs: [changes, go, go-postgres, go-server-shards, go-store-shards, go-web-parity, nix, native-smoke, web, e2e]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:

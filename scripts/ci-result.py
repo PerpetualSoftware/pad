@@ -5,7 +5,7 @@ import os
 import sys
 
 SCOPED = {'go': 'go', 'go-postgres': 'go', 'go-server-shards': 'go',
-          'go-web-parity': 'parity', 'nix': 'nix'}
+          'go-store-shards': 'go', 'go-web-parity': 'parity', 'nix': 'nix'}
 REQUIRED = {'changes', 'native-smoke', 'web', 'e2e', *SCOPED}
 
 
