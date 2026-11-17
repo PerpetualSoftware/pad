@@ -10,6 +10,8 @@ class HomeOverview {
 	error = $state('');
 	loading = $state(false);
 	private key = '';
+	// A forced reload reuses its key, so only the latest load may publish.
+	private gen = 0;
 	private pending: Promise<void> | null = null;
 	private inFlight: Promise<void> | null = null;
 	constructor() {
@@ -27,13 +29,14 @@ class HomeOverview {
 		const key = this.keyFor(path);
 		if (!force && key === this.key) return this.pending ?? Promise.resolve();
 		this.key = key;
+		const gen = ++this.gen;
 		const sameIdentity = authStore.identityFence();
 		const from = dayWindow(this.monday, this.zone).from;
 		const to = dayWindow(shiftDay(this.monday, 6), this.zone).to;
 		this.loading = true;
 		this.error = '';
 		const pending = Promise.allSettled([Promise.resolve().then(() => api.needs.list({ sort: 'age', limit: 4 })), Promise.resolve().then(() => api.getMyAgenda(from, to, this.zone, undefined, ['completed'], 'omit'))]).then(([needs, agenda]) => {
-			if (!sameIdentity() || this.key !== key) return;
+			if (!sameIdentity() || this.key !== key || this.gen !== gen) return;
 			if (needs.status === 'fulfilled') this.needs = needs.value;
 			if (agenda.status === 'fulfilled') this.agenda = agenda.value;
 			if (needs.status === 'rejected' || agenda.status === 'rejected') this.error = 'Could not load your overview. Try again.';
