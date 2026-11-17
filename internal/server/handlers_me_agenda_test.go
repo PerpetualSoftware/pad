@@ -599,3 +599,51 @@ func TestAgendaReferenceDocumentsAreNotUnplacedWork(t *testing.T) {
 		t.Fatalf("explicit reference commitment: %v", priority)
 	}
 }
+
+// A reference item whose schedule has no current occurrence, or whose ending
+// was dismissed, is not unplaced work either; a work item is (TASK-4554).
+func TestAgendaReferenceScheduleWithoutOccurrenceIsNotUnplaced(t *testing.T) {
+	w := newAgendaWorld(t, "tasks", "reference")
+	if _, err := w.srv.store.DB().Exec(`UPDATE collections SET settings=? WHERE id=?`, `{"tracks_work":false}`, w.colls["reference"].ID); err != nil {
+		t.Fatal(err)
+	}
+	states := map[string]string{
+		"dismissed":     "ended_at='2031-03-09T11:00:00Z',ended_dismissed_at='2031-03-09T12:00:00Z',next_at=NULL,next_wall=NULL",
+		"no_occurrence": "next_at=NULL",
+	}
+	want := map[string]bool{}
+	for _, coll := range []string{"tasks", "reference"} {
+		for state, assignment := range states {
+			it := w.item(t, coll, coll+" "+state, `{"status":"open"}`, oneShot())
+			meAgendaExec(t, w, `UPDATE items SET assigned_user_id=? WHERE id=?`, w.owner.ID, it.ID)
+			meAgendaExec(t, w, `UPDATE item_schedules SET `+assignment+` WHERE item_id=?`, it.ID)
+			if coll == "tasks" {
+				want[it.Ref] = true
+			}
+		}
+	}
+	m := w.ok(t, w.owner, agendaWindow+"&recipient="+w.owner.ID)
+	rows, _ := m["no_date"].([]any)
+	got := map[string]bool{}
+	for _, r := range rows {
+		got[r.(map[string]any)["item_ref"].(string)] = true
+	}
+	if len(got) != len(want) {
+		t.Fatalf("personal no_date = %v; want %v", got, want)
+	}
+	for ref := range want {
+		if !got[ref] {
+			t.Fatalf("personal no_date = %v; want %v", got, want)
+		}
+	}
+	if m["no_date_complete"] != true {
+		t.Fatalf("personal no_date_complete = %v", m["no_date_complete"])
+	}
+	m = w.ok(t, w.owner, agendaWindow)
+	if rows, _ := m["no_date"].([]any); len(rows) != 0 {
+		t.Fatalf("workspace no_date = %v", rows)
+	}
+	if rows, _ := m["priority_list"].([]any); len(rows) != 0 {
+		t.Fatalf("workspace priority_list = %v", rows)
+	}
+}

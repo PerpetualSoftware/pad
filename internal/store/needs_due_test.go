@@ -27,7 +27,7 @@ func TestNeedsDueOccurrences(t *testing.T) {
 		{name: "done", audience: "human", action: "done"},
 		{name: "skip", audience: "human", action: "skip"},
 		{name: "move", audience: "human", action: "move"},
-		{name: "snooze", audience: "human", action: "snooze", want: true},
+		{name: "snooze", audience: "human", action: "snooze"},
 		{name: "future", audience: "human", action: "future"},
 		{name: "assigned", audience: "human", assigned: true, want: true},
 		{name: "assigned away", audience: "human", away: true},
@@ -103,6 +103,29 @@ func TestNeedsDueOccurrencesMoved(t *testing.T) {
 			}
 		} else if len(got) != 1 || !got[it.ID].Equal(moved) {
 			t.Fatalf("at %s due = %v", at, got)
+		}
+	}
+}
+
+// A snooze defers the due claim until the snooze ends, then the claim
+// returns at the original due instant (TASK-4591).
+func TestNeedsDueOccurrencesSnoozed(t *testing.T) {
+	f := newBootFixture(t)
+	due := rt("2031-03-10T09:00:00Z")
+	it, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC"}, "2031-03-09T00:00:00Z")
+	until := rt("2031-03-12T09:00:00Z")
+	f.mustResolve(t, it, ResolveInput{OccurrenceAt: due, State: "snooze", Until: &until, Actor: "user"}, "2031-03-10T11:00:00Z")
+	for _, at := range []time.Time{rt("2031-03-10T12:00:00Z"), until.Add(-time.Second), until, until.Add(time.Hour)} {
+		got, err := f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{}, f.me.ID, at)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if at.Before(until) {
+			if len(got) != 0 {
+				t.Fatalf("snoozed at %s: due = %v", at, got)
+			}
+		} else if len(got) != 1 || !got[it.ID].Equal(due) {
+			t.Fatalf("snooze ended at %s: due = %v", at, got)
 		}
 	}
 }
