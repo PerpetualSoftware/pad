@@ -287,8 +287,11 @@ func (s *Server) readCalendarFeed(r *http.Request, f *store.CalendarFeed, u *mod
 		run := s.newAgendaRead(start, end, usertz.Zone{Name: "UTC", Loc: time.UTC}, "")
 		run.recipient = u.ID
 		run.audience = "human"
+		// The same audiences the entry loop below keeps.
+		run.scheduleAudiences = []string{"human", "both"}
 		if c.Agent {
 			run.audience = "agent"
+			run.scheduleAudiences = []string{"agent"}
 			run.skipDated = true
 		}
 		if deadline.Before(run.deadline) {

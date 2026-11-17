@@ -252,6 +252,11 @@ type agendaRead struct {
 	// skipDated reads schedule occurrences only, for a reader that would
 	// discard dated-field entries (the agent calendar feed).
 	skipDated bool
+	// scheduleAudiences limits the schedule read to these audiences (empty
+	// reads every audience). Only the calendar feed sets it, so schedules of
+	// the layer it discards take no slot of the scan or the entry cap. The
+	// audience field above is the work list's and does not filter schedules.
+	scheduleAudiences []string
 	// A set cut cannot promise a resume instant. A time cut can.
 	setCut  bool
 	timeCut time.Time
@@ -278,7 +283,7 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 	if !run.scanCut {
 		var more bool
 		var err error
-		schedules, more, err = s.store.ListSchedulesForAgenda(workspaceID, scope, from, to, run.remaining)
+		schedules, more, err = s.store.ListSchedulesForAgendaAudiences(workspaceID, scope, run.scheduleAudiences, from, to, run.remaining)
 		if err != nil {
 			return err
 		}
