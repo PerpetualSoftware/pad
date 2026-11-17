@@ -376,7 +376,10 @@ func TestCIWorkflow_RaceStepsExcludeExactlyTheShardedPackages(t *testing.T) {
 		t.Errorf("race.yml shards %v; the race step exclusion names internal/server and internal/store", got)
 	}
 
-	cmd := exec.Command("bash", "-euo", "pipefail", "-c", raceExclusion+"\nprintf '%s\\n' $pkgs")
+	// go list -e: CI creates the web embed before this step, and a checkout
+	// that has not built it would otherwise fail to list the root package.
+	script := strings.Replace(raceExclusion, "go list ./...", "go list -e ./...", 1)
+	cmd := exec.Command("bash", "-euo", "pipefail", "-c", script+"\nprintf '%s\\n' $pkgs")
 	cmd.Dir = filepath.Join("..", "..")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
