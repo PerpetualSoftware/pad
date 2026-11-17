@@ -142,7 +142,10 @@ func TestBlindInventory(t *testing.T) {
 		got = append(got, name)
 	}
 	sort.Strings(got)
-	want := []string{"comments_fts", "documents_fts", "items_fts", "sqlite_sequence"}
+	// item_entries_fts (TASK-4491) is written only by the FTS triggers on
+	// item_entries, an ordinary table the hook sees, so the blind spot hides
+	// no write a capture would otherwise miss.
+	want := []string{"comments_fts", "documents_fts", "item_entries_fts", "items_fts", "sqlite_sequence"}
 	if strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Fatalf("blind inventory = %v, want exactly %v", got, want)
 	}

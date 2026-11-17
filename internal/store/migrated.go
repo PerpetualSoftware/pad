@@ -259,6 +259,10 @@ var migratedExcludedTables = map[string]string{
 	// which runs only at server start (cmd/pad/cmd_server.go:232), after
 	// store.New, which refuses a migrated file (store.go:469). Recomputable.
 	"comment_mentions": "derived",
+	// Written only by triggers on items (migrations/184, pgmigrations/144,
+	// TASK-4491), so every write rides a refused items write. Recomputable
+	// from items.fields by the recovery recipe in the migration header.
+	"item_entries": "derived",
 	// Written only with an item update (updateItemWithParentLinkOnce) and
 	// deleted in the purge's transaction after protected deletes (BUG-3958).
 	"item_patches": "derived",
@@ -325,7 +329,7 @@ var migratedExcludedTables = map[string]string{
 // the base it has four shadow tables: <base>_config, _data, _docsize and _idx. Named rather
 // than matched by suffix, so an ordinary table that happens to end in _fts_data
 // is still classified by hand (BUG-3958).
-var migratedFTSBases = []string{"items_fts", "comments_fts", "documents_fts"}
+var migratedFTSBases = []string{"items_fts", "comments_fts", "documents_fts", "item_entries_fts"}
 
 // isFTSShadowTable reports an FTS5 table or one of its shadow tables. They are
 // reached only behind a base-table write that has already aborted.

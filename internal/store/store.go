@@ -694,6 +694,9 @@ var slowSQLiteMigrations = map[string]string{
 	// a 321 MB working database); 10.5 s for a synthetic 97,660 items
 	// (235 MB of content). Roughly linear in item content.
 	"095_rebuild_items_fts.sql": "rebuilding the item search index; this takes about 1 s per 10,000 items",
+	// TASK-4491. Parses every items.fields once per log and tokenizes every
+	// note and decision; linear in their total size.
+	"184_item_entries_search.sql": "indexing notes and decisions for search",
 }
 
 func (s *Store) migrate() error {
@@ -828,6 +831,10 @@ func (s *Store) migrate() error {
 //   - items_fts_*    — internal/store/migrations/001_initial.sql
 //   - comments_fts_* — internal/store/migrations/007_comments.sql
 //   - documents_*    — internal/store/migrations/001_initial.sql (restored by 046 after BUG-822 drift)
+//   - item_entries_* — internal/store/migrations/184_item_entries_search.sql
+//     (TASK-4491). The three on items keep the derived item_entries table in
+//     step with items.fields; a migration that rebuilds items drops them and
+//     must recreate them. The three on item_entries keep item_entries_fts.
 //
 // If a future migration intentionally renames or removes any of these,
 // update this list in the same commit.
@@ -844,6 +851,12 @@ var expectedFTSTriggers = []struct {
 	{"documents_ai", "documents"},
 	{"documents_au", "documents"},
 	{"documents_ad", "documents"},
+	{"item_entries_items_insert", "items"},
+	{"item_entries_items_update", "items"},
+	{"item_entries_items_delete", "items"},
+	{"item_entries_fts_insert", "item_entries"},
+	{"item_entries_fts_update", "item_entries"},
+	{"item_entries_fts_delete", "item_entries"},
 }
 
 // validateFTSInvariants checks that every trigger in expectedFTSTriggers
