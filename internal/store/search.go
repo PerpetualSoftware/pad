@@ -19,6 +19,11 @@ type SearchResult struct {
 	Rank      float64     `json:"rank"`
 	MatchedIn string      `json:"matched_in"`
 	CommentID string      `json:"comment_id,omitempty"`
+	// EntryID is set on a `note` or `decision` match (TASK-4491): the stored
+	// id of the matching implementation note or decision-log entry, the same
+	// value `item show` and the append echo carry. Not its index, which
+	// shifts when an earlier entry is removed.
+	EntryID string `json:"entry_id,omitempty"`
 	// Workspace says which workspace the item is in, so a search across
 	// workspaces can be navigated (TASK-3604). The handler fills it from the
 	// same access check that admitted the workspace into the search; it is
@@ -187,8 +192,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		       c.slug, c.name, c.icon, c.prefix,
 		       COALESCE(au.name, ''), COALESCE(au.email, ''),
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at,
-		       CASE m.match_leg WHEN 0 THEN i.title WHEN 1 THEN its.snippet ELSE cms.snippet END,
-		       COALESCE(its.title_snippet, ''), COALESCE(its.tags_snippet, ''), m.rank_score, m.comment_id, m.match_leg
+		       CASE m.match_leg WHEN 0 THEN i.title WHEN 1 THEN its.snippet ELSE COALESCE(cms.snippet, '') END,
+		       COALESCE(its.title_snippet, ''), COALESCE(its.tags_snippet, ''), m.rank_score, m.comment_id, m.match_leg,
+		       COALESCE(es.kind, ''), COALESCE(es.entry_id, ''), COALESCE(es.head_snippet, ''), COALESCE(es.body_snippet, '')
 		FROM search_page m
 		JOIN items i ON i.id = m.id
 		JOIN collections c ON c.id = i.collection_id
@@ -196,6 +202,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		LEFT JOIN agent_roles ar ON ar.id = i.agent_role_id
 		LEFT JOIN item_snippets its ON its.id = m.id
 		LEFT JOIN comment_snippets cms ON cms.comment_id = m.comment_id
+		LEFT JOIN entry_snippets es ON es.entry_row = m.entry_row AND es.item_id = m.id
 	`
 	query += order
 	rows, err := s.db.Query(s.q(query), args...)
@@ -210,6 +217,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		var deletedAt *string
 		var pinned bool
 		var titleSnippet, tagsSnippet string
+		var entryKind, entryID, headSnippet, bodySnippet string
 		var leg int
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
@@ -221,14 +229,26 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			&r.Item.AssignedUserName, &r.Item.AssignedUserEmail,
 			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon, &deletedAt,
 			&r.Snippet, &titleSnippet, &tagsSnippet, &r.Rank, &r.CommentID, &leg,
+			&entryKind, &entryID, &headSnippet, &bodySnippet,
 		); err != nil {
 			return nil, err
 		}
 		switch {
 		case leg == 0:
 			r.MatchedIn = "ref"
-		case leg == 2:
+		case leg == 2 && r.CommentID != "":
 			r.MatchedIn = "comment"
+		case leg == 2:
+			// A note or decision (TASK-4491). The head (summary or
+			// decision) is preferred when it carries the match.
+			r.MatchedIn, r.EntryID = "note", entryID
+			if entryKind == "decision" {
+				r.MatchedIn = "decision"
+			}
+			r.Snippet = bodySnippet
+			if strings.Contains(headSnippet, "<mark>") {
+				r.Snippet = headSnippet
+			}
 		case strings.Contains(r.Snippet, "<mark>"):
 			r.MatchedIn = "content"
 		case strings.Contains(titleSnippet, "<mark>"):
@@ -244,8 +264,8 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		r.Item.DeletedAt = parseTimePtr(deletedAt)
 		hydrateItemComputedMetadata(&r.Item)
 		r.Item.Content = ""
-		// Only a content snippet is body text. Ref, title, tags and comment
-		// snippets must not carry the body's staleness marker.
+		// Only a content snippet is body text. Ref, title, tags, comment, note
+		// and decision snippets must not carry the body's staleness marker.
 		if r.MatchedIn != "content" {
 			r.Item.ContentState = ""
 		}
@@ -259,7 +279,9 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 
 // searchMatches builds one row per item before sorting, paging, counting or
 // faceting, without computing snippets. Materialization keeps SQLite ranks in
-// their MATCH context before the window function picks the best comment.
+// their MATCH context before the window function picks the best side match:
+// a comment, or a note or decision (TASK-4491), which share one band (leg 2).
+// entry_row is the item_entries row of an entry match, 0 otherwise.
 func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, []interface{}) {
 	itemTable, commentTable := "items_fts", "comments_fts"
 	itemFrom := "items_fts JOIN items i ON i.rowid = items_fts.rowid"
@@ -271,7 +293,7 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 	}
 	itemRank, itemRankArgs := s.dialect.FTSRank(itemTable, "search_vector", params.Query)
 	itemMatch, itemMatchArgs := s.dialect.FTSMatch(itemTable, "search_vector", params.Query)
-	itemQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, '' AS comment_id, 1 AS match_leg
+	itemQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, '' AS comment_id, 0 AS entry_row, 1 AS match_leg
 		FROM %s JOIN collections c ON c.id = i.collection_id WHERE %s`,
 		itemRank, itemFrom, itemMatch)
 	args := append(itemRankArgs, itemMatchArgs...)
@@ -285,7 +307,7 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 
 	commentRank, rankArgs := s.dialect.FTSRank(commentTable, "search_vector", params.Query)
 	commentMatch, matchArgs := s.dialect.FTSMatch(commentTable, "search_vector", params.Query)
-	commentQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, cm.id AS comment_id, 2 AS match_leg
+	commentQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, cm.id AS comment_id, 0 AS entry_row, 2 AS match_leg
 		FROM %s JOIN collections c ON c.id = i.collection_id
 		WHERE %s AND cm.deleted_at IS NULL`, commentRank, commentFrom, commentMatch)
 	commentArgs := append(rankArgs, matchArgs...)
@@ -298,21 +320,45 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 		}
 	}
 	args = append(args, commentArgs...)
+
+	entryTable := "item_entries_fts"
+	entryFrom := "item_entries_fts JOIN item_entries e ON e.id = item_entries_fts.rowid JOIN items i ON i.id = e.item_id"
+	if s.dialect.Driver() == DriverPostgres {
+		entryTable = "e"
+		entryFrom = "item_entries e JOIN items i ON i.id = e.item_id"
+	}
+	entryRank, entryRankArgs := s.dialect.FTSRank(entryTable, "search_vector", params.Query)
+	entryMatch, entryMatchArgs := s.dialect.FTSMatch(entryTable, "search_vector", params.Query)
+	entryQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, '' AS comment_id, e.id AS entry_row, 2 AS match_leg
+		FROM %s JOIN collections c ON c.id = i.collection_id
+		WHERE %s`, entryRank, entryFrom, entryMatch)
+	entryArgs := append(entryRankArgs, entryMatchArgs...)
+	entryQuery, entryArgs = s.appendSearchFilters(entryQuery, entryArgs, params)
+	entryQuery += " AND i.id NOT IN (SELECT id FROM item_matches)"
+	if len(directIDs) > 0 {
+		entryQuery += " AND i.id NOT IN (" + placeholders(len(directIDs)) + ")"
+		for _, id := range directIDs {
+			entryArgs = append(entryArgs, id)
+		}
+	}
+	args = append(args, entryArgs...)
+
 	direction := "ASC"
 	if s.dialect.Driver() == DriverPostgres {
 		direction = "DESC"
 	}
-	query := "WITH item_matches AS MATERIALIZED (" + itemQuery + "), comment_candidates AS MATERIALIZED (" + commentQuery + `),
-		best_comments AS (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY rank_score ` + direction + `, comment_id) AS comment_position
-			FROM comment_candidates
+	// A rank tie goes to the comment, then the lowest comment id or entry row.
+	query := "WITH item_matches AS MATERIALIZED (" + itemQuery + "), side_candidates AS MATERIALIZED (" + commentQuery + " UNION ALL " + entryQuery + `),
+		best_sides AS (
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY rank_score ` + direction + `, CASE WHEN comment_id <> '' THEN 0 ELSE 1 END, comment_id, entry_row) AS side_position
+			FROM side_candidates
 		), search_matches AS (
 			SELECT * FROM item_matches
 			UNION ALL
-			SELECT id, rank_score, comment_id, match_leg
-			FROM best_comments WHERE comment_position = 1`
+			SELECT id, rank_score, comment_id, entry_row, match_leg
+			FROM best_sides WHERE side_position = 1`
 	if len(directIDs) > 0 {
-		query += ` UNION ALL SELECT i.id, -1000, '', 0 FROM items i WHERE i.id IN (` + placeholders(len(directIDs)) + ")"
+		query += ` UNION ALL SELECT i.id, -1000, '', 0, 0 FROM items i WHERE i.id IN (` + placeholders(len(directIDs)) + ")"
 		for _, id := range directIDs {
 			args = append(args, id)
 		}
@@ -358,6 +404,23 @@ func (s *Store) searchPage(params SearchParams, matches string, args []interface
 	) `, commentSnippet, commentFrom, commentMatch)
 	args = append(args, snippetArgs...)
 	args = append(args, commentMatchArgs...)
+
+	// Note and decision snippets (TASK-4491): head is column 0, body column 1.
+	entryTable, entryFrom := "item_entries_fts", "item_entries_fts JOIN item_entries e ON e.id = item_entries_fts.rowid"
+	if s.dialect.Driver() == DriverPostgres {
+		entryTable, entryFrom = "e", "item_entries e"
+	}
+	headSnippet, headArgs := s.dialect.FTSSnippet(entryTable, 0, "e.head", params.Query)
+	entryBodySnippet, entryBodyArgs := s.dialect.FTSSnippet(entryTable, 1, "e.body", params.Query)
+	entryMatch, entryMatchArgs := s.dialect.FTSMatch(entryTable, "search_vector", params.Query)
+	query += fmt.Sprintf(`, entry_snippets AS MATERIALIZED (
+		SELECT e.id AS entry_row, e.item_id, e.kind, e.entry_id, %s AS head_snippet, %s AS body_snippet
+		FROM %s WHERE %s
+		AND e.id IN (SELECT entry_row FROM search_page WHERE match_leg = 2 AND entry_row <> 0)
+	) `, headSnippet, entryBodySnippet, entryFrom, entryMatch)
+	args = append(args, headArgs...)
+	args = append(args, entryBodyArgs...)
+	args = append(args, entryMatchArgs...)
 	return query, args
 }
 
