@@ -807,6 +807,22 @@ dialog.attachment-crop-modal::backdrop {
 	}
 }
 
+/* Native date and time pickers draw their calendar and clock icons from the
+   colour scheme, not from `color`, so a light-scheme icon all but vanished on
+   the dark inputs. Each input follows the theme: dark by default, light under
+   a forced light theme and under a light system preference. */
+input:is([type="date"], [type="time"], [type="datetime-local"], [type="month"], [type="week"]) {
+	color-scheme: dark;
+}
+[data-theme="light"] input:is([type="date"], [type="time"], [type="datetime-local"], [type="month"], [type="week"]) {
+	color-scheme: light;
+}
+@media (prefers-color-scheme: light) {
+	:root:not([data-theme="dark"]) input:is([type="date"], [type="time"], [type="datetime-local"], [type="month"], [type="week"]) {
+		color-scheme: light;
+	}
+}
+
 /* Responsive */
 @media (max-width: 768px) {
 	:root {
