@@ -677,7 +677,8 @@ shared agenda fields are documented in [the REST contract](api.md#item-commitmen
 `pad_item` update and bulk-update preserve `schedule_active` and its details on
 stdio and HTTP: `{schedule_id, next_at}` (`next_at` is RFC3339 or null; no human
 rule summary is currently exposed). Closing a non-terminal item with a live
-recurring rule requires the existing `force:true`, which overrides both this
+recurring rule (an RRULE, or RDATEs that add a second occurrence) requires
+the existing `force:true`, which overrides both this
 and `open_children`. Optimistic concurrency runs first, then `open_children`,
 then `schedule_active`. When both apply, `open_children` details include
 `schedule_active: {schedule_id, next_at}` (also in bulk per-item failures),

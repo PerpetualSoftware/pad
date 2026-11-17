@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 )
 
 // LiveRecurringScheduleTx reads the closing guard under the item update's
@@ -26,10 +27,39 @@ func (s *Store) LiveRecurringScheduleTx(tx *sql.Tx, workspaceID, itemID string) 
 	if err != nil {
 		return nil, err
 	}
-	// Recurring means an RRULE or any RDATE: an RDATE-only schedule still has
-	// occurrences after the next one. An exhausted series has EndedAt set.
-	if sc == nil || sc.EndedAt != nil || ((sc.Rrule == nil || *sc.Rrule == "") && len(sc.RDates) == 0) {
+	// An exhausted series has EndedAt set.
+	if sc == nil || sc.EndedAt != nil || !scheduleRecurs(sc) {
 		return nil, nil
 	}
 	return sc, nil
+}
+
+// scheduleRecurs reports whether a schedule has more than one occurrence: any
+// RRULE, or, with no RRULE, at least two distinct walls among the start and
+// the RDATEs once the EXDATEs are removed. An RDATE that repeats the start or
+// is excluded leaves a one-shot. A stored spec that no longer compiles counts
+// as recurring, so the close is refused and force still overrides it.
+func scheduleRecurs(sc *models.ItemSchedule) bool {
+	if sc.Rrule != nil && *sc.Rrule != "" {
+		return true
+	}
+	if len(sc.RDates) == 0 {
+		return false
+	}
+	c, err := compileScheduleSpec(storedSpecInput(sc, sc.Dtstart))
+	if err != nil {
+		return true
+	}
+	spec := c.Spec()
+	excluded := map[string]bool{}
+	for _, w := range spec.ExDates {
+		excluded[w.String()] = true
+	}
+	walls := map[string]bool{}
+	for _, w := range append([]schedule.Wall{spec.Start}, spec.RDates...) {
+		if !excluded[w.String()] {
+			walls[w.String()] = true
+		}
+	}
+	return len(walls) > 1
 }

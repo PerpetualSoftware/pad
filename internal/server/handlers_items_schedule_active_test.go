@@ -260,3 +260,26 @@ func TestScheduleActiveRDateOnly(t *testing.T) {
 		})
 	}
 }
+
+// An RDATE that repeats the start, or is excluded, adds no second occurrence,
+// so the schedule is still a one-shot and closing is not refused.
+func TestScheduleActiveRDateOneShot(t *testing.T) {
+	t.Parallel()
+	for name, patch := range map[string]map[string]any{
+		"rdate-is-start": {"rdates": []string{"2099-01-01T09:00"}},
+		"rdate-excluded": {"rdates": []string{"2099-01-05T09:00"}, "exdates": []string{"2099-01-05T09:00"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := endGuardHTTP(t)
+			readCommitment(t, commitmentCall(f, "PATCH", patch), 200)
+			sc, _ := f.srv.store.GetSchedule(f.ws.ID, f.item.ID)
+			if len(sc.RDates) != 1 || sc.EndedAt != nil {
+				t.Fatalf("fixture schedule = %+v", sc)
+			}
+			rr := f.as(f.token(f.owner, ""), "PATCH", strings.TrimSuffix(f.path(f.item), "/commitment"), map[string]any{"fields_patch": map[string]any{"status": "done"}})
+			if rr.Code != 200 {
+				t.Fatalf("close: %d %s", rr.Code, rr.Body.String())
+			}
+		})
+	}
+}
