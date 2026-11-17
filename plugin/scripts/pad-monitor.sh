@@ -14,7 +14,14 @@
 #      has consented right now (a live `pad session arm`, or auto_arm with
 #      no explicit disarm). If not, this script exits immediately. The mod
 #      checks first, so for it this is the re-check; for the connect
-#      monitor it is the gate.
+#      monitor it is the gate. The connect monitor passes --await-consent
+#      (BUG-4511): the harness launches it the moment /pad:connect is
+#      invoked, before the skill's own `pad session arm` has run, so a
+#      first connect would otherwise find no consent yet and exit. With the
+#      flag the script polls should-arm for a bounded time (default every
+#      2s for 60s; PAD_MONITOR_CONSENT_POLL / PAD_MONITOR_CONSENT_WAIT)
+#      and exits silently if consent never arrives. Without it (the mod)
+#      the gate is immediate.
 #
 #   2. Dedupe. When both callers start it for one armed session, a
 #      per-session lockfile lets only one hold the stream; the loser exits
@@ -54,6 +61,25 @@ done
 # test harness drives this script; the step is verified by hand with
 # `pad session list` after a session starts (TASK-2767).
 pad session register >/dev/null 2>&1 || true
+
+# --- 0.75. Bounded consent wait, connect monitor only (BUG-4511). Only a
+# first argument of --await-consent enables it; any other argument is
+# ignored so the script stays silent. A non-numeric override falls back to
+# the default rather than erroring.
+if [ "${1:-}" = "--await-consent" ]; then
+	wait_max="${PAD_MONITOR_CONSENT_WAIT:-60}"
+	poll="${PAD_MONITOR_CONSENT_POLL:-2}"
+	case "$wait_max" in '' | *[!0-9]*) wait_max=60 ;; esac
+	case "$poll" in '' | *[!0-9]* | 0) poll=2 ;; esac
+	waited=0
+	while ! pad session should-arm >/dev/null 2>&1; do
+		if [ "$waited" -ge "$wait_max" ]; then
+			exit 0
+		fi
+		sleep "$poll"
+		waited=$((waited + poll))
+	done
+fi
 
 # --- 1. Session key for the lockfile.
 sock="${CLAUDE_CODE_MESSAGING_SOCKET:-}"
