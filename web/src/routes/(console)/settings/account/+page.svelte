@@ -956,13 +956,17 @@
 				</div>
 				<div class="field">
 					<label for="timezone">Time zone</label>
-					<input id="timezone" list="timezones" bind:value={timezone} disabled={timezoneSaving} />
+					<div class="timezone-row">
+						<input id="timezone" list="timezones" bind:value={timezone} disabled={timezoneSaving} />
+						<Button onclick={saveTimezone} disabled={!profileReady || timezoneSaving || !timezone.trim()}>Save time zone</Button>
+					</div>
 					<datalist id="timezones">{#each timezones as tz}<option value={tz}></option>{/each}</datalist>
-					{#if profile?.timezone === null}<p>Not set, times use UTC</p>{/if}
+					{#if profile?.timezone === null}<p class="plan-desc">Not set, times use UTC</p>{/if}
 					{#if browserTimezone}
-						<button onclick={() => timezone = browserTimezone} disabled={timezoneSaving}>Use browser zone ({browserTimezone})</button>
+						<div class="timezone-helper">
+							<Button variant="ghost" size="sm" onclick={() => timezone = browserTimezone} disabled={timezoneSaving}>Use browser zone ({browserTimezone})</Button>
+						</div>
 					{/if}
-					<Button onclick={saveTimezone} disabled={!profileReady || timezoneSaving || !timezone.trim()}>Save time zone</Button>
 					{#if timezoneError}<p class="error" role="alert">{timezoneError}</p>{/if}
 					{#if timezoneMsg}<p class="success" role="status">{timezoneMsg}</p>{/if}
 				</div>
@@ -1842,6 +1846,26 @@
 		justify-content: flex-end;
 		gap: var(--space-2);
 		margin-top: var(--space-2);
+	}
+
+	/* Time zone input and its Save share a row (input grows, Save keeps its
+	   natural width and stretches to the input height); on a narrow screen
+	   Save wraps under the input at its natural width. */
+	.timezone-row {
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-2);
+	}
+
+	.timezone-row input {
+		flex: 1 1 12rem;
+		min-width: 0;
+	}
+
+	/* Keeps the ghost helper action at its natural width, start-aligned,
+	   instead of stretching across the column-flex .field. */
+	.timezone-helper {
+		display: flex;
 	}
 
 	.token-create-row {

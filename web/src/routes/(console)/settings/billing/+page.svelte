@@ -354,7 +354,7 @@
 </svelte:head>
 
 <div class="billing-page">
-	<h1 class="page-title">Billing</h1>
+	<h2 class="page-title">Billing</h2>
 
 	{#if !commerceAllowed}
 		<!-- no checkout-result banners in the apps -->
