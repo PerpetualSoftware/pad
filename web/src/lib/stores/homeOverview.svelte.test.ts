@@ -76,3 +76,31 @@ it('refetches on arrival after a failed read has settled', async () => {
  await homeOverview.arrive('/'); expectReads(2);
  expect(homeOverview.error).toBe('');
 });
+it('an older forced load that resolves last does not overwrite the newer one', async () => {
+ const older = deferred(); const newer = deferred();
+ h.agenda.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+ h.needs.mockResolvedValueOnce({ rows: [], total: 1, hidden: 0, workspaces: [] })
+  .mockResolvedValueOnce({ rows: [], total: 2, hidden: 0, workspaces: [] });
+ const first = homeOverview.load('/', true);
+ const second = homeOverview.load('/', true);
+ await Promise.resolve(); expectReads(2);
+ newer.resolve(); await second;
+ expect(homeOverview.needs?.total).toBe(2);
+ expect(homeOverview.loading).toBe(false);
+ older.resolve(); await first;
+ expect(homeOverview.needs?.total).toBe(2);
+ expect(homeOverview.loading).toBe(false);
+});
+it('an older forced load that resolves first leaves loading set until the newer one lands', async () => {
+ const older = deferred(); const newer = deferred();
+ h.agenda.mockReturnValueOnce(older.promise).mockReturnValueOnce(newer.promise);
+ h.needs.mockResolvedValueOnce({ rows: [], total: 1, hidden: 0, workspaces: [] })
+  .mockResolvedValueOnce({ rows: [], total: 2, hidden: 0, workspaces: [] });
+ const first = homeOverview.load('/', true);
+ const second = homeOverview.load('/', true);
+ older.resolve(); await first;
+ expect(homeOverview.loading).toBe(true);
+ newer.resolve(); await second;
+ expect(homeOverview.needs?.total).toBe(2);
+ expect(homeOverview.loading).toBe(false);
+});
