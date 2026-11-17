@@ -194,7 +194,8 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		       COALESCE(ar.name, ''), COALESCE(ar.slug, ''), COALESCE(ar.icon, ''), i.deleted_at,
 		       CASE m.match_leg WHEN 0 THEN i.title WHEN 1 THEN its.snippet ELSE COALESCE(cms.snippet, '') END,
 		       COALESCE(its.title_snippet, ''), COALESCE(its.tags_snippet, ''), m.rank_score, m.comment_id, m.match_leg,
-		       COALESCE(es.kind, ''), COALESCE(es.entry_id, ''), COALESCE(es.head_snippet, ''), COALESCE(es.body_snippet, '')
+		       COALESCE(es.kind, ''), COALESCE(es.entry_id, ''), COALESCE(es.head_snippet, ''), COALESCE(es.body_snippet, ''),
+		       COALESCE(its.content_matched, 0), COALESCE(its.title_matched, 0), COALESCE(its.tags_matched, 0), COALESCE(es.head_matched, 0)
 		FROM search_page m
 		JOIN items i ON i.id = m.id
 		JOIN collections c ON c.id = i.collection_id
@@ -219,6 +220,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		var titleSnippet, tagsSnippet string
 		var entryKind, entryID, headSnippet, bodySnippet string
 		var leg int
+		var contentMatched, titleMatched, tagsMatched, headMatched int
 		if err := rows.Scan(
 			&r.Item.ID, &r.Item.WorkspaceID, &r.Item.CollectionID, &r.Item.Title, &r.Item.Slug,
 			&r.Item.Content, &r.Item.ContentState, &r.Item.Fields, &r.Item.Tags,
@@ -230,6 +232,7 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			&r.Item.AgentRoleName, &r.Item.AgentRoleSlug, &r.Item.AgentRoleIcon, &deletedAt,
 			&r.Snippet, &titleSnippet, &tagsSnippet, &r.Rank, &r.CommentID, &leg,
 			&entryKind, &entryID, &headSnippet, &bodySnippet,
+			&contentMatched, &titleMatched, &tagsMatched, &headMatched,
 		); err != nil {
 			return nil, err
 		}
@@ -246,15 +249,15 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 				r.MatchedIn = "decision"
 			}
 			r.Snippet = bodySnippet
-			if strings.Contains(headSnippet, "<mark>") {
+			if headMatched != 0 {
 				r.Snippet = headSnippet
 			}
-		case strings.Contains(r.Snippet, "<mark>"):
+		case contentMatched != 0:
 			r.MatchedIn = "content"
-		case strings.Contains(titleSnippet, "<mark>"):
+		case titleMatched != 0:
 			r.MatchedIn, r.Snippet = "title", titleSnippet
-		case strings.Contains(tagsSnippet, "<mark>"):
-			r.MatchedIn, r.Snippet = "tags", tagsSnippet
+		case tagsMatched != 0:
+			r.MatchedIn, r.Snippet = "tags", plainTagsSnippet(tagsSnippet)
 		default:
 			r.MatchedIn = "content"
 		}
@@ -385,14 +388,23 @@ func (s *Store) searchPage(params SearchParams, matches string, args []interface
 	bodySnippet, bodyArgs := s.dialect.FTSSnippet(itemTable, 1, "i.content", params.Query)
 	titleSnippet, titleArgs := s.dialect.FTSSnippet(itemTable, 0, "i.title", params.Query)
 	tagsSnippet, tagsArgs := s.dialect.FTSSnippet(itemTable, 2, tagsColumn, params.Query)
+	// Which column matched comes from these flags, not from "<mark>" in a
+	// snippet: stored text can contain that string (TASK-4514).
+	bodyMatched, bodyMatchedArgs := s.dialect.FTSColumnMatched(itemTable, 1, "i.content", params.Query)
+	titleMatched, titleMatchedArgs := s.dialect.FTSColumnMatched(itemTable, 0, "i.title", params.Query)
+	tagsMatched, tagsMatchedArgs := s.dialect.FTSColumnMatched(itemTable, 2, tagsColumn, params.Query)
 	itemMatch, itemMatchArgs := s.dialect.FTSMatch(itemTable, "search_vector", params.Query)
 	query += fmt.Sprintf(`item_snippets AS MATERIALIZED (
-		SELECT i.id, %s AS snippet, %s AS title_snippet, %s AS tags_snippet
+		SELECT i.id, %s AS snippet, %s AS title_snippet, %s AS tags_snippet,
+		       %s AS content_matched, %s AS title_matched, %s AS tags_matched
 		FROM %s WHERE %s AND i.id IN (SELECT id FROM search_page WHERE match_leg = 1)
-	), `, bodySnippet, titleSnippet, tagsSnippet, itemFrom, itemMatch)
+	), `, bodySnippet, titleSnippet, tagsSnippet, bodyMatched, titleMatched, tagsMatched, itemFrom, itemMatch)
 	args = append(args, bodyArgs...)
 	args = append(args, titleArgs...)
 	args = append(args, tagsArgs...)
+	args = append(args, bodyMatchedArgs...)
+	args = append(args, titleMatchedArgs...)
+	args = append(args, tagsMatchedArgs...)
 	args = append(args, itemMatchArgs...)
 
 	commentSnippet, snippetArgs := s.dialect.FTSSnippet(commentTable, 0, "cm.body", params.Query)
@@ -406,20 +418,26 @@ func (s *Store) searchPage(params SearchParams, matches string, args []interface
 	args = append(args, commentMatchArgs...)
 
 	// Note and decision snippets (TASK-4491): head is column 0, body column 1.
+	// The Postgres head flag reads the head as its search vector indexes it
+	// (pgmigrations/144: the first 65536 characters).
 	entryTable, entryFrom := "item_entries_fts", "item_entries_fts JOIN item_entries e ON e.id = item_entries_fts.rowid"
+	headSource := "e.head"
 	if s.dialect.Driver() == DriverPostgres {
 		entryTable, entryFrom = "e", "item_entries e"
+		headSource = "left(e.head, 65536)"
 	}
 	headSnippet, headArgs := s.dialect.FTSSnippet(entryTable, 0, "e.head", params.Query)
 	entryBodySnippet, entryBodyArgs := s.dialect.FTSSnippet(entryTable, 1, "e.body", params.Query)
+	headMatched, headMatchedArgs := s.dialect.FTSColumnMatched(entryTable, 0, headSource, params.Query)
 	entryMatch, entryMatchArgs := s.dialect.FTSMatch(entryTable, "search_vector", params.Query)
 	query += fmt.Sprintf(`, entry_snippets AS MATERIALIZED (
-		SELECT e.id AS entry_row, e.item_id, e.kind, e.entry_id, %s AS head_snippet, %s AS body_snippet
+		SELECT e.id AS entry_row, e.item_id, e.kind, e.entry_id, %s AS head_snippet, %s AS body_snippet, %s AS head_matched
 		FROM %s WHERE %s
 		AND e.id IN (SELECT entry_row FROM search_page WHERE match_leg = 2 AND entry_row <> 0)
-	) `, headSnippet, entryBodySnippet, entryFrom, entryMatch)
+	) `, headSnippet, entryBodySnippet, headMatched, entryFrom, entryMatch)
 	args = append(args, headArgs...)
 	args = append(args, entryBodyArgs...)
+	args = append(args, headMatchedArgs...)
 	args = append(args, entryMatchArgs...)
 	return query, args
 }
@@ -661,4 +679,61 @@ func appendSearchCollectionFilter(query string, args []interface{}, params Searc
 		args = append(args, params.Collection)
 	}
 	return query, args
+}
+
+// plainTagsSnippet renders a tags snippet as a plain list, `<mark>x</mark>, y`,
+// rather than the stored JSON array text it was cut from (`["<mark>x</mark>","y"]`
+// on SQLite, `["<mark>x</mark>", "y"]` on Postgres). An FTS ellipsis at either
+// end of a cut snippet is kept, and the JSON escapes \" and \\ inside a tag are
+// undone. The stored tags are not touched.
+func plainTagsSnippet(snippet string) string {
+	s, lead, trail := snippet, "", ""
+	if strings.HasPrefix(s, "...") {
+		lead, s = "...", s[3:]
+	}
+	if strings.HasSuffix(s, "...") {
+		trail, s = "...", s[:len(s)-3]
+	}
+	// A bracket is the array's only at an end the snippet did not cut.
+	if lead == "" {
+		s = strings.TrimPrefix(s, "[")
+	}
+	if trail == "" {
+		s = strings.TrimSuffix(s, "]")
+	}
+	var b strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; c {
+		case '\\':
+			if i+1 < len(s) && (s[i+1] == '"' || s[i+1] == '\\') {
+				i++
+				b.WriteByte(s[i])
+			} else {
+				b.WriteByte(c)
+			}
+		case '"':
+			// An unescaped quote either closes a tag before the next one or
+			// opens or closes the list; only the separator is shown.
+			j := i + 1
+			for j < len(s) && s[j] == ' ' {
+				j++
+			}
+			if j < len(s) && s[j] == ',' {
+				j++
+				for j < len(s) && s[j] == ' ' {
+					j++
+				}
+				if j < len(s) && s[j] == '"' {
+					b.WriteString(", ")
+					i = j
+				}
+			}
+		default:
+			b.WriteByte(c)
+		}
+	}
+	if b.Len() == 0 {
+		return ""
+	}
+	return lead + b.String() + trail
 }

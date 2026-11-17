@@ -117,6 +117,16 @@ type Dialect interface {
 	// PostgreSQL uses the same tsquery as FTSMatch; SQLite uses the MATCH context.
 	FTSSnippet(ftsTable string, colIndex int, sourceColumn, query string) (string, []interface{})
 
+	// FTSColumnMatched returns SQL that is 1 when one indexed column matches
+	// the query and 0 otherwise, so a search can say which column matched
+	// without reading the snippet text, which stored text can imitate.
+	// SQLite compares the column snippet with and without highlight markers
+	// inside the MATCH context: they differ in length only when a marker was
+	// inserted. PostgreSQL tests the column on its own with the same tsquery
+	// as FTSMatch; sourceColumn must be the expression the search vector
+	// indexes for that column.
+	FTSColumnMatched(ftsTable string, colIndex int, sourceColumn, query string) (string, []interface{})
+
 	// FTSRank returns relevance SQL and its arguments.
 	// PostgreSQL uses the same tsquery as FTSMatch; SQLite uses the MATCH context.
 	FTSRank(table, column, query string) (string, []interface{})
@@ -220,6 +230,10 @@ func (d *sqliteDialect) FTSMatch(table, _, query string) (string, []interface{})
 
 func (d *sqliteDialect) FTSSnippet(ftsTable string, colIndex int, _, _ string) (string, []interface{}) {
 	return fmt.Sprintf("snippet(%s, %d, '<mark>', '</mark>', '...', 32)", ftsTable, colIndex), nil
+}
+
+func (d *sqliteDialect) FTSColumnMatched(ftsTable string, colIndex int, _, _ string) (string, []interface{}) {
+	return fmt.Sprintf("(length(snippet(%[1]s, %[2]d, '<mark>', '</mark>', '...', 32)) <> length(snippet(%[1]s, %[2]d, '', '', '...', 32)))", ftsTable, colIndex), nil
 }
 
 func (d *sqliteDialect) FTSRank(_, _, _ string) (string, []interface{}) {
@@ -345,6 +359,11 @@ func (d *postgresDialect) FTSSnippet(_ string, _ int, sourceColumn, query string
 		"ts_headline('english', %s, %s, 'StartSel=<mark>,StopSel=</mark>,MaxFragments=1,MaxWords=32')",
 		sourceColumn, tsquery,
 	), args
+}
+
+func (d *postgresDialect) FTSColumnMatched(_ string, _ int, sourceColumn, query string) (string, []interface{}) {
+	tsquery, args := postgresFTSQuery(query)
+	return fmt.Sprintf("(CASE WHEN to_tsvector('english', COALESCE(%s, '')) @@ (%s) THEN 1 ELSE 0 END)", sourceColumn, tsquery), args
 }
 
 func (d *postgresDialect) FTSRank(table, column, query string) (string, []interface{}) {
