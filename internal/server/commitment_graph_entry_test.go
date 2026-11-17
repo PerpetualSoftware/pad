@@ -275,7 +275,7 @@ func TestTASK4423_R11SkipAuthority(t *testing.T) {
 				for _, q := range []string{
 					`CREATE TEMP TABLE graph_parent_schedule AS SELECT * FROM item_schedules WHERE item_id='` + f.item.ID + `'`,
 					`CREATE TEMP TABLE graph_parent_reminder AS SELECT * FROM item_reminders WHERE item_id='` + f.item.ID + `'`,
-					`CREATE TRIGGER graph_response_clock AFTER UPDATE ON item_schedules WHEN new.item_id='` + f.item.ID + `' BEGIN UPDATE item_schedules SET updated_at='2026-01-01T00:00:00Z',ended_at=CASE WHEN ended_at IS NULL THEN NULL ELSE '2026-01-01T00:00:00Z' END WHERE id=new.id; END`,
+					`CREATE TRIGGER graph_response_clock AFTER UPDATE ON item_schedules WHEN new.item_id='` + f.item.ID + `' BEGIN UPDATE item_schedules SET updated_at='2026-01-01T00:00:00Z',ended_at=CASE WHEN ended_at IS NULL THEN NULL ELSE '2026-01-01T00:00:00Z' END,ended_dismissed_at=CASE WHEN ended_dismissed_at IS NULL THEN NULL ELSE '2026-01-01T00:00:00Z' END WHERE id=new.id; END`,
 				} {
 					if _, err := f.srv.store.DB().Exec(q); err != nil {
 						t.Fatal(err)
