@@ -101,21 +101,28 @@ $$ LANGUAGE sql IMMUTABLE;
 
 -- Bring one item into step: delete the rows whose position no longer holds
 -- the same entry, then insert the positions that have no row. An append
--- inserts one row and rewrites none.
+-- inserts one row and rewrites none. Each statement runs only when it has
+-- rows to touch, so an item with no notes or decisions (the common create)
+-- issues no statement against item_entries at all, and statement-level
+-- observers of the item write see exactly what they saw before this table.
 CREATE OR REPLACE FUNCTION item_entries_sync(p_item_id TEXT, f JSONB) RETURNS void AS $$
 BEGIN
-    WITH s AS MATERIALIZED (SELECT * FROM item_entries_source(f))
-    DELETE FROM item_entries e
-    WHERE e.item_id = p_item_id
-      AND NOT EXISTS (
-          SELECT 1 FROM s
-          WHERE s.kind = e.kind AND s.entry_index = e.entry_index
-            AND s.entry_id = e.entry_id AND s.head = e.head AND s.body = e.body
-      );
-    INSERT INTO item_entries (item_id, kind, entry_index, entry_id, head, body)
-    SELECT p_item_id, s.kind, s.entry_index, s.entry_id, s.head, s.body
-    FROM item_entries_source(f) s
-    ON CONFLICT (item_id, kind, entry_index) DO NOTHING;
+    IF EXISTS (SELECT 1 FROM item_entries WHERE item_id = p_item_id) THEN
+        WITH s AS MATERIALIZED (SELECT * FROM item_entries_source(f))
+        DELETE FROM item_entries e
+        WHERE e.item_id = p_item_id
+          AND NOT EXISTS (
+              SELECT 1 FROM s
+              WHERE s.kind = e.kind AND s.entry_index = e.entry_index
+                AND s.entry_id = e.entry_id AND s.head = e.head AND s.body = e.body
+          );
+    END IF;
+    IF EXISTS (SELECT 1 FROM item_entries_source(f)) THEN
+        INSERT INTO item_entries (item_id, kind, entry_index, entry_id, head, body)
+        SELECT p_item_id, s.kind, s.entry_index, s.entry_id, s.head, s.body
+        FROM item_entries_source(f) s
+        ON CONFLICT (item_id, kind, entry_index) DO NOTHING;
+    END IF;
 END;
 $$ LANGUAGE plpgsql;
 
