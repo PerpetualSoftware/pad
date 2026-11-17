@@ -201,3 +201,33 @@ it('says "1 entry" for a day with one entry, in the cell label and the phone sum
   expect(list.querySelector('button.day-header[data-day="2026-03-08"] span')).toHaveTextContent(/^1 entry$/);
  } finally { spy.mockRestore(); }
 });
+it('pages to the next month without selecting a day there, and a clicked day still selects', async () => {
+ vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
+ try {
+  mount({initialMonth:undefined});
+  await screen.findByRole('grid');
+  await vi.waitFor(() => expect(api.calendar.get).toHaveBeenCalled());
+  await fireEvent.click(screen.getByRole('button',{name:'Next month'}));
+  await screen.findByRole('heading',{name:'December 2026'});
+  const grid = screen.getByRole('grid');
+  expect(within(grid).getByRole('button',{name:/Sunday, 13 December 2026/})).toBeInTheDocument();
+  expect(grid.querySelectorAll('[aria-selected="true"]')).toHaveLength(0);
+  const pick = within(grid).getByRole('button',{name:/Thursday, 17 December 2026/});
+  await fireEvent.click(pick);
+  expect(pick.closest('[role="gridcell"]')).toHaveAttribute('aria-selected','true');
+  expect(grid.querySelectorAll('[aria-selected="true"]')).toHaveLength(1);
+ } finally { vi.useRealTimers(); }
+});
+it('keeps no header for the paged-to day-of-month in the phone list', async () => {
+ vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
+ const { viewport } = await import('$lib/stores/breakpoint.svelte');
+ const spy = vi.spyOn(viewport, 'isMobile', 'get').mockReturnValue(true);
+ try {
+  mount({initialMonth:undefined});
+  await screen.findByRole('list',{name:'November 2026'});
+  await fireEvent.click(screen.getByRole('button',{name:'Next month'}));
+  const list = await screen.findByRole('list',{name:'December 2026'});
+  expect(list.querySelector('button.day-header[data-day="2026-12-13"]')).toBeNull();
+  expect(list.querySelector('[aria-selected="true"]')).toBeNull();
+ } finally { spy.mockRestore(); vi.useRealTimers(); }
+});

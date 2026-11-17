@@ -103,7 +103,8 @@
   month = day.slice(0,7);
   if (focus) grid?.focusDate(day);
  }
- function pageMonth(delta: number) { chooseDay(moveMonth(focusDay,delta)); }
+ // Paging changes the month only: no day in the new month is selected until one is chosen.
+ function pageMonth(delta: number) { month = moveMonth(focusDay,delta).slice(0,7); }
  function openDay(day:string) { selected=day; openedDay=day; }
  async function openEntry(row:CalendarRow) {
   openedDay=null;
