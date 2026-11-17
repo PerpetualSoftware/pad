@@ -193,9 +193,10 @@
 
 <style>
 	.workspace-chooser :global(.mi-hint) { max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-	.workspace-picker { position: relative; display: flex; flex-direction: column; min-height: 0; --scroll-cue-bg: var(--bg-raised, var(--bg-tertiary)); }
-	.workspace-picker:has(.workspace-list[data-scroll-more])::after { content: ''; position: absolute; inset: auto 0 0; height: 24px; pointer-events: none; background: linear-gradient(transparent, var(--scroll-cue-bg)); }
-	.workspace-picker.phone { --scroll-cue-bg: var(--bg-secondary); }
+	.workspace-picker { position: relative; display: flex; flex-direction: column; min-height: 0; --scroll-cue-bg: var(--bg-raised, var(--bg-tertiary)); --scroll-cue-height: 24px; }
+	.workspace-picker:has(.workspace-list[data-scroll-more])::after { content: ''; position: absolute; inset: auto 0 0; height: var(--scroll-cue-height); pointer-events: none; background: linear-gradient(transparent, var(--scroll-cue-bg)); }
+	/* Phone rows are about 58px tall with roomy padding, so a 24px fade lands on the gap between rows and dims nothing (TASK-4584). Fade about one row instead. */
+	.workspace-picker.phone { --scroll-cue-bg: var(--bg-secondary); --scroll-cue-height: 56px; }
 	.workspace-picker > :global(.mi) { flex-shrink: 0; }
 	.workspace-list { min-height: 0; overflow-y: scroll; scrollbar-gutter: stable; border-top: 1px solid var(--border); }
 	.workspace-picker.phone .workspace-list { max-height: 50dvh; }
