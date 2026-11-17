@@ -14,6 +14,7 @@ vi.mock('$app/navigation', () => ({
 
 import ToastContainer from './ToastContainer.svelte';
 import { toastStore } from '$lib/stores/toast.svelte';
+import toastSource from './ToastContainer.svelte?raw';
 
 const regions = (c: HTMLElement) => ({
 	polite: c.querySelector('[aria-live="polite"]') as HTMLElement | null,
@@ -138,5 +139,57 @@ describe('ToastContainer hold and keys (TASK-2202)', () => {
 		const dismiss = container.querySelector(`[data-toast-id="${id}"] .toast-dismiss`) as HTMLElement;
 		await fireEvent.keyDown(dismiss, { key: 'Enter' });
 		expect(nav.goto).toEqual([]);
+	});
+});
+
+// TASK-4581 — on a phone the bottom tab bar showed through a new toast. The
+// toast slid in with Svelte's `fly`, whose default fades opacity up from 0,
+// so for the whole intro the toast was translucent over whatever lay under
+// it. The slide stays; the toast is opaque from its first frame.
+describe('ToastContainer opacity and phone placement (TASK-4581)', () => {
+	it('a toast is fully opaque on every frame of its entrance', async () => {
+		const frames: Keyframe[][] = [];
+		const original = Element.prototype.animate;
+		const spy = vi
+			.spyOn(Element.prototype, 'animate')
+			.mockImplementation(function (this: Element, keyframes, options) {
+				if (this instanceof HTMLElement && this.classList.contains('toast')) {
+					frames.push(Array.isArray(keyframes) ? (keyframes as Keyframe[]) : []);
+				}
+				return original.call(this, keyframes, options);
+			});
+		try {
+			render(ToastContainer);
+			toastStore.show('Occurrence marked done.', 'success', 3000, undefined, {
+				label: 'Undo',
+				onAction: () => {}
+			});
+			flushSync();
+			// The stand-in finishes on a microtask; let the real intro start.
+			await Promise.resolve();
+			await Promise.resolve();
+			const all = frames.flat();
+			const withOpacity = all.filter((k) => k.opacity !== undefined);
+			expect(withOpacity.length, 'the entrance animates and its frames were seen').toBeGreaterThan(0);
+			for (const k of withOpacity) expect(Number(k.opacity)).toBe(1);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	// Placement is CSS that jsdom cannot lay out, so this reads the component's
+	// style source: on a phone with the bottom bar shown (`body.has-bottom-nav`)
+	// the stack clears the bar and its safe-area inset; desktop keeps 20px.
+	it('the phone stack sits above the bottom bar while the bar is shown', () => {
+		const style = (toastSource.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+		const squash = (s: string) => s.replace(/\s+/g, ' ');
+		const mobile = squash(style.slice(style.indexOf('@media (max-width: 768px)')));
+		expect(mobile).toMatch(
+			/:global\(body\.has-bottom-nav\) \.toast-container \{[^}]*bottom: calc\(var\(--bottom-nav-height\) \+ env\(safe-area-inset-bottom, 0px\) \+ 12px\);/
+		);
+		// Without the bar (or with the keyboard up) the phone keeps 12px.
+		expect(mobile).toMatch(/\.toast-container \{ bottom: 12px;/);
+		// Desktop placement is unchanged.
+		expect(squash(style)).toMatch(/^ ?\.toast-container \{ position: fixed; bottom: 20px; right: 20px;/);
 	});
 });

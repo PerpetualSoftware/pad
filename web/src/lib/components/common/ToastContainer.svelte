@@ -50,12 +50,14 @@
 </script>
 
 {#snippet toastItem(toast: Toast)}
+	<!-- Slide in at full opacity: fly's default fades up from 0, and a
+	     half-transparent toast shows whatever lies under it (TASK-4581). -->
 	<!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_static_element_interactions -->
 	<div
 		class="toast toast-{toast.type}"
 		class:clickable={!!toast.link}
 		data-toast-id={toast.id}
-		in:fly={{ x: 80, duration: 250 }}
+		in:fly={{ x: 80, duration: 250, opacity: 1 }}
 		out:fade={{ duration: 150 }}
 		onclick={() => handleClick(toast)}
 		onmouseenter={() => toastStore.pause(toast.id)}
@@ -222,6 +224,12 @@
 			right: 12px;
 			left: 12px;
 			max-width: none;
+		}
+		/* The bottom tab bar is shown (it sets this class, and drops it while
+		   the keyboard is up): sit above it and its safe-area inset rather
+		   than over its icons (TASK-4581). */
+		:global(body.has-bottom-nav) .toast-container {
+			bottom: calc(var(--bottom-nav-height) + env(safe-area-inset-bottom, 0px) + 12px);
 		}
 	}
 </style>
