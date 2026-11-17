@@ -158,11 +158,15 @@ func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
 	t.Run("renew", func(t *testing.T) {
 		t.Parallel()
 		mr := miniredis.RunT(t)
-		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 200 * time.Millisecond})
+		// Generous timeouts: under -race load a healthy first dial and SET
+		// can take longer than a few hundred ms, which the premise below
+		// would misread as a failed register (TASK-4647). A closed listener
+		// refuses at once, so detection after mr.Close does not depend on them.
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 2 * time.Second})
 		t.Cleanup(func() { _ = client.Close() })
 
 		p := NewRedisSessionPresence(client)
-		p.opTimeout = 300 * time.Millisecond
+		p.opTimeout = 2 * time.Second
 		p.renewInterval = 20 * time.Millisecond
 		t.Cleanup(p.Close)
 
@@ -196,11 +200,12 @@ func TestPresenceReportsRenewAndDeregisterFailures(t *testing.T) {
 	t.Run("deregister", func(t *testing.T) {
 		t.Parallel()
 		mr := miniredis.RunT(t)
-		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 200 * time.Millisecond})
+		// Same timeouts as the renew subtest, for the same reason (TASK-4647).
+		client := redis.NewClient(&redis.Options{Addr: mr.Addr(), DialTimeout: 2 * time.Second})
 		t.Cleanup(func() { _ = client.Close() })
 
 		p := NewRedisSessionPresence(client)
-		p.opTimeout = 300 * time.Millisecond
+		p.opTimeout = 2 * time.Second
 		t.Cleanup(p.Close)
 
 		obs := newRecordingPresenceObserver()

@@ -80,16 +80,16 @@ jobs:
   go:
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
-    # below, which fails fast AND prints the goroutine dump that tells
-    # you which test hung; this cap exists because a job with no
-    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # Backstop only. A hung TEST is caught by the -timeout on the steps
+    # below (45m plain, 60m race), which fails fast AND prints the goroutine
+    # dump that tells you which test hung; this cap exists because a job
+    # with no timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
     # that isn't a single test (a wedged service container, a stuck
-    # download) would otherwise sit there. Set well above the two 45m test
-    # steps so that in practice the per-binary timeout is what fires — not a
-    # guarantee, since this cap covers setup and every step, not just those
-    # two (TASK-2545).
-    timeout-minutes: 100
+    # download) would otherwise sit there. Set above the two test-step
+    # timeouts combined (105m) so that in practice the per-binary timeout is
+    # what fires — not a guarantee, since this cap covers setup and every
+    # step, not just those two (TASK-2545, BUG-4646).
+    timeout-minutes: 120
     name: Go
     runs-on: ubuntu-latest
     steps:
@@ -250,7 +250,10 @@ jobs:
         # headroom; genuine deadlocks still hit this and produce the
         # goroutine-dump panic, just up to 15m later. The server package
         # reached that budget again and is now sharded out of this step
-        # (TASK-4141, below).
+        # (TASK-4141, below). internal/store then grew into the same 45m
+        # (2376s of 2700s on a green run, a timeout on most others, with no
+        # test stuck), so this step and the PostgreSQL race step run at 60m
+        # (BUG-4646).
         #
         # checkptr is OFF for modernc.org/... only (BUG-3483). -race turns on
         # checkptr, which checks unsafe.Pointer arithmetic, and modernc's
@@ -277,7 +280,7 @@ jobs:
           test -n "$pkgs"
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
           [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
-          go test $GO_RACE_FLAGS -timeout=45m $pkgs
+          go test $GO_RACE_FLAGS -timeout=60m $pkgs
 
       # A race failure on a push is stop-the-line (TASK-4224): on main, no
       # merges until it is triaged; on release-*, no tag. The same treatment
@@ -524,16 +527,16 @@ jobs:
   go-postgres:
     needs: changes
     if: needs.changes.outputs.go == 'true'
-    # Backstop only. A hung TEST is caught by -timeout=45m on the steps
-    # below, which fails fast AND prints the goroutine dump that tells
-    # you which test hung; this cap exists because a job with no
-    # timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
+    # Backstop only. A hung TEST is caught by the -timeout on the steps
+    # below (45m plain, 60m race), which fails fast AND prints the goroutine
+    # dump that tells you which test hung; this cap exists because a job
+    # with no timeout-minutes inherits GitHub's 6-HOUR default, so a runaway
     # that isn't a single test (a wedged service container, a stuck
-    # download) would otherwise sit there. Set well above the two 45m test
-    # steps so that in practice the per-binary timeout is what fires — not a
-    # guarantee, since this cap covers setup and every step, not just those
-    # two (TASK-2545).
-    timeout-minutes: 100
+    # download) would otherwise sit there. Set above the two test-step
+    # timeouts combined (105m) so that in practice the per-binary timeout is
+    # what fires — not a guarantee, since this cap covers setup and every
+    # step, not just those two (TASK-2545, BUG-4646).
+    timeout-minutes: 120
     name: Go (PostgreSQL)
     runs-on: ubuntu-latest
     services:
@@ -693,7 +696,7 @@ jobs:
           test -n "$pkgs"
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
           [ "$removed" = github.com/PerpetualSoftware/pad/internal/server ] || { printf '::error::the race step must exclude exactly internal/server; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
-          go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
+          go test $GO_RACE_FLAGS -timeout=60m -count=1 $pkgs
 
       # Same stop-the-line treatment as the SQLite race step in the go job.
       - name: Stop the line on a race failure
