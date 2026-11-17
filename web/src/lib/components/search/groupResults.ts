@@ -88,10 +88,18 @@ export function resultAnnouncement(
 }
 
 /**
- * The source label shown beside a result's snippet: "in comment" when the
- * snippet was cut from a comment, the wording the CLI uses. Every other
- * source reads as the item's own text and gets no label.
+ * The source label shown beside a result's snippet: "in comment", "in note"
+ * or "in decision" when the snippet was cut from a comment, an implementation
+ * note or a decision-log entry (TASK-4491), the wording the CLI uses. Every
+ * other source reads as the item's own text and gets no label.
  */
 export function matchMarker(result: Pick<PaletteResult, 'matched_in'>): string {
-	return result.matched_in === 'comment' ? 'in comment' : '';
+	switch (result.matched_in) {
+		case 'comment':
+		case 'note':
+		case 'decision':
+			return `in ${result.matched_in}`;
+		default:
+			return '';
+	}
 }

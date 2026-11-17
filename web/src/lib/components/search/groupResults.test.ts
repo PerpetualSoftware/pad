@@ -101,6 +101,11 @@ describe('matchMarker', () => {
 		for (const matched_in of others) expect(matchMarker({ matched_in })).toBe('');
 	});
 
+	it('labels a note and a decision match', () => {
+		expect(matchMarker({ matched_in: 'note' })).toBe('in note');
+		expect(matchMarker({ matched_in: 'decision' })).toBe('in decision');
+	});
+
 	it('gives no label to a locally built row, which names no source', () => {
 		expect(matchMarker(hit('a', 'tasks'))).toBe('');
 	});

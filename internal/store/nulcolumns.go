@@ -356,6 +356,14 @@ var nulColumns = []nulColumn{
 	{"schedule_reopen_checkpoints", "before_json", classJSON},
 	{"schedule_reopen_checkpoints", "after_json", classJSON},
 	{"schedule_reopen_checkpoints", "blocked_code", classText},
+
+	// item_entries (TASK-4491): derived from items.fields, which is classJSON,
+	// and the extraction in migration 184 also cuts a value at its first NUL,
+	// so a legacy row cannot reach these triggers either and they never
+	// refuse an item write. Classed as text like the other derived columns.
+	{"item_entries", "entry_id", classText},
+	{"item_entries", "head", classText},
+	{"item_entries", "body", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -392,11 +400,17 @@ var nulTriggerMigrations = []string{
 	"171_nul_invariant_triggers_post170.sql",
 	"177_nul_invariant_triggers_post176.sql",
 	"182_nul_invariant_triggers_post181.sql",
+	"185_nul_invariant_triggers_post184.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
 // first. Every column not named here is in nulTriggerMigrations[0].
 var nulColumnTriggerFile = map[string]string{
+	// 184 introduced the table (TASK-4491).
+	"item_entries.entry_id": "185_nul_invariant_triggers_post184.sql",
+	"item_entries.head":     "185_nul_invariant_triggers_post184.sql",
+	"item_entries.body":     "185_nul_invariant_triggers_post184.sql",
+
 	"schedule_reopen_checkpoints.occurrence_key": "182_nul_invariant_triggers_post181.sql",
 	"schedule_reopen_checkpoints.operation":      "182_nul_invariant_triggers_post181.sql",
 	"schedule_reopen_checkpoints.before_json":    "182_nul_invariant_triggers_post181.sql",
@@ -547,6 +561,9 @@ func NULProtectedColumns() []nulColumn {
 // dispatcher's claim and send columns (TASK-3939) do not exist yet.
 // user_notification_settings is written by PutNotificationSettings.
 var nulExcluded = map[string]string{
+	"item_entries.item_id": "server UUID: the id of the items row whose trigger wrote it (TASK-4491, migration 184)",
+	"item_entries.kind":    "fixed enum constrained by CHECK: note or decision (TASK-4491, migration 184)",
+
 	"users.totp_enabled_at":    "server value: RFC3339 enrolment time (TASK-3867)",
 	"sessions.signed_in_at":    "server value: RFC3339 sign-in time (TASK-3867)",
 	"sessions.step_up_until":   "server value: RFC3339 grant deadline (TASK-3867)",

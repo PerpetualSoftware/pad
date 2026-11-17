@@ -25,18 +25,21 @@ func TestSearchMatchRelationHasNoSnippets(t *testing.T) {
 }
 
 // pageOnlySnippetDialect makes a snippet expression fail if it is evaluated
-// for any item or comment outside the expected page. The real snippet still
+// for any item, comment or entry outside the expected page. The real snippet still
 // runs for allowed rows, including SQLite FTS auxiliary-function checks.
 type pageOnlySnippetDialect struct {
 	Dialect
-	itemIDs, commentIDs []string
+	itemIDs, commentIDs, entryRows []string
 }
 
 func (d *pageOnlySnippetDialect) FTSSnippet(table string, col int, source, query string) (string, []interface{}) {
 	expression, args := d.Dialect.FTSSnippet(table, col, source, query)
 	column, ids := "i.id", d.itemIDs
-	if source == "cm.body" {
+	switch source {
+	case "cm.body":
 		column, ids = "cm.id", d.commentIDs
+	case "e.head", "e.body":
+		column, ids = "e.id", d.entryRows
 	}
 	condition := "1 = 0"
 	var guardArgs []interface{}

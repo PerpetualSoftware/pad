@@ -1800,7 +1800,7 @@ func TestExpectedFTSTriggers_MatchesActual(t *testing.T) {
 
 	rows, err := s.db.Query(`
 		SELECT name, tbl_name FROM sqlite_master
-		WHERE type='trigger' AND tbl_name IN ('items', 'comments', 'documents')
+		WHERE type='trigger' AND tbl_name IN ('items', 'comments', 'documents', 'item_entries')
 	`)
 	if err != nil {
 		t.Fatalf("query triggers: %v", err)
