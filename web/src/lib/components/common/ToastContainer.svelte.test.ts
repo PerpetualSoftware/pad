@@ -192,4 +192,35 @@ describe('ToastContainer opacity and phone placement (TASK-4581)', () => {
 		// Desktop placement is unchanged.
 		expect(squash(style)).toMatch(/^ ?\.toast-container \{ position: fixed; bottom: 20px; right: 20px;/);
 	});
+
+	// While a bottom-anchored phone surface with controls is open, a toast at
+	// the bottom lands on its controls (the Quick capture sheet's "Add and
+	// open" was intercepted by an "Added" toast). The stack moves to the top,
+	// below the safe area and the context bar when that bar is shown.
+	// The members: DockedSheet's panel (Quick capture, Workspace, Account, the
+	// phone chat), BottomSheet's sheet (DialogShell and Menu sheet modes, and
+	// direct users), and the editor's keyboard toolbar.
+	it('the phone stack moves to the top while a bottom-anchored sheet is open', () => {
+		const style = (toastSource.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? '').replace(/\/\*[\s\S]*?\*\//g, '');
+		const squash = (s: string) => s.replace(/\s+/g, ' ');
+		const media = style.indexOf('@media (max-width: 768px)');
+		expect(media).toBeGreaterThan(-1);
+		const mobile = squash(style.slice(media));
+		const desktop = squash(style.slice(0, media));
+		const rule = mobile.match(/((?::global\(body:has\([^)]*\)\) \.toast-container, ?)*:global\(body:has\([^)]*\)\) \.toast-container) \{([^}]*)\}/);
+		expect(rule, 'a top-placement rule keyed on open sheets').not.toBeNull();
+		const selectors = rule![1].split(',').map((s) => s.trim());
+		for (const member of ['.ds-panel', '.bs-sheet', '.mobile-toolbar']) {
+			expect(selectors, `covers ${member}`).toContain(`:global(body:has(${member})) .toast-container`);
+		}
+		const body = rule![2];
+		expect(body).toMatch(/top: calc\(env\(safe-area-inset-top, 0px\) \+ 12px \+ var\(--toast-top-offset, 0px\)\);/);
+		expect(body).toMatch(/bottom: auto;/);
+		// The context bar, when shown, pushes the top placement below it.
+		expect(mobile).toMatch(/:global\(body\.has-context-bar\) \.toast-container \{[^}]*--toast-top-offset: var\(--context-bar-height\);/);
+		// The sheet rule comes after the bottom-bar rule, so it wins at equal specificity.
+		expect(mobile.indexOf(rule![0])).toBeGreaterThan(mobile.indexOf(':global(body.has-bottom-nav) .toast-container {'));
+		// None of this reaches the desktop rules.
+		expect(desktop).not.toMatch(/body:has|--toast-top-offset/);
+	});
 });
