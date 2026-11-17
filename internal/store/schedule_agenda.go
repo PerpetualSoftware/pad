@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -40,7 +41,15 @@ type AgendaSchedule struct {
 // [from, to) (an early resolve ends a schedule before its due instant) never
 // push a visible schedule past it.
 func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
-	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, true)
+	return s.listAgendaSchedules(workspaceID, scope, nil, from, to, limit, true)
+}
+
+// ListSchedulesForAgendaAudiences is ListSchedulesForAgenda limited to the
+// schedules whose audience is one of audiences (nil or empty reads every
+// audience). The filter is applied in SQL before the bound, so a schedule of
+// another audience neither takes a slot nor sets the more flag.
+func (s *Store) ListSchedulesForAgendaAudiences(workspaceID string, scope PendingReminderScope, audiences []string, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
+	return s.listAgendaSchedules(workspaceID, scope, audiences, from, to, limit, true)
 }
 
 // ListSchedulesForCalendar is ListSchedulesForAgenda for the calendar, which
@@ -51,10 +60,10 @@ func (s *Store) ListSchedulesForAgenda(workspaceID string, scope PendingReminder
 // terminal (AgendaSchedule.Terminal). The scope, workspace and deleted
 // conditions are the same ones.
 func (s *Store) ListSchedulesForCalendar(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int) ([]AgendaSchedule, bool, error) {
-	return s.listAgendaSchedules(workspaceID, scope, from, to, limit, true)
+	return s.listAgendaSchedules(workspaceID, scope, nil, from, to, limit, true)
 }
 
-func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderScope, from, to time.Time, limit int, includeTerminal bool) ([]AgendaSchedule, bool, error) {
+func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderScope, audiences []string, from, to time.Time, limit int, includeTerminal bool) ([]AgendaSchedule, bool, error) {
 	if scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0 {
 		return nil, false, nil
 	}
@@ -81,8 +90,17 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 		open = "(" + open + " OR (" + doneSQL + " AND " + historySQL + "))"
 		openArgs = append(append(openArgs, doneArgs...), historyArgs...)
 	}
+	var audienceSQL string
+	var audienceArgs []any
+	if len(audiences) > 0 {
+		audienceSQL = " AND item_schedules.audience IN (?" + strings.Repeat(",?", len(audiences)-1) + ")"
+		for _, a := range audiences {
+			audienceArgs = append(audienceArgs, a)
+		}
+	}
 	args := []any{workspaceID, from.UTC().Format(f)}
 	args = append(args, historyArgs...)
+	args = append(args, audienceArgs...)
 	args = append(args, workspaceID)
 	args = append(append(args, scopeArgs...), openArgs...)
 	// Dismissed, alarm-less schedules without resolutions carry only journal history.
@@ -92,7 +110,7 @@ func (s *Store) listAgendaSchedules(workspaceID string, scope PendingReminderSco
 		WHERE workspace_id = ? AND (ended_at IS NULL OR ended_at >= ? OR `+historySQL+`)
 		AND (ended_at IS NULL OR ended_dismissed_at IS NULL
 			OR EXISTS (SELECT 1 FROM item_reminders r WHERE r.schedule_id=item_schedules.id)
-			OR EXISTS (SELECT 1 FROM schedule_occurrences h WHERE h.schedule_id=item_schedules.id))
+			OR EXISTS (SELECT 1 FROM schedule_occurrences h WHERE h.schedule_id=item_schedules.id))`+audienceSQL+`
 		AND EXISTS (
 			SELECT 1 FROM items i JOIN collections c ON c.id = i.collection_id
 			WHERE i.id = item_schedules.item_id AND i.workspace_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL`+scopeSQL+` AND `+open+`)

@@ -471,3 +471,77 @@ func TestCalendarFeedRateLimitIsPerFeed(t *testing.T) {
 		t.Fatalf("feed b from the same address: %d", rr.Code)
 	}
 }
+
+// Each layer reads only its own schedules: more than the agenda's entry cap of
+// the other layer's occurrences in one chunk neither cuts the chunk nor drops
+// the reader's own occurrence. On the mine layer, dated items placed where the
+// cap would fall make that cut one with no resume point.
+func TestCalendarFeedOtherLayerTakesNoEntryCap(t *testing.T) {
+	for _, tc := range []struct {
+		layer, own string
+		other      []string
+		dated      int
+	}{
+		{"mine", "human", []string{"agent"}, 4},
+		{"agent", "agent", []string{"human", "both"}, 0},
+	} {
+		t.Run(tc.layer, func(t *testing.T) {
+			w := newAgendaWorld(t, "tasks")
+			w.srv.agendaClock = func() time.Time { return meAgendaNow }
+			// The first chunk starts 2030-12-10. Seven daily schedules place 644
+			// occurrences in it, 497 of them before 2031-02-19.
+			for i := 0; i < 7; i++ {
+				aud := tc.other[i%len(tc.other)]
+				w.item(t, "tasks", fmt.Sprintf("Other-%d", i), `{}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2030-12-10T09:00", Tz: "UTC", Rrule: "FREQ=DAILY", Audience: aud})
+			}
+			// Midnight sorts these first on 2031-02-19, so the 501st entry is a date.
+			for i := 0; i < tc.dated; i++ {
+				if _, err := w.srv.store.CreateItem(w.ws.ID, w.colls["tasks"].ID, models.ItemCreate{Title: fmt.Sprintf("Dated-%d", i), Fields: `{"due_date":"2031-02-19"}`}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			w.item(t, "tasks", "Own-occurrence", `{}`, &models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-01T10:00", Tz: "UTC", Audience: tc.own})
+			f := createTestCalendarFeed(t, w.srv, w.owner, tc.layer)
+			rr := fetchTestCalendarFeed(w.srv, f.Token)
+			body := rr.Body.String()
+			if rr.Code != 200 || rr.Header().Get("X-Pad-Feed-Complete") != "true" {
+				t.Fatalf("%s feed %d complete=%q", tc.layer, rr.Code, rr.Header().Get("X-Pad-Feed-Complete"))
+			}
+			if n := strings.Count(body, "BEGIN:VEVENT"); n != 1+tc.dated || !strings.Contains(body, "Own-occurrence") {
+				t.Fatalf("%s feed holds %d events, own occurrence present=%v", tc.layer, n, strings.Contains(body, "Own-occurrence"))
+			}
+		})
+	}
+}
+
+// Other-layer schedules take no slot of the schedule scan either: a scan
+// limit they would fill on their own leaves the feed complete.
+func TestCalendarFeedOtherLayerTakesNoScanSlot(t *testing.T) {
+	for _, tc := range []struct{ layer, own, other string }{
+		{"mine", "human", "agent"},
+		{"agent", "agent", "both"},
+	} {
+		t.Run(tc.layer, func(t *testing.T) {
+			w := newAgendaWorld(t, "tasks")
+			w.srv.agendaClock = func() time.Time { return meAgendaNow }
+			w.srv.agendaScanLimit = 3
+			for i := 0; i < 3; i++ {
+				sc := oneShot()
+				sc.Audience = tc.other
+				w.item(t, "tasks", fmt.Sprintf("Other-%d", i), `{}`, sc)
+			}
+			sc := oneShot()
+			sc.Audience = tc.own
+			w.item(t, "tasks", "Own-occurrence", `{}`, sc)
+			f := createTestCalendarFeed(t, w.srv, w.owner, tc.layer)
+			rr := fetchTestCalendarFeed(w.srv, f.Token)
+			body := rr.Body.String()
+			if rr.Code != 200 || rr.Header().Get("X-Pad-Feed-Complete") != "true" {
+				t.Fatalf("%s feed %d complete=%q", tc.layer, rr.Code, rr.Header().Get("X-Pad-Feed-Complete"))
+			}
+			if n := strings.Count(body, "BEGIN:VEVENT"); n != 1 || !strings.Contains(body, "Own-occurrence") {
+				t.Fatalf("%s feed holds %d events, own occurrence present=%v", tc.layer, n, strings.Contains(body, "Own-occurrence"))
+			}
+		})
+	}
+}

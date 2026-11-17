@@ -93,3 +93,48 @@ func assertAgendaScheduleIDs(t *testing.T, rows []AgendaSchedule, want []string)
 		t.Errorf("schedule IDs = %v, want %v in order", got, want)
 	}
 }
+
+// The audience filter applies before the limit: a filtered-out row with a
+// lower id neither takes the only slot nor sets the more flag.
+func TestListSchedulesForAgendaAudiencesFilterBeforeLimit(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	agentIn := dailyFromOct
+	agentIn.Audience = "agent"
+	humanIn := dailyFromOct
+	humanIn.Audience = "human"
+	_, agent := f.mk(t, agentIn, "2026-10-01T00:00:00Z")
+	_, human := f.mk(t, humanIn, "2026-10-01T00:00:00Z")
+	from, to := rt("2026-10-01T00:00:00Z"), rt("2026-10-08T00:00:00Z")
+
+	// Filter on the audience of the higher id, so the lower id is the one dropped.
+	low, high := agent, human
+	if high.ID < low.ID {
+		low, high = high, low
+	}
+	got, more, err := f.s.ListSchedulesForAgendaAudiences(f.ws.ID, PendingReminderScope{}, []string{high.Audience}, from, to, 1)
+	if err != nil || more {
+		t.Fatalf("filtered limit 1: more=%v err=%v, want no more", more, err)
+	}
+	assertAgendaScheduleIDs(t, got, []string{high.ID})
+
+	got, more, err = f.s.ListSchedulesForAgendaAudiences(f.ws.ID, PendingReminderScope{}, []string{"human", "both"}, from, to, 10)
+	if err != nil || more {
+		t.Fatalf("human and both: more=%v err=%v", more, err)
+	}
+	assertAgendaScheduleIDs(t, got, []string{human.ID})
+
+	want := []string{low.ID, high.ID}
+	for _, audiences := range [][]string{nil, {}} {
+		got, more, err = f.s.ListSchedulesForAgendaAudiences(f.ws.ID, PendingReminderScope{}, audiences, from, to, 10)
+		if err != nil || more {
+			t.Fatalf("no filter %v: more=%v err=%v", audiences, more, err)
+		}
+		assertAgendaScheduleIDs(t, got, want)
+	}
+	got, more, err = f.s.ListSchedulesForAgenda(f.ws.ID, PendingReminderScope{}, from, to, 1)
+	if err != nil || !more {
+		t.Fatalf("unfiltered limit 1: more=%v err=%v, want more", more, err)
+	}
+	assertAgendaScheduleIDs(t, got, want[:1])
+}
