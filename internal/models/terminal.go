@@ -267,6 +267,65 @@ func ValidateAbandonedOptions(schema CollectionSchema) error {
 	return nil
 }
 
+// ValidateAwaitsHumanOptions refuses a schema whose awaits_human_options
+// (TASK-4643) name a value that is not one of the same field's options, or
+// one that is also one of its terminal_options: a closed item is not waiting
+// on anyone. Values are compared trimmed and case-insensitively, as
+// ValidateAbandonedOptions compares them. Every field is checked; only the
+// done field's declaration is read (AwaitsHumanValuesForDoneField). This is
+// the per-option field-def key, not the collection-level
+// settings.awaits_human (awaits_human.go), which marks a whole collection.
+func ValidateAwaitsHumanOptions(schema CollectionSchema) error {
+	norm := func(v string) string { return strings.ToLower(strings.TrimSpace(v)) }
+	for _, f := range schema.Fields {
+		if len(f.AwaitsHumanOptions) == 0 {
+			continue
+		}
+		options := make(map[string]bool, len(f.Options))
+		for _, o := range f.Options {
+			options[norm(o)] = true
+		}
+		terminal := make(map[string]bool, len(f.TerminalOptions))
+		for _, t := range f.TerminalOptions {
+			terminal[norm(t)] = true
+		}
+		for _, a := range f.AwaitsHumanOptions {
+			if !options[norm(a)] {
+				return fmt.Errorf("field %q: awaits_human_options value %q is not one of its options", f.Key, a)
+			}
+			if terminal[norm(a)] {
+				return fmt.Errorf("field %q: awaits_human_options value %q is one of its terminal_options; a closed item is not waiting on a person", f.Key, a)
+			}
+		}
+	}
+	return nil
+}
+
+// AwaitsHumanValuesForDoneField returns the resolved done-field key and the
+// done field's declared awaits_human_options (TASK-4643) minus every value
+// TerminalValuesForDoneField treats as terminal, so a field relying on the
+// default terminal list cannot mark a closing value as waiting. nil when the
+// done field declares none, or is not a select. Values keep their declared
+// spelling; callers compare case-insensitively.
+func AwaitsHumanValuesForDoneField(
+	schema CollectionSchema,
+	settings CollectionSettings,
+) (fieldKey string, values []string) {
+	fieldKey, terminals := TerminalValuesForDoneField(schema, settings)
+	for _, f := range schema.Fields {
+		if f.Key != fieldKey || f.Type != "select" {
+			continue
+		}
+		for _, v := range f.AwaitsHumanOptions {
+			if !containsFold(terminals, strings.TrimSpace(v)) {
+				values = append(values, v)
+			}
+		}
+		break
+	}
+	return fieldKey, values
+}
+
 // CollectionCompletedWorkValues unmarshals a collection's persisted schema
 // and settings JSON (best-effort; parse failures fall back the same way
 // TerminalValuesForDoneField does) and returns the done-field key plus the

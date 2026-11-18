@@ -21,13 +21,20 @@ type FieldDef struct {
 	// that never sets it behaves as before. Validated as a subset of
 	// TerminalOptions on collection create/update.
 	AbandonedOptions []string `json:"abandoned_options,omitempty"`
-	Default          any      `json:"default,omitempty"`
-	Required         bool     `json:"required,omitempty"`
-	Computed         bool     `json:"computed,omitempty"`
-	Collection       string   `json:"collection,omitempty"`   // for relation type
-	Suffix           string   `json:"suffix,omitempty"`       // for number type display
-	Pattern          string   `json:"pattern,omitempty"`      // optional ECMAScript-style regex applied to text values; empty = no pattern check
-	UniqueScope      string   `json:"unique_scope,omitempty"` // "workspace_collection" enforces uniqueness within a collection (non-empty values only); empty = no uniqueness
+	// AwaitsHumanOptions (TASK-4643) are the options that mean "this item
+	// is waiting on a person". A per-option, per-field declaration, distinct
+	// from the collection-level settings.awaits_human, which marks a whole
+	// collection. Every value must be one of the field's Options and none
+	// may be one of its TerminalOptions (ValidateAwaitsHumanOptions); only
+	// the done field's declaration is read (AwaitsHumanValuesForDoneField).
+	AwaitsHumanOptions []string `json:"awaits_human_options,omitempty"`
+	Default            any      `json:"default,omitempty"`
+	Required           bool     `json:"required,omitempty"`
+	Computed           bool     `json:"computed,omitempty"`
+	Collection         string   `json:"collection,omitempty"`   // for relation type
+	Suffix             string   `json:"suffix,omitempty"`       // for number type display
+	Pattern            string   `json:"pattern,omitempty"`      // optional ECMAScript-style regex applied to text values; empty = no pattern check
+	UniqueScope        string   `json:"unique_scope,omitempty"` // "workspace_collection" enforces uniqueness within a collection (non-empty values only); empty = no uniqueness
 }
 
 // RelationFieldTypes is every field type whose VALUE names other items

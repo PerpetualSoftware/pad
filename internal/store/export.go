@@ -1086,6 +1086,10 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			if err := models.ValidateAbandonedOptions(importedSchema); err != nil {
 				return nil, invalidf("import collection %q: %v; fix abandoned_options in the export and import again", c.Name, err)
 			}
+			// TASK-4643: awaits_human_options, held to the same doors' rule.
+			if err := models.ValidateAwaitsHumanOptions(importedSchema); err != nil {
+				return nil, invalidf("import collection %q: %v; fix awaits_human_options in the export and import again", c.Name, err)
+			}
 		}
 		collPrefix[newCollID] = prefix
 		collUniqueKeys[newCollID] = importUniqueKeys(importedSchema)
