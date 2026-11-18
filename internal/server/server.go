@@ -2458,6 +2458,10 @@ func (s *Server) setupRouter() {
 						// dismiss/defer, so viewers and guests may too.
 						r.Put("/needs/snooze", s.handleSnoozeNeedsItem)
 						r.Delete("/needs/snooze", s.handleUnsnoozeNeedsItem)
+						// Needs-you "not mine" (TASK-4643): per user, like
+						// the snooze, and replacing it.
+						r.Put("/needs/not-mine", s.handleNotMineNeedsItem)
+						r.Delete("/needs/not-mine", s.handleUnNotMineNeedsItem)
 						// Push (IDEA-2544 Phase 1): transient, self-addressed
 						// human→harness dispatch over the SAME watch-events
 						// bus/stream — no durable row, see handlePushToItem's

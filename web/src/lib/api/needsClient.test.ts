@@ -56,4 +56,27 @@ describe('api.needs', () => {
 		expect(init?.method).toBe('DELETE');
 		expect(init?.body).toBeUndefined();
 	});
+
+	it('notMine: PUT .../needs/not-mine with the marker given', async () => {
+		const fn = okFetch({ ref: 'TASK-5', not_mine: {} });
+		vi.stubGlobal('fetch', fn);
+		const m = { ...marker, seen_at: '2026-11-18T10:00:00Z', seen_collection_id: 'c', seen_assignee_id: 'u' };
+		await api.needs.notMine('my ws', 'TASK-5', { marker: m });
+		expect(fn.mock.calls[0][0]).toBe('/api/v1/workspaces/my%20ws/items/TASK-5/needs/not-mine');
+		const init = fn.mock.calls[0][1];
+		expect(init?.method).toBe('PUT');
+		expect(JSON.parse(String(init?.body))).toStrictEqual({ marker: m });
+		await api.needs.notMine('ws', 'TASK-6');
+		expect(JSON.parse(String(fn.mock.calls[1][1]?.body))).toStrictEqual({});
+	});
+
+	it('undoNotMine: DELETE the same route with no body', async () => {
+		const fn = okFetch({ ref: 'TASK-5', not_mine: null });
+		vi.stubGlobal('fetch', fn);
+		await api.needs.undoNotMine('ws', 'TASK-5');
+		expect(fn.mock.calls[0][0]).toBe('/api/v1/workspaces/ws/items/TASK-5/needs/not-mine');
+		const init = fn.mock.calls[0][1];
+		expect(init?.method).toBe('DELETE');
+		expect(init?.body).toBeUndefined();
+	});
 });

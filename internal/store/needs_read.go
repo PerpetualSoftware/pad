@@ -248,6 +248,9 @@ type NeedsMention struct {
 	CommentID string
 	By        string // the commenter's display name
 	At        time.Time
+	// CommentAt is the comment's created_at (At is the mention's, later when
+	// an edit added it).
+	CommentAt time.Time
 }
 
 // OpenMentionsForItems returns the open mentions on the given items (see
@@ -260,7 +263,7 @@ func (s *Store) OpenMentionsForItems(itemIDs []string) (map[string][]NeedsMentio
 			args[i] = id
 		}
 		rows, err := s.db.Query(s.q(`
-			SELECT m.item_id, m.user_id, m.comment_id, cm.author, m.created_at
+			SELECT m.item_id, m.user_id, m.comment_id, cm.author, m.created_at, cm.created_at
 			FROM comment_mentions m `+openMentionSQL+`
 			  AND m.item_id IN (`+placeholders(len(chunk))+`)
 			ORDER BY m.item_id, m.created_at, m.user_id`), args...)
@@ -268,13 +271,14 @@ func (s *Store) OpenMentionsForItems(itemIDs []string) (map[string][]NeedsMentio
 			return nil, fmt.Errorf("open mentions: %w", err)
 		}
 		for rows.Next() {
-			var itemID, at string
+			var itemID, at, commentAt string
 			var m NeedsMention
-			if err := rows.Scan(&itemID, &m.UserID, &m.CommentID, &m.By, &at); err != nil {
+			if err := rows.Scan(&itemID, &m.UserID, &m.CommentID, &m.By, &at, &commentAt); err != nil {
 				rows.Close()
 				return nil, err
 			}
 			m.At = parseTime(at)
+			m.CommentAt = parseTime(commentAt)
 			out[itemID] = append(out[itemID], m)
 		}
 		err = rows.Err()

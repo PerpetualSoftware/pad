@@ -164,6 +164,8 @@ var migratedRefusalTables = []string{
 	// A person's needs-you dismissals and deferrals (TASK-3918), the same
 	// class as item_stars: per-user workspace state the bundle does not carry.
 	"item_needs_snoozes",
+	// A person's "not mine" marks (TASK-4643): the same class.
+	"item_needs_not_mine",
 	// Schedules, occurrence actuals, sparse overrides and journal rows travel
 	// through the workspace bundle. Writes to this abandoned copy are refused.
 	"item_schedules",
