@@ -8,16 +8,35 @@ import { flushSync, mount, unmount, tick } from 'svelte';
 const list = vi.hoisted(() => vi.fn());
 const snooze = vi.hoisted(() => vi.fn());
 const restore = vi.hoisted(() => vi.fn());
+const notMine = vi.hoisted(() => vi.fn());
+const undoNotMine = vi.hoisted(() => vi.fn());
+const itemGet = vi.hoisted(() => vi.fn());
+const itemUpdate = vi.hoisted(() => vi.fn());
+const rolesList = vi.hoisted(() => vi.fn());
+const membersList = vi.hoisted(() => vi.fn());
+// Every call the not-mine flows make, in order, so the tests can pin the order.
+const calls = vi.hoisted(() => [] as string[]);
 
 vi.mock('$lib/api/client', () => ({
 	api: {
 		needs: {
 			list: (p: unknown) => list(p),
 			snooze: (ws: string, ref: string, body: unknown) => snooze(ws, ref, body),
-			restore: (ws: string, ref: string) => restore(ws, ref)
-		}
-	}
+			restore: (ws: string, ref: string) => restore(ws, ref),
+			notMine: (ws: string, ref: string, body: unknown) => (calls.push('PUT not-mine'), notMine(ws, ref, body)),
+			undoNotMine: (ws: string, ref: string) => (calls.push('DELETE not-mine'), undoNotMine(ws, ref))
+		},
+		items: {
+			get: (ws: string, ref: string) => (calls.push('GET item'), itemGet(ws, ref)),
+			update: (ws: string, ref: string, body: unknown) => (calls.push('PATCH item'), itemUpdate(ws, ref, body))
+		},
+		agentRoles: { list: (ws: string) => rolesList(ws) },
+		members: { list: (ws: string) => membersList(ws) }
+	},
+	isUpdateConflictError: (e: unknown) => (e as { code?: string } | null)?.code === 'update_conflict'
 }));
+
+const { toastStore } = await import('$lib/stores/toast.svelte');
 
 const { default: Page } = await import('./+page.svelte');
 
@@ -106,10 +125,19 @@ beforeEach(() => {
 	list.mockReset();
 	snooze.mockReset();
 	restore.mockReset();
+	notMine.mockReset();
+	undoNotMine.mockReset();
+	itemGet.mockReset();
+	itemUpdate.mockReset();
+	rolesList.mockReset();
+	membersList.mockReset();
+	calls.length = 0;
+	toastStore.clearAll();
 });
 
 afterEach(() => {
 	vi.useRealTimers();
+	toastStore.clearAll();
 	if (app) unmount(app);
 	app = null;
 	host.remove();
@@ -1040,5 +1068,222 @@ describe('needs page: r5 (a quiet automatic refetch)', () => {
 		await settle();
 		expect(refs()).toEqual(['TASK-3']);
 		expect(host.textContent).not.toContain('Loading');
+	});
+});
+
+describe('needs page: not mine (TASK-4643)', () => {
+	// The row's marker as the server builds it for not-mine: the snooze fields
+	// plus the three it reads, the caller's own id as the assignee.
+	const fullMarker = {
+		seen_comment_at: '2026-10-05T10:00:00Z',
+		seen_comment_ids: ['c5'],
+		seen_transition_seq: 5,
+		seen_at: '2026-10-06T08:00:00Z',
+		seen_collection_id: 'col-1',
+		seen_assignee_id: 'u-me'
+	};
+	function editable(ref: string, extra: Record<string, unknown> = {}) {
+		const r = row('alpha', ref, { can_edit: true, marker: fullMarker, ...extra });
+		(r.item as Record<string, unknown>).seq = 41;
+		return r;
+	}
+	const ROLES = [{ id: 'role-rev', slug: 'reviewer', name: 'Reviewer', icon: '🔍' }];
+	const MEMBERS = {
+		members: [{ user_id: 'u-bob', user_name: 'Bob Person', user_email: 'bob@x.test', role: 'editor' }],
+		invitations: []
+	};
+	const PREV = { assigned_user_id: 'u-me', agent_role_id: 'role-old', seq: 41 };
+
+	const rowEl = (ref: string) => host.querySelector(`[data-ref="${ref}"]`)!;
+	const errText = () => host.querySelector('[data-testid="needs-action-error"]')?.textContent ?? '';
+	const lastToast = () => toastStore.toasts[toastStore.toasts.length - 1];
+
+	async function openMore(ref: string) {
+		await click(btn('⋯', rowEl(ref)));
+	}
+	async function giveTo(ref: string, label: string | RegExp) {
+		rolesList.mockResolvedValue(ROLES);
+		membersList.mockResolvedValue(MEMBERS);
+		await openMore(ref);
+		await click(btn('Not mine, give to…', document.body));
+		await settle();
+		await click(btn(label, document.body));
+	}
+
+	it('not mine: the PUT carries row.marker verbatim with no source key; the row leaves, Hidden +1, toast offers Undo', async () => {
+		const r = editable('TASK-1');
+		await mountWith(resp([r, row('alpha', 'TASK-2')], { hidden: 2 }));
+		notMine.mockResolvedValue({ ref: 'TASK-1', not_mine: {} });
+		await openMore('TASK-1');
+		await click(btn('Not mine', document.body));
+		expect(notMine).toHaveBeenCalledTimes(1);
+		const [ws, ref, body] = notMine.mock.calls[0];
+		expect([ws, ref]).toEqual(['alpha', 'TASK-1']);
+		expect(body).toStrictEqual({ marker: fullMarker });
+		expect(Object.keys(body)).not.toContain('source');
+		expect(calls).toEqual(['PUT not-mine']);
+		expect(refs()).toEqual(['TASK-2']);
+		expect(btn(/^Hidden/).textContent).toContain('(3)');
+		expect(lastToast().message).toBe('TASK-1 marked not mine');
+		expect(lastToast().action?.label).toBe('Undo');
+	});
+
+	it('menu: "give to…" is absent when can_edit is false and present when true', async () => {
+		await mountWith(resp([editable('TASK-1'), row('alpha', 'TASK-2', { can_edit: false })]));
+		await openMore('TASK-2');
+		const labels = () => [...document.body.querySelectorAll('[role="menuitem"]')].map((b) => b.textContent?.trim());
+		expect(labels()).toEqual(['Not mine']);
+		await openMore('TASK-1');
+		expect(labels()).toEqual(['Not mine', 'Not mine, give to…']);
+	});
+
+	it('give to a role: GET, then PATCH {agent_role_id, clear_assigned_user, expected_seq = row seq}, then the PUT, in that order', async () => {
+		await mountWith(resp([editable('TASK-1')]));
+		itemGet.mockResolvedValue(PREV);
+		itemUpdate.mockResolvedValue({ ...PREV, assigned_user_id: null, agent_role_id: 'role-rev', seq: 42 });
+		notMine.mockResolvedValue({});
+		await giveTo('TASK-1', /Reviewer/);
+		expect(calls).toEqual(['GET item', 'PATCH item', 'PUT not-mine']);
+		expect(itemUpdate.mock.calls[0]).toEqual([
+			'alpha',
+			'TASK-1',
+			{ agent_role_id: 'role-rev', clear_assigned_user: true, expected_seq: 41 }
+		]);
+		expect(notMine.mock.calls[0][2]).toStrictEqual({ marker: fullMarker });
+		expect(refs()).toEqual([]);
+		expect(lastToast().message).toBe('TASK-1 given to Reviewer and marked not mine');
+	});
+
+	it('give to a person: PATCH {assigned_user_id, expected_seq} only', async () => {
+		await mountWith(resp([editable('TASK-1')]));
+		itemGet.mockResolvedValue(PREV);
+		itemUpdate.mockResolvedValue({ ...PREV, assigned_user_id: 'u-bob', seq: 42 });
+		notMine.mockResolvedValue({});
+		await giveTo('TASK-1', 'Bob Person');
+		expect(itemUpdate.mock.calls[0][2]).toStrictEqual({ assigned_user_id: 'u-bob', expected_seq: 41 });
+		expect(calls).toEqual(['GET item', 'PATCH item', 'PUT not-mine']);
+	});
+
+	it('PATCH fails on a conflict: the error says so, no PUT is sent, the row stays', async () => {
+		await mountWith(resp([editable('TASK-1')], { hidden: 0 }));
+		itemGet.mockResolvedValue(PREV);
+		itemUpdate.mockRejectedValue(Object.assign(new Error('conflict'), { code: 'update_conflict' }));
+		await giveTo('TASK-1', 'Bob Person');
+		expect(notMine).not.toHaveBeenCalled();
+		expect(errText()).toBe('The item changed since you loaded the list. Reload and try again.');
+		expect(refs()).toEqual(['TASK-1']);
+		expect(btn(/^Hidden/).textContent).toContain('(0)');
+		expect(toastStore.toasts.length).toBe(0);
+	});
+
+	it('PATCH ok, PUT fails: the error names the reassignment, one refetch, no local settle', async () => {
+		await mountWith(resp([editable('TASK-1')], { hidden: 0 }));
+		itemGet.mockResolvedValue(PREV);
+		itemUpdate.mockResolvedValue({ ...PREV, assigned_user_id: 'u-bob', seq: 42 });
+		notMine.mockRejectedValue(new Error('boom'));
+		let resolveRefetch!: (v: unknown) => void;
+		list.mockImplementation(() => new Promise((r) => (resolveRefetch = r)));
+		const before = list.mock.calls.length;
+		await giveTo('TASK-1', 'Bob Person');
+		expect(errText()).toBe('Gave TASK-1 to Bob Person, but marking it not mine failed: boom');
+		// Not settled locally: the row and the counts wait for the server.
+		expect(refs()).toEqual(['TASK-1']);
+		expect(btn(/^Hidden/).textContent).toContain('(0)');
+		expect(list.mock.calls.length - before).toBe(1);
+		resolveRefetch(resp([editable('TASK-1')], { hidden: 0 }));
+		await settle();
+		expect(list.mock.calls.length - before).toBe(1);
+		expect(toastStore.toasts.length).toBe(0);
+	});
+
+	it('undo after a plain not mine: DELETE only, then one refetch that brings the row back', async () => {
+		await mountWith(resp([editable('TASK-1')], { hidden: 0 }));
+		notMine.mockResolvedValue({});
+		await openMore('TASK-1');
+		await click(btn('Not mine', document.body));
+		expect(refs()).toEqual([]);
+		undoNotMine.mockResolvedValue({ ref: 'TASK-1', not_mine: null });
+		list.mockResolvedValue(resp([editable('TASK-1')], { hidden: 0 }));
+		const before = list.mock.calls.length;
+		lastToast().action!.onAction();
+		await settle();
+		expect(calls).toEqual(['PUT not-mine', 'DELETE not-mine']);
+		expect(undoNotMine).toHaveBeenCalledWith('alpha', 'TASK-1');
+		expect(itemUpdate).not.toHaveBeenCalled();
+		expect(list.mock.calls.length - before).toBe(1);
+		expect(refs()).toEqual(['TASK-1']);
+	});
+
+	it('undo after a role give: DELETE, then a PATCH restoring the previous role and person with expected_seq = the give PATCH seq', async () => {
+		await mountWith(resp([editable('TASK-1')]));
+		itemGet.mockResolvedValue(PREV);
+		itemUpdate.mockResolvedValue({ ...PREV, assigned_user_id: null, agent_role_id: 'role-rev', seq: 42 });
+		notMine.mockResolvedValue({});
+		await giveTo('TASK-1', /Reviewer/);
+		undoNotMine.mockResolvedValue({});
+		itemUpdate.mockResolvedValue({ ...PREV, seq: 43 });
+		list.mockResolvedValue(resp([editable('TASK-1')]));
+		lastToast().action!.onAction();
+		await settle();
+		expect(calls).toEqual(['GET item', 'PATCH item', 'PUT not-mine', 'DELETE not-mine', 'PATCH item']);
+		expect(itemUpdate.mock.calls[1][2]).toStrictEqual({
+			agent_role_id: 'role-old',
+			assigned_user_id: 'u-me',
+			expected_seq: 42
+		});
+	});
+
+	it('undo after a person give onto an unassigned item clears the person and leaves the role alone', async () => {
+		await mountWith(resp([editable('TASK-1')]));
+		itemGet.mockResolvedValue({ assigned_user_id: null, agent_role_id: 'role-old', seq: 41 });
+		itemUpdate.mockResolvedValue({ assigned_user_id: 'u-bob', agent_role_id: 'role-old', seq: 42 });
+		notMine.mockResolvedValue({});
+		await giveTo('TASK-1', 'Bob Person');
+		undoNotMine.mockResolvedValue({});
+		list.mockResolvedValue(resp([editable('TASK-1')]));
+		lastToast().action!.onAction();
+		await settle();
+		expect(itemUpdate.mock.calls[1][2]).toStrictEqual({ clear_assigned_user: true, expected_seq: 42 });
+	});
+
+	it('undo conflict: a 409 on the restoring PATCH says the reassignment was kept', async () => {
+		await mountWith(resp([editable('TASK-1')]));
+		itemGet.mockResolvedValue(PREV);
+		itemUpdate.mockResolvedValue({ ...PREV, assigned_user_id: 'u-bob', seq: 42 });
+		notMine.mockResolvedValue({});
+		await giveTo('TASK-1', 'Bob Person');
+		undoNotMine.mockResolvedValue({});
+		itemUpdate.mockRejectedValue(Object.assign(new Error('conflict'), { code: 'update_conflict' }));
+		list.mockResolvedValue(resp([editable('TASK-1')]));
+		lastToast().action!.onAction();
+		await settle();
+		expect(calls.slice(-2)).toEqual(['DELETE not-mine', 'PATCH item']);
+		expect(lastToast().message).toBe('The item changed since; the reassignment was kept.');
+		expect(lastToast().type).toBe('info');
+		expect(refs()).toEqual(['TASK-1']);
+	});
+
+	it('hidden: a not-mine row shows "Not mine since <date>" and Restore sends DELETE not-mine, not the snooze DELETE', async () => {
+		await mountWith(resp([row('alpha', 'TASK-1')], { hidden: 1 }));
+		const created = '2026-10-07T12:00:00Z';
+		list.mockResolvedValue(
+			resp([row('alpha', 'TASK-7', { not_mine: { created_at: created, source: 'web', marker: fullMarker } })], { hidden: 1 })
+		);
+		await click(btn(/^Hidden/));
+		const note = rowEl('TASK-7').querySelector('.snooze')?.textContent;
+		expect(note).toBe(`Not mine since ${new Date(created).toLocaleDateString()}`);
+		expect(rowEl('TASK-7').textContent).not.toContain('Dismissed');
+		undoNotMine.mockResolvedValue({});
+		await click(btn('Restore', rowEl('TASK-7')));
+		expect(undoNotMine).toHaveBeenCalledWith('alpha', 'TASK-7');
+		expect(restore).not.toHaveBeenCalled();
+		expect(refs()).toEqual([]);
+	});
+
+	it('hidden-view copy says a not-mine item comes back only when it comes back to you', async () => {
+		await mountWith(resp([], { hidden: 0 }));
+		list.mockResolvedValue(resp([], { hidden: 0 }));
+		await click(btn(/^Hidden/));
+		expect(host.textContent).toContain('Items you marked not mine come back only when they come back to you');
 	});
 });
