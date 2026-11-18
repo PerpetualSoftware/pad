@@ -1038,20 +1038,29 @@
 		color: var(--accent-green, #22c55e);
 	}
 
+	/* Header labels are wider than the 40px toggles: each column takes its
+	   label's width, and the row cells below match it, so "Abandoned?" and
+	   "Waits?" never overlap (TASK-4643). */
 	.options-col-abandoned,
 	.options-col-waits {
-		width: 40px;
+		white-space: nowrap;
 		flex-shrink: 0;
 		text-align: center;
 		font-size: 0.75em;
 		color: var(--text-muted);
 	}
 
+	.options-col-abandoned,
 	.option-abandoned-toggle,
-	.option-abandoned-placeholder,
+	.option-abandoned-placeholder {
+		width: 64px;
+		flex-shrink: 0;
+	}
+
+	.options-col-waits,
 	.option-waits-toggle,
 	.option-waits-placeholder {
-		width: 40px;
+		width: 44px;
 		flex-shrink: 0;
 	}
 
