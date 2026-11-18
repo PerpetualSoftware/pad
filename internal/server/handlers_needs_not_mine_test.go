@@ -221,6 +221,37 @@ func TestNotMine_ReleasesOnAssignToViewer(t *testing.T) {
 	})
 }
 
+// An item assigned to the viewer when they marked it, then assigned away and
+// back: the assignee id matches the marker, so only the assignment's time
+// (the latest "assigned:" activity) can release it.
+func TestNotMine_ReleasesOnReassignBackToViewer(t *testing.T) {
+	t.Parallel()
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		tasks := f.collection(ws, "Tasks", false)
+		it := f.item(ws, tasks, "back to me", alice, nfxDay(1))
+		f.at(f.comment(ws, it, owner, "@alice-nx thoughts?"), nfxDay(2))
+		f.notMine(alice, ws, it, nil)
+		f.exec(fmt.Sprintf("UPDATE item_needs_not_mine SET seen_at = '%s' WHERE user_id = '%s' AND item_id = '%s'",
+			nfxDay(10).Format(time.RFC3339), alice.ID, it.ID))
+		assigned := func(id string, at time.Time) {
+			t.Helper()
+			f.exec(fmt.Sprintf(`INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, created_at)
+				VALUES ('%s', '%s', '%s', 'updated', 'user', 'web', '{"changes":"assigned: Owner Person → Alice Person"}', '%s')`,
+				id, ws.ID, it.ID, at.Format(time.RFC3339)))
+		}
+		assigned("act-before", nfxDay(5))
+		f.held("assigned to her before the mark", alice, "back to me")
+		assigned("act-same", nfxDay(10))
+		f.held("assigned at the mark's second", alice, "back to me")
+		assigned("act-after", nfxDay(20))
+		f.released("assigned away and back after the mark", alice, "back to me")
+	})
+}
+
 func TestNotMine_ReleasesOnDueReminder(t *testing.T) {
 	t.Parallel()
 	// The agenda clock is in the future (a schedule must start after the

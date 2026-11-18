@@ -19,6 +19,9 @@ type NotMineFacts struct {
 	AwaitsHuman  bool
 	// AssigneeUserID is the item's assigned person now, or "".
 	AssigneeUserID string
+	// AssignedAt is when the item was last assigned to that person (zero
+	// when unknown).
+	AssignedAt time.Time
 	// WaitingTransition: a status transition with a seq above the marker's
 	// moved the done field into one of its waiting statuses.
 	WaitingTransition bool
@@ -37,7 +40,8 @@ type NotMineFacts struct {
 //  2. a transition after seen_transition_seq into a waiting status;
 //  3. the item now in an ask collection other than seen_collection_id;
 //  4. the item now assigned to the viewer when seen_assignee_id was not
-//     the viewer;
+//     the viewer, or by an assignment made after seen_at (assigned away
+//     and back);
 //  5. a reminder due to the viewer that came due after seen_at.
 //
 // Times are compared in whole seconds and must be strictly later. An empty or
@@ -69,7 +73,8 @@ func NotMineHolds(m models.NeedsSnoozeMarker, f NotMineFacts) bool {
 	if f.AwaitsHuman && f.CollectionID != m.SeenCollectionID {
 		return false
 	}
-	if f.ViewerID != "" && f.AssigneeUserID == f.ViewerID && m.SeenAssigneeID != f.ViewerID {
+	if f.ViewerID != "" && f.AssigneeUserID == f.ViewerID &&
+		(m.SeenAssigneeID != f.ViewerID || later(f.AssignedAt, seenAt, atOK)) {
 		return false
 	}
 	if f.DueLatest != nil && later(*f.DueLatest, seenAt, atOK) {

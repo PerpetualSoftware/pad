@@ -547,7 +547,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 			facts := needs.NotMineFacts{
 				ViewerID: user.ID, Mentions: c.Mentions,
 				CollectionID: it.CollectionID, AwaitsHuman: c.AwaitsHuman,
-				AssigneeUserID: c.AssigneeUserID,
+				AssigneeUserID: c.AssigneeUserID, AssignedAt: c.AssignedAt,
 			}
 			for _, tr := range nm.Transitions {
 				if ci.waitKey != "" && tr.FieldKey == ci.waitKey && ci.waiting[strings.ToLower(strings.TrimSpace(tr.ToStatus))] {
