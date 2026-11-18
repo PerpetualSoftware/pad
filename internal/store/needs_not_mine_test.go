@@ -80,6 +80,18 @@ func TestNotMine_MarkerClamp(t *testing.T) {
 		t.Fatalf("dismissal fields not clamped: %+v", got)
 	}
 
+	// Assigned to someone else: the row never names them, with or without a
+	// marker (only the caller's own id is ever stored).
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE items SET assigned_user_id = ? WHERE id = ?`), f.other.ID, f.item.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got = f.notMine(t, f.me, nil).Marker; got.SeenAssigneeID != "" {
+		t.Fatalf("nil marker stored another person's id: %+v", got)
+	}
+	if got = f.notMine(t, f.me, &models.NeedsSnoozeMarker{SeenAssigneeID: f.other.ID}).Marker; got.SeenAssigneeID != "" {
+		t.Fatalf("marker stored another person's id: %+v", got)
+	}
+
 	if _, err := f.s.MarkNeedsNotMine(f.me.ID, f.ws.ID, f.item.ID, "mcp-body", nil); !errors.Is(err, ErrInvalidNeedsSource) {
 		t.Fatalf("unknown source: %v", err)
 	}

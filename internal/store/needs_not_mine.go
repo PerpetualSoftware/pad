@@ -33,7 +33,9 @@ func (s *Store) lockNeedsHide(tx *sql.Tx, userID, itemID string) error {
 }
 
 // needsNotMineState is the item's state as a not-mine made now would record
-// it: the dismissal marker plus now, the item's collection and its assignee.
+// it: the dismissal marker plus now, the item's collection, and userID when
+// the item is assigned to them. Another assignee is stored as "": the release
+// rule asks only whether it was the caller, and a row never names anyone else.
 func (s *Store) needsNotMineState(tx *sql.Tx, userID, itemID string, now time.Time) (models.NeedsSnoozeMarker, error) {
 	cur, err := s.needsItemState(tx, userID, itemID)
 	if err != nil {
@@ -44,7 +46,9 @@ func (s *Store) needsNotMineState(tx *sql.Tx, userID, itemID string, now time.Ti
 		Scan(&cur.SeenCollectionID, &assignee); err != nil {
 		return cur, fmt.Errorf("read item for not-mine: %w", err)
 	}
-	cur.SeenAssigneeID = assignee.String
+	if assignee.Valid && assignee.String == userID {
+		cur.SeenAssigneeID = userID
+	}
 	cur.SeenAt = now.UTC().Truncate(time.Second).Format(time.RFC3339)
 	return cur, nil
 }
