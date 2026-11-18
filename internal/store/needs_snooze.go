@@ -110,8 +110,9 @@ func (s *Store) clampNeedsMarker(q Queryer, userID, itemID string, m models.Need
 // replacing any earlier one. kind is models.NeedsSnoozeDismiss or
 // models.NeedsSnoozeDefer; deferUntil is read only for a deferral. marker is
 // what the client had seen (nil: the item's current state) and is clamped
-// to the server's values. The caller has already checked the user may see
-// the item.
+// to the server's values. Any "not mine" of the user's on the item is
+// deleted in the same transaction. The caller has already checked the user
+// may see the item.
 func (s *Store) SnoozeNeedsItem(userID, workspaceID, itemID, kind string, deferUntil time.Time, marker *models.NeedsSnoozeMarker) (*models.NeedsSnooze, error) {
 	nowT := time.Now().UTC()
 	var until sql.NullString
@@ -136,6 +137,9 @@ func (s *Store) SnoozeNeedsItem(userID, workspaceID, itemID, kind string, deferU
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := s.lockNeedsHide(tx, userID, itemID); err != nil {
+		return nil, err
+	}
 	seen, err := s.needsItemState(tx, userID, itemID)
 	if err != nil {
 		return nil, err
@@ -163,6 +167,10 @@ func (s *Store) SnoozeNeedsItem(userID, workspaceID, itemID, kind string, deferU
 			created_at          = excluded.created_at`),
 		userID, itemID, workspaceID, kind, until, seen.SeenCommentAt, string(ids), seen.SeenTransitionSeq, created); err != nil {
 		return nil, fmt.Errorf("snooze needs item: %w", err)
+	}
+	// One hide state at a time: a snooze replaces a "not mine" (TASK-4643).
+	if _, err := tx.Exec(s.q(`DELETE FROM item_needs_not_mine WHERE user_id = ? AND item_id = ?`), userID, itemID); err != nil {
+		return nil, fmt.Errorf("clear needs not-mine: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return nil, err

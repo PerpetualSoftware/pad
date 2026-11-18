@@ -78,8 +78,8 @@ func TestNeedsDueOccurrences(t *testing.T) {
 		t.Fatalf("due=%v; want %v", got, want)
 	}
 	for id, at := range want {
-		if !got[id].Equal(at) {
-			t.Errorf("%s due=%s want %s", id, got[id], at)
+		if !got[id].Earliest.Equal(at) {
+			t.Errorf("%s due=%s want %s", id, got[id].Earliest, at)
 		}
 	}
 	if got, err := f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{CollectionIDs: []string{}}, f.me.ID, now); err != nil || len(got) != 0 {
@@ -101,7 +101,7 @@ func TestNeedsDueOccurrencesMoved(t *testing.T) {
 			if len(got) != 0 {
 				t.Fatalf("before move due = %v", got)
 			}
-		} else if len(got) != 1 || !got[it.ID].Equal(moved) {
+		} else if len(got) != 1 || !got[it.ID].Earliest.Equal(moved) {
 			t.Fatalf("at %s due = %v", at, got)
 		}
 	}
@@ -124,7 +124,7 @@ func TestNeedsDueOccurrencesSnoozed(t *testing.T) {
 			if len(got) != 0 {
 				t.Fatalf("snoozed at %s: due = %v", at, got)
 			}
-		} else if len(got) != 1 || !got[it.ID].Equal(due) {
+		} else if len(got) != 1 || !got[it.ID].Earliest.Equal(due) {
 			t.Fatalf("snooze ended at %s: due = %v", at, got)
 		}
 	}
@@ -142,7 +142,7 @@ func TestNeedsDueOccurrencesScopeBeforeCap(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&log, nil)))
 	defer slog.SetDefault(old)
 	got, err := f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{CollectionIDs: []string{}, ItemIDs: []string{last.ID}}, f.me.ID, due)
-	if err != nil || len(got) != 1 || !got[last.ID].Equal(due) || log.Len() != 0 {
+	if err != nil || len(got) != 1 || !got[last.ID].Earliest.Equal(due) || log.Len() != 0 {
 		t.Fatalf("scoped due=%v err=%v log=%s", got, err, log.String())
 	}
 	got, err = f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{}, f.me.ID, due)
@@ -152,14 +152,14 @@ func TestNeedsDueOccurrencesScopeBeforeCap(t *testing.T) {
 	log.Reset()
 	f.exec(t, `UPDATE item_reminders SET fired_at=?,acked_at=? WHERE workspace_id=? AND item_id<>?`, due.Format(time.RFC3339), due.Format(time.RFC3339), f.ws.ID, last.ID)
 	got, err = f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{}, f.me.ID, due)
-	if err != nil || len(got) != 1 || !got[last.ID].Equal(due) || log.Len() != 0 {
+	if err != nil || len(got) != 1 || !got[last.ID].Earliest.Equal(due) || log.Len() != 0 {
 		t.Fatalf("ack exclusion before cap: due=%v err=%v log=%s", got, err, log.String())
 	}
 	f.exec(t, `UPDATE item_reminders SET acked_at=NULL WHERE workspace_id=?`, f.ws.ID)
 	log.Reset()
 	f.exec(t, `UPDATE items SET fields = ? WHERE workspace_id = ? AND id <> ?`, `{"status":"done"}`, f.ws.ID, last.ID)
 	got, err = f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{}, f.me.ID, due)
-	if err != nil || len(got) != 1 || !got[last.ID].Equal(due) || log.Len() != 0 {
+	if err != nil || len(got) != 1 || !got[last.ID].Earliest.Equal(due) || log.Len() != 0 {
 		t.Fatalf("terminal filter before cap: due=%v err=%v log=%s", got, err, log.String())
 	}
 
@@ -194,8 +194,24 @@ func TestNeedsDueOccurrencesViewerZone(t *testing.T) {
 			if len(got) != 0 {
 				t.Fatalf("not due in viewer zone: %v", got)
 			}
-		} else if !got[it.ID].Equal(due) {
+		} else if !got[it.ID].Earliest.Equal(due) {
 			t.Fatalf("due in viewer zone = %v", got)
 		}
+	}
+}
+
+// Latest is the newest outstanding claim, Earliest the oldest (TASK-4643).
+// An item has one schedule and the agenda reports its oldest unresolved
+// occurrence, so a daily check missed for three days reports that one in both.
+func TestNeedsDueOccurrencesLatest(t *testing.T) {
+	f := newBootFixture(t)
+	it, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-07T09:00", Tz: "UTC", Audience: "human", Rrule: "FREQ=DAILY"}, "2031-03-06T00:00:00Z")
+	got, err := f.s.NeedsDueOccurrences(f.ws.ID, CatchUpScope{}, f.me.ID, rt("2031-03-10T12:00:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := rt("2031-03-07T09:00:00Z")
+	if d, ok := got[it.ID]; !ok || !d.Earliest.Equal(want) || !d.Latest.Equal(want) {
+		t.Fatalf("due = %+v, want earliest and latest %s", got, want)
 	}
 }

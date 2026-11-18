@@ -39,6 +39,8 @@ var wsChildTables = []string{
 	// item_needs_snoozes (TASK-3918) has no line in purgeWorkspaceChildDeletes:
 	// its FKs to items and workspaces cascade. Listed so the purge tests prove it.
 	"item_needs_snoozes",
+	// item_needs_not_mine (TASK-4643): the same, its FKs cascade.
+	"item_needs_not_mine",
 	// item_schedules (TASK-4102): same, its composite FK to items cascades;
 	// schedule_occurrences and the managed item_reminders row cascade from it.
 	"item_schedules",
@@ -119,6 +121,8 @@ func seedFullWorkspace(t *testing.T, s *Store, u *models.User, name string) seed
 		u.ID, item1.ID, ts)
 	s.mustExec(t, `INSERT INTO item_needs_snoozes (user_id, item_id, workspace_id, kind, created_at) VALUES (?, ?, ?, ?, ?)`,
 		u.ID, item1.ID, ws.ID, "dismiss", ts)
+	s.mustExec(t, `INSERT INTO item_needs_not_mine (user_id, item_id, workspace_id, source, created_at) VALUES (?, ?, ?, ?, ?)`,
+		u.ID, item1.ID, ws.ID, "web", ts)
 	s.mustExec(t, `INSERT INTO item_yjs_updates (item_id, update_data, schema_version, created_at) VALUES (?, ?, ?, ?)`,
 		item1.ID, []byte{1, 2, 3}, "v1", ts)
 	s.mustExec(t, `INSERT INTO item_wiki_links (source_item_id, target_kind, position) VALUES (?, ?, ?)`,

@@ -45,6 +45,9 @@ type Mention struct {
 	CommentID string
 	By        string
 	At        time.Time
+	// CommentAt is the mentioning comment's own created_at; At is when the
+	// mention was recorded, later when an edit added it.
+	CommentAt time.Time
 }
 
 // Candidate is one open item the server found waiting on someone, with the
@@ -387,16 +390,25 @@ type Row struct {
 	WaitingSince time.Time `json:"waiting_since"`
 	// Marker is the item's state now, for the client to send back when it
 	// snoozes the row, so a comment that lands meanwhile is not swallowed.
-	Marker     *models.NeedsSnoozeMarker `json:"marker,omitempty"`
-	Snooze     *models.NeedsSnooze       `json:"snooze,omitempty"`
-	Importance *Score                    `json:"importance,omitempty"`
-	Simplicity *Score                    `json:"simplicity,omitempty"`
+	Marker *models.NeedsSnoozeMarker `json:"marker,omitempty"`
+	Snooze *models.NeedsSnooze       `json:"snooze,omitempty"`
+	// NotMine is the viewer's "not mine" on the item, set only while it
+	// holds (TASK-4643).
+	NotMine *models.NeedsNotMine `json:"not_mine,omitempty"`
+	// CanEdit is the viewer's own edit right on the item.
+	CanEdit    bool   `json:"can_edit"`
+	Importance *Score `json:"importance,omitempty"`
+	Simplicity *Score `json:"simplicity,omitempty"`
 
 	// Internal, never serialized.
 	ItemID      string `json:"-"`
 	WorkspaceID string `json:"-"`
-	// Held: the viewer's snooze on the item holds now.
+	// Held: the viewer's snooze or "not mine" on the item holds now.
 	Held bool `json:"-"`
+	// CollectionID is the item's collection; AssignedToViewer reports that
+	// the item is assigned to the viewer. Both feed the row's marker.
+	CollectionID     string `json:"-"`
+	AssignedToViewer bool   `json:"-"`
 	// Ask: the item is an ask (Candidate.Asked).
 	Ask bool `json:"-"`
 }

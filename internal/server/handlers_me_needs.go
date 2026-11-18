@@ -171,7 +171,7 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 	if more {
 		inView = inView[:limit]
 	}
-	if err := s.needsAttachMarkers(user.ID, inView); err != nil {
+	if err := s.needsAttachMarkers(user.ID, asOf, inView); err != nil {
 		writeInternalError(w, err)
 		return
 	}
@@ -454,6 +454,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	}
 	routed := map[string]needs.Routing{}
 	asked := map[string]bool{}
+	cands := map[string]needs.Candidate{}
 	var kept []models.Item
 	for _, it := range items {
 		c := needs.Candidate{
@@ -464,7 +465,8 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		if it.AgentRoleID != nil {
 			c.AgentRoleID = *it.AgentRoleID
 		}
-		if at, ok := due[it.ID]; ok {
+		if d, ok := due[it.ID]; ok {
+			at := d.Earliest
 			c.Due, c.DueRecipientID = &at, user.ID
 		}
 		if it.AssignedUserID != nil {
@@ -474,7 +476,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 			c.AssignedAt = t
 		}
 		for _, m := range mentions[it.ID] {
-			c.Mentions = append(c.Mentions, needs.Mention{UserID: m.UserID, CommentID: m.CommentID, By: m.By, At: m.At})
+			c.Mentions = append(c.Mentions, needs.Mention{UserID: m.UserID, CommentID: m.CommentID, By: m.By, At: m.At, CommentAt: m.CommentAt})
 		}
 		rt, ok := needs.Resolve(c, owners, elig)
 		if elig.err != nil {
@@ -483,6 +485,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		if ok && rt.Includes(user.ID) {
 			routed[it.ID] = rt.For(user.ID)
 			asked[it.ID] = c.Asked()
+			cands[it.ID] = c
 			kept = append(kept, it)
 		}
 	}
@@ -495,6 +498,14 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		keptIDs[i] = it.ID
 	}
 	snoozes, err := s.store.NeedsSnoozesForItems(user.ID, ws.ID, keptIDs, asOf)
+	if err != nil {
+		return nil, false, err
+	}
+	notMine, err := s.store.NeedsNotMineForItems(user.ID, ws.ID, keptIDs)
+	if err != nil {
+		return nil, false, err
+	}
+	edit, err := s.needsEditRights(r, user, ws, member)
 	if err != nil {
 		return nil, false, err
 	}
@@ -520,6 +531,9 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 			// never leave the server.
 			WaitingOn: needs.WaitingOnView{Kind: rt.Target.Kind, Rule: rt.Target.Rule},
 			ItemID:    it.ID, WorkspaceID: ws.ID, Ask: asked[it.ID],
+			CollectionID:     it.CollectionID,
+			AssignedToViewer: it.AssignedUserID != nil && *it.AssignedUserID == user.ID,
+			CanEdit:          edit.allows(it.ID, it.CollectionID),
 		}
 		var fields map[string]any
 		_ = json.Unmarshal([]byte(it.Fields), &fields)
@@ -527,6 +541,27 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		row.Item.Priority, _ = fields["priority"].(string)
 		if sn := snoozes[it.ID]; sn != nil && sn.Holds {
 			row.Held, row.Snooze = true, sn
+		}
+		if nm := notMine[it.ID]; nm != nil && !row.Held {
+			c, ci := cands[it.ID], infos[it.CollectionID]
+			facts := needs.NotMineFacts{
+				ViewerID: user.ID, Mentions: c.Mentions,
+				CollectionID: it.CollectionID, AwaitsHuman: c.AwaitsHuman,
+				AssigneeUserID: c.AssigneeUserID,
+			}
+			for _, tr := range nm.Transitions {
+				if ci.waitKey != "" && tr.FieldKey == ci.waitKey && ci.waiting[strings.ToLower(strings.TrimSpace(tr.ToStatus))] {
+					facts.WaitingTransition = true
+					break
+				}
+			}
+			if d, ok := due[it.ID]; ok {
+				latest := d.Latest
+				facts.DueLatest = &latest
+			}
+			if needs.NotMineHolds(nm.NotMine.Marker, facts) {
+				row.Held, row.NotMine = true, nm.NotMine
+			}
 		}
 		rows = append(rows, row)
 	}
@@ -556,8 +591,10 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 }
 
 // needsAttachMarkers fills each shown row's marker: the item's state as the
-// viewer sees it now, one batch per workspace.
-func (s *Server) needsAttachMarkers(userID string, rows []*needs.Row) error {
+// viewer sees it now, one batch per workspace. The not-mine fields are the
+// listing's as-of time, the item's collection, and the viewer's own id when
+// the item is assigned to them (never anyone else's).
+func (s *Server) needsAttachMarkers(userID string, asOf time.Time, rows []*needs.Row) error {
 	byWS := map[string][]*needs.Row{}
 	for _, row := range rows {
 		byWS[row.WorkspaceID] = append(byWS[row.WorkspaceID], row)
@@ -576,8 +613,72 @@ func (s *Server) needsAttachMarkers(userID string, rows []*needs.Row) error {
 			if !ok {
 				return errors.New("needs: no marker for a shown row")
 			}
+			m.SeenAt = asOf.UTC().Truncate(time.Second).Format(time.RFC3339)
+			m.SeenCollectionID = row.CollectionID
+			if row.AssignedToViewer {
+				m.SeenAssigneeID = userID
+			}
 			row.Marker = &m
 		}
 	}
 	return nil
+}
+
+// needsEditRight is the viewer's edit right across one workspace's rows,
+// read once per workspace (never per item). It is canEditInCollection's
+// decision: an editor or owner role inside the collections it reaches, else
+// the item grant, else the collection grant.
+type needsEditRight struct {
+	all      bool
+	reach    map[string]bool
+	itemPerm map[string]string
+	collPerm map[string]string
+}
+
+func (e *needsEditRight) allows(itemID, collectionID string) bool {
+	if e.all || e.reach[collectionID] {
+		return true
+	}
+	if p, ok := e.itemPerm[itemID]; ok {
+		return permissionLevel(p) >= permissionLevel("edit")
+	}
+	return permissionLevel(e.collPerm[collectionID]) >= permissionLevel("edit")
+}
+
+// needsEditRights loads the viewer's edit right in one workspace from the
+// membership the router already read, plus the viewer's own grants and
+// collection access when the role does not cover the whole workspace.
+func (s *Server) needsEditRights(r *http.Request, user *models.User, ws *models.Workspace, member *models.WorkspaceMember) (*needsEditRight, error) {
+	e := &needsEditRight{reach: map[string]bool{}, itemPerm: map[string]string{}, collPerm: map[string]string{}}
+	switch {
+	case user.Role == "admin" && !isBearerAuth(r), ws.OwnerID != "" && ws.OwnerID == user.ID:
+		e.all = true
+		return e, nil
+	case member != nil && member.Role == "owner":
+		e.all = true
+		return e, nil
+	case member != nil && member.Role == "editor":
+		if member.CollectionAccess == "all" || member.CollectionAccess == "" {
+			e.all = true
+			return e, nil
+		}
+		listed, err := s.store.GetMemberCollectionAccess(ws.ID, user.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range listed {
+			e.reach[id] = true
+		}
+	}
+	colls, items, err := s.store.ListUserGrants(ws.ID, user.ID)
+	if err != nil {
+		return nil, err
+	}
+	for _, g := range colls {
+		e.collPerm[g.CollectionID] = g.Permission
+	}
+	for _, g := range items {
+		e.itemPerm[g.ItemID] = g.Permission
+	}
+	return e, nil
 }

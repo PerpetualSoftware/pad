@@ -7,14 +7,22 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
 
-// NeedsDueOccurrences returns the earliest outstanding human-audience claim
-// per open item received by userID. BootstrapAgenda applies visibility,
+// NeedsDue is one item's outstanding due claims for the viewer: the earliest
+// (the routing claim) and the latest (when the newest one came due, which
+// releases a "not mine" made before it, TASK-4643).
+type NeedsDue struct {
+	Earliest time.Time
+	Latest   time.Time
+}
+
+// NeedsDueOccurrences returns the earliest and latest outstanding
+// human-audience claims per open item received by userID. BootstrapAgenda applies visibility,
 // recipient, audience and terminal filters in SQL before its schedule scan cap.
 // A capped read returns its partial set and logs the cap. A moved occurrence
 // claims from its moved instant, and a snoozed one waits until the snooze
 // ends (TASK-4591): the person asked to hear about it later.
-func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, userID string, now time.Time) (map[string]time.Time, error) {
-	out := map[string]time.Time{}
+func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, userID string, now time.Time) (map[string]NeedsDue, error) {
+	out := map[string]NeedsDue{}
 	if scope.seesNothing() {
 		return out, nil
 	}
@@ -42,9 +50,14 @@ func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, user
 				continue
 			}
 			id := row.Schedule.ItemID
-			if old, ok := out[id]; !ok || row.Due.Before(old) {
-				out[id] = row.Due
+			d, ok := out[id]
+			if !ok || row.Due.Before(d.Earliest) {
+				d.Earliest = row.Due
 			}
+			if !ok || row.Due.After(d.Latest) {
+				d.Latest = row.Due
+			}
+			out[id] = d
 		}
 	}
 	return out, nil

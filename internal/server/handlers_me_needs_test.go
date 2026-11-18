@@ -1092,7 +1092,10 @@ func TestMeNeeds_WaitingStatusSignal(t *testing.T) {
 		}
 		// The wire carries kind and rule only.
 		body := f.get(alice, "").Body.String()
-		if !strings.Contains(body, `"waiting_on":{"kind":"person","rule":"asked"}`) || strings.Contains(body, role.ID) || strings.Contains(body, alice.ID) {
+		// The viewer's own id appears only as their marker's assignee
+		// (TASK-4643), never in waiting_on.
+		if !strings.Contains(body, `"waiting_on":{"kind":"person","rule":"asked"}`) || strings.Contains(body, role.ID) ||
+			strings.Count(body, alice.ID) != strings.Count(body, `"seen_assignee_id":"`+alice.ID+`"`) {
 			t.Fatalf("waiting_on on the wire: %s", body)
 		}
 	})
