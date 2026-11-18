@@ -3665,11 +3665,15 @@ export interface NeedsBecause {
 	comment_id?: string;
 }
 
-/** What the person had seen of an item; echoed back verbatim on dismiss/defer. */
+/** What the person had seen of an item; echoed back verbatim on dismiss/defer/not-mine. */
 export interface NeedsSnoozeMarker {
 	seen_comment_at: string;
 	seen_comment_ids: string[];
 	seen_transition_seq: number;
+	/** Read by "not mine" only (TASK-4643): when the list was read, the item's collection, and the caller's own id when it is assigned to them. */
+	seen_at?: string;
+	seen_collection_id?: string;
+	seen_assignee_id?: string;
 }
 
 export interface NeedsSnooze {
@@ -3680,6 +3684,15 @@ export interface NeedsSnooze {
 	marker: NeedsSnoozeMarker;
 	created_at: string;
 	holds: boolean;
+}
+
+/** The caller's "not mine" on an item (TASK-4643). `source` is how the write authenticated. */
+export interface NeedsNotMine {
+	item_id: string;
+	workspace_id: string;
+	marker: NeedsSnoozeMarker;
+	source: 'web' | 'cli';
+	created_at: string;
 }
 
 export interface NeedsScore {
@@ -3707,6 +3720,10 @@ export interface NeedsRow {
 	waiting_since: string;
 	marker?: NeedsSnoozeMarker;
 	snooze?: NeedsSnooze;
+	/** Set only while the caller's "not mine" holds. */
+	not_mine?: NeedsNotMine;
+	/** The caller's own edit right on the item (absent from a server before TASK-4643). */
+	can_edit?: boolean;
 	importance?: NeedsScore;
 	simplicity?: NeedsScore;
 }
@@ -3730,6 +3747,10 @@ export interface NeedsListParams {
 	workspace?: string;
 	limit?: number;
 	cursor?: string;
+}
+
+export interface NeedsNotMineRequest {
+	marker?: NeedsSnoozeMarker;
 }
 
 export type NeedsSnoozeRequest =

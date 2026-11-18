@@ -152,7 +152,9 @@ import type {
 	AgendaCountsResponse,
 	AgendaWorkspaceSelection,
 	NeedsSnooze,
-	NeedsSnoozeRequest
+	NeedsSnoozeRequest,
+	NeedsNotMine,
+	NeedsNotMineRequest
 } from '$lib/types';
 import { runSessionExpiryKeepers } from '$lib/stores/sessionExpiryKeep';
 import { reportWorkspaceWrite } from './workspaceWrites';
@@ -3877,6 +3879,18 @@ export const api = {
 		restore: (ws: string, ref: string) =>
 			request<{ ref: string; snooze: null }>(
 				`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/needs/snooze`,
+				{ method: 'DELETE' }
+			),
+		/** Mark one item "not mine" for the caller (TASK-4643), replacing any snooze of theirs on it. */
+		notMine: (ws: string, ref: string, body: NeedsNotMineRequest = {}) =>
+			request<{ ref: string; not_mine: NeedsNotMine }>(
+				`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/needs/not-mine`,
+				{ method: 'PUT', body: JSON.stringify(body) }
+			),
+		/** Undo "not mine": DELETE the caller's mark. Idempotent, sends no body. */
+		undoNotMine: (ws: string, ref: string) =>
+			request<{ ref: string; not_mine: null }>(
+				`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/needs/not-mine`,
 				{ method: 'DELETE' }
 			)
 	},
