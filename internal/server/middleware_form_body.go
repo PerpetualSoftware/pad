@@ -12,6 +12,7 @@ import (
 // (parsePostForm's maxFormSize when the body is not a MaxBytesReader).
 // Reading exactly as far as ParseForm would is what lets this check see
 // every byte a handler could see without buffering anything it would not.
+// Routes with a smaller cap of their own (oauthFormBodyCap) stop sooner.
 const formBodyParseCap = 10 << 20
 
 // ValidateFormBody is the form-encoded-body half of the transport text rule
@@ -49,8 +50,13 @@ const formBodyParseCap = 10 << 20
 //   - a read error is replayed to the handler after the bytes that did
 //     arrive, so its ParseForm fails the way it would have.
 //
-// The one divergence: parsePostForm skips its cap when the body is already a
-// MaxBytesReader. No OAuth route installs one, so it does not arise here.
+// A route may install a smaller cap of its own. /oauth/token, /oauth/revoke
+// and /oauth/introspect wrap the body in an http.MaxBytesReader at
+// oauthFormBodyCap (64 KiB, BUG-4644) before this runs. The read here then
+// stops at that cap with the MaxBytesReader's error, which is replayed as
+// above, so the handler's ParseForm fails at 64 KiB, not 10 MiB. (The
+// handler sees the replay wrapper rather than the MaxBytesReader, so
+// parsePostForm keeps its own 10 MiB cap; the inner cap is the one reached.)
 //
 // The refusal is RFC 6749 §5.2's error shape rather than the API envelope,
 // because /oauth/token, /revoke and /introspect speak it to OAuth clients.

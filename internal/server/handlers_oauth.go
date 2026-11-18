@@ -167,10 +167,72 @@ func (s *Server) registerOAuthRoutes(r interface {
 	r.Post("/oauth/register", ValidateFormBody(s.handleOAuthRegister))
 	r.Get("/oauth/authorize", s.handleOAuthAuthorize)
 	r.Post("/oauth/authorize/decide", ValidateFormBody(s.handleOAuthAuthorizeDecide))
-	r.Post("/oauth/token", ValidateFormBody(s.handleOAuthToken))
-	r.Post("/oauth/revoke", ValidateFormBody(s.handleOAuthRevoke))
-	r.Post("/oauth/introspect", ValidateFormBody(s.handleOAuthIntrospect))
+	// token, revoke and introspect also cap the body (BUG-4644), outside
+	// ValidateFormBody so its read stops at the cap too.
+	r.Post("/oauth/token", capOAuthFormBody(ValidateFormBody(s.handleOAuthToken)))
+	r.Post("/oauth/revoke", capOAuthFormBody(ValidateFormBody(s.handleOAuthRevoke)))
+	r.Post("/oauth/introspect", capOAuthFormBody(ValidateFormBody(s.handleOAuthIntrospect)))
 }
+
+// oauthFormBodyCap bounds the body of /oauth/token, /oauth/revoke and
+// /oauth/introspect (BUG-4644). Without it they read up to net/http's 10 MiB
+// form default and hand all of it to fosite. Their requests are tiny: a
+// code, a code_verifier of at most 128 characters, a redirect_uri, a refresh
+// or access token, a client id and secret, a resource. 64 KiB is many times
+// the largest legitimate request.
+const oauthFormBodyCap = 64 << 10
+
+// capOAuthFormBody installs http.MaxBytesReader at oauthFormBodyCap. A body
+// over it fails the handler's own form parse, which refuses it with 400
+// before fosite is called.
+func capOAuthFormBody(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Body != nil && r.Body != http.NoBody {
+			r.Body = http.MaxBytesReader(w, r.Body, oauthFormBodyCap)
+		}
+		next(w, r)
+	}
+}
+
+// parseOAuthForm parses a token or introspection request as fosite does
+// (ParseMultipartForm with a 1 MiB memory bound) and returns any failure.
+// ParseForm runs first on its own because ParseMultipartForm drops a
+// ParseForm error when the body is not multipart: an urlencoded body over
+// oauthFormBodyCap would otherwise parse as an empty form and reach fosite.
+func parseOAuthForm(r *http.Request) error {
+	if err := r.ParseForm(); err != nil {
+		return err
+	}
+	if err := r.ParseMultipartForm(1 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		return err
+	}
+	return nil
+}
+
+// hasClientAssertion reports whether a parsed request carries a non-empty
+// client_assertion or client_assertion_type in any form source fosite reads
+// (PostForm, multipart values included once parsed, or Form). Pad never
+// accepts JWT client authentication: clients are public PKCE clients or
+// install clients with a secret. fosite parses a client_assertion as a JWT
+// before it looks the client up, so the token, revoke and introspect
+// handlers refuse one before calling fosite, and no attacker-supplied JWT
+// reaches the parser.
+func hasClientAssertion(r *http.Request) bool {
+	for _, form := range []url.Values{r.PostForm, r.Form} {
+		for _, key := range []string{"client_assertion", "client_assertion_type"} {
+			for _, v := range form[key] {
+				if v != "" {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// errClientAssertionRefused is the refusal for a request carrying a client
+// assertion.
+var errClientAssertionRefused = fosite.ErrInvalidClient.WithHint("This server does not accept client assertions.")
 
 // =====================================================================
 // /oauth/register — Dynamic Client Registration (RFC 7591)
@@ -1317,8 +1379,14 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 	// the same 1 MiB bound), so the client classified here is the client
 	// fosite will authenticate: a ParseForm-only read missed a multipart
 	// body, skipping the install-client rules entirely.
-	if err := r.ParseMultipartForm(1 << 20); err != nil && !errors.Is(err, http.ErrNotMultipart) {
+	// A body over oauthFormBodyCap fails here too.
+	if err := parseOAuthForm(r); err != nil {
 		http.Error(w, "Invalid form body", http.StatusBadRequest)
+		return
+	}
+	// Refused before any client lookup or fosite call (BUG-4644).
+	if hasClientAssertion(r) {
+		s.writeTokenError(ctx, w, errClientAssertionRefused)
 		return
 	}
 	installClient := s.installClientFor(r)
@@ -1471,7 +1539,11 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 //     handle such an error in a reasonable way"; revocation is
 //     idempotent from the client's POV).
 //   - 400 invalid_request on malformed input (missing token, wrong
-//     HTTP method, unparseable body).
+//     HTTP method); 400 "Invalid form body" (plain text) for a body
+//     that cannot be read, including one over oauthFormBodyCap.
+//   - 401 invalid_client for a form-encoded request carrying a client
+//     assertion. A multipart body is not parsed here, so one is refused
+//     400 invalid_request as missing its token, before fosite runs.
 //   - 401 invalid_client on client-auth failure.
 //
 // Response body is empty for the 200 success path; the OAuth error
@@ -1509,10 +1581,21 @@ func (s *Server) handleOAuthRevoke(w http.ResponseWriter, r *http.Request) {
 	// anyway) so we can fail-fast with a clean 400 + spec-shaped
 	// error envelope instead of fosite's silent 200-on-empty-token
 	// behavior. ParseForm on a x-www-form-urlencoded body populates
-	// r.PostForm; multipart bodies are extremely rare for OAuth
-	// endpoints, and ParseForm refuses to handle them — for those
-	// we let fosite handle the rejection downstream.
-	if err := r.ParseForm(); err == nil && r.PostForm.Get("token") == "" {
+	// r.PostForm; ParseForm does not read a multipart body, so one leaves
+	// r.PostForm empty and is refused here as missing its token.
+	//
+	// A body ParseForm cannot read (over oauthFormBodyCap, or a read
+	// error) is refused here rather than handed to fosite (BUG-4644).
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "Invalid form body", http.StatusBadRequest)
+		return
+	}
+	// Refused before fosite authenticates the client (BUG-4644).
+	if hasClientAssertion(r) {
+		s.oauthServer.Provider().WriteRevocationResponse(ctx, w, errClientAssertionRefused)
+		return
+	}
+	if r.PostForm.Get("token") == "" {
 		s.oauthServer.Provider().WriteRevocationResponse(ctx, w,
 			fosite.ErrInvalidRequest.WithHint("The `token` parameter is required (RFC 7009 §2.1)."))
 		return
@@ -1578,14 +1661,25 @@ func (s *Server) handleOAuthIntrospect(w http.ResponseWriter, r *http.Request) {
 	// pad-specific fields.
 	session := oauth.NewSession("")
 
+	// Parsed as fosite parses it (multipart included, the same 1 MiB
+	// bound), so the client-assertion check below sees every value fosite
+	// would. A body over oauthFormBodyCap fails here (BUG-4644).
+	if err := parseOAuthForm(r); err != nil {
+		http.Error(w, "Invalid form body", http.StatusBadRequest)
+		return
+	}
+	// Refused before the bearer is introspected or fosite runs (BUG-4644).
+	// Written as an RFC 6749 §5.2 invalid_client (RFC 7662 §2.3 points
+	// there): WriteIntrospectionError would turn invalid_client into
+	// {"active": false}.
+	if hasClientAssertion(r) {
+		s.writeTokenError(ctx, w, errClientAssertionRefused)
+		return
+	}
 	// Installed apps' clients do not use the public endpoint, and it never
 	// describes their tokens (TASK-3394): the app API
 	// checks its tokens in-process. Every other caller is told only about
 	// its own client's access tokens (BUG-3398, below).
-	if err := r.ParseForm(); err != nil {
-		http.Error(w, "Invalid form body", http.StatusBadRequest)
-		return
-	}
 	if s.introspectionCallerIsInstall(r) {
 		s.oauthServer.Provider().WriteIntrospectionError(ctx, w, fosite.ErrRequestUnauthorized.WithHint("Installed apps do not use this endpoint."))
 		return

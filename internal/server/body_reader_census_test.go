@@ -313,13 +313,20 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_oauth.go::Server.parseConsentPayload::PostForm":             2,
 		// TASK-3394: parsed as fosite parses it (multipart included), so the
 		// client classified for the install-client rules is fosite's client.
-		"handlers_oauth.go::Server.handleOAuthToken::ParseMultipartForm": 1,
+		// BUG-4644 moved the token and introspect parse into parseOAuthForm,
+		// ParseForm first so its error (an over-cap body) is not dropped.
+		"handlers_oauth.go::parseOAuthForm::ParseForm":          1,
+		"handlers_oauth.go::parseOAuthForm::ParseMultipartForm": 1,
+		// BUG-4644: the client-assertion refusal reads the parsed form; the
+		// cap wraps the body in http.MaxBytesReader (nil/NoBody checks, the
+		// argument, the assignment).
+		"handlers_oauth.go::hasClientAssertion::PostForm":                1,
+		"handlers_oauth.go::capOAuthFormBody::Body":                      4,
 		"app_delegated_consent.go::Server.appSignInAvailable::ParseForm": 1,
 		"app_delegated_consent.go::Server.decideAppConsent::PostForm":    1,
 		// TASK-3399 adds four: the install client's grant type and the code
 		// or refresh token its ownership is checked by before fosite runs.
 		"handlers_oauth.go::Server.handleOAuthToken::PostForm":          5,
-		"handlers_oauth.go::Server.handleOAuthIntrospect::ParseForm":    1,
 		"app_tokens.go::Server.prepareInstallTokenRequest::PostForm":    4,
 		"app_tokens.go::requestClientID::PostForm":                      1,
 		"handlers_oauth.go::Server.handleOAuthRevoke::ParseForm":        1,
