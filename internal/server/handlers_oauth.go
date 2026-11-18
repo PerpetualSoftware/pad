@@ -1541,7 +1541,9 @@ func (s *Server) handleOAuthToken(w http.ResponseWriter, r *http.Request) {
 //   - 400 invalid_request on malformed input (missing token, wrong
 //     HTTP method); 400 "Invalid form body" (plain text) for a body
 //     that cannot be read, including one over oauthFormBodyCap.
-//   - 401 invalid_client for a request carrying a client assertion.
+//   - 401 invalid_client for a form-encoded request carrying a client
+//     assertion. A multipart body is not parsed here, so one is refused
+//     400 invalid_request as missing its token, before fosite runs.
 //   - 401 invalid_client on client-auth failure.
 //
 // Response body is empty for the 200 success path; the OAuth error
