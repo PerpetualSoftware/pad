@@ -157,6 +157,9 @@ func (s *Storage) GetClient(_ context.Context, id string) (fosite.Client, error)
 // client assertions (private_key_jwt / client_secret_jwt) — public
 // clients only, PKCE-authenticated. fosite calls this during JWT-
 // based client auth flows we don't enable, so returning nil is safe.
+// The token, revoke and introspect handlers also refuse any request
+// carrying client_assertion or client_assertion_type before fosite
+// runs (internal/server hasClientAssertion, BUG-4644).
 //
 // If a future change adds JWT client auth, populate a JTI-blocklist
 // table and check it here. For now, returning nil means "nothing

@@ -191,6 +191,13 @@ One browser tab's content writes to an item are ordered by the server, also **pe
 - `POST /api/v1/invitations/{code}/decline`, `POST /api/v1/me/invitations/{id}/decline` — decline a pending invitation (BUG-2136): it is deleted, as an owner's cancel does, and `member_invite_declined` is audited. By code, the caller must be signed in as the invited address; by id, the same admission as accept by id. 204
 - `GET /api/v1/workspaces/{ws}/agent/bootstrap` — one-round-trip agent context (workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + `needs_onboarding` flag). Same payload as the MCP `pad://workspace/{ws}/bootstrap` resource and the `pad_set_workspace` embed.
 
+### OAuth form endpoints (BUG-4644)
+
+`POST /oauth/token`, `/oauth/revoke` and `/oauth/introspect` (outside `/api/v1/`, RFC 6749 §5.2 error shape):
+
+- **Body cap 64 KiB** (`oauthFormBodyCap`), form-encoded or multipart. A larger body is refused `400` with the plain-text body `Invalid form body` before the OAuth library reads it: nothing is issued, revoked or described. Before this the endpoints read up to net/http's 10 MiB form default.
+- **No client assertions.** Pad's clients are public PKCE clients and installed apps' clients with a secret; JWT client authentication (`private_key_jwt`, `client_secret_jwt`) is not supported. A request carrying a non-empty `client_assertion` or `client_assertion_type` is refused `401 invalid_client` before any client lookup ("This server does not accept client assertions." in `error_description` on token and introspect; revoke writes the generic `invalid_client` body). On introspect this is a `401`, not the `{"active": false}` other failures answer.
+
 ### Sessions and presence
 
 `GET /api/v1/sessions` lists only the authenticated user's live event-stream
