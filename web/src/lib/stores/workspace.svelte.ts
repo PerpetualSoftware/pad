@@ -523,8 +523,9 @@ export const workspaceStore = {
 			}
 		}
 
-		// Drop any later writes from a stale call.
-		if (seq !== membershipSeq) return;
+		// A competing selection can supersede these writes, but the caller
+		// still needs its resolved slug to canonicalize the active URL.
+		if (seq !== membershipSeq) return callUser === currentUserId() ? resolved : undefined;
 		current = resolved;
 
 		// Fetch the current user's membership context. If the workspace
@@ -543,7 +544,7 @@ export const workspaceStore = {
 			// answer, and the same one.
 			settleIfCurrent(seq, callUser, slug, null);
 		}
-		if (seq === membershipSeq && callUser === currentUserId()) return resolved;
+		if (callUser === currentUserId()) return resolved;
 	},
 
 	async create(data: { name: string; description?: string; template?: string }) {

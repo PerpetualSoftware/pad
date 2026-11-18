@@ -88,6 +88,10 @@ var nulColumns = []nulColumn{
 	{"collections", "icon", classText},
 	{"collections", "prefix", classText},
 
+	// Claims can carry preserved legacy slugs and IDs during migration.
+	{"workspace_slug_claims", "slug", classText},
+	{"workspace_slug_claims", "workspace_id", classText},
+
 	// workspaces
 	{"workspaces", "settings", classJSON},
 	{"workspaces", "name", classText},
@@ -401,11 +405,14 @@ var nulTriggerMigrations = []string{
 	"177_nul_invariant_triggers_post176.sql",
 	"182_nul_invariant_triggers_post181.sql",
 	"185_nul_invariant_triggers_post184.sql",
+	"187_nul_invariant_triggers_post186.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
 // first. Every column not named here is in nulTriggerMigrations[0].
 var nulColumnTriggerFile = map[string]string{
+	"workspace_slug_claims.slug":         "187_nul_invariant_triggers_post186.sql",
+	"workspace_slug_claims.workspace_id": "187_nul_invariant_triggers_post186.sql",
 	// 184 introduced the table (TASK-4491).
 	"item_entries.entry_id": "185_nul_invariant_triggers_post184.sql",
 	"item_entries.head":     "185_nul_invariant_triggers_post184.sql",

@@ -74,7 +74,8 @@ func TestMigratedTablesCoversTheExport(t *testing.T) {
 	// And the set contains nothing SPURIOUS, which would be an over-refusal
 	// rather than a miss but is still wrong.
 	for table := range migrated {
-		if table == "workspaces" {
+		// Claims are copied separately from WorkspaceExport.
+		if table == "workspaces" || table == "workspace_slug_claims" {
 			continue
 		}
 		found := nestedTables[table]

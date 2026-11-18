@@ -82,6 +82,20 @@ describe('workspaceStore: repeat resolution of an already-answered workspace', (
 		auth.userId = 'user-1';
 	});
 
+	it('returns the canonical slug when another selection wins the store write', async () => {
+		const { workspaceStore } = await import('./workspace.svelte');
+		const first = deferred<typeof WS>();
+		api.workspaces.get.mockReturnValueOnce(first.promise).mockResolvedValueOnce(WS);
+		api.workspaces.me.mockResolvedValue(OWNER);
+
+		const navigation = workspaceStore.setCurrent('former-slug');
+		await workspaceStore.setCurrent('former-slug');
+		first.resolve(WS);
+
+		await expect(navigation).resolves.toEqual(WS);
+		expect(workspaceStore.current).toEqual(WS);
+	});
+
 	it('keeps membershipKnown and isOwner true across a second setCurrent for the same slug', async () => {
 		const { workspaceStore } = await import('./workspace.svelte');
 		api.workspaces.get.mockResolvedValue(WS);

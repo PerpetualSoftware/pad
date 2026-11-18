@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 
@@ -133,5 +135,104 @@ func TestWorkspaceSlugClaimImportAtomic(t *testing.T) {
 	}
 	if _, ok := claims["must-rollback"]; ok {
 		t.Fatal("partial import committed")
+	}
+}
+
+func TestWorkspaceSlugClaimsMigrationGuards(t *testing.T) {
+	s := testStoreSQLite(t)
+	plantLegacyRows(t, s, func(raw *sql.DB) {
+		mustExec(t, raw, `INSERT INTO workspace_slug_claims (slug, workspace_id) VALUES (?, ?)`, "bad\x00slug", "old-id")
+		mustExec(t, raw, `INSERT INTO workspace_slug_claims (slug, workspace_id) VALUES (?, ?)`, "bad-id", "id"+invalidByte)
+	})
+	report, err := s.ScanNUL()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := report.ByColumn()
+	if got["workspace_slug_claims.slug"] != 1 || got["workspace_slug_claims.workspace_id"] != 1 {
+		t.Fatalf("claims violations: %v", got)
+	}
+	if !MigratedTables()["workspace_slug_claims"] {
+		t.Fatal("claims missing from migration preflight")
+	}
+	raw, err := sql.Open("sqlite", s.dbPath+"?_pragma=busy_timeout(30000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(`INSERT INTO workspace_slug_claims (slug, workspace_id) VALUES (?, ?)`, "new\x00slug", "owner"); err == nil {
+		t.Fatal("raw writer inserted NUL claim")
+	}
+}
+
+func TestWorkspaceSlugClaimsRepairLegacyCanonical(t *testing.T) {
+	for _, bad := range []string{"legacy\x00slug", "legacy" + invalidByte} {
+		t.Run(fmt.Sprintf("%x", bad), func(t *testing.T) {
+			db, _ := preMigrationDB(t, "186")
+			s := &Store{db: db, dialect: &sqliteDialect{}}
+			if _, err := db.Exec(`DROP TRIGGER pad_nul_workspaces_slug_ins`); err != nil {
+				t.Fatal(err)
+			}
+			id, ts := newID(), now()
+			if _, err := db.Exec(`INSERT INTO workspaces (id, name, slug, settings, created_at, updated_at) VALUES (?, 'Legacy', CAST(? AS TEXT), '{}', ?, ?)`, id, []byte(bad), ts, ts); err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range []string{"186_workspace_slug_claims.sql", "187_nul_invariant_triggers_post186.sql"} {
+				body, err := migrationsFS.ReadFile("migrations/" + name)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := applySQLiteMigration(db, name, string(body)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := db.Exec(`INSERT INTO workspace_slug_claims (slug, workspace_id) VALUES ('valid-alias', ?)`, id); err != nil {
+				t.Fatal(err)
+			}
+			report, err := s.RepairNUL()
+			if err != nil || len(report.Failed) != 0 {
+				t.Fatalf("repair: %+v %v", report, err)
+			}
+			scan, err := s.ScanNUL()
+			if err != nil || scan.Total() != 0 {
+				t.Fatalf("remaining violations: %+v %v", scan, err)
+			}
+			again, err := s.RepairNUL()
+			if err != nil || len(again.Repaired) != 0 || len(again.Failed) != 0 || len(again.Skipped) != 0 {
+				t.Fatalf("second repair: %+v %v", again, err)
+			}
+			ws, err := s.GetWorkspaceByID(id)
+			if err != nil || ws == nil {
+				t.Fatalf("workspace: %+v %v", ws, err)
+			}
+			for _, slug := range []string{ws.Slug, "valid-alias"} {
+				owner, err := s.GetWorkspaceBySlug(slug)
+				if err != nil || owner == nil || owner.ID != id {
+					t.Fatalf("claim %q: %+v %v", slug, owner, err)
+				}
+			}
+			var n int
+			if err := db.QueryRow(`SELECT COUNT(*) FROM workspace_slug_claims WHERE slug = CAST(? AS TEXT)`, []byte(bad)).Scan(&n); err != nil || n != 0 {
+				t.Fatalf("old claim count %d: %v", n, err)
+			}
+		})
+	}
+}
+
+func TestWorkspaceSlugRepairDoesNotDeleteOtherOwnersClaim(t *testing.T) {
+	s := testStoreSQLite(t)
+	ws := createTestWorkspace(t, s, "Claim owner")
+	bad := "malformed\x00slug"
+	plantLegacyRows(t, s, func(raw *sql.DB) {
+		mustExec(t, raw, `UPDATE workspaces SET slug = ? WHERE id = ?`, bad, ws.ID)
+		mustExec(t, raw, `UPDATE workspace_slug_claims SET workspace_id = 'other-owner' WHERE slug = ?`, bad)
+	})
+	changed, err := s.repairOneNUL(NULViolation{Table: "workspaces", Column: "slug", Key: map[string]string{"id": ws.ID}})
+	if err != nil || !changed {
+		t.Fatalf("repair: %v %v", changed, err)
+	}
+	var owner string
+	if err := s.db.QueryRow(`SELECT workspace_id FROM workspace_slug_claims WHERE slug = CAST(? AS TEXT)`, []byte(bad)).Scan(&owner); err != nil || owner != "other-owner" {
+		t.Fatalf("other claim: %q %v", owner, err)
 	}
 }
