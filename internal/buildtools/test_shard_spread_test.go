@@ -18,7 +18,9 @@ func runTestShard(t *testing.T, spread string, args ...string) (string, error) {
 			t.Fatal(err)
 		}
 	}
-	cmd := exec.Command("scripts/test-shard.sh", args...)
+	// Through bash, not the script's #!/usr/bin/env shebang: the Nix build
+	// sandbox has no /usr/bin/env, as the other script tests here assume.
+	cmd := exec.Command("bash", append([]string{"scripts/test-shard.sh"}, args...)...)
 	cmd.Dir = filepath.Join("..", "..")
 	cmd.Env = append(os.Environ(), "TEST_SHARD_SPREAD="+file)
 	out, err := cmd.CombinedOutput()
