@@ -2242,6 +2242,7 @@ func (s *Server) setupRouter() {
 					r.Delete("/commitment-gates/{gateID}", s.handleDeleteCommitmentGate)
 					r.Get("/", s.handleGetWorkspace)
 					r.Patch("/", s.handleUpdateWorkspace)
+					r.Patch("/slug", s.handleRenameWorkspace)
 					r.Delete("/", s.handleDeleteWorkspace)
 					r.Get("/export", s.handleExportWorkspace)
 					// Import a single playbook/convention artifact (Markdown

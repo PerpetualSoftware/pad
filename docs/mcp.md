@@ -81,6 +81,10 @@ If ANY element fails, the whole write is refused and nothing is stored — never
 
 In `relation_targets`, a `multi_relation` key carries a JSON **ARRAY** of the same `{id, ref, title}` objects, in stored order and one per stored element — including an `id`-only entry for an element that names nothing, so a position in the list lines up with the same position in `fields`. A scalar key is unchanged: still a single object, byte-identical to v0.31. Decide which shape to expect from the field's declared type, not by probing.
 
+### Rename a workspace
+
+Call `pad_workspace` with `{"action":"rename","workspace":"current-slug","new_slug":"next-slug"}`. An optional `name` updates the display name. The caller needs owner access and a write-capable connection. Previous links still resolve to the same workspace. Use the returned slug for new links and workspace bindings.
+
 ## Remote caller identity
 
 A write over remote `/mcp` is an **agent** write (BUG-2772, IDEA-2791 Tier B). Every surface that records who wrote something (`created_by`, activity `actor`, the activity `agent` name, comments) records the remote call as `agent`, named by the client's own declaration, MCP `clientInfo.name`, recorded verbatim (self-declared, like the CLI's `X-Pad-Agent`):

@@ -447,7 +447,23 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token validation failed; please retry.")
 		return
 	}
-	if allowed := mergeAllowedWorkspaces(extraAllowed, access); allowed != nil {
+	allowed := mergeAllowedWorkspaces(extraAllowed, access)
+	if allowed != nil && !access.HasConnection {
+		// The legacy token lists slugs. Resolve through the permanent claims
+		// so an earlier slug still grants access to the same workspace.
+		for i, slug := range allowed {
+			ws, err := s.store.GetWorkspaceBySlug(slug)
+			if err != nil {
+				slog.Warn("OAuth workspace lookup failed", "error", err)
+				s.writeMCPUnauthorized(w, r, "invalid_token", "Token validation failed; please retry.")
+				return
+			}
+			if ws != nil {
+				allowed[i] = ws.Slug
+			}
+		}
+	}
+	if allowed != nil {
 		ctx = WithTokenAllowedWorkspaces(ctx, allowed)
 	}
 

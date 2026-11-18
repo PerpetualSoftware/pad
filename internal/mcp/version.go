@@ -2355,7 +2355,9 @@ const CmdhelpVersion = "0.1"
 // the workspace scope, or a user ID). The default answer changes: the groups
 // list the caller's own work and no_date is listed instead of the
 // personal_only marker. stale refuses a recipient.
-const ToolSurfaceVersion = "0.122"
+// v0.123 adds the owner-only pad_workspace.rename action.
+// The current and new slugs are explicit, and the old slug stays an alias.
+const ToolSurfaceVersion = "0.123"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

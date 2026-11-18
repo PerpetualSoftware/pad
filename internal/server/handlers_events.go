@@ -85,7 +85,7 @@ func (s *Server) handleSSE(w http.ResponseWriter, r *http.Request) {
 	// refused before the name is resolved so the answer is the same for a
 	// workspace that does not exist, one the user is not in, and one they
 	// are in.
-	if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, slug) {
+	if pin := tokenPinFrom(r.Context()); pin != nil && !s.pinAdmitsWorkspaceRef(pin, slug) {
 		writeTokenWorkspaceDenied(w, r)
 		return
 	}

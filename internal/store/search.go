@@ -446,7 +446,7 @@ func (s *Store) searchPage(params SearchParams, matches string, args []interface
 // Used to keep count and results queries in sync.
 func (s *Store) appendSearchFilters(query string, args []interface{}, params SearchParams) (string, []interface{}) {
 	if params.Workspace != "" {
-		query += ` AND i.workspace_id = (SELECT id FROM workspaces WHERE slug = ? AND deleted_at IS NULL)`
+		query += ` AND i.workspace_id = (SELECT w.id FROM workspaces w JOIN workspace_slug_claims c ON c.workspace_id = w.id WHERE c.slug = ? AND w.deleted_at IS NULL)`
 		args = append(args, params.Workspace)
 	} else if len(params.WorkspaceIDs) > 0 {
 		query += ` AND i.workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import { createKeyedCoalescer, CoalescerCancelled } from '$lib/utils/keyedCoalescer';
 	import { onMount, onDestroy, untrack } from 'svelte';
@@ -215,6 +216,18 @@
 		untrack(() => lastWorkspace.note(username, wsSlug));
 	});
 
+	async function selectWorkspace(requested: string, routeUser: string) {
+		const workspace = await workspaceStore.setCurrent(requested);
+		if (!workspace || workspace.slug === requested ||
+			page.params.workspace !== requested || page.params.username !== routeUser) return;
+
+		const url = new URL(page.url.href);
+		const parts = url.pathname.split('/');
+		parts[2] = encodeURIComponent(workspace.slug);
+		url.pathname = parts.join('/');
+		await goto(url, { replaceState: true });
+	}
+
 	// Initialize workspace, load collections, and reconnect SSE when the
 	// workspace slug changes. The body is wrapped in `untrack` because
 	// `workspaceStore.setCurrent(wsSlug)` synchronously reads
@@ -229,7 +242,7 @@
 	$effect(() => {
 		if (wsSlug) {
 			untrack(() => {
-				workspaceStore.setCurrent(wsSlug);
+				void selectWorkspace(wsSlug, username).catch(() => {});
 				collectionStore.loadCollections(wsSlug);
 				starredStore.load(wsSlug);
 				syncService.setWorkspace(wsSlug);

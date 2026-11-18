@@ -2,7 +2,9 @@ package store
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -256,7 +258,7 @@ func (s *Store) uniqueWorkspaceSlug(q rowQueryer, baseSlug string) (string, erro
 	slug := baseSlug
 	for i := 2; ; i++ {
 		var count int
-		err := q.QueryRow(s.q("SELECT COUNT(*) FROM workspaces WHERE slug = ?"), slug).Scan(&count)
+		err := q.QueryRow(s.q("SELECT COUNT(*) FROM workspace_slug_claims WHERE slug = ?"), slug).Scan(&count)
 		if err != nil {
 			return "", err
 		}
@@ -283,7 +285,7 @@ func (s *Store) getWorkspaceBySlugQ(q rowQueryer, slug string) (*models.Workspac
 		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
-		WHERE w.slug = ? AND w.deleted_at IS NULL
+		WHERE w.id = (SELECT workspace_id FROM workspace_slug_claims WHERE slug = ?) AND w.deleted_at IS NULL
 	`), slug).Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt, &deletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -300,11 +302,15 @@ func (s *Store) getWorkspaceBySlugQ(q rowQueryer, slug string) (*models.Workspac
 }
 
 func (s *Store) GetWorkspaceByID(id string) (*models.Workspace, error) {
+	return s.getWorkspaceByIDQ(s.db, id)
+}
+
+func (s *Store) getWorkspaceByIDQ(q rowQueryer, id string) (*models.Workspace, error) {
 	var w models.Workspace
 	var createdAt, updatedAt string
 	var deletedAt *string
 
-	err := s.db.QueryRow(s.q(`
+	err := q.QueryRow(s.q(`
 		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
@@ -334,7 +340,7 @@ func (s *Store) GetWorkspacesBySlugForUser(slug, userID string) ([]models.Worksp
 		LEFT JOIN collection_grants cg ON cg.workspace_id = w.id AND cg.user_id = ?
 		LEFT JOIN item_grants ig ON ig.workspace_id = w.id AND ig.user_id = ?
 		LEFT JOIN users ou ON ou.id = w.owner_id
-		WHERE w.slug = ? AND w.deleted_at IS NULL
+		WHERE w.id = (SELECT workspace_id FROM workspace_slug_claims WHERE slug = ?) AND w.deleted_at IS NULL
 		AND (w.owner_id = ? OR wm.user_id IS NOT NULL OR cg.user_id IS NOT NULL OR ig.user_id IS NOT NULL)
 	`), userID, userID, userID, slug, userID)
 	if err != nil {
@@ -366,6 +372,19 @@ func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mod
 		return nil, nil
 	}
 
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	// Lock and reread by ID so a concurrent rename cannot be overwritten.
+	if _, err := tx.Exec(s.q(`UPDATE workspaces SET name = name WHERE id = ? AND deleted_at IS NULL`), w.ID); err != nil {
+		return nil, err
+	}
+	w, err = s.getWorkspaceByIDQ(tx, w.ID)
+	if err != nil || w == nil {
+		return nil, err
+	}
 	ts := now()
 
 	if input.Name != nil {
@@ -392,7 +411,7 @@ func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mod
 		w.Settings = settings
 	}
 
-	_, err = s.db.Exec(s.q(`
+	_, err = tx.Exec(s.q(`
 		UPDATE workspaces SET name = ?, description = ?, settings = ?, updated_at = ?
 		WHERE id = ?
 	`), w.Name, w.Description, w.Settings, ts, w.ID)
@@ -400,7 +419,10 @@ func (s *Store) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mod
 		return nil, err
 	}
 
-	return s.GetWorkspaceBySlug(slug)
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetWorkspaceByID(w.ID)
 }
 
 // DeleteWorkspace soft-deletes a workspace. Every user's tab for it goes in
@@ -568,4 +590,96 @@ func (s *Store) ListOwnedLiveWorkspaceIDs(userID string) ([]string, error) {
 		ids = append(ids, id)
 	}
 	return ids, rows.Err()
+}
+
+// ErrWorkspaceSlugConflict indicates that another workspace owns the slug.
+var ErrWorkspaceSlugConflict = errors.New("workspace slug conflict")
+
+// ErrWorkspaceRenameStale indicates that the workspace changed since it was read.
+var ErrWorkspaceRenameStale = errors.New("workspace rename stale")
+
+// WorkspaceHasSlug reports whether slug belongs to the live workspace.
+func (s *Store) WorkspaceHasSlug(id, slug string) (bool, error) {
+	var n int
+	err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM workspace_slug_claims c JOIN workspaces w ON w.id = c.workspace_id WHERE c.workspace_id = ? AND c.slug = ? AND w.deleted_at IS NULL`), id, slug).Scan(&n)
+	return n != 0, err
+}
+
+// RenameWorkspace changes a workspace only if its canonical slug is still expectedSlug.
+func (s *Store) RenameWorkspace(id, expectedSlug, slug string, name *string) (*models.Workspace, bool, error) {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	// Lock the stable row on Postgres; SQLite serializes the write itself.
+	query := `UPDATE workspaces SET slug = ?, name = COALESCE(?, name), updated_at = ? WHERE id = ? AND slug = ? AND deleted_at IS NULL AND (slug <> ? OR (CAST(? AS TEXT) IS NOT NULL AND name <> ?))`
+	res, err := tx.Exec(s.q(query), slug, name, now(), id, expectedSlug, slug, name, name)
+	if err != nil {
+		if strings.Contains(err.Error(), "workspace slug conflict") {
+			return nil, false, ErrWorkspaceSlugConflict
+		}
+		return nil, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	w, err := s.getWorkspaceByIDQ(tx, id)
+	if err != nil || w == nil {
+		return nil, false, err
+	}
+	// An identical retry succeeds even when it supplies the former slug.
+	if n == 0 && w.Slug != expectedSlug && (w.Slug != slug || (name != nil && w.Name != *name)) {
+		return nil, false, ErrWorkspaceRenameStale
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return w, n != 0, nil
+}
+
+// WorkspaceSlugClaims returns all claims, including those of purged workspaces.
+func (s *Store) WorkspaceSlugClaims() (map[string]string, error) {
+	return s.WorkspaceSlugClaimsQ(s.db)
+}
+
+// WorkspaceSlugClaimsQ reads claims in the caller's snapshot.
+func (s *Store) WorkspaceSlugClaimsQ(q Queryer) (map[string]string, error) {
+	rows, err := q.Query(`SELECT slug, workspace_id FROM workspace_slug_claims`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	claims := make(map[string]string)
+	for rows.Next() {
+		var slug, id string
+		if err := rows.Scan(&slug, &id); err != nil {
+			return nil, err
+		}
+		claims[slug] = id
+	}
+	return claims, rows.Err()
+}
+
+// ImportWorkspaceSlugClaims restores claims after workspace IDs have been mapped.
+func (s *Store) ImportWorkspaceSlugClaims(claims map[string]string) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for slug, id := range claims {
+		if _, err := tx.Exec(s.q(`INSERT INTO workspace_slug_claims (slug, workspace_id) VALUES (?, ?) ON CONFLICT (slug) DO NOTHING`), slug, id); err != nil {
+			return err
+		}
+		var owner string
+		if err := tx.QueryRow(s.q(`SELECT workspace_id FROM workspace_slug_claims WHERE slug = ?`), slug).Scan(&owner); err != nil {
+			return err
+		}
+		if owner != id {
+			return ErrWorkspaceSlugConflict
+		}
+	}
+	return tx.Commit()
 }

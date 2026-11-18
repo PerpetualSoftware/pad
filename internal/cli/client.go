@@ -240,6 +240,11 @@ func (c *Client) UpdateWorkspace(slug string, input models.WorkspaceUpdate) (*mo
 	return &result, c.patch("/workspaces/"+url.PathEscape(slug), input, &result)
 }
 
+func (c *Client) RenameWorkspace(input models.WorkspaceRename) (*models.Workspace, error) {
+	var result models.Workspace
+	return &result, c.patch("/workspaces/"+url.PathEscape(input.ExpectedSlug)+"/slug", input, &result)
+}
+
 // DeletedWorkspace is one entry from GET /api/v1/workspaces/deleted — a
 // soft-deleted workspace still inside the restore window, plus the
 // purge-window fields (both derived server-side from the shared purge

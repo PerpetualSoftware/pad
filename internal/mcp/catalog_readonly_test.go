@@ -105,6 +105,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		// TASK-1973: workspace soft-delete recovery.
 		{"pad_workspace", "deleted"}: {"workspace", "deleted"},
 		{"pad_workspace", "restore"}: {"workspace", "restore"},
+		{"pad_workspace", "rename"}:  {"workspace", "rename"},
 
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
@@ -309,6 +310,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		// TASK-1973: workspace soft-delete recovery.
 		{"pad_workspace", "deleted"}: {"workspace", "deleted"},
 		{"pad_workspace", "restore"}: {"workspace", "restore"},
+		{"pad_workspace", "rename"}:  {"workspace", "rename"},
 
 		{"pad_collection", "list"}:   {"collection", "list"},
 		{"pad_collection", "create"}: {"collection", "create"},
@@ -411,7 +413,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		"decision":          "test decision",
 		// PLAN-1519 / TASK-1521 — workspace.claim needs a `code` positional;
 		// `name` (above) doubles as the workspace.create positional.
-		"code": "123456",
+		"code": "123456", "workspace": "test-workspace", "new_slug": "new-workspace",
 		// pad_attachment.show needs an attachment_id positional.
 		"attachment_id": "att-1",
 		"since":         "0", "access_epoch": "epoch",
@@ -588,6 +590,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Args:    mkArgs("code"),
 				Flags:   mkFlags("workspace"),
 			},
+			"workspace rename": {Summary: "rename workspace", Args: mkArgs("workspace", "new_slug"), Flags: mkFlags("name")},
 			// TASK-1973: workspace soft-delete recovery.
 			"workspace deleted": {Summary: "list soft-deleted workspaces"},
 			"workspace restore": {

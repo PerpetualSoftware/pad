@@ -58,7 +58,7 @@ func (s *Server) handleResolveCrossWorkspaceRef(w http.ResponseWriter, r *http.R
 	// A workspace-pinned token resolves refs in its own workspace only
 	// (BUG-3982), decided before the name is resolved; anywhere else is the
 	// resolver's ordinary 404.
-	if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, workspaceSlug) {
+	if pin := tokenPinFrom(r.Context()); pin != nil && !s.pinAdmitsWorkspaceRef(pin, workspaceSlug) {
 		s.refResolverNotFound(w, r)
 		return
 	}

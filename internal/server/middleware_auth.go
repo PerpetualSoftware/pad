@@ -738,7 +738,7 @@ func (s *Server) RequireWorkspaceAccess(next http.Handler) http.Handler {
 		// before the name is resolved, so the refusal is the same whether
 		// that workspace exists, and whether the user belongs to it
 		// (BUG-3982).
-		if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, slugOrID) {
+		if pin := tokenPinFrom(r.Context()); pin != nil && !s.pinAdmitsWorkspaceRef(pin, slugOrID) {
 			writeTokenWorkspaceDenied(w, r)
 			return
 		}

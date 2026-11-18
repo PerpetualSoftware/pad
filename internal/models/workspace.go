@@ -55,6 +55,12 @@ type WorkspaceCreate struct {
 	Source string `json:"-"`
 }
 
+type WorkspaceRename struct {
+	ExpectedSlug string  `json:"expected_slug"`
+	Slug         string  `json:"slug"`
+	Name         *string `json:"name,omitempty"`
+}
+
 type WorkspaceUpdate struct {
 	Name        *string           `json:"name,omitempty"`
 	Description *string           `json:"description,omitempty"`

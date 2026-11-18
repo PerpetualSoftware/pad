@@ -543,6 +543,7 @@ export const workspaceStore = {
 			// answer, and the same one.
 			settleIfCurrent(seq, callUser, slug, null);
 		}
+		if (seq === membershipSeq && callUser === currentUserId()) return resolved;
 	},
 
 	async create(data: { name: string; description?: string; template?: string }) {

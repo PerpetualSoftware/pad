@@ -555,7 +555,7 @@ func (s *Server) authorizeCrossWorkspaceInner(r *http.Request, workspaceSlugOrID
 	// the user is not in, and one they are in get the same refusal. The
 	// allow-list check below, which reports only after the role check,
 	// still covers OAuth tokens.
-	if pin := tokenPinFrom(r.Context()); pin != nil && !pinAdmitsWorkspaceRef(pin, workspaceSlugOrID) {
+	if pin := tokenPinFrom(r.Context()); pin != nil && !s.pinAdmitsWorkspaceRef(pin, workspaceSlugOrID) {
 		return crossWorkspaceDeny(CrossWorkspaceTokenNotAllowed, nil, "", nil)
 	}
 

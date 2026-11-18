@@ -58,9 +58,17 @@ func (s *Server) withTokenPin(ctx context.Context, t *models.APIToken) (context.
 // BEFORE ref is resolved (BUG-3982 r4): a slug that does not exist, one the
 // user is not a member of, and one the user is a member of all get the same
 // refusal, so the pin answers nothing about existence or membership. A pin
-// whose workspace is gone admits nothing.
-func pinAdmitsWorkspaceRef(pin *tokenPin, ref string) bool {
-	return pin.Slug != "" && (ref == pin.Slug || ref == pin.ID)
+// whose workspace is gone admits nothing. Historical slugs are checked only
+// against that pinned workspace's own claims.
+func (s *Server) pinAdmitsWorkspaceRef(pin *tokenPin, ref string) bool {
+	if pin.Slug == "" {
+		return false
+	}
+	if ref == pin.Slug || ref == pin.ID {
+		return true
+	}
+	ok, err := s.store.WorkspaceHasSlug(pin.ID, ref)
+	return err == nil && ok
 }
 
 // signedInFor is currentUser for a public route that reads the caller about a
