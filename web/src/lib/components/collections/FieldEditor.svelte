@@ -431,7 +431,10 @@
 					<span
 						class="options-col-abandoned"
 						title="Mark a terminal option that closes an item WITHOUT delivering it (cancelled, rejected, overturned…). The changelog, standup and reports leave those items out of completed work."
-						>Abandoned?</span
+						><span class="options-col-full">Abandoned?</span><span
+							class="options-col-short"
+							aria-hidden="true">Abnd?</span
+						></span
 					>
 					<span
 						class="options-col-waits"
@@ -1062,6 +1065,65 @@
 	.option-waits-placeholder {
 		width: 44px;
 		flex-shrink: 0;
+	}
+
+	/* The compact header label only shows on narrow viewports (below). */
+	.options-col-short {
+		display: none;
+	}
+
+	/* Phone widths: the 28px indent and the wide Abandoned? column left the
+	   option name ~75px, cutting off "needs-review" and "in-progress"
+	   (TASK-4643). Drop the indent, tighten the gaps, and shorten the
+	   Abandoned? header to "Abnd?" (the full label stays for screen readers
+	   and in the title) so the column can shrink to the Waits? width. */
+	@media (max-width: 640px) {
+		.field-options {
+			padding-left: var(--space-3);
+		}
+
+		.options-col-headers,
+		.option-row {
+			gap: var(--space-1);
+		}
+
+		.options-col-abandoned,
+		.option-abandoned-toggle,
+		.option-abandoned-placeholder {
+			width: 44px;
+		}
+
+		/* Header and rows end on the same width, so the Abnd? and Waits?
+		   headers sit over their toggles; DONE? takes only its text width so
+		   the header row fits at 360px. */
+		.options-col-spacer,
+		.option-remove-btn {
+			width: 20px;
+		}
+
+		.options-col-terminal {
+			width: auto;
+		}
+
+		.done-pill {
+			padding: 1px 4px;
+		}
+
+		.options-col-full {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			margin: -1px;
+			overflow: hidden;
+			clip: rect(0, 0, 0, 0);
+			white-space: nowrap;
+			border: 0;
+		}
+
+		.options-col-short {
+			display: inline;
+		}
 	}
 
 	.option-abandoned-toggle {
