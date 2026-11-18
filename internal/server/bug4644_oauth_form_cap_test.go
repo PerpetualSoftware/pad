@@ -299,6 +299,29 @@ func TestBUG4644_Token_RefusesClientAssertion(t *testing.T) {
 			}
 		})
 	}
+	// A spent code presented again makes fosite revoke the grant it minted
+	// (replay detection, inside NewAccessRequest). Refused before fosite,
+	// the replay with an assertion leaves that grant's tokens alive.
+	t.Run("replayed code with assertion", func(t *testing.T) {
+		verifier := "verifier-bug4644-assert-replay-quick-brown-fox-0123456789"
+		code := authCodeFor(t, srv, sess, csrf, clientID, verifier, testCanonicalAudience)
+		form := bug4644TokenForm(clientID, code, verifier)
+		first := postOAuthForm(srv, "/oauth/token", form)
+		if first.Code != http.StatusOK {
+			t.Fatalf("first exchange: %d %.300s", first.Code, first.Body.String())
+		}
+		var resp map[string]any
+		parseJSON(t, first, &resp)
+		minted, _ := resp["access_token"].(string)
+		bearer, _ := runAuthCodeFlow(t, srv, sess, csrf, clientID, "verifier-bug4644-assert-replay-brr-quick-brown-fox-0123")["access_token"].(string)
+		if minted == "" || bearer == "" {
+			t.Fatal("missing tokens")
+		}
+		bug4644WantInvalidClient(t, postOAuthForm(srv, "/oauth/token", bug4644With(form, url.Values{"client_assertion": {bug4644Dummy}})), true)
+		if !bug4644Active(t, srv, minted, bearer) {
+			t.Fatal("the refused replay revoked the grant: fosite ran")
+		}
+	})
 	t.Run("multipart assertion only", func(t *testing.T) {
 		verifier := "verifier-bug4644-assert-mp-quick-brown-fox-0123456789"
 		code := authCodeFor(t, srv, sess, csrf, clientID, verifier, testCanonicalAudience)
