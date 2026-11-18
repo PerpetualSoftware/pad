@@ -1097,3 +1097,27 @@ func TestMeNeeds_WaitingStatusSignal(t *testing.T) {
 		}
 	})
 }
+
+// A waiting value declared in another case than its option ("écrit" for
+// "Écrit") still finds the item, which stores the option's spelling, on
+// SQLite too, whose LOWER folds ASCII only.
+func TestMeNeeds_WaitingStatusOptionSpelling(t *testing.T) {
+	t.Parallel()
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		tasks, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks",
+			Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","Écrit","done"],"default":"open","required":true,"awaits_human_options":["écrit"]}]}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		it, err := srv.store.CreateItem(ws.ID, tasks.ID, models.ItemCreate{Title: "asked of alice", Fields: `{"status":"Écrit"}`, AssignedUserID: &alice.ID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.setCreated(it, nfxDay(1))
+		wantTitles(t, "alice", f.need(alice, "").Rows, "asked of alice")
+	})
+}

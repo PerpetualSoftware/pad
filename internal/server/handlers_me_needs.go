@@ -280,6 +280,38 @@ func (e *needsEligibility) Eligible(userID, collectionID, itemID string) bool {
 	return v != nil && (v.unrestricted || v.collections[collectionID] || v.items[itemID])
 }
 
+// needsWaitingSpellings returns the waiting values plus the done field's own
+// spelling of each: awaits_human_options match their options
+// case-insensitively, and an item stores the option's spelling, which the
+// candidate SQL must see verbatim (SQLite's LOWER folds ASCII only).
+func needsWaitingSpellings(schema models.CollectionSchema, key string, vals []string) []string {
+	out := append([]string(nil), vals...)
+	seen := map[string]bool{}
+	for _, v := range vals {
+		seen[strings.TrimSpace(v)] = true
+	}
+	for _, f := range schema.Fields {
+		if f.Key != key {
+			continue
+		}
+		for _, opt := range f.Options {
+			o := strings.TrimSpace(opt)
+			if seen[o] {
+				continue
+			}
+			for _, v := range vals {
+				if strings.EqualFold(o, strings.TrimSpace(v)) {
+					seen[o] = true
+					out = append(out, o)
+					break
+				}
+			}
+		}
+		break
+	}
+	return out
+}
+
 // needsForWorkspace runs the router for one admitted workspace and returns the
 // rows routed to the caller, held ones included (the caller splits the views).
 // Order matters for what is read: visibility first (in the candidate SQL), then
@@ -345,7 +377,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 			for _, v := range vals {
 				ci.waiting[strings.ToLower(strings.TrimSpace(v))] = true
 			}
-			awaitsStatus = append(awaitsStatus, store.NeedsAwaitsStatus{CollectionID: c.ID, Key: key, Values: vals})
+			awaitsStatus = append(awaitsStatus, store.NeedsAwaitsStatus{CollectionID: c.ID, Key: key, Values: needsWaitingSpellings(ci.schema, key, vals)})
 		}
 	}
 
