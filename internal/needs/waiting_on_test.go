@@ -80,3 +80,14 @@ func TestWaitingOnAskedPerson(t *testing.T) {
 		t.Fatalf("target = %+v", tg)
 	}
 }
+
+// A due reminder names exactly one recipient, so it waits on a person, like
+// asked and assigned.
+func TestWaitingOnDueIsPerson(t *testing.T) {
+	t0 := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	c := Candidate{ItemID: "i", CreatedAt: t0, Due: &t0, DueRecipientID: "u-due"}
+	tg := WaitingOn(c, fakeElig{"u-due": true})
+	if tg.Kind != TargetPerson || tg.Rule != RuleDue || len(tg.IDs) != 1 || tg.IDs[0] != "u-due" {
+		t.Fatalf("target = %+v, want person/due", tg)
+	}
+}

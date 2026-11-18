@@ -182,7 +182,7 @@ func WaitingOn(c Candidate, elig Eligibility) Target {
 	case ok(c.AssigneeUserID):
 		return Target{Kind: TargetPerson, IDs: []string{c.AssigneeUserID}, Rule: RuleAssigned}
 	case c.Due != nil && ok(c.DueRecipientID):
-		return Target{Kind: TargetPeople, IDs: []string{c.DueRecipientID}, Rule: RuleDue}
+		return Target{Kind: TargetPerson, IDs: []string{c.DueRecipientID}, Rule: RuleDue}
 	case c.AgentRoleID != "":
 		return Target{Kind: TargetRole, IDs: []string{c.AgentRoleID}, Rule: RuleRole}
 	case c.Asked():
