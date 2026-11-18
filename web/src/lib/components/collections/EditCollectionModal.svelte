@@ -16,6 +16,7 @@
 		defaultsEqual,
 		isSafeDoneFieldKey,
 		keptAbandoned,
+		keptAwaitsHuman,
 		typeSupportsDefault,
 		validateFieldKey,
 		type EditableField
@@ -482,6 +483,7 @@
 				originalOptions: f.options ? [...f.options] : [],
 				terminalOptions: f.terminal_options ? [...f.terminal_options] : [],
 				abandonedOptions: f.abandoned_options ? [...f.abandoned_options] : [],
+				awaitsHumanOptions: f.awaits_human_options ? [...f.awaits_human_options] : [],
 				required: f.required,
 				computed: f.computed,
 				collection: f.collection,
@@ -739,6 +741,12 @@
 					const ab = keptAbandoned(f.abandonedOptions, terms);
 					if (ab.length > 0) def.abandoned_options = ab;
 				}
+				// Waiting marks (TASK-4643) need no terminal option, so they
+				// are emitted outside the terminal block.
+				if ((f.type === 'select' || f.type === 'multi_select') && def.options) {
+					const waits = keptAwaitsHuman(f.awaitsHumanOptions, def.options, def.terminal_options ?? []);
+					if (waits.length > 0) def.awaits_human_options = waits;
+				}
 				// Gate type-specific advanced values by the current type so
 				// stale hidden values from a previous type (e.g. a number
 				// default/suffix after switching to relation) don't leak
@@ -818,6 +826,12 @@
 						if (terms.length > 0) def.terminal_options = terms;
 						const ab = keptAbandoned(f.abandonedOptions, terms);
 						if (ab.length > 0) def.abandoned_options = ab;
+					}
+					// Waiting marks (TASK-4643) need no terminal option, so they
+					// are emitted outside the terminal block.
+					if ((f.type === 'select' || f.type === 'multi_select') && def.options) {
+						const waits = keptAwaitsHuman(f.awaitsHumanOptions, def.options, def.terminal_options ?? []);
+						if (waits.length > 0) def.awaits_human_options = waits;
 					}
 					// Advanced controls (T3 / TASK-596). Only emit when set so
 					// payloads stay compact and round-trip with existing schemas.

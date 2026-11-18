@@ -38,6 +38,12 @@ export interface EditableField {
 	 * silently strip the server-side declaration.
 	 */
 	abandonedOptions: string[];
+	/**
+	 * Non-terminal options that mean "waiting on a person"
+	 * (`awaits_human_options`, TASK-4643). Always an array; it round-trips
+	 * like abandonedOptions, or a save would strip the declaration.
+	 */
+	awaitsHumanOptions: string[];
 	required?: boolean;
 	computed?: boolean;
 	collection?: string;
@@ -412,6 +418,7 @@ export function blankField(): EditableField {
 		originalOptions: [],
 		terminalOptions: [],
 		abandonedOptions: [],
+		awaitsHumanOptions: [],
 		keyTouched: false
 	};
 }
@@ -435,6 +442,7 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
 		originalOptions: existing && def.options ? [...def.options] : [],
 		terminalOptions: def.terminal_options ? [...def.terminal_options] : [],
 		abandonedOptions: def.abandoned_options ? [...def.abandoned_options] : [],
+		awaitsHumanOptions: def.awaits_human_options ? [...def.awaits_human_options] : [],
 		required: def.required,
 		computed: def.computed,
 		collection: def.collection,
@@ -458,4 +466,18 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
  */
 export function keptAbandoned(abandoned: readonly string[], terms: readonly string[]): string[] {
 	return abandoned.filter((a) => terms.includes(a));
+}
+
+/**
+ * The waiting markings to save beside `options` and `terms` (the options and
+ * terminal options being saved): only those still an option and not terminal,
+ * so a renamed, removed or newly terminal option cannot leave a declaration
+ * the server refuses (TASK-4643).
+ */
+export function keptAwaitsHuman(
+	awaits: readonly string[],
+	options: readonly string[],
+	terms: readonly string[]
+): string[] {
+	return awaits.filter((a) => options.includes(a) && !terms.includes(a));
 }
