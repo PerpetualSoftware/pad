@@ -369,6 +369,7 @@ var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_workspace", "invite"}:          "sends email to an arbitrary address; kept to the web app",
 	{"pad_workspace", "claim"}:           "workspace lifecycle; web app",
 	{"pad_workspace", "restore"}:         "workspace lifecycle; web app",
+	{"pad_workspace", "rename"}:          "owner-level workspace administration; available through the full MCP catalog",
 	{"pad_workspace", "deleted"}:         "workspace lifecycle; web app",
 	{"pad_workspace", "members"}:         "returns member emails (fails data minimization)",
 	{"pad_workspace", "audit-log"}:       "returns IP addresses and user agents (fails data minimization)",

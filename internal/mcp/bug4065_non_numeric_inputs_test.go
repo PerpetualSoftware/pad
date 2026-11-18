@@ -643,7 +643,7 @@ func TestBUG4065_NoRouteForwardsANonNumberForANumberParam(t *testing.T) {
 // route accepts, so a refusal in the walk is about the numeric parameter.
 func bug4065WalkBase(cmd string) map[string]any {
 	base := map[string]any{
-		"workspace": "docapp", "ref": "TASK-1", "item_ref": "TASK-1", "target": "C12",
+		"workspace": "docapp", "new_slug": "renamed-docapp", "ref": "TASK-1", "item_ref": "TASK-1", "target": "C12",
 		"query": "needle", "slug": "tasks", "attachment_id": "att-1", "seq": 3.0, "to": 3.0,
 		"body": "hi", "name": "Tasks", "collection": "tasks", "title": "A title",
 		"message": "a comment", "comment_id": "c-1", "reminder_id": "r-1", "status": "done",

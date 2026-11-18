@@ -14,6 +14,7 @@ test('old workspace deep links resolve to the canonical slug with query and frag
 	try {
 		await page.goto(`/${fixture.adminUsername}/${oldSlug}/settings?source=old-link#members`);
 		await expect(page).toHaveURL((url) => url.pathname === `/${fixture.adminUsername}/${newSlug}/settings` && url.search === '?source=old-link' && url.hash === '#members');
+		await expect(page.getByRole('heading', { name: 'Workspace settings' })).toBeVisible();
 		const current = await request.get(`/api/v1/workspaces/${oldSlug}`, { headers });
 		expect((await current.json()).id).toBe(workspace.id);
 	} finally {

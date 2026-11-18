@@ -218,7 +218,7 @@
 
 	async function selectWorkspace(requested: string, routeUser: string) {
 		const workspace = await workspaceStore.setCurrent(requested);
-		if (!workspace || workspace.slug === requested ||
+		if (!workspace || workspace.slug === requested || page.state?.chatDepth ||
 			page.params.workspace !== requested || page.params.username !== routeUser) return;
 
 		const url = new URL(page.url.href);

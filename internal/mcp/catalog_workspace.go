@@ -160,13 +160,8 @@ Actions:
                Required: name.
                Optional: slug (derived from name when omitted), template (e.g.
                "startup" / "scrum" / "blank").
-               When called over an OAuth-bound MCP session whose grant has
-               may_create_workspaces=true, the new workspace is auto-added to that connection's allow-list, usable at once
-               with no re-auth.
-               When that grant has may_create_workspaces=FALSE the call is
-               REFUSED with a 403 and no workspace is created (IDEA-2756);
-               retrying will not help. Only the USER can lift it: re-authorize, or enable the flag
-               on the existing connection at /settings/connected-apps.
+               OAuth adds the workspace to the connection when may_create_workspaces is enabled.
+               Otherwise creation returns 403. Enable it under /settings/connected-apps or re-authorize.
   claim      — Redeem a 6-digit claim code to add a workspace to the calling
                OAuth connection's allow-list.
                Required: workspace, code.
