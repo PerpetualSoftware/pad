@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 env:
-  # Keep identical to CI's shard coverage and non-server race flags.
+  # Keep identical to CI's shard coverage and ./... race step flags.
   GO_RACE_FLAGS: "-race -gcflags=modernc.org/...=-d=checkptr=0"
 
 jobs:
@@ -151,6 +151,119 @@ jobs:
         if: failure() || cancelled()
         env:
           FAILED_JOB: Go race internal/server (PostgreSQL ${{ matrix.shard }}/3)
+        run: |
+          echo "::error::$FAILED_JOB failed at $GITHUB_SHA"
+          {
+            echo "# STOP THE LINE: a race run on $GITHUB_REF_NAME failed or did not finish"
+            echo "Job: $FAILED_JOB"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # internal/store under -race, as 3 shards per driver (TASK-4648). In the
+  # ./... race steps it took 3155.755s (SQLite) of a 3600s budget on main and
+  # timed out at 3600s on a release tip, and 1843.580s on PostgreSQL. The
+  # same split as internal/server above; go-store-shards in ci.yml proves the
+  # shards cover the package exactly once.
+  #
+  # Its test binary imports neither the web embeds nor the materializer, so
+  # these jobs build no bundles and need no Node. No store test reads
+  # PAD_TEST_REQUIRE_PS (the ./... race step sets it for cmd/pad).
+  go-store-race:
+    # Backstop only, as on the go job: -timeout=45m fires first.
+    timeout-minutes: 75
+    name: Go race internal/store (SQLite ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # See the identical step in the `go` job.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      - name: Run internal/store shard with race detector
+        env:
+          SHARD: ${{ matrix.shard }}
+        run: |
+          run=$(scripts/test-shard.sh regex ./internal/store/ 3 "$SHARD" $GO_RACE_FLAGS)
+          go test $GO_RACE_FLAGS -timeout=45m -run "$run" ./internal/store/
+
+      # failure() alone misses a cancelled run, which leaves the branch with no
+      # race result at this SHA: that is stop-the-line too (TASK-4224).
+      - name: Stop the line on a race failure
+        if: failure() || cancelled()
+        env:
+          FAILED_JOB: Go race internal/store (SQLite ${{ matrix.shard }}/3)
+        run: |
+          echo "::error::$FAILED_JOB failed at $GITHUB_SHA"
+          {
+            echo "# STOP THE LINE: a race run on $GITHUB_REF_NAME failed or did not finish"
+            echo "Job: $FAILED_JOB"
+            echo "Commit: $GITHUB_SHA"
+            echo "Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  go-store-race-postgres:
+    # Backstop only, as on the go-postgres job: -timeout=45m fires first.
+    timeout-minutes: 75
+    name: Go race internal/store (PostgreSQL ${{ matrix.shard }}/3)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    services:
+      postgres:
+        # Same image and digest as the go-postgres job; bump them together.
+        image: mirror.gcr.io/library/postgres:17-alpine@sha256:b0f9560a2de083e2cc7382e75f808c7381a32852a7ec49117deedb300e552b24
+        env:
+          POSTGRES_USER: pad
+          POSTGRES_PASSWORD: pad
+          POSTGRES_DB: pad
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U pad"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: "1.26"
+
+      - name: Allow Go to fetch the toolchain go.mod pins
+        # See the identical step in the `go` job.
+        run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # internal/store's tests need no PostgreSQL client tools (no pg_dump
+      # or psql), so the PGDG install the go-postgres job does is not here.
+      # The env is the PostgreSQL race step's.
+      - name: Run internal/store shard with race detector against PostgreSQL
+        env:
+          PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+          PAD_TEST_POSTGRES_TOOLS_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+          SHARD: ${{ matrix.shard }}
+        run: |
+          run=$(scripts/test-shard.sh regex ./internal/store/ 3 "$SHARD" $GO_RACE_FLAGS)
+          go test $GO_RACE_FLAGS -timeout=45m -count=1 -run "$run" ./internal/store/
+
+      # failure() alone misses a cancelled run, which leaves the branch with no
+      # race result at this SHA: that is stop-the-line too (TASK-4224).
+      - name: Stop the line on a race failure
+        if: failure() || cancelled()
+        env:
+          FAILED_JOB: Go race internal/store (PostgreSQL ${{ matrix.shard }}/3)
         run: |
           echo "::error::$FAILED_JOB failed at $GITHUB_SHA"
           {

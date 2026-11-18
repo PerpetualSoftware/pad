@@ -1,0 +1,14 @@
+# Tests that test-shard.sh deals out first, one per shard in this order, so
+# the heaviest stay in different shards (see its header). Format: one
+# "<package dir> <TestName>" per line, the package as test-shard.sh is given
+# it without ./ or a trailing slash. Keep it to the few tests that dominate a
+# shard's wall; `scripts/test-shard.sh check` still proves the shards are
+# disjoint and complete.
+#
+# internal/store, 3 shards (TASK-4648). Times are a local non-race run at
+# 8c213e081 (-race multiplies them; the rename test took 484s alone under
+# -race). The first two are serial, and serial time adds to a shard's wall
+# in full; the third is parallel but long enough to be a shard's tail.
+internal/store TestUnreadableReminderHistory
+internal/store TestReminderCollisionPolicy
+internal/store TestItemRenameCascade_BoundsTheScanNotJustTheRewrite

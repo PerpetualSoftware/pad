@@ -6,6 +6,8 @@
 # drivers (2658s on PostgreSQL, 2519s on SQLite, against 2700s). No test or
 # family is more than ~4% of the wall; ~88% of it is serial tests. So the
 # package runs as N jobs, each with a disjoint slice of its top-level tests.
+# internal/store followed (3155s on SQLite against 3600s; TASK-4648) and is
+# split the same way.
 #
 # Usage:
 #   scripts/test-shard.sh regex <pkg> <N> <k> [go test build flags...]
@@ -16,7 +18,12 @@
 #
 # Shard membership: the package's top-level Test/Fuzz/Example names from
 # `go test -list`, sorted (C locale), name i (0-based) goes to shard
-# (i mod N) + 1.
+# (i mod N) + 1. Names pinned for the package in scripts/test-shard-spread.txt
+# (or the file $TEST_SHARD_SPREAD names) come first, in file order, so the
+# heaviest tests are dealt to different shards whatever names are added
+# around them; the rest follow in sorted order. A pin that names no test in
+# the package, or names one twice, is an error, so a renamed test cannot
+# leave a stale pin behind.
 #
 # The build flags MUST be the ones the shard jobs test with. -list reports
 # the tests of the binary those flags build, so a build-tagged file is in the
@@ -53,11 +60,43 @@ check_n() {
 	[[ $1 =~ ^[1-9][0-9]*$ ]] || die "N must be a positive integer, got '$1'"
 }
 
+spread=${TEST_SHARD_SPREAD:-$(dirname "$0")/test-shard-spread.txt}
+
+# ordered_tests <pkg> [flags...]: the package's tests in dealing order, the
+# pinned ones first.
+ordered_tests() {
+	local pkg=$1
+	shift
+	local all key pins="" p rest
+	all=$(list_tests "$pkg" '.' "$@") || exit 1
+	key=${pkg#./}
+	key=${key%/}
+	if [[ -f $spread ]]; then
+		pins=$(awk -v key="$key" '
+			/^[[:space:]]*(#|$)/ { next }
+			NF != 2 { printf "bad line %d: %s\n", NR, $0 > "/dev/stderr"; exit 1 }
+			$1 == key { print $2 }' "$spread") || die "malformed $spread"
+	fi
+	if [[ -n $pins ]]; then
+		[[ -z $(printf '%s\n' "$pins" | LC_ALL=C sort | uniq -d) ]] || die "$spread pins a $key test twice"
+		while IFS= read -r p; do
+			grep -qxF -- "$p" <<<"$all" || die "$spread pins $p, which $pkg does not have"
+		done <<<"$pins"
+		printf '%s\n' "$pins"
+		rest=$(LC_ALL=C comm -23 <(printf '%s\n' "$all") <(printf '%s\n' "$pins" | LC_ALL=C sort))
+		[[ -z $rest ]] || printf '%s\n' "$rest"
+	else
+		printf '%s\n' "$all"
+	fi
+}
+
 shard_regex() {
 	local pkg=$1 n=$2 k=$3
 	shift 3
-	local names
-	names=$(list_tests "$pkg" '.' "$@" | awk -v n="$n" -v k="$k" '(NR - 1) % n == k - 1')
+	local order names
+	# Its own assignment, so a die in ordered_tests stops the script.
+	order=$(ordered_tests "$pkg" "$@")
+	names=$(printf '%s\n' "$order" | awk -v n="$n" -v k="$k" 'NF && (NR - 1) % n == k - 1')
 	[[ -n $names ]] || die "shard $k/$n of $pkg is empty"
 	local regex="^($(printf '%s\n' "$names" | paste -sd'|'))\$"
 	((${#regex} <= max_regex_bytes)) ||
