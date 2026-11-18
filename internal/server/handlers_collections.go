@@ -285,6 +285,10 @@ func (s *Server) handleCreateCollection(w http.ResponseWriter, r *http.Request) 
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
+		if err := models.ValidateAwaitsHumanOptions(schema); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
 		// TASK-3539: a repeated or empty field key or option, named.
 		if err := models.ValidateSchemaKeysAndOptions(schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
@@ -504,6 +508,10 @@ func (s *Server) handleUpdateCollection(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := models.ValidateAbandonedOptions(schema); err != nil {
+			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+			return
+		}
+		if err := models.ValidateAwaitsHumanOptions(schema); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}

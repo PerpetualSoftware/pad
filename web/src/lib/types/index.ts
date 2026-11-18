@@ -540,6 +540,12 @@ export interface FieldDef {
 	terminal_options?: string[];
 	/** Subset of terminal_options that closes WITHOUT delivering; excluded from changelog/standup/report throughput (BUG-2347). */
 	abandoned_options?: string[];
+	/**
+	 * Options that mean "waiting on a person" (TASK-4643). Each must be one of
+	 * `options` and none terminal. Per-option, unlike the collection-level
+	 * `settings.awaits_human`. Only the done field's declaration is read.
+	 */
+	awaits_human_options?: string[];
 	default?: any;
 	required?: boolean;
 	computed?: boolean;

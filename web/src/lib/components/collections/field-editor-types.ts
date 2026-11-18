@@ -38,6 +38,12 @@ export interface EditableField {
 	 * silently strip the server-side declaration.
 	 */
 	abandonedOptions: string[];
+	/**
+	 * Non-terminal options that mean "waiting on a person"
+	 * (`awaits_human_options`, TASK-4643). Always an array; it round-trips
+	 * like abandonedOptions, or a save would strip the declaration.
+	 */
+	awaitsHumanOptions: string[];
 	required?: boolean;
 	computed?: boolean;
 	collection?: string;
@@ -412,6 +418,7 @@ export function blankField(): EditableField {
 		originalOptions: [],
 		terminalOptions: [],
 		abandonedOptions: [],
+		awaitsHumanOptions: [],
 		keyTouched: false
 	};
 }
@@ -435,6 +442,9 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
 		originalOptions: existing && def.options ? [...def.options] : [],
 		terminalOptions: def.terminal_options ? [...def.terminal_options] : [],
 		abandonedOptions: def.abandoned_options ? [...def.abandoned_options] : [],
+		awaitsHumanOptions: def.awaits_human_options
+			? canonicalAwaitsHuman(def.awaits_human_options, def.options ?? [])
+			: [],
 		required: def.required,
 		computed: def.computed,
 		collection: def.collection,
@@ -458,4 +468,43 @@ export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
  */
 export function keptAbandoned(abandoned: readonly string[], terms: readonly string[]): string[] {
 	return abandoned.filter((a) => terms.includes(a));
+}
+
+/**
+ * Declared waiting values respelled as the option they match. The server
+ * matches awaits_human_options to options trimmed and case-insensitively, so
+ * a saved " Review " is a valid mark on the option "review"; the editor
+ * compares exactly, and without this the toggle would show unmarked and a
+ * save would drop the declaration. A value that matches no option is kept
+ * as declared (keptAwaitsHuman drops it on save). Duplicates collapse.
+ */
+export function canonicalAwaitsHuman(
+	declared: readonly string[],
+	options: readonly string[]
+): string[] {
+	const norm = (v: string) => v.trim().toLowerCase();
+	const out: string[] = [];
+	for (const d of declared) {
+		const v = options.find((o) => norm(o) === norm(d)) ?? d;
+		if (!out.includes(v)) out.push(v);
+	}
+	return out;
+}
+
+/**
+ * The waiting markings to save beside `options` and `terms` (the options and
+ * terminal options being saved): only those still an option and not terminal,
+ * so a renamed, removed or newly terminal option cannot leave a declaration
+ * the server refuses (TASK-4643). The terminal check is trimmed and
+ * case-insensitive, as the server's is, so a terminal_options entry spelled
+ * differently from its option still excludes it.
+ */
+export function keptAwaitsHuman(
+	awaits: readonly string[],
+	options: readonly string[],
+	terms: readonly string[]
+): string[] {
+	const norm = (v: string) => v.trim().toLowerCase();
+	const terminal = new Set(terms.map(norm));
+	return awaits.filter((a) => options.includes(a) && !terminal.has(norm(a)));
 }

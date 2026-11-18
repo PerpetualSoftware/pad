@@ -161,6 +161,12 @@ func TestUpgradeDiff_Refusals(t *testing.T) {
 		"computed":      addField(models.FieldDef{Key: "x", Type: "text", Computed: true}),
 		"terminal":      addField(models.FieldDef{Key: "x", Type: "select", Options: []string{"a", "b"}, TerminalOptions: []string{"b"}}),
 		"abandoned":     addField(models.FieldDef{Key: "x", Type: "select", Options: []string{"a", "b"}, AbandonedOptions: []string{"b"}}),
+		// TASK-4643: a new waiting declaration would reclassify existing items
+		// as waiting on a person, and a changed one is a field change.
+		"awaits human": addField(models.FieldDef{Key: "x", Type: "select", Options: []string{"a", "b"}, AwaitsHumanOptions: []string{"a"}}),
+		"awaits human changed": func(m *appmanifest.Manifest) {
+			m.CompanionPack.Collections[0].Parsed.Fields[0].AwaitsHumanOptions = []string{"open"}
+		},
 	} {
 		t.Run(name, func(t *testing.T) {
 			n := clone(old)

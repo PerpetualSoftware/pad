@@ -279,10 +279,10 @@ func diffUpgrade(old, next *appmanifest.Manifest, oldDigests map[string]storedAr
 }
 
 // additiveFields returns the fields next adds to old, refusing every other
-// schema change. An added field must be optional
-// with no default, not computed, and declare no terminal or abandoned
-// options: each of those would change existing items, which hold no value
-// for it (a backfill, or a reclassification of their done state).
+// schema change. An added field must be optional with no default, not
+// computed, and declare no terminal, abandoned or awaits_human options: each
+// of those would change existing items, which hold no value for it (a
+// backfill, or a reclassification of their done or waiting state).
 func additiveFields(old, next models.CollectionSchema, path, collKey string) ([]models.FieldDef, error) {
 	oldByKey := map[string]models.FieldDef{}
 	for _, f := range old.Fields {
@@ -308,6 +308,8 @@ func additiveFields(old, next models.CollectionSchema, path, collKey string) ([]
 			return nil, refuseUpgrade(path, "companion collection %q adds a computed field %q; existing items would need a backfill", collKey, f.Key)
 		case len(f.TerminalOptions) > 0 || len(f.AbandonedOptions) > 0:
 			return nil, refuseUpgrade(path, "companion collection %q adds field %q with terminal or abandoned options, which would reclassify existing items", collKey, f.Key)
+		case len(f.AwaitsHumanOptions) > 0:
+			return nil, refuseUpgrade(path, "companion collection %q adds field %q with awaits_human_options, which would reclassify existing items as waiting on a person", collKey, f.Key)
 		}
 		adds = append(adds, f)
 	}

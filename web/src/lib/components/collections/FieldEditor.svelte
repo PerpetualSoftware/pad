@@ -106,14 +106,14 @@
 	}
 
 	// Markings are keyed by option VALUE, so an edited option must carry its
-	// terminal and abandoned marks to the new value (#1468):
+	// terminal, abandoned and waiting marks to the new value (#1468):
 	// a plain bind left them on the old value, which the save then filtered
 	// out, silently un-marking a renamed "cancelled" and counting it shipped.
 	function renameOption(optIndex: number, next: string) {
 		const prev = field.options[optIndex];
 		field.options[optIndex] = next;
 		if (prev === next) return;
-		for (const marks of [field.terminalOptions, field.abandonedOptions]) {
+		for (const marks of [field.terminalOptions, field.abandonedOptions, field.awaitsHumanOptions]) {
 			const at = marks.indexOf(prev);
 			if (at < 0) continue;
 			// Another row may still hold the old value; its marking stays.
@@ -150,6 +150,10 @@
 			if (ab >= 0) field.abandonedOptions.splice(ab, 1);
 		} else {
 			field.terminalOptions.push(option);
+			// A closed item is not waiting on anyone: the server refuses a
+			// terminal value in awaits_human_options (TASK-4643).
+			const w = field.awaitsHumanOptions.indexOf(option);
+			if (w >= 0) field.awaitsHumanOptions.splice(w, 1);
 		}
 	}
 
@@ -172,6 +176,22 @@
 
 	function isAbandoned(option: string): boolean {
 		return field.abandonedOptions.includes(option);
+	}
+
+	// "Waits on a person" (TASK-4643): a non-terminal option that means the
+	// item is waiting on someone (needs review, awaiting reply…). Offered only
+	// on a non-terminal option; marking an option terminal clears it.
+	function toggleAwaitsHuman(option: string) {
+		const idx = field.awaitsHumanOptions.indexOf(option);
+		if (idx >= 0) {
+			field.awaitsHumanOptions.splice(idx, 1);
+		} else {
+			field.awaitsHumanOptions.push(option);
+		}
+	}
+
+	function isAwaitsHuman(option: string): boolean {
+		return field.awaitsHumanOptions.includes(option);
 	}
 
 	// ── Advanced section ─────────────────────────────────────────────────────
@@ -411,7 +431,15 @@
 					<span
 						class="options-col-abandoned"
 						title="Mark a terminal option that closes an item WITHOUT delivering it (cancelled, rejected, overturned…). The changelog, standup and reports leave those items out of completed work."
-						>Abandoned?</span
+						><span class="options-col-full">Abandoned?</span><span
+							class="options-col-short"
+							aria-hidden="true">Abnd?</span
+						></span
+					>
+					<span
+						class="options-col-waits"
+						title="Mark an open option that means the item is waiting on a person (needs review, awaiting a reply…). Not offered on a terminal option."
+						>Waits?</span
 					>
 					<span class="options-col-spacer"></span>
 				</div>
@@ -500,6 +528,28 @@
 								>&#10007;</button>
 							{:else}
 								<span class="option-abandoned-placeholder" aria-hidden="true"></span>
+							{/if}
+							{#if isTerminal(field.options[oi])}
+								<span class="option-waits-placeholder" aria-hidden="true"></span>
+							{:else}
+								<button
+									class="option-waits-toggle"
+									class:active={isAwaitsHuman(field.options[oi])}
+									type="button"
+									aria-pressed={isAwaitsHuman(field.options[oi])}
+									onclick={() => toggleAwaitsHuman(field.options[oi])}
+									title={isAwaitsHuman(field.options[oi])
+										? 'Waits on a person: an item with this value is waiting on someone (click to unmark)'
+										: 'Mark as waiting on a person: an item with this value is waiting on someone'}
+									aria-label={isAwaitsHuman(field.options[oi])
+										? `Unmark ${field.options[oi]} as waiting on a person`
+										: `Mark ${field.options[oi]} as waiting on a person`}
+								>
+									<svg width="14" height="14" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+										<circle cx="8" cy="8" r="6.25" stroke="currentColor" stroke-width="1.5" />
+										<path d="M8 4.75V8L10.25 9.5" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+									</svg>
+								</button>
 							{/if}
 						{/if}
 						<button
@@ -991,18 +1041,89 @@
 		color: var(--accent-green, #22c55e);
 	}
 
-	.options-col-abandoned {
-		width: 40px;
+	/* Header labels are wider than the 40px toggles: each column takes its
+	   label's width, and the row cells below match it, so "Abandoned?" and
+	   "Waits?" never overlap (TASK-4643). */
+	.options-col-abandoned,
+	.options-col-waits {
+		white-space: nowrap;
 		flex-shrink: 0;
 		text-align: center;
 		font-size: 0.75em;
 		color: var(--text-muted);
 	}
 
+	.options-col-abandoned,
 	.option-abandoned-toggle,
 	.option-abandoned-placeholder {
-		width: 40px;
+		width: 64px;
 		flex-shrink: 0;
+	}
+
+	.options-col-waits,
+	.option-waits-toggle,
+	.option-waits-placeholder {
+		width: 44px;
+		flex-shrink: 0;
+	}
+
+	/* The compact header label only shows on narrow viewports (below). */
+	.options-col-short {
+		display: none;
+	}
+
+	/* Phone widths: the 28px indent and the wide Abandoned? column left the
+	   option name ~75px, cutting off "needs-review" and "in-progress"
+	   (TASK-4643). Drop the indent, tighten the gaps, and shorten the
+	   Abandoned? header to "Abnd?" (the full label stays for screen readers
+	   and in the title) so the column can shrink to the Waits? width. */
+	@media (max-width: 640px) {
+		.field-options {
+			padding-left: var(--space-3);
+		}
+
+		.options-col-headers,
+		.option-row {
+			gap: var(--space-1);
+		}
+
+		.options-col-abandoned,
+		.option-abandoned-toggle,
+		.option-abandoned-placeholder {
+			width: 44px;
+		}
+
+		/* Header and rows end on the same width, so the Abnd? and Waits?
+		   headers sit over their toggles; DONE? takes only its text width so
+		   the header row fits at 360px. */
+		.options-col-spacer,
+		.option-remove-btn {
+			width: 20px;
+		}
+
+		.options-col-terminal {
+			width: auto;
+		}
+
+		.done-pill {
+			padding: 1px 4px;
+		}
+
+		.options-col-full {
+			position: absolute;
+			width: 1px;
+			height: 1px;
+			padding: 0;
+			margin: -1px;
+			overflow: hidden;
+			clip: rect(0, 0, 0, 0);
+			white-space: nowrap;
+			border: 0;
+		}
+
+		.options-col-short {
+			display: inline;
+		}
 	}
 
 	.option-abandoned-toggle {
@@ -1024,6 +1145,31 @@
 
 	.option-abandoned-toggle.active {
 		color: var(--accent-red, #ef4444);
+		opacity: 1;
+	}
+
+	.option-waits-toggle {
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: none;
+		border: none;
+		color: var(--text-muted);
+		opacity: 0.5;
+		cursor: pointer;
+		padding: var(--space-1);
+		border-radius: var(--radius-sm);
+		transition:
+			color 0.15s,
+			opacity 0.15s;
+	}
+
+	.option-waits-toggle:hover {
+		opacity: 1;
+	}
+
+	.option-waits-toggle.active {
+		color: var(--accent-amber, #f59e0b);
 		opacity: 1;
 	}
 
