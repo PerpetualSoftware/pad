@@ -495,12 +495,16 @@ export function canonicalAwaitsHuman(
  * The waiting markings to save beside `options` and `terms` (the options and
  * terminal options being saved): only those still an option and not terminal,
  * so a renamed, removed or newly terminal option cannot leave a declaration
- * the server refuses (TASK-4643).
+ * the server refuses (TASK-4643). The terminal check is trimmed and
+ * case-insensitive, as the server's is, so a terminal_options entry spelled
+ * differently from its option still excludes it.
  */
 export function keptAwaitsHuman(
 	awaits: readonly string[],
 	options: readonly string[],
 	terms: readonly string[]
 ): string[] {
-	return awaits.filter((a) => options.includes(a) && !terms.includes(a));
+	const norm = (v: string) => v.trim().toLowerCase();
+	const terminal = new Set(terms.map(norm));
+	return awaits.filter((a) => options.includes(a) && !terminal.has(norm(a)));
 }

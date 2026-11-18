@@ -55,6 +55,10 @@ describe('keptAwaitsHuman', () => {
 	it('keeps only waiting values still saved as options and not terminal', () => {
 		expect(keptAwaitsHuman(['review', 'gone', 'done'], ['open', 'review', 'done'], ['done'])).toEqual(['review']);
 	});
+
+	it('drops a value whose terminal entry is spelled differently, as the server would refuse it', () => {
+		expect(keptAwaitsHuman(['review', 'done'], ['open', 'review', 'done'], [' Done '])).toEqual(['review']);
+	});
 });
 
 describe('fieldFromDef waiting values', () => {
