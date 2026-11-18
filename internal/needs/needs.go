@@ -376,6 +376,9 @@ type ItemInfo struct {
 	CreatedAt      time.Time `json:"created_at"`
 	UpdatedAt      time.Time `json:"updated_at"`
 	Path           string    `json:"path"`
+	// Seq is the item's optimistic-concurrency token, to send as
+	// expected_seq on a reassignment made from the row (TASK-4643).
+	Seq int64 `json:"seq"`
 }
 
 // Row is one item that needs the viewer.
