@@ -177,8 +177,15 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 		if len(a.Values) == 0 || !validFieldKey.MatchString(a.Key) {
 			continue
 		}
-		src = append(src, "(i.collection_id = ? AND LOWER(TRIM("+s.dialect.JSONExtractText("i.fields", a.Key)+")) IN ("+placeholders(len(a.Values))+"))")
+		// The declared spelling matches exactly, so a value with a non-ASCII
+		// capital is found on SQLite too, whose LOWER folds ASCII only; the
+		// lowered form catches case variants (all of them on Postgres).
+		val := "TRIM(" + s.dialect.JSONExtractText("i.fields", a.Key) + ")"
+		src = append(src, "(i.collection_id = ? AND ("+val+" IN ("+placeholders(len(a.Values))+") OR LOWER("+val+") IN ("+placeholders(len(a.Values))+")))")
 		args = append(args, a.CollectionID)
+		for _, v := range a.Values {
+			args = append(args, strings.TrimSpace(v))
+		}
 		for _, v := range a.Values {
 			args = append(args, strings.ToLower(strings.TrimSpace(v)))
 		}

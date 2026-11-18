@@ -488,3 +488,28 @@ func TestNeedsCandidateItems_AwaitsStatus(t *testing.T) {
 		t.Fatalf("an unsafe key matched %d items (err %v)", len(got), err)
 	}
 }
+
+// A waiting status spelled with a non-ASCII capital matches when stored as
+// declared, on every dialect (SQLite's LOWER folds ASCII only).
+func TestNeedsCandidateItems_AwaitsStatusNonASCII(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Awaits NonASCII")
+	schema := `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","Écrit","done"],"default":"open","awaits_human_options":["Écrit"]}]}`
+	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.CreateItem(ws.ID, c.ID, models.ItemCreate{Title: "waiting", Fields: `{"status":"Écrit"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NeedsCandidateParams{AwaitsStatus: []NeedsAwaitsStatus{{CollectionID: c.ID, Key: "status", Values: []string{"Écrit"}}}}
+	got, err := s.NeedsCandidateItems(ws.ID, CatchUpScope{}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != it.ID {
+		t.Fatalf("candidates %+v, want only %s", got, it.ID)
+	}
+}
