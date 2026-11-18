@@ -42,7 +42,9 @@ type NotMineFacts struct {
 //  4. the item now assigned to the viewer when seen_assignee_id was not
 //     the viewer, or by an assignment made after seen_at (assigned away
 //     and back);
-//  5. a reminder due to the viewer that came due after seen_at.
+//  5. a reminder due to the viewer whose oldest outstanding occurrence came
+//     due after seen_at (a later occurrence of a repeating reminder, or a
+//     snoozed one coming back, is not seen yet: TASK-4683).
 //
 // Times are compared in whole seconds and must be strictly later. An empty or
 // unparseable seen time claims nothing was seen, so anything releases.

@@ -10,7 +10,7 @@
 -- status on the done field, the item now in an awaits_human collection other
 -- than seen_collection_id, the item now assigned to them when
 -- seen_assignee_id was not them or by an assignment made after seen_at, or a
--- reminder of theirs that came due after
+-- reminder of theirs whose oldest outstanding occurrence came due after
 -- seen_at. Times are compared in whole seconds, strictly later.
 --
 -- A separate table, not a new snooze kind: the snooze kind CHECK would need a
