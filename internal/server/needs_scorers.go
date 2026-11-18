@@ -35,7 +35,6 @@ const (
 	whyWaitingWeek      = "waiting a week or more"
 	whyWaitingTwoWeeks  = "waiting two weeks or more"
 	whyAsked            = "asked of you"
-	whyNeedsHuman       = "judged to need a human"
 	whyEstimated        = "estimated from the text"
 	whyRefreshing       = "estimate is being refreshed"
 )
@@ -43,7 +42,7 @@ const (
 var needsWhyVocabulary = []string{
 	whyPriorityCritical, whyPriorityHigh, whyPriorityLow, whyBlocksWork,
 	whyOverdue, whyDueToday, whyDueSoon, whyWaitingWeek, whyWaitingTwoWeeks,
-	whyAsked, whyNeedsHuman, whyEstimated, whyRefreshing,
+	whyAsked, whyEstimated, whyRefreshing,
 }
 
 // Importance weights (the design's B3): priority, blocks, deadline, stakes,
@@ -101,7 +100,6 @@ type needsMemo struct {
 	decs   memoSlot[map[string][]models.ItemDecision]
 	owed   memoSlot[map[string]bool]
 	qhash  memoSlot[map[string]string]
-	human  memoSlot[map[string]map[string]float64]
 	graph  *blocksGraph
 	graphE error
 }
@@ -200,37 +198,6 @@ func (m *needsMemo) answers(ctx context.Context, rows []*needs.Row) (decs map[st
 	return
 }
 
-// humanCurrent is the inbox's own verdict on which of the rows' attention
-// answers are current: the flag path (WorkspaceFlagsForItems) at threshold 0
-// returns every answer current by question hash AND item state, or held while
-// its refresh is owed, by item and key. H and "judged to need a human" read
-// needs_human only through it, so they agree with whether the router counts
-// the item as flagged. Its failing bit is not read. Nil without a runner.
-func (m *needsMemo) humanCurrent(rows []*needs.Row) (map[string]map[string]float64, error) {
-	if m.runner == nil {
-		return nil, nil
-	}
-	return memoLoad(m, "attention_current", &m.human, func() (map[string]map[string]float64, error) {
-		cur, _, err := m.runner.WorkspaceFlagsForItems(m.wsID, decision.AttentionSetName, 0, rowIDs(rows))
-		return cur, err
-	})
-}
-
-// withCurrentHuman is decs without the needs_human answer unless the flag path
-// still holds it current (cur, from humanCurrent). It copies; decs is shared.
-func withCurrentHuman(decs []models.ItemDecision, cur map[string]float64) []models.ItemDecision {
-	if _, ok := cur[decision.AttentionNeedsHuman]; ok {
-		return decs
-	}
-	out := make([]models.ItemDecision, 0, len(decs))
-	for _, d := range decs {
-		if d.QuestionKey != decision.AttentionNeedsHuman {
-			out = append(out, d)
-		}
-	}
-	return out
-}
-
 // currentAnswer is the item's latest answer for a question key, if it answers
 // the question as asked now.
 func currentAnswer(decs []models.ItemDecision, qh map[string]string, key string) (models.ItemDecision, bool) {
@@ -281,14 +248,6 @@ func (sc *importanceScorer) Score(ctx context.Context, v needs.Viewer, scope nee
 	if err != nil {
 		return true, err
 	}
-	decs, _, qh, err := m.answers(ctx, rows)
-	if err != nil {
-		return true, err
-	}
-	hc, err := m.humanCurrent(rows)
-	if err != nil {
-		return true, err
-	}
 	now := nowOr(v)
 	vis := newScopeSet(scope)
 	loc := sc.loc
@@ -296,24 +255,24 @@ func (sc *importanceScorer) Score(ctx context.Context, v needs.Viewer, scope nee
 		loc = v.Loc
 	}
 	for _, r := range rows {
-		r.Importance = importanceIn(loc, r, items[r.ItemID], g.fanout(r.ItemID, vis), withCurrentHuman(decs[r.ItemID], hc[r.ItemID]), qh, now)
+		r.Importance = importanceIn(loc, r, items[r.ItemID], g.fanout(r.ItemID, vis), now)
 	}
 	return false, nil
 }
 
-func importanceOf(r *needs.Row, it store.NeedsScoringItem, blocked int, decs []models.ItemDecision, qh map[string]string, now time.Time) *needs.Score {
-	return importanceIn(nil, r, it, blocked, decs, qh, now)
+func importanceOf(r *needs.Row, it store.NeedsScoringItem, blocked int, now time.Time) *needs.Score {
+	return importanceIn(nil, r, it, blocked, now)
 }
 
 // importanceParts are the unweighted inputs, each in [0,1].
 type importanceParts struct{ p, b, d, s, h, a float64 }
 
-func importanceIn(loc *time.Location, r *needs.Row, it store.NeedsScoringItem, blocked int, decs []models.ItemDecision, qh map[string]string, now time.Time) *needs.Score {
-	sc, _ := importanceDetail(loc, r, it, blocked, decs, qh, now)
+func importanceIn(loc *time.Location, r *needs.Row, it store.NeedsScoringItem, blocked int, now time.Time) *needs.Score {
+	sc, _ := importanceDetail(loc, r, it, blocked, now)
 	return sc
 }
 
-func importanceDetail(loc *time.Location, r *needs.Row, it store.NeedsScoringItem, blocked int, decs []models.ItemDecision, qh map[string]string, now time.Time) (*needs.Score, importanceParts) {
+func importanceDetail(loc *time.Location, r *needs.Row, it store.NeedsScoringItem, blocked int, now time.Time) (*needs.Score, importanceParts) {
 	var why []string
 	p := 0.5
 	switch strings.ToLower(r.Item.Priority) {
@@ -340,19 +299,14 @@ func importanceDetail(loc *time.Location, r *needs.Row, it store.NeedsScoringIte
 	case days >= 7:
 		why = append(why, whyWaitingWeek)
 	}
+	// H: 1 for an ask (an awaits_human collection or a waiting status),
+	// else .5. No stored answer is read.
 	h := 0.5
-	if r.Why.Rule == needs.RuleAsked {
+	if r.Ask {
 		h = 1
+	}
+	if r.Why.Rule == needs.RuleAsked {
 		why = append(why, whyAsked)
-	} else if d, ok := currentAnswer(decs, qh, decision.AttentionNeedsHuman); ok {
-		if pr, ok := decision.NoulValue(d); ok {
-			h = math.Max(0, math.Min(1, pr))
-			// The router's own threshold (handlers_me_needs.go), so the Why
-			// agrees with whether the item is flagged.
-			if h >= decision.AttentionThreshold {
-				why = append(why, whyNeedsHuman)
-			}
-		}
 	}
 	val := wPriority*p + wBlocks*b + wDeadline*d + wStakes*stakesPart + wHuman*h + wAge*a
 	// Snap before rounding: the weighted sum is a float, and a value that is

@@ -125,14 +125,24 @@ const openMentionSQL = `
 			WHERE r.item_id = m.item_id AND r.deleted_at IS NULL AND r.created_by = 'user'
 			  AND r.user_id = m.user_id AND r.created_at >= m.created_at)`
 
+// NeedsAwaitsStatus is one collection's waiting statuses (TASK-4643): its
+// items whose done field Key holds one of Values, compared trimmed and
+// case-insensitively, are candidates.
+type NeedsAwaitsStatus struct {
+	CollectionID string
+	Key          string
+	Values       []string
+}
+
 // NeedsCandidateParams selects the items the router considers in one workspace.
 type NeedsCandidateParams struct {
 	// AwaitsCollectionIDs are the awaits_human collections: their items are
-	// candidates. FlaggedItemIDs are the needs_human items; DueItemIDs are
-	// items with due occurrences received by the viewer. An item with an
-	// open mention is a candidate in any non-system collection.
+	// candidates. AwaitsStatus are the collections with waiting statuses on
+	// their done field; DueItemIDs are items with due occurrences received
+	// by the viewer. An item with an open mention is a candidate in any
+	// non-system collection.
 	AwaitsCollectionIDs []string
-	FlaggedItemIDs      []string
+	AwaitsStatus        []NeedsAwaitsStatus
 	DueItemIDs          []string
 	// ForUserID, when set, keeps only the items that user is the assignee of or
 	// holds an open mention on, or that is in DueItemIDs: the rows a non-owner
@@ -141,8 +151,9 @@ type NeedsCandidateParams struct {
 }
 
 // NeedsCandidateItems returns the live items in scope that are router
-// candidates: in a live, non-system collection, and an ask, a flagged item or
-// holding an open mention. The scope clause is the caller's visibility and is
+// candidates: in a live, non-system collection, and an ask (an awaits_human
+// collection or a waiting status), due to the viewer, or holding an open
+// mention. The scope clause is the caller's visibility and is
 // applied in SQL, so nothing else is read for an item outside it. Status is not
 // filtered here (it is per-collection JSON); the router drops terminal items.
 // Only the columns a needs row shows are filled; Content is empty.
@@ -161,10 +172,15 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 			args = append(args, id)
 		}
 	}
-	for _, chunk := range chunkStrings(p.FlaggedItemIDs, needsChunk) {
-		src = append(src, "i.id IN ("+placeholders(len(chunk))+")")
-		for _, id := range chunk {
-			args = append(args, id)
+	for _, a := range p.AwaitsStatus {
+		// The key is spliced into the JSON path, so only a safe one is used.
+		if len(a.Values) == 0 || !validFieldKey.MatchString(a.Key) {
+			continue
+		}
+		src = append(src, "(i.collection_id = ? AND LOWER(TRIM("+s.dialect.JSONExtractText("i.fields", a.Key)+")) IN ("+placeholders(len(a.Values))+"))")
+		args = append(args, a.CollectionID)
+		for _, v := range a.Values {
+			args = append(args, strings.ToLower(strings.TrimSpace(v)))
 		}
 	}
 	for _, chunk := range chunkStrings(p.DueItemIDs, needsChunk) {
@@ -176,7 +192,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 	src = append(src, `EXISTS (SELECT 1 FROM comment_mentions m `+openMentionSQL+` AND m.item_id = i.id)`)
 
 	q := `
-		SELECT i.id, i.collection_id, i.title, i.slug, i.fields, i.assigned_user_id, COALESCE(au.name, ''),
+		SELECT i.id, i.collection_id, i.title, i.slug, i.fields, i.assigned_user_id, COALESCE(au.name, ''), i.agent_role_id,
 		       i.item_number, i.created_at, i.updated_at, c.slug, c.name, c.prefix
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL AND NOT c.is_system
@@ -206,7 +222,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 	for rows.Next() {
 		var it models.Item
 		var createdAt, updatedAt string
-		if err := rows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Fields, &it.AssignedUserID, &it.AssignedUserName,
+		if err := rows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Fields, &it.AssignedUserID, &it.AssignedUserName, &it.AgentRoleID,
 			&it.ItemNumber, &createdAt, &updatedAt, &it.CollectionSlug, &it.CollectionName, &it.CollectionPrefix); err != nil {
 			return nil, fmt.Errorf("scan needs candidate: %w", err)
 		}

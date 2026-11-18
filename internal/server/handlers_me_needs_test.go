@@ -651,9 +651,9 @@ func TestNeedsMe_DegradedOnlyOnProviderError(t *testing.T) {
 	})
 }
 
-// The attention read evaluates only items the caller can see, so
-// an item whose state cannot be built, hidden from the caller, sets no bit on
-// their response; the same failure on a visible item does degrade.
+// An item whose state cannot be built, hidden from the caller, sets no bit on
+// their response. Since TASK-4643 Needs you builds no attention state at all,
+// so the same failure on a visible item does not degrade it either.
 func TestNeedsMe_DegradedNotLeakedByHiddenItemFailure(t *testing.T) {
 	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
@@ -683,11 +683,12 @@ func TestNeedsMe_DegradedNotLeakedByHiddenItemFailure(t *testing.T) {
 		if len(resp.Degraded) != 0 {
 			t.Fatalf("a failure on an item alice cannot see set degraded: %v", resp.Degraded)
 		}
-		// The same failure on an item alice can see degrades the workspace.
+		// The same failure on an item alice can see: no attention read, so
+		// nothing to degrade.
 		corrupt(vis.ID)
 		resp = f.need(alice, "")
-		if len(resp.Degraded) != 1 || resp.Degraded[0] != ws.Slug {
-			t.Fatalf("degraded = %v, want [%s]", resp.Degraded, ws.Slug)
+		if len(resp.Degraded) != 0 {
+			t.Fatalf("degraded = %v, want none: Needs you reads no attention state", resp.Degraded)
 		}
 	})
 }
@@ -728,10 +729,14 @@ func TestNeedsMe_RoutingRulesAndWaitingSince(t *testing.T) {
 			t.Fatalf("WaitingSince: %v, %v", resp.Rows[0].WaitingSince, resp.Rows[1].WaitingSince)
 		}
 
-		// admin_fallback: nobody eligible is named, so only an owner is routed.
+		// admin_fallback: an ask with nobody eligible named and no role falls
+		// to the owners only. A non-ask in the same state waits on nobody
+		// (TASK-4643).
 		orphan := f.item(ws, tasks, "orphan", nil, nfxDay(3))
 		f.comment(ws, orphan, bob, "@outsider-nx ?")
-		wantTitles(t, "owner", f.need(owner, "").Rows, "orphan")
+		asks := f.collection(ws, "Asks", true)
+		f.item(ws, asks, "orphan ask", nil, nfxDay(3))
+		wantTitles(t, "owner", f.need(owner, "").Rows, "orphan ask")
 		if got := f.need(bob, ""); got.Total != 0 {
 			t.Fatalf("an editor was routed the owners' fallback: %v", titles(got.Rows))
 		}
@@ -751,34 +756,6 @@ func TestNeedsMe_RoutingRulesAndWaitingSince(t *testing.T) {
 		f.comment(ws, note, bob, "done")
 		if got := f.need(bob, ""); got.Total != 0 {
 			t.Fatalf("a replied mention is still open: %v", titles(got.Rows))
-		}
-	})
-}
-
-func TestNeedsMe_NeedsHumanClaim(t *testing.T) {
-	t.Parallel()
-	needsBackends(t, func(t *testing.T, srv *Server) {
-		f := newNfx(t, srv)
-		owner := f.user("owner")
-		ws := f.workspace("One", owner)
-		tasks, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: nfxSchema})
-		if err != nil {
-			t.Fatal(err)
-		}
-		attachAttentionRunner(t, srv)
-		it := f.item(ws, tasks, "Pick vendor HUMAN-HIGH", nil, nfxDay(0))
-		f.item(ws, tasks, "Pick vendor HUMAN-LOW", nil, nfxDay(0))
-		f.setCreated(it, time.Now().UTC().Add(-48*time.Hour))
-		runDecisionTick(t, srv)
-
-		resp := f.need(owner, "")
-		wantTitles(t, "owner", resp.Rows, "Pick vendor HUMAN-HIGH")
-		r := resp.Rows[0]
-		if r.NeedsHuman == nil || len(r.Because) != 1 || r.Because[0].Kind != needs.BecauseNeedsHuman || r.Why.Rule != needs.RuleAdminFallback {
-			t.Fatalf("row %+v because %+v", r, r.Because)
-		}
-		if !r.WaitingSince.Equal(r.Item.CreatedAt) {
-			t.Fatalf("WaitingSince %v, want the item's creation %v (the earlier claim)", r.WaitingSince, r.Item.CreatedAt)
 		}
 	})
 }
@@ -935,39 +912,6 @@ func TestNeedsMe_MentionedRowIsPerCaller(t *testing.T) {
 	})
 }
 
-// A needs_human row that did not surface (below threshold) must not touch a
-// candidate that reached the list another way, even when the workspace has a
-// truly flagged item (which is what makes the decision rows get read at all).
-func TestNeedsMe_UnsurfacedNeedsHumanRowIgnored(t *testing.T) {
-	t.Parallel()
-	needsBackends(t, func(t *testing.T, srv *Server) {
-		f := newNfx(t, srv)
-		owner, alice := f.user("owner"), f.user("alice")
-		ws := f.workspace("One", owner)
-		f.member(ws, alice, "editor")
-		asks := f.collection(ws, "Asks", true)
-		attachAttentionRunner(t, srv)
-		f.item(ws, asks, "flagged HUMAN-HIGH", nil, nfxDay(0))
-		mine := f.item(ws, asks, "mine HUMAN-LOW", alice, nfxDay(1))
-		runDecisionTick(t, srv)
-
-		resp := f.need(alice, "")
-		wantTitles(t, "alice", resp.Rows, "mine HUMAN-LOW")
-		r := resp.Rows[0]
-		if r.NeedsHuman != nil {
-			t.Fatalf("an unsurfaced needs_human row set NeedsHuman: %+v", r.NeedsHuman)
-		}
-		for _, b := range r.Because {
-			if b.Kind == needs.BecauseNeedsHuman {
-				t.Fatalf("because carries needs_human: %+v", r.Because)
-			}
-		}
-		if !r.WaitingSince.Equal(mine.CreatedAt) && !r.WaitingSince.Equal(nfxDay(1)) {
-			t.Fatalf("WaitingSince %v, want its own claim time", r.WaitingSince)
-		}
-	})
-}
-
 // A forged as_of in the future is clamped to now: a defer still in force is
 // still hiding its item.
 func TestNeedsMe_ForgedFutureAsOfClamped(t *testing.T) {
@@ -1054,6 +998,102 @@ func TestNeedsMe_OwnerLookupErrorFailsTheRequest(t *testing.T) {
 		rr := f.get(alice, "")
 		if rr.Code != http.StatusInternalServerError {
 			t.Fatalf("owner lookup error: status = %d, want 500: %s", rr.Code, rr.Body.String())
+		}
+	})
+}
+
+// A stored needs_human answer is not a signal (TASK-4643): with a live runner
+// and a current 0.99 answer, an item that has no explicit signal (no ask
+// collection, no waiting status, no open mention, no due reminder) is not in
+// anyone's inbox.
+func TestMeNeeds_StoredJudgeAnswersIgnored(t *testing.T) {
+	t.Parallel()
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		tasks := f.collection(ws, "Tasks", false)
+		judged := f.item(ws, tasks, "Pick a vendor", alice, nfxDay(1))
+		attachAttentionRunner(t, srv) // after the item: no job is queued for it
+		runner := srv.decisionRunner()
+		if runner == nil {
+			t.Fatal("the runner must be live")
+		}
+		qh, err := runner.CurrentQuestionHashes(context.Background(), ws.ID, decision.AttentionSetName)
+		if err != nil || qh[decision.AttentionNeedsHuman] == "" {
+			t.Fatalf("question hashes %v %v", qh, err)
+		}
+		_, st, err := runner.State(judged.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := srv.store.InsertItemDecisions(ws.ID, []models.ItemDecision{{
+			ItemID: judged.ID, QuestionSet: decision.AttentionSetName, QuestionKey: decision.AttentionNeedsHuman, Kind: "noul",
+			Answer: json.RawMessage(`{"type":"noul","noul":0.99}`), Provider: "stub", Model: "stub-1",
+			StateHash: st.Hash, QuestionHash: qh[decision.AttentionNeedsHuman], ItemSeq: 1,
+		}}); err != nil {
+			t.Fatal(err)
+		}
+		for _, u := range []*models.User{owner, alice} {
+			if resp := f.need(u, ""); resp.Total != 0 || len(resp.Rows) != 0 {
+				t.Fatalf("%s was routed an item with only a judge answer: %v", u.Username, titles(resp.Rows))
+			}
+		}
+	})
+}
+
+// A waiting status on the done field makes an item an ask (TASK-4643): its
+// eligible assignee gets it under asked, with waiting_on {person, asked} and
+// no ids. A waiting item owned by an agent role with no eligible person sits
+// in the role's queue: no owner gets it. A waiting item with neither falls to
+// the owners. A plain item assigned to someone is not a candidate.
+func TestMeNeeds_WaitingStatusSignal(t *testing.T) {
+	t.Parallel()
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		tasks, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks",
+			Schema: `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","needs-answer","done"],"default":"open","required":true,"awaits_human_options":["needs-answer"]}]}`})
+		if err != nil {
+			t.Fatal(err)
+		}
+		role, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Seat"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		mk := func(title, status string, assignee *models.User, roleID *string) {
+			in := models.ItemCreate{Title: title, Fields: `{"status":"` + status + `"}`, AgentRoleID: roleID}
+			if assignee != nil {
+				in.AssignedUserID = &assignee.ID
+			}
+			it, err := srv.store.CreateItem(ws.ID, tasks.ID, in)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.setCreated(it, nfxDay(1))
+		}
+		mk("asked of alice", "needs-answer", alice, nil)
+		mk("seat waits", "needs-answer", nil, &role.ID)
+		mk("nobody waits", "needs-answer", nil, nil)
+		mk("plain assignment", "open", alice, nil)
+
+		resp := f.need(alice, "")
+		wantTitles(t, "alice", resp.Rows, "asked of alice")
+		r := resp.Rows[0]
+		if r.Why.Rule != needs.RuleAsked || r.WaitingOn != (needs.WaitingOnView{Kind: needs.TargetPerson, Rule: needs.RuleAsked}) {
+			t.Fatalf("row why %+v waiting_on %+v", r.Why, r.WaitingOn)
+		}
+		wantTitles(t, "owner", f.need(owner, "").Rows, "nobody waits")
+		if o := f.need(owner, "").Rows[0]; o.WaitingOn != (needs.WaitingOnView{Kind: needs.TargetOwners, Rule: needs.RuleAdminFallback}) {
+			t.Fatalf("owner waiting_on %+v", o.WaitingOn)
+		}
+		// The wire carries kind and rule only.
+		body := f.get(alice, "").Body.String()
+		if !strings.Contains(body, `"waiting_on":{"kind":"person","rule":"asked"}`) || strings.Contains(body, role.ID) || strings.Contains(body, alice.ID) {
+			t.Fatalf("waiting_on on the wire: %s", body)
 		}
 	})
 }

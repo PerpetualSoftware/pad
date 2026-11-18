@@ -65,7 +65,7 @@ func TestNeedsYouSignals_FanoutCycleTerminates(t *testing.T) {
 	it := store.NeedsScoringItem{}
 	r := &needs.Row{WaitingSince: nfxT0}
 	now := nfxT0
-	none, full := importanceOf(r, it, 0, nil, nil, now), importanceOf(r, it, 99, nil, nil, now)
+	none, full := importanceOf(r, it, 0, now), importanceOf(r, it, 99, now)
 	if full.Value-none.Value != 20 {
 		t.Fatalf("saturated blocks adds %d, want 20 (weight .20)", full.Value-none.Value)
 	}
@@ -183,10 +183,6 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 3, 10, 12, 0, 0, 0, time.UTC)
 	day := func(n float64) time.Time { return now.Add(-time.Duration(n * 24 * float64(time.Hour))) }
-	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
-	ans := func(p string) []models.ItemDecision {
-		return []models.ItemDecision{{QuestionKey: decision.AttentionNeedsHuman, Kind: "noul", QuestionHash: "h", Answer: json.RawMessage(`{"type":"noul","noul":` + p + `}`)}}
-	}
 	due := func(d string) store.NeedsScoringItem {
 		return store.NeedsScoringItem{Fields: `{"due_date":"` + d + `"}`}
 	}
@@ -198,7 +194,6 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 		waited  float64
 		item    store.NeedsScoringItem
 		blocked int
-		decs    []models.ItemDecision
 		asked   bool
 		part    func(importanceParts) float64
 		want    float64 // the part
@@ -242,9 +237,8 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 		{name: "A 14 days", prio: "low", waited: 14, part: A, want: 1, value: 21}, // .2125
 		{name: "A 30 days", prio: "low", waited: 30, part: A, want: 1, value: 21},
 		// H: .0625 + .10H.
-		{name: "H no answer", prio: "low", part: H, want: .5, value: 11},                   // .1125
-		{name: "H answer .8", prio: "low", decs: ans("0.8"), part: H, want: .8, value: 14}, // .1425
-		{name: "H asked", prio: "low", asked: true, part: H, want: 1, value: 16},           // .1625
+		{name: "H not an ask", prio: "low", part: H, want: .5, value: 11},        // .1125
+		{name: "H asked", prio: "low", asked: true, part: H, want: 1, value: 16}, // .1625
 		// B: .1125 + .20B.
 		{name: "B none", prio: "low", part: B, want: 0, value: 11},
 		{name: "B one", prio: "low", blocked: 1, part: B, want: b1, value: 16}, // .1125+.2*.24465 = .16143
@@ -255,9 +249,9 @@ func TestNeedsYouSignals_ImportancePartsPinned(t *testing.T) {
 		r := &needs.Row{WaitingSince: day(c.waited)}
 		r.Item.Priority = c.prio
 		if c.asked {
-			r.Why.Rule = needs.RuleAsked
+			r.Why.Rule, r.Ask = needs.RuleAsked, true
 		}
-		sc, parts := importanceDetail(time.UTC, r, c.item, c.blocked, c.decs, qh, now)
+		sc, parts := importanceDetail(time.UTC, r, c.item, c.blocked, now)
 		if got := c.part(parts); math.Abs(got-c.want) > eps {
 			t.Errorf("%s: part = %v, want %v", c.name, got, c.want)
 		}
@@ -274,49 +268,28 @@ func TestNeedsYouSignals_ImportanceRoundingSnapped(t *testing.T) {
 	// high .1875 + H .05 + A (12.25 days / 14 = .875) .0875 = .325 -> 32.5 -> 33.
 	r := &needs.Row{WaitingSince: now.Add(-294 * time.Hour)}
 	r.Item.Priority = "high"
-	if got := importanceIn(time.UTC, r, store.NeedsScoringItem{}, 0, nil, nil, now).Value; got != 33 {
+	if got := importanceIn(time.UTC, r, store.NeedsScoringItem{}, 0, now).Value; got != 33 {
 		t.Errorf("exactly .325 scored %d, want 33", got)
 	}
 	// unset priority .125 + H .05 + A (7 days / 14 = .5) .05 = .225 -> 22.5 -> 23;
 	// summed as floats this is 22.499999999999996 without the snap.
 	r = &needs.Row{WaitingSince: now.Add(-7 * 24 * time.Hour)}
-	if got := importanceIn(time.UTC, r, store.NeedsScoringItem{}, 0, nil, nil, now).Value; got != 23 {
+	if got := importanceIn(time.UTC, r, store.NeedsScoringItem{}, 0, now).Value; got != 23 {
 		t.Errorf("exactly .225 scored %d, want 23", got)
 	}
 }
 
-// H is a probability: a stored value outside [0,1] cannot push importance past its bounds.
-func TestNeedsYouSignals_NeedsHumanProbabilityClamped(t *testing.T) {
+// H is 1 for an ask whatever rule routed it, .5 otherwise, and no stored
+// needs_human answer moves it (TASK-4643).
+func TestNeedsYouSignals_ImportanceHFromTheAsk(t *testing.T) {
 	t.Parallel()
-	r := &needs.Row{WaitingSince: nfxT0}
-	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
-	ans := func(p string) []models.ItemDecision {
-		return []models.ItemDecision{{QuestionKey: decision.AttentionNeedsHuman, Kind: "noul", QuestionHash: "h", Answer: json.RawMessage(`{"type":"noul","noul":` + p + `}`)}}
+	mentioned := &needs.Row{WaitingSince: nfxT0, Why: needs.Why{Rule: needs.RuleMentioned}, Ask: true}
+	plain := &needs.Row{WaitingSince: nfxT0, Why: needs.Why{Rule: needs.RuleMentioned}}
+	if a, b := importanceOf(mentioned, store.NeedsScoringItem{}, 0, nfxT0).Value, importanceOf(plain, store.NeedsScoringItem{}, 0, nfxT0).Value; a-b != 5 {
+		t.Errorf("an ask routed by mention scored %d, a non-ask %d: want H to add .10 x .5", a, b)
 	}
-	base := importanceOf(r, store.NeedsScoringItem{}, 0, ans("1"), qh, nfxT0).Value
-	if got := importanceOf(r, store.NeedsScoringItem{}, 0, ans("7"), qh, nfxT0).Value; got != base {
-		t.Errorf("probability 7 scored %d, want the value for 1 (%d)", got, base)
-	}
-	low := importanceOf(r, store.NeedsScoringItem{}, 0, ans("0"), qh, nfxT0).Value
-	if got := importanceOf(r, store.NeedsScoringItem{}, 0, ans("-4"), qh, nfxT0).Value; got != low {
-		t.Errorf("probability -4 scored %d, want the value for 0 (%d)", got, low)
-	}
-}
-
-// "judged to need a human" is given from the attention threshold up, not below it.
-func TestNeedsYouSignals_NeedsHumanWhyAtThreshold(t *testing.T) {
-	t.Parallel()
-	r := &needs.Row{WaitingSince: nfxT0}
-	qh := map[string]string{decision.AttentionNeedsHuman: "h"}
-	for _, c := range []struct {
-		p    float64
-		want bool
-	}{{decision.AttentionThreshold, true}, {decision.AttentionThreshold - 0.01, false}, {1, true}} {
-		decs := []models.ItemDecision{{QuestionKey: decision.AttentionNeedsHuman, Kind: "noul", QuestionHash: "h", Answer: json.RawMessage(fmt.Sprintf(`{"type":"noul","noul":%v}`, c.p))}}
-		why := importanceOf(r, store.NeedsScoringItem{}, 0, decs, qh, nfxT0).Why
-		if got := slices.Contains(why, whyNeedsHuman); got != c.want {
-			t.Errorf("probability %v: Why %v, want %q present = %v", c.p, why, whyNeedsHuman, c.want)
-		}
+	if why := importanceOf(mentioned, store.NeedsScoringItem{}, 0, nfxT0).Why; slices.Contains(why, whyAsked) {
+		t.Errorf("an ask routed by mention says %q: %v", whyAsked, why)
 	}
 }
 
@@ -442,16 +415,11 @@ func TestNeedsYouSignals_HintTable(t *testing.T) {
 		t.Fatalf("owed job: %+v", s)
 	}
 
-	// high_stakes is never read: an answer for it moves nothing.
-	stakes := models.ItemDecision{QuestionKey: decision.AttentionHighStakes, Kind: "noul", QuestionHash: "qs", Answer: json.RawMessage(`{"type":"noul","noul":1}`)}
+	// high_stakes is never read: importance takes no stored answer at all
+	// (TASK-4643). Importance tops out at 85 while S is 0 (not renormalised).
 	now := nfxT0
-	r := &needs.Row{WaitingSince: now}
-	if a, b := importanceOf(r, store.NeedsScoringItem{}, 0, nil, qh, now), importanceOf(r, store.NeedsScoringItem{}, 0, []models.ItemDecision{stakes}, qh, now); a.Value != b.Value || fmt.Sprint(a.Why) != fmt.Sprint(b.Why) {
-		t.Fatalf("high_stakes moved importance: %+v vs %+v", a, b)
-	}
-	// And importance tops out at 85 while S is 0 (not renormalised).
-	top := &needs.Row{Item: needs.ItemInfo{Priority: "critical"}, Why: needs.Why{Rule: needs.RuleAsked}, WaitingSince: now.AddDate(0, -1, 0)}
-	if v := importanceOf(top, store.NeedsScoringItem{Fields: `{"due_date":"2020-01-01"}`}, 99, nil, qh, now).Value; v != 85 {
+	top := &needs.Row{Item: needs.ItemInfo{Priority: "critical"}, Why: needs.Why{Rule: needs.RuleAsked}, Ask: true, WaitingSince: now.AddDate(0, -1, 0)}
+	if v := importanceOf(top, store.NeedsScoringItem{Fields: `{"due_date":"2020-01-01"}`}, 99, now).Value; v != 85 {
 		t.Fatalf("maximum importance = %d, want 85", v)
 	}
 }
@@ -475,9 +443,9 @@ func TestNeedsYouSignals_WhyOnlyFromTheVocabulary(t *testing.T) {
 					for _, blocked := range []int{0, 7} {
 						for _, ds := range [][]models.ItemDecision{nil, {human}, {effortAnswer(`{"1":1}`, "qe")}} {
 							for _, owed := range []bool{false, true} {
-								r := &needs.Row{Item: needs.ItemInfo{Title: "SECRET-TITLE ENG-1", Priority: prio}, Why: needs.Why{Rule: rule}, WaitingSince: now.AddDate(0, 0, -waited)}
+								r := &needs.Row{Item: needs.ItemInfo{Title: "SECRET-TITLE ENG-1", Priority: prio}, Why: needs.Why{Rule: rule}, Ask: rule == needs.RuleAsked, WaitingSince: now.AddDate(0, 0, -waited)}
 								it := store.NeedsScoringItem{Fields: `{"due_date":"` + due + `"}`, ContentRunes: waited * 300}
-								for _, sc := range []*needs.Score{importanceOf(r, it, blocked, ds, qh, now), simplicityOf(r, it, ds, qh, owed)} {
+								for _, sc := range []*needs.Score{importanceOf(r, it, blocked, now), simplicityOf(r, it, ds, qh, owed)} {
 									for _, w := range sc.Why {
 										seen[w] = true
 										if !vocab[w] || strings.Contains(w, "SECRET") {
@@ -524,7 +492,7 @@ func TestNeedsYouSignals_MemoReadsOncePerRequest(t *testing.T) {
 				t.Fatalf("round %d: rows %+v", round, resp.Rows)
 			}
 			for _, ws := range []*models.Workspace{w1, w2} {
-				for _, read := range []string{"items", "blocks_edges", "collections", "question_hashes", "decisions", "owed_jobs", "attention_current"} {
+				for _, read := range []string{"items", "blocks_edges", "collections", "question_hashes", "decisions", "owed_jobs"} {
 					if n := loads[ws.ID+":"+read]; n != round {
 						t.Errorf("round %d: %s read %d times, want %d (once per request, never cached across them)", round, read, n, round)
 					}
@@ -845,13 +813,10 @@ func TestNeedsYouSignals_ReadFailureDegrades(t *testing.T) {
 	}
 }
 
-// H and "judged to need a human" read needs_human through the inbox's own flag
-// rule, which wants the answer current by item state as well as question: an
-// answer of .9 to the question as asked now, but on an edited item (state hash
-// moved, no refresh owed), weighs nothing, while the same answer on the item as
-// it stands counts and says so. A stale answer whose refresh is owed is held,
-// as the flag rule holds it.
-func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
+// Importance reads no stored needs_human answer (TASK-4643): a current .9
+// answer, a stale one and a stale one owed a refresh all leave H at the
+// non-ask .5, and none of them adds a Why.
+func TestNeedsYouSignals_ImportanceIgnoresStoredNeedsHuman(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	f := newNfx(t, srv)
@@ -895,17 +860,11 @@ func TestNeedsYouSignals_NeedsHumanNeedsFullCurrency(t *testing.T) {
 	if deg || err != nil {
 		t.Fatalf("degraded %v err %v", deg, err)
 	}
-	// Control, current: medium .125 + H .9 -> .09 = .215 -> 22, and the Why.
-	if c := rows[0].Importance; c.Value != 22 || !slices.Contains(c.Why, whyNeedsHuman) {
-		t.Fatalf("current answer: %+v, want 22 with %q", c, whyNeedsHuman)
-	}
-	// Stale: H is the no-answer .5, so .125 + .05 = .175 -> 18, and no Why.
-	if s := rows[1].Importance; s.Value != 18 || slices.Contains(s.Why, whyNeedsHuman) {
-		t.Fatalf("stale answer: %+v, want 18 without %q", s, whyNeedsHuman)
-	}
-	// Stale but owed a refresh: held, like the current one.
-	if h := rows[2].Importance; h.Value != 22 || !slices.Contains(h.Why, whyNeedsHuman) {
-		t.Fatalf("stale answer with a refresh owed: %+v, want 22 with %q", h, whyNeedsHuman)
+	// Medium .125 + H .5 -> .05 = .175 -> 18 on every row, and no Why.
+	for i, r := range rows {
+		if r.Importance.Value != 18 || len(r.Importance.Why) != 0 {
+			t.Fatalf("row %d: %+v, want 18 with no why", i, r.Importance)
+		}
 	}
 }
 

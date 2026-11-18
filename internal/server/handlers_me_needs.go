@@ -7,9 +7,9 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
-	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/needs"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -280,36 +280,6 @@ func (e *needsEligibility) Eligible(userID, collectionID, itemID string) bool {
 	return v != nil && (v.unrestricted || v.collections[collectionID] || v.items[itemID])
 }
 
-// callerVisibleDecidedItems returns the ids of the items holding an attention
-// decision row that fall inside the caller's scope.
-func (s *Server) callerVisibleDecidedItems(workspaceID string, scope store.CatchUpScope) ([]string, error) {
-	latest, err := s.store.LatestWorkspaceDecisions(workspaceID, decision.AttentionSetName)
-	if err != nil {
-		return nil, err
-	}
-	var decided []string
-	seen := map[string]bool{}
-	for _, d := range latest {
-		if !seen[d.ItemID] {
-			seen[d.ItemID] = true
-			decided = append(decided, d.ItemID)
-		}
-	}
-	if len(decided) == 0 {
-		return nil, nil
-	}
-	// The candidate read applies the scope in SQL; what it returns is visible.
-	items, err := s.store.NeedsCandidateItems(workspaceID, scope, store.NeedsCandidateParams{FlaggedItemIDs: decided})
-	if err != nil {
-		return nil, err
-	}
-	out := make([]string, len(items))
-	for i, it := range items {
-		out[i] = it.ID
-	}
-	return out, nil
-}
-
 // needsForWorkspace runs the router for one admitted workspace and returns the
 // rows routed to the caller, held ones included (the caller splits the views).
 // Order matters for what is read: visibility first (in the candidate SQL), then
@@ -349,9 +319,14 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		schema   models.CollectionSchema
 		settings models.CollectionSettings
 		awaits   bool
+		// waitKey and waiting are the done field and its waiting statuses
+		// (lowercased, trimmed); waiting is empty when it declares none.
+		waitKey string
+		waiting map[string]bool
 	}
 	infos := map[string]*collInfo{}
 	var awaitsIDs []string
+	var awaitsStatus []store.NeedsAwaitsStatus
 	for _, c := range colls {
 		ci := &collInfo{awaits: !c.IsSystem && models.CollectionAwaitsHumanJSON(c.Settings)}
 		_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &ci.schema)
@@ -362,56 +337,25 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		if ci.awaits {
 			awaitsIDs = append(awaitsIDs, c.ID)
 		}
-	}
-
-	// needs_human answers. A provider ERROR degrades this workspace; the
-	// provider's failing bit is deliberately not read (see needsResponse).
-	var flaggedIDs []string
-	flaggedAt := map[string]time.Time{}
-	flaggedSet := map[string]bool{}
-	// Only items the caller can see are evaluated: an error caused by a hidden
-	// item must not set degraded, which would leak one bit about it.
-	visibleDecided, derr := s.callerVisibleDecidedItems(ws.ID, scope)
-	if derr != nil {
-		return nil, false, derr
-	}
-	flags, _, ferr := s.decisionRunner().WorkspaceFlagsForItems(ws.ID, decision.AttentionSetName, decision.AttentionThreshold, visibleDecided)
-	if ferr != nil {
-		slog.Error("needs: attention decisions failed; workspace degraded", "workspace_id", ws.ID, "error", ferr)
-		degraded = true
-	} else {
-		for id, answers := range flags {
-			if _, ok := answers[decision.AttentionNeedsHuman]; ok {
-				flaggedIDs = append(flaggedIDs, id)
-			}
+		if c.IsSystem {
+			continue
 		}
-		sort.Strings(flaggedIDs)
-		for _, id := range flaggedIDs {
-			flaggedSet[id] = true
-		}
-		if len(flaggedIDs) > 0 {
-			latest, err := s.store.LatestWorkspaceDecisions(ws.ID, decision.AttentionSetName)
-			if err != nil {
-				return nil, false, err
+		if key, vals := models.AwaitsHumanValuesForDoneField(ci.schema, ci.settings); len(vals) > 0 {
+			ci.waitKey, ci.waiting = key, map[string]bool{}
+			for _, v := range vals {
+				ci.waiting[strings.ToLower(strings.TrimSpace(v))] = true
 			}
-			for _, d := range latest {
-				if d.QuestionKey != decision.AttentionNeedsHuman || !flaggedSet[d.ItemID] {
-					continue
-				}
-				if t, perr := time.Parse("2006-01-02T15:04:05.000000000Z", d.EvaluatedAt); perr == nil {
-					flaggedAt[d.ItemID] = t
-				}
-			}
+			awaitsStatus = append(awaitsStatus, store.NeedsAwaitsStatus{CollectionID: c.ID, Key: key, Values: vals})
 		}
 	}
 
-	// An owner can be routed anything the other rules leave over, so reads all
+	// An owner can be routed an ask nobody else can take, so reads all
 	// candidates; anyone else only what names them.
 	member, err := s.store.GetWorkspaceMember(ws.ID, user.ID)
 	if err != nil {
 		return nil, false, err
 	}
-	params := store.NeedsCandidateParams{AwaitsCollectionIDs: awaitsIDs, FlaggedItemIDs: flaggedIDs, DueItemIDs: dueIDs}
+	params := store.NeedsCandidateParams{AwaitsCollectionIDs: awaitsIDs, AwaitsStatus: awaitsStatus, DueItemIDs: dueIDs}
 	if member == nil || member.Role != "owner" {
 		params.ForUserID = user.ID
 	}
@@ -420,6 +364,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		return nil, false, err
 	}
 	open := items[:0]
+	waitingIDs := map[string]bool{}
 	for _, it := range items {
 		ci := infos[it.CollectionID]
 		if ci == nil {
@@ -431,6 +376,9 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		}
 		if !models.IsTerminalItem(fields, ci.schema, ci.settings) {
 			open = append(open, it)
+			if v, ok := fields[ci.waitKey].(string); ok && ci.waiting[strings.ToLower(strings.TrimSpace(v))] {
+				waitingIDs[it.ID] = true
+			}
 		}
 	}
 	items = open
@@ -473,11 +421,16 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		}
 	}
 	routed := map[string]needs.Routing{}
+	asked := map[string]bool{}
 	var kept []models.Item
 	for _, it := range items {
 		c := needs.Candidate{
 			ItemID: it.ID, CollectionID: it.CollectionID, AwaitsHuman: infos[it.CollectionID].awaits,
-			AssignedAt: it.CreatedAt, CreatedAt: it.CreatedAt,
+			WaitingStatus: waitingIDs[it.ID],
+			AssignedAt:    it.CreatedAt, CreatedAt: it.CreatedAt,
+		}
+		if it.AgentRoleID != nil {
+			c.AgentRoleID = *it.AgentRoleID
 		}
 		if at, ok := due[it.ID]; ok {
 			c.Due, c.DueRecipientID = &at, user.ID
@@ -491,20 +444,13 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		for _, m := range mentions[it.ID] {
 			c.Mentions = append(c.Mentions, needs.Mention{UserID: m.UserID, CommentID: m.CommentID, By: m.By, At: m.At})
 		}
-		if flaggedSet[it.ID] {
-			if t, ok := flaggedAt[it.ID]; ok {
-				c.NeedsHuman = &t
-			} else {
-				t := it.UpdatedAt
-				c.NeedsHuman = &t
-			}
-		}
 		rt, ok := needs.Resolve(c, owners, elig)
 		if elig.err != nil {
 			return nil, false, elig.err
 		}
 		if ok && rt.Includes(user.ID) {
 			routed[it.ID] = rt.For(user.ID)
+			asked[it.ID] = c.Asked()
 			kept = append(kept, it)
 		}
 	}
@@ -538,18 +484,15 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 				Path: path,
 			},
 			Why: rt.Why, Because: rt.Because, WaitingSince: rt.WaitingSince,
-			ItemID: it.ID, WorkspaceID: ws.ID,
+			// Kind and rule only: the target's ids (a role, other people)
+			// never leave the server.
+			WaitingOn: needs.WaitingOnView{Kind: rt.Target.Kind, Rule: rt.Target.Rule},
+			ItemID:    it.ID, WorkspaceID: ws.ID, Ask: asked[it.ID],
 		}
 		var fields map[string]any
 		_ = json.Unmarshal([]byte(it.Fields), &fields)
 		row.Item.Status, _ = fields["status"].(string)
 		row.Item.Priority, _ = fields["priority"].(string)
-		for _, b := range rt.Because {
-			if b.Kind == needs.BecauseNeedsHuman {
-				at := b.At
-				row.NeedsHuman = &at
-			}
-		}
 		if sn := snoozes[it.ID]; sn != nil && sn.Holds {
 			row.Held, row.Snooze = true, sn
 		}
