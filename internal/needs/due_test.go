@@ -17,7 +17,8 @@ func TestResolveDueOrdering(t *testing.T) {
 		{"mentioned", false, true, true, true, RuleMentioned},
 		{"assigned", false, false, true, true, RuleAssigned},
 		{"due", false, false, false, true, RuleDue},
-		{"fallback", false, false, false, false, RuleAdminFallback},
+		// The owners fallback is for asks only (TASK-4643).
+		{"fallback", true, false, false, false, RuleAdminFallback},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := Candidate{CreatedAt: later, AssignedAt: later, Due: &due, DueRecipientID: "recipient", AwaitsHuman: tc.asked}
@@ -108,7 +109,8 @@ func TestResolveDueRecipientOwnerIsNotFallback(t *testing.T) {
 	if !r.WaitingSince.Equal(due) || len(r.Because) != 1 || r.Because[0].Kind != BecauseDue {
 		t.Fatalf("recipient = %+v", r)
 	}
-	c.Due = nil
+	// Without the due claim only an ask falls to the owners (TASK-4643).
+	c.Due, c.AwaitsHuman = nil, true
 	r, ok = Resolve(c, []string{"o1", "o2"}, fakeElig{"o1": true, "o2": true})
 	if !ok || r.Rule != RuleAdminFallback || len(r.Because) != 0 {
 		t.Fatalf("without a due claim = %+v", r)

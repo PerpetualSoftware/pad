@@ -12,21 +12,31 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// The routing rules, in the order Resolve tries them.
+// The routing rules, in the order WaitingOn tries them.
 const (
 	RuleAsked         = "asked"
 	RuleMentioned     = "mentioned"
 	RuleAssigned      = "assigned"
 	RuleDue           = "due"
+	RuleRole          = "role"
 	RuleAdminFallback = "admin_fallback"
+	RuleNone          = "none"
+)
+
+// The kinds of Target: what an item is waiting on.
+const (
+	TargetPerson = "person"
+	TargetPeople = "people"
+	TargetRole   = "role"
+	TargetOwners = "owners"
+	TargetNone   = "none"
 )
 
 // The kinds a Because entry can have.
 const (
-	BecauseHumanTask  = "human_task"
-	BecauseNeedsHuman = "needs_human"
-	BecauseMention    = "mention"
-	BecauseDue        = "due"
+	BecauseHumanTask = "human_task"
+	BecauseMention   = "mention"
+	BecauseDue       = "due"
 )
 
 // Mention is one open @mention of a user on an item.
@@ -44,6 +54,11 @@ type Candidate struct {
 	CollectionID string
 	// AwaitsHuman: the item is in an awaits_human collection (an ask).
 	AwaitsHuman bool
+	// WaitingStatus: the item's done field holds one of that field's
+	// awaits_human_options (also an ask).
+	WaitingStatus bool
+	// AgentRoleID is the agent role the item is assigned to, or "".
+	AgentRoleID string
 	// AssigneeUserID is the assigned PERSON; a role-only assignment is "" and
 	// falls through every rule that needs one (TASK-3615).
 	AssigneeUserID string
@@ -52,12 +67,29 @@ type Candidate struct {
 	AssignedAt time.Time
 	CreatedAt  time.Time
 	Mentions   []Mention
-	// NeedsHuman, when set, is when the attention set's needs_human answer was
-	// written.
-	NeedsHuman *time.Time
 	// Due is the earliest outstanding due instant for DueRecipientID.
 	Due            *time.Time
 	DueRecipientID string
+}
+
+// Asked reports whether the item is an ask: in an awaits_human collection, or
+// holding a waiting status on its done field.
+func (c Candidate) Asked() bool { return c.AwaitsHuman || c.WaitingStatus }
+
+// Target is what an item is waiting on. IDs are the people (person, people)
+// or the role (role) the rule names; owners and none carry none. IDs never
+// leave the server: a row shows only Kind and Rule (WaitingOnView).
+type Target struct {
+	Kind string
+	IDs  []string
+	Rule string
+}
+
+// WaitingOnView is the part of a Target a row shows the person it is routed
+// to: no role id, nobody else's id, nobody the rules skipped.
+type WaitingOnView struct {
+	Kind string `json:"kind"`
+	Rule string `json:"rule"`
 }
 
 // Eligibility answers whether a user may be routed an item: a live human who
@@ -92,6 +124,8 @@ type Routing struct {
 	Why          Why
 	Because      []Because
 	WaitingSince time.Time
+	// Target is what WaitingOn found the item waiting on.
+	Target Target
 
 	// byUser holds, for the mentioned rule, each routed person's own view: the
 	// row for one person is computed from that person's mentions only.
@@ -119,44 +153,72 @@ func (r Routing) Includes(userID string) bool {
 	return false
 }
 
-// Resolve applies the rules in strict, exclusive order and returns the first
-// that yields at least one eligible person, or ok=false when none does (the
-// item is dropped: never "everyone"):
+// WaitingOn applies the rules in strict, exclusive order and returns what the
+// item is waiting on. It reads no store; elig is the only question it asks.
 //
-//  1. asked: the item is in an awaits_human collection and its assigned
-//     person is eligible;
+//  1. asked: the item is an ask (Asked) and its assigned person is eligible;
 //  2. mentioned: the eligible people with an open @mention, by mention time;
-//  3. assigned: the assigned person, if eligible;
+//  3. assigned: the assigned person, if eligible (reached only for an item
+//     some other signal made a candidate: an assignment alone is not one);
 //  4. due: the schedule recipient, if eligible;
-//  5. admin_fallback: the eligible workspace owners.
-//
-// WaitingSince is the earliest open claim: the winning rule's own claim (the
-// item's creation for asked and the fallback, the mention for mentioned, the
-// latest assignment for assigned) and the needs_human answer when the item
-// carries one. Why.Text comes from the winning rule alone and never names a
-// person the rules skipped.
-func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
+//  5. role: the item has an agent role and no eligible person was found;
+//  6. owners (admin_fallback): an ask with no eligible person and no role;
+//  7. none: anything else.
+func WaitingOn(c Candidate, elig Eligibility) Target {
 	ok := func(id string) bool { return id != "" && elig.Eligible(id, c.CollectionID, c.ItemID) }
-	r := Routing{}
-	var claim time.Time
 	switch {
-	case c.AwaitsHuman && ok(c.AssigneeUserID):
-		r.Rule, r.People, claim = RuleAsked, []string{c.AssigneeUserID}, c.CreatedAt
-		r.Because = append(r.Because, Because{Kind: BecauseHumanTask, At: c.CreatedAt})
-		r.Why = Why{Text: "An ask of you: it is assigned to you in a collection of asks."}
+	case c.Asked() && ok(c.AssigneeUserID):
+		return Target{Kind: TargetPerson, IDs: []string{c.AssigneeUserID}, Rule: RuleAsked}
 	case len(eligibleMentions(c, ok)) > 0:
-		ms := eligibleMentions(c, ok)
+		var ids []string
 		seen := map[string]bool{}
-		for _, m := range ms {
+		for _, m := range eligibleMentions(c, ok) {
 			if !seen[m.UserID] {
 				seen[m.UserID] = true
-				r.People = append(r.People, m.UserID)
+				ids = append(ids, m.UserID)
 			}
 		}
-		r.Rule = RuleMentioned
+		return Target{Kind: TargetPeople, IDs: ids, Rule: RuleMentioned}
+	case ok(c.AssigneeUserID):
+		return Target{Kind: TargetPerson, IDs: []string{c.AssigneeUserID}, Rule: RuleAssigned}
+	case c.Due != nil && ok(c.DueRecipientID):
+		return Target{Kind: TargetPerson, IDs: []string{c.DueRecipientID}, Rule: RuleDue}
+	case c.AgentRoleID != "":
+		return Target{Kind: TargetRole, IDs: []string{c.AgentRoleID}, Rule: RuleRole}
+	case c.Asked():
+		return Target{Kind: TargetOwners, Rule: RuleAdminFallback}
+	}
+	return Target{Kind: TargetNone, Rule: RuleNone}
+}
+
+// Deliver maps a target to the people it reaches, or ok=false when it reaches
+// nobody (the item is dropped: never "everyone"). A role target reaches no
+// human: the item sits in that role's queue. An owners target reaches the
+// eligible workspace owners.
+//
+// WaitingSince is the earliest open claim: the rule's own claim (the item's
+// creation for asked and owners, the mention for mentioned, the latest
+// assignment for assigned, the due instant for due), lowered by a due
+// reminder of the routed person's. Why.Text comes from the rule alone and
+// never names a person the rules skipped.
+func Deliver(c Candidate, t Target, owners []string, elig Eligibility) (Routing, bool) {
+	ok := func(id string) bool { return id != "" && elig.Eligible(id, c.CollectionID, c.ItemID) }
+	r := Routing{Rule: t.Rule, Target: t}
+	var claim time.Time
+	switch t.Rule {
+	case RuleAsked:
+		r.People, claim = t.IDs, c.CreatedAt
+		r.Because = append(r.Because, Because{Kind: BecauseHumanTask, At: c.CreatedAt})
+		r.Why = Why{Text: "An ask of you: it is assigned to you in a collection of asks."}
+		if !c.AwaitsHuman {
+			r.Why.Text = "An ask of you: it is assigned to you and its status waits on a person."
+		}
+	case RuleMentioned:
+		ms := eligibleMentions(c, ok)
+		r.People = t.IDs
 		r.byUser = map[string]Routing{}
 		for _, uid := range r.People {
-			own := Routing{Rule: RuleMentioned, People: r.People}
+			own := Routing{Rule: RuleMentioned, People: r.People, Target: t}
 			var first *Mention
 			for i := range ms {
 				m := ms[i]
@@ -168,10 +230,16 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 					first = &ms[i]
 				}
 			}
+			if first == nil {
+				continue
+			}
 			at := first.At
 			own.Why = Why{Text: "You were @-mentioned and have not replied.", By: first.By, At: &at, CommentID: first.CommentID}
 			own.WaitingSince = first.At
 			r.byUser[uid] = own
+		}
+		if len(ms) == 0 {
+			return Routing{}, false
 		}
 		// The shared claim is the earliest mention of anyone; a row never
 		// shows it, only each person's own (see For).
@@ -181,32 +249,28 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 				claim = m.At
 			}
 		}
-	case ok(c.AssigneeUserID):
-		r.Rule, r.People, claim = RuleAssigned, []string{c.AssigneeUserID}, c.AssignedAt
+	case RuleAssigned:
+		r.People, claim = t.IDs, c.AssignedAt
 		r.Why = Why{Text: "It is assigned to you."}
-	case c.Due != nil && ok(c.DueRecipientID):
-		r.Rule, r.People, claim = RuleDue, []string{c.DueRecipientID}, *c.Due
+	case RuleDue:
+		r.People, claim = t.IDs, *c.Due
 		r.Why = Why{Text: "A reminder of yours is due."}
-	default:
+	case RuleAdminFallback:
 		for _, o := range owners {
 			if ok(o) {
 				r.People = append(r.People, o)
 			}
 		}
-		if len(r.People) == 0 {
-			return Routing{}, false
-		}
-		r.Rule, claim = RuleAdminFallback, c.CreatedAt
+		claim = c.CreatedAt
 		r.Why = Why{Text: "Nobody else can take it, so it falls to the workspace owners."}
+	default: // role, none
+		return Routing{}, false
+	}
+	if len(r.People) == 0 {
+		return Routing{}, false
 	}
 	finish := func(x *Routing, claim time.Time, userID string) {
 		x.Why.Rule = x.Rule
-		if c.NeedsHuman != nil {
-			x.Because = append(x.Because, Because{Kind: BecauseNeedsHuman, At: *c.NeedsHuman})
-			if c.NeedsHuman.Before(claim) {
-				claim = *c.NeedsHuman
-			}
-		}
 		if c.Due != nil && userID != "" && userID == c.DueRecipientID {
 			x.Because = append(x.Because, Because{Kind: BecauseDue, At: *c.Due})
 			if c.Due.Before(claim) {
@@ -229,6 +293,12 @@ func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
 	}
 	finish(&r, claim, person)
 	return r, true
+}
+
+// Resolve is Deliver(WaitingOn(c)): the people the item is routed to, or
+// ok=false when it reaches nobody.
+func Resolve(c Candidate, owners []string, elig Eligibility) (Routing, bool) {
+	return Deliver(c, WaitingOn(c, elig), owners, elig)
 }
 
 // eligibleMentions are the open mentions of eligible users, by time then user.
@@ -307,11 +377,12 @@ type ItemInfo struct {
 
 // Row is one item that needs the viewer.
 type Row struct {
-	Workspace  WorkspaceLabel `json:"workspace"`
-	Item       ItemInfo       `json:"item"`
-	Why        Why            `json:"why"`
-	Because    []Because      `json:"because"`
-	NeedsHuman *time.Time     `json:"needs_human,omitempty"`
+	Workspace WorkspaceLabel `json:"workspace"`
+	Item      ItemInfo       `json:"item"`
+	Why       Why            `json:"why"`
+	Because   []Because      `json:"because"`
+	// WaitingOn is what the item waits on, as this row's person may see it.
+	WaitingOn WaitingOnView `json:"waiting_on"`
 	// WaitingSince is the earliest open claim; sort=age orders by it.
 	WaitingSince time.Time `json:"waiting_since"`
 	// Marker is the item's state now, for the client to send back when it
@@ -326,4 +397,6 @@ type Row struct {
 	WorkspaceID string `json:"-"`
 	// Held: the viewer's snooze on the item holds now.
 	Held bool `json:"-"`
+	// Ask: the item is an ask (Candidate.Asked).
+	Ask bool `json:"-"`
 }

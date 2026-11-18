@@ -3659,7 +3659,7 @@ export interface NeedsWhy {
 }
 
 export interface NeedsBecause {
-	kind: 'human_task' | 'needs_human' | 'mention' | 'due' | string;
+	kind: 'human_task' | 'mention' | 'due' | string;
 	at: string;
 	by?: string;
 	comment_id?: string;
@@ -3688,12 +3688,22 @@ export interface NeedsScore {
 	why?: string[];
 }
 
+/**
+ * What the item is waiting on, as the row's person may see it (TASK-4643):
+ * the kind and the rule only, never a role id or anyone else's id. A row is
+ * only built for `person`, `people` or `owners`.
+ */
+export interface NeedsWaitingOn {
+	kind: 'person' | 'people' | 'role' | 'owners' | 'none' | string;
+	rule: 'asked' | 'mentioned' | 'assigned' | 'due' | 'role' | 'admin_fallback' | 'none' | string;
+}
+
 export interface NeedsRow {
 	workspace: NeedsWorkspaceLabel;
 	item: NeedsItemInfo;
 	why: NeedsWhy;
 	because: NeedsBecause[];
-	needs_human?: string;
+	waiting_on: NeedsWaitingOn;
 	waiting_since: string;
 	marker?: NeedsSnoozeMarker;
 	snooze?: NeedsSnooze;

@@ -203,6 +203,9 @@ func TestNeedsCandidateItems(t *testing.T) {
 	askItem := createTestItem(t, f.s, f.ws.ID, ask.ID, "An ask", "")
 	plain := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Plain", "")
 	flagged := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Flagged", "")
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE items SET fields = ? WHERE id = ?`), `{"status":"waiting"}`, flagged.ID); err != nil {
+		t.Fatal(err)
+	}
 	f.comment(t, f.author, "@alice look") // f.item: open mention
 
 	ids := func(items []models.Item) []string {
@@ -215,7 +218,8 @@ func TestNeedsCandidateItems(t *testing.T) {
 	}
 	sorted := func(v ...string) []string { sort.Strings(v); return v }
 	all := CatchUpScope{}
-	p := NeedsCandidateParams{AwaitsCollectionIDs: []string{ask.ID}, FlaggedItemIDs: []string{flagged.ID}}
+	p := NeedsCandidateParams{AwaitsCollectionIDs: []string{ask.ID},
+		AwaitsStatus: []NeedsAwaitsStatus{{CollectionID: f.col.ID, Key: "status", Values: []string{"waiting"}}}}
 
 	got, err := f.s.NeedsCandidateItems(f.ws.ID, all, p)
 	if err != nil {
@@ -399,7 +403,7 @@ func TestNeedsMarkersForItems(t *testing.T) {
 
 // A restricted scope with BOTH a collection list and an item grant returns the
 // visible items and never the hidden one, even though the hidden item matches
-// every candidate source (it is flagged and it carries an open mention).
+// every candidate source (it is in DueItemIDs and it carries an open mention).
 func TestNeedsCandidateItems_RestrictedScopeHidesItem(t *testing.T) {
 	t.Parallel()
 	f := newMentionFixture(t)
@@ -411,7 +415,7 @@ func TestNeedsCandidateItems_RestrictedScopeHidesItem(t *testing.T) {
 	granted := createTestItem(t, f.s, f.ws.ID, f.col.ID, "visible by grant", "")
 	// f.item sits in f.col, is not granted, and has an open mention.
 	hidden := f.item
-	p := NeedsCandidateParams{AwaitsCollectionIDs: []string{ask.ID}, FlaggedItemIDs: []string{granted.ID, hidden.ID}}
+	p := NeedsCandidateParams{AwaitsCollectionIDs: []string{ask.ID}, DueItemIDs: []string{granted.ID, hidden.ID}}
 	f.comment(t, f.author, "@alice look")
 
 	got, err := f.s.NeedsCandidateItems(f.ws.ID, CatchUpScope{CollectionIDs: []string{ask.ID}, ItemIDs: []string{granted.ID}}, p)
@@ -424,5 +428,88 @@ func TestNeedsCandidateItems_RestrictedScopeHidesItem(t *testing.T) {
 	}
 	if !have[visibleByColl.ID] || !have[granted.ID] || have[hidden.ID] || len(got) != 2 {
 		t.Fatalf("restricted scope returned %v; want %s and %s, not the hidden %s", have, visibleByColl.ID, granted.ID, hidden.ID)
+	}
+}
+
+// TASK-4643: an item whose done field holds a waiting status is a candidate in
+// the collections AwaitsStatus names, compared case-insensitively; a sibling
+// with another value is not, nor is an item with the same key and value in a
+// collection AwaitsStatus does not name. agent_role_id is selected.
+func TestNeedsCandidateItems_AwaitsStatus(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Awaits")
+	schema := `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","needs-answer","done"],"default":"open","awaits_human_options":["needs-answer"]}]}`
+	mk := func(name string) *models.Collection {
+		c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: name, Schema: schema})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c
+	}
+	asks, other := mk("Tasks"), mk("Notes")
+	role, err := s.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Seat"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := func(c *models.Collection, title, status string, roleID *string) *models.Item {
+		it, err := s.CreateItem(ws.ID, c.ID, models.ItemCreate{Title: title, Fields: `{"status":"` + status + `"}`, AgentRoleID: roleID})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return it
+	}
+	waiting := item(asks, "waiting", "needs-answer", &role.ID)
+	shouty := item(asks, "shouty", "NEEDS-ANSWER", nil)
+	item(asks, "sibling", "open", nil)
+	item(other, "elsewhere", "needs-answer", nil)
+
+	p := NeedsCandidateParams{AwaitsStatus: []NeedsAwaitsStatus{{CollectionID: asks.ID, Key: "status", Values: []string{"Needs-Answer"}}}}
+	got, err := s.NeedsCandidateItems(ws.ID, CatchUpScope{}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byID := map[string]models.Item{}
+	for _, it := range got {
+		byID[it.ID] = it
+	}
+	if len(got) != 2 || byID[waiting.ID].ID == "" || byID[shouty.ID].ID == "" {
+		t.Fatalf("candidates %v, want only %s and %s", byID, waiting.ID, shouty.ID)
+	}
+	if r := byID[waiting.ID].AgentRoleID; r == nil || *r != role.ID {
+		t.Fatalf("agent_role_id = %v, want %s", r, role.ID)
+	}
+	if r := byID[shouty.ID].AgentRoleID; r != nil {
+		t.Fatalf("agent_role_id = %v, want nil", *r)
+	}
+	// An unsafe key is never spliced into the SQL: the entry is skipped.
+	p.AwaitsStatus[0].Key = "status') OR 1=1 --"
+	if got, err := s.NeedsCandidateItems(ws.ID, CatchUpScope{}, p); err != nil || len(got) != 0 {
+		t.Fatalf("an unsafe key matched %d items (err %v)", len(got), err)
+	}
+}
+
+// A waiting status spelled with a non-ASCII capital matches when stored as
+// declared, on every dialect (SQLite's LOWER folds ASCII only).
+func TestNeedsCandidateItems_AwaitsStatusNonASCII(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Awaits NonASCII")
+	schema := `{"fields":[{"key":"status","label":"Status","type":"select","options":["open","Écrit","done"],"default":"open","awaits_human_options":["Écrit"]}]}`
+	c, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	it, err := s.CreateItem(ws.ID, c.ID, models.ItemCreate{Title: "waiting", Fields: `{"status":"Écrit"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := NeedsCandidateParams{AwaitsStatus: []NeedsAwaitsStatus{{CollectionID: c.ID, Key: "status", Values: []string{"Écrit"}}}}
+	got, err := s.NeedsCandidateItems(ws.ID, CatchUpScope{}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ID != it.ID {
+		t.Fatalf("candidates %+v, want only %s", got, it.ID)
 	}
 }
