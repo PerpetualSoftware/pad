@@ -57,6 +57,24 @@ describe('keptAwaitsHuman', () => {
 	});
 });
 
+describe('fieldFromDef waiting values', () => {
+	it('respells a declaration the server matched trimmed and case-insensitively, so a save keeps it', () => {
+		const f = fieldFromDef(
+			{
+				key: 'status',
+				label: 'Status',
+				type: 'select',
+				options: ['open', 'review', 'done'],
+				terminal_options: ['done'],
+				awaits_human_options: [' Review ', 'REVIEW', 'gone']
+			},
+			true
+		);
+		expect(f.awaitsHumanOptions).toEqual(['review', 'gone']);
+		expect(keptAwaitsHuman(f.awaitsHumanOptions, f.options, f.terminalOptions)).toEqual(['review']);
+	});
+});
+
 function row(option: string): HTMLElement {
 	const input = [...document.querySelectorAll<HTMLInputElement>('.option-name-input')].find((i) => i.value === option);
 	expect(input, `a row for ${option}`).toBeTruthy();
