@@ -323,7 +323,9 @@
 			let patched: Item;
 			try {
 				prev = await api.items.get(ws, ref);
-				const expected_seq = row.item.seq ?? prev.seq;
+				// The row's seq, not the GET's: a change since the list was read must
+				// refuse the reassignment.
+				const expected_seq = row.item.seq;
 				const body: ItemUpdate =
 					target.kind === 'role'
 						? { agent_role_id: target.id, clear_assigned_user: true, expected_seq }

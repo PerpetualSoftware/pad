@@ -1154,6 +1154,15 @@ describe('needs page: not mine (TASK-4643)', () => {
 		expect(lastToast().message).toBe('TASK-1 given to Reviewer and marked not mine');
 	});
 
+	it('give sends the row seq, not the seq the GET read, so a change since the list refuses it', async () => {
+		await mountWith(resp([editable('TASK-1')]));
+		itemGet.mockResolvedValue({ ...PREV, seq: 44 });
+		itemUpdate.mockResolvedValue({ ...PREV, assigned_user_id: 'u-bob', seq: 45 });
+		notMine.mockResolvedValue({});
+		await giveTo('TASK-1', 'Bob Person');
+		expect(itemUpdate.mock.calls[0][2]).toStrictEqual({ assigned_user_id: 'u-bob', expected_seq: 41 });
+	});
+
 	it('give to a person: PATCH {assigned_user_id, expected_seq} only', async () => {
 		await mountWith(resp([editable('TASK-1')]));
 		itemGet.mockResolvedValue(PREV);
