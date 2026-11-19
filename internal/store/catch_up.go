@@ -57,7 +57,7 @@ type CatchUpLine struct {
 	Title      string `json:"title"`
 	Collection string `json:"collection"`
 	// What happened, in a word or two: "finished", "created", "reopened",
-	// "commented", "blocked", or an activity action.
+	// "commented", "needs a decision", "blocked", or an activity action.
 	What  string `json:"what"`
 	Actor string `json:"actor,omitempty"`
 	Agent string `json:"agent,omitempty"`
