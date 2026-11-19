@@ -185,9 +185,8 @@ func (s *Store) enqueueDecisionJobsTx(tx *sql.Tx, workspaceID, itemID, collectio
 	return nil
 }
 
-// owedDecisionJobTx is the per-(item, set) body of enqueueDecisionJobsTx,
-// shared with OweDecisionJobs so the backfill and the write doors cannot
-// drift: same upsert, same coalescing, same debounce.
+// owedDecisionJobTx is the per-(item, set) body of enqueueDecisionJobsTx:
+// the upsert, its coalescing and the debounce.
 func (s *Store) owedDecisionJobTx(tx *sql.Tx, workspaceID, itemID, set string, debounce DecisionDebounce, now time.Time, ts string) error {
 	notBefore := ""
 	if window := decisionWindowFor(debounce, set); window > 0 {
@@ -209,136 +208,6 @@ func (s *Store) owedDecisionJobTx(tx *sql.Tx, workspaceID, itemID, set string, d
 		return fmt.Errorf("enqueue decision job %s/%s: %w", itemID, set, err)
 	}
 	return nil
-}
-
-// oweDecisionChunk bounds the items one OweDecisionJobs transaction covers.
-const oweDecisionChunk = 500
-
-// OweDecisionJobs makes the one question set owed for each item, in chunked
-// transactions, under the installed debounce (an item evaluated inside the
-// window gets a future not_before, exactly as a write would give it). It does
-// not consult the set resolver or any eligibility: the caller has decided.
-// Re-owing an item that already has a job bumps its generation and keeps one
-// row. Used by the one-shot effort backfill (TASK-3921).
-func (s *Store) OweDecisionJobs(workspaceID, set string, itemIDs []string) error {
-	debounce := s.decisionDebounceFunc()
-	for start := 0; start < len(itemIDs); start += oweDecisionChunk {
-		end := start + oweDecisionChunk
-		if end > len(itemIDs) {
-			end = len(itemIDs)
-		}
-		if err := s.oweDecisionChunk(workspaceID, set, itemIDs[start:end], debounce); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (s *Store) oweDecisionChunk(workspaceID, set string, itemIDs []string, debounce DecisionDebounce) error {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback() //nolint:errcheck // no-op after commit
-	now := time.Now()
-	ts := decisionTime(now)
-	for _, id := range itemIDs {
-		if err := s.owedDecisionJobTx(tx, workspaceID, id, set, debounce, now, ts); err != nil {
-			return err
-		}
-	}
-	return tx.Commit()
-}
-
-// DecisionBackfillCandidate is one live item the backfill may owe a job for.
-type DecisionBackfillCandidate struct {
-	ItemID      string
-	WorkspaceID string
-}
-
-// ItemsMissingDecisionKey lists the live items that have a stored answer for
-// withKey in the set (in any state or hash) and NONE for missingKey: the items
-// the set has been asked about before the question missingKey existed. The
-// caller filters by the set's current eligibility. Ordered for stable chunks.
-func (s *Store) ItemsMissingDecisionKey(set, withKey, missingKey string) ([]DecisionBackfillCandidate, error) {
-	// A whole-table read, marker-gated and run once: it gets a read
-	// transaction with a raised statement bound rather than the runtime pool's
-	// default (TASK-4278). The duration is logged so a large database's cost
-	// is on record.
-	started := time.Now()
-	// SQLite keeps its plain read: its DSN begins every transaction IMMEDIATE,
-	// which would take the write lock for a read, and it has no timeout to raise.
-	var q interface {
-		Query(string, ...any) (*sql.Rows, error)
-	} = s.db
-	if s.dialect.Driver() == DriverPostgres {
-		tx, err := s.db.Begin()
-		if err != nil {
-			return nil, fmt.Errorf("list decision backfill candidates: begin: %w", err)
-		}
-		defer tx.Rollback() //nolint:errcheck // read-only
-		if err := s.setTxTimeouts(tx, effortCandidatesStatementTimeout.get(), effortCandidatesLockTimeout.get()); err != nil {
-			return nil, fmt.Errorf("list decision backfill candidates: %w", err)
-		}
-		q = tx
-	}
-	rows, err := q.Query(s.q(`
-		SELECT i.workspace_id, i.id
-		FROM items i
-		WHERE i.deleted_at IS NULL
-		  AND EXISTS (SELECT 1 FROM item_decisions d
-		              WHERE d.item_id = i.id AND d.question_set = ? AND d.question_key = ?)
-		  AND NOT EXISTS (SELECT 1 FROM item_decisions e
-		              WHERE e.item_id = i.id AND e.question_set = ? AND e.question_key = ?)
-		ORDER BY i.workspace_id, i.id`), set, withKey, set, missingKey)
-	if err != nil {
-		return nil, fmt.Errorf("list decision backfill candidates: %w", err)
-	}
-	defer rows.Close()
-	var out []DecisionBackfillCandidate
-	for rows.Next() {
-		var c DecisionBackfillCandidate
-		if err := rows.Scan(&c.WorkspaceID, &c.ItemID); err != nil {
-			return nil, err
-		}
-		out = append(out, c)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	slog.Info("decision backfill candidates listed", "set", set, "candidates", len(out), "duration", time.Since(started))
-	return out, nil
-}
-
-// The whole-table candidate read's bounds (TASK-4278): 30 min statement,
-// 30 s lock. Atomics only so a test can lower them
-// (SetEffortCandidatesBoundsForTesting); nothing else writes them.
-var (
-	effortCandidatesStatementTimeout = newDurationVar(30 * time.Minute)
-	effortCandidatesLockTimeout      = newDurationVar(30 * time.Second)
-)
-
-type durationVar struct{ ns atomic.Int64 }
-
-func newDurationVar(d time.Duration) *durationVar {
-	v := &durationVar{}
-	v.ns.Store(int64(d))
-	return v
-}
-
-func (v *durationVar) get() time.Duration { return time.Duration(v.ns.Load()) }
-
-// SetEffortCandidatesBoundsForTesting lowers the candidate read's statement and
-// lock bounds so a test can make it time out without waiting minutes. Returns
-// the restore. Production code MUST NOT call this.
-func SetEffortCandidatesBoundsForTesting(statement, lock time.Duration) func() {
-	ps, pl := effortCandidatesStatementTimeout.get(), effortCandidatesLockTimeout.get()
-	effortCandidatesStatementTimeout.ns.Store(int64(statement))
-	effortCandidatesLockTimeout.ns.Store(int64(lock))
-	return func() {
-		effortCandidatesStatementTimeout.ns.Store(int64(ps))
-		effortCandidatesLockTimeout.ns.Store(int64(pl))
-	}
 }
 
 // enqueueDecisionJobsForItemTx is the comment door's form: a comment knows its
@@ -437,41 +306,6 @@ func (s *Store) ClaimDecisionJobs(runner string, limit int, lease time.Duration)
 		}
 	}
 	return claimed, nil
-}
-
-// CountClaimableDecisionJobs counts the set's jobs for itemIDs that
-// ClaimDecisionJobs could take RIGHT NOW at `now`: the very decisionJobClaimable
-// predicate, so the two cannot drift. A job that is claimed (lease live), held
-// by the re-ask debounce (not_before ahead), held by a soft-deleted workspace,
-// answered or deleted is not counted. The effort backfill uses it to tell
-// whether its last chunk has drained (TASK-3921).
-func (s *Store) CountClaimableDecisionJobs(set string, itemIDs []string, now time.Time) (int, error) {
-	nowS := decisionTime(now)
-	total := 0
-	for start := 0; start < len(itemIDs); start += oweDecisionChunk {
-		end := start + oweDecisionChunk
-		if end > len(itemIDs) {
-			end = len(itemIDs)
-		}
-		part := itemIDs[start:end]
-		args := make([]any, 0, len(part)+3)
-		args = append(args, set)
-		marks := make([]string, len(part))
-		for i, id := range part {
-			marks[i] = "?"
-			args = append(args, id)
-		}
-		args = append(args, nowS, nowS)
-		var n int
-		if err := s.db.QueryRow(s.q(`
-			SELECT COUNT(*) FROM decision_jobs
-			WHERE question_set = ? AND item_id IN (`+strings.Join(marks, ",")+`)
-			  AND `+decisionJobClaimable), args...).Scan(&n); err != nil {
-			return 0, fmt.Errorf("count claimable decision jobs: %w", err)
-		}
-		total += n
-	}
-	return total, nil
 }
 
 // CompleteDecisionJob retires a claimed job.
@@ -829,52 +663,6 @@ func scanItemDecisions(rows *sql.Rows) ([]models.ItemDecision, error) {
 		out = append(out, d)
 	}
 	return out, rows.Err()
-}
-
-// LatestWorkspaceDecisions returns the newest answer per (item, question_key)
-// in one question set across a workspace — the dashboard's batch form of
-// LatestItemDecisions. Soft-deleted items are excluded HERE as a cost filter,
-// not as the correctness guard: the one caller (Runner.WorkspaceFlags) reads
-// each flagged item's state and skips a gone one, so without this join a
-// deleted item costs a read and is still not shown. Visibility and
-// terminal-state filtering are the caller's, which already holds the item
-// list it is joining against. Current is left false, as there.
-func (s *Store) LatestWorkspaceDecisions(workspaceID, questionSet string) ([]models.ItemDecision, error) {
-	rows, err := s.db.Query(s.q(`
-		SELECT d.id, d.item_id, d.question_set, d.question_key, d.kind, d.answer, d.confidence,
-		       d.provider, d.model, d.state_hash, d.question_hash, d.item_seq, d.state_truncated, d.evaluated_at
-		FROM item_decisions d
-		JOIN items i ON i.id = d.item_id AND i.deleted_at IS NULL
-		WHERE d.workspace_id = ? AND d.question_set = ?
-		  AND NOT EXISTS (
-			SELECT 1 FROM item_decisions n
-			WHERE n.item_id = d.item_id AND n.question_set = d.question_set AND n.question_key = d.question_key
-			  AND (n.evaluated_at > d.evaluated_at OR (n.evaluated_at = d.evaluated_at AND n.id > d.id))
-		  )
-		ORDER BY d.item_id, d.question_key`), workspaceID, questionSet)
-	if err != nil {
-		return nil, fmt.Errorf("list workspace decisions: %w", err)
-	}
-	defer rows.Close()
-	return scanItemDecisions(rows)
-}
-
-// DecisionJobsFailing reports whether any owed job for the set in this
-// workspace carries a recorded failure — the read path's only view of a
-// provider that is erroring, since the provider is called off the request.
-// A failure is cleared when a new write re-enqueues the job, and the row is
-// deleted when an evaluation succeeds, so a true answer means the most
-// recent attempt at some item's current work failed.
-func (s *Store) DecisionJobsFailing(workspaceID, questionSet string) (bool, error) {
-	var n int
-	err := s.db.QueryRow(s.q(`
-		SELECT COUNT(*) FROM decision_jobs
-		WHERE workspace_id = ? AND question_set = ? AND last_error IS NOT NULL`),
-		workspaceID, questionSet).Scan(&n)
-	if err != nil {
-		return false, fmt.Errorf("count failing decision jobs: %w", err)
-	}
-	return n > 0, nil
 }
 
 // RecentComments returns an item's newest n comments, oldest first — the

@@ -492,44 +492,6 @@ func TestOverridePaths_RunWithRaisedLimits(t *testing.T) {
 	})
 }
 
-// BackfillEffort's whole-table read waits out a lock the bounded default would
-// have failed on.
-func TestOverridePaths_EffortCandidatesRead(t *testing.T) {
-	t.Parallel()
-	// No idle-in-transaction bound: the lock holder must outlive the lock bound.
-	s := pgBounded(t, RuntimeLimits{Statement: 30 * time.Second, Lock: rtBound})
-
-	holder, err := s.db.Begin()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer holder.Rollback()
-	if _, err := holder.Exec(`LOCK TABLE item_decisions IN ACCESS EXCLUSIVE MODE`); err != nil {
-		t.Fatal(err)
-	}
-
-	// Control: a plain read on the bounded pool dies at the lock bound.
-	ctrlCtx, cancelCtrl := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancelCtrl()
-	_, ctrlErr := s.db.ExecContext(ctrlCtx, `SELECT count(*) FROM item_decisions`)
-	if pgErrCode(ctrlErr) != "55P03" {
-		t.Fatalf("control read: %v, want 55P03", ctrlErr)
-	}
-
-	// Release the lock after the lock bound has passed but well inside the
-	// override's 30 s, so only the override can make the read succeed.
-	release := time.AfterFunc(900*time.Millisecond, func() { holder.Rollback() })
-	defer release.Stop()
-
-	got, err := s.ItemsMissingDecisionKey("attention", "needs_human_decision", "effort")
-	if err != nil {
-		t.Fatalf("ItemsMissingDecisionKey behind a lock held past the bound: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("candidates = %d on an empty table", len(got))
-	}
-}
-
 func TestSetTxTimeouts(t *testing.T) {
 	t.Parallel()
 	t.Run("no-op on SQLite", func(t *testing.T) {

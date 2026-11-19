@@ -430,13 +430,31 @@ func TestDecisionJobs_RestoreEnqueues(t *testing.T) {
 	}
 }
 
+// oweJobsForTest makes the set owed for each item in one transaction, through
+// the write doors' own per-(item, set) body and the installed debounce.
+func oweJobsForTest(t *testing.T, s *Store, wsID, set string, itemIDs ...string) {
+	t.Helper()
+	tx, err := s.db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Rollback() //nolint:errcheck // no-op after commit
+	now := time.Now()
+	for _, id := range itemIDs {
+		if err := s.owedDecisionJobTx(tx, wsID, id, set, s.decisionDebounceFunc(), now, decisionTime(now)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // failOneAttentionJob owes, claims and fails one attention job with this
 // message, and returns the job's stored state (BUG-4018).
 func failOneAttentionJob(t *testing.T, s *Store, wsID, itemID, msg string) *DecisionJobState {
 	t.Helper()
-	if err := s.OweDecisionJobs(wsID, "attention", []string{itemID}); err != nil {
-		t.Fatal(err)
-	}
+	oweJobsForTest(t, s, wsID, "attention", itemID)
 	claimed, err := s.ClaimDecisionJobs("r", 10, time.Hour)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim: %d, %v", len(claimed), err)
@@ -476,12 +494,6 @@ func TestFailDecisionJob_RecordsAnyMessage(t *testing.T) {
 			}
 			if j.Attempts != 1 {
 				t.Fatalf("attempts = %d, want 1", j.Attempts)
-			}
-			if failing, err := s.DecisionJobsFailing(ws.ID, "attention"); err != nil || !failing {
-				t.Fatalf("DecisionJobsFailing = %v, %v; want true", failing, err)
-			}
-			if got, err := s.OwedDecisionJobs(ws.ID, []string{item.ID}, "attention"); err != nil || got[item.ID] {
-				t.Fatalf("a failed job still reads as owed: %v %v", got, err)
 			}
 		})
 	}
@@ -572,12 +584,6 @@ func TestFailDecisionJob_SanitiseBeforeCut(t *testing.T) {
 			}
 			if j.Attempts != 1 {
 				t.Fatalf("attempts = %d, want 1", j.Attempts)
-			}
-			if failing, err := s.DecisionJobsFailing(ws.ID, "attention"); err != nil || !failing {
-				t.Fatalf("DecisionJobsFailing = %v, %v; want true", failing, err)
-			}
-			if got, err := s.OwedDecisionJobs(ws.ID, []string{item.ID}, "attention"); err != nil || got[item.ID] {
-				t.Fatalf("a failed job still reads as owed: %v %v", got, err)
 			}
 		})
 	}

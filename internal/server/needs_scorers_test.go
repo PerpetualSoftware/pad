@@ -743,8 +743,8 @@ func TestNeedsYouSignals_ReadFailureDegrades(t *testing.T) {
 }
 
 // Importance reads no stored needs_human answer (TASK-4643): a current .9
-// answer, a stale one and a stale one owed a refresh all leave H at the
-// non-ask .5, and none of them adds a Why.
+// answer and two stale ones all leave H at the non-ask .5, and none of them
+// adds a Why.
 func TestNeedsYouSignals_ImportanceIgnoresStoredNeedsHuman(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
@@ -772,9 +772,6 @@ func TestNeedsYouSignals_ImportanceIgnoresStoredNeedsHuman(t *testing.T) {
 	}
 	if job, err := srv.store.GetDecisionJob(stale.ID, decision.AttentionSetName); err != nil || job != nil {
 		t.Fatalf("a job is owed for the stale item (%+v, %v): the flag rule would hold its answer", job, err)
-	}
-	if err := srv.store.OweDecisionJobs(ws.ID, decision.AttentionSetName, []string{held.ID}); err != nil {
-		t.Fatal(err)
 	}
 	now := time.Now()
 	row := func(it *models.Item) *needs.Row {
@@ -971,9 +968,9 @@ func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
 }
 
 // Simplicity reads no stored answer (TASK-4643): a current effort answer at
-// level 3, a confident effort_medium "device" and an owed job leave the score
-// at the text heuristic (a question title with a short body: 100), with no
-// hint and only "estimated from the text" in Why.
+// level 3 and a confident effort_medium "device" leave the score at the text
+// heuristic (a question title with a short body: 100), with no hint and only
+// "estimated from the text" in Why.
 func TestNeedsYouSignals_SimplicityIgnoresStoredEffort(t *testing.T) {
 	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
@@ -1013,9 +1010,6 @@ func TestNeedsYouSignals_SimplicityIgnoresStoredEffort(t *testing.T) {
 		}
 		if current != 2 {
 			t.Fatalf("precondition: %d of the 2 stored effort answers are current", current)
-		}
-		if err := srv.store.OweDecisionJobs(ws.ID, decision.AttentionSetName, []string{it.ID}); err != nil {
-			t.Fatal(err)
 		}
 		resp := f.need(alice, "")
 		if len(resp.Rows) != 1 {

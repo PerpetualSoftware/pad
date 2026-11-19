@@ -107,56 +107,6 @@ func measureBulkWorkspace(t *testing.T, s *Store, name string, n, commentsPer, r
 	return ws.ID, col.ID
 }
 
-// (a) BackfillEffort's whole-table read on the 4,079-item shape and a
-// 10x one, with an item writer running alongside to show what it costs a
-// runtime writer.
-//
-//	PAD_MEASURE=1 PAD_TEST_POSTGRES_URL=... go test ./internal/store -run TestMeasure_BackfillEffortRead -v
-func TestMeasure_BackfillEffortRead(t *testing.T) {
-	if os.Getenv("PAD_MEASURE") != "1" {
-		t.Skip("PAD_MEASURE=1 not set")
-	}
-	s := pgBounded(t, RuntimeLimits{Statement: 30 * time.Second, Lock: 10 * time.Second, IdleInTx: time.Minute})
-	for _, n := range []int{4079, 40790} {
-		wsID, colID := measureBulkWorkspace(t, s, fmt.Sprintf("Effort %d", n), n, 5, 0, "")
-		if _, err := s.db.Exec(`INSERT INTO item_decisions (id, workspace_id, item_id, question_set, question_key, kind, answer, provider, model, state_hash, question_hash, item_seq, evaluated_at)
-			SELECT gen_random_uuid()::text, workspace_id, id, 'attention', 'needs_human_decision', 'bool', 'no', 'p', 'm', 'h', 'q', 0, now()::text FROM items WHERE workspace_id = $1`, wsID); err != nil {
-			t.Fatal(err)
-		}
-		probe := createTestItem(t, s, wsID, colID, "probe", "x")
-		var maxWrite time.Duration
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			for i := 0; i < 20; i++ {
-				title := fmt.Sprintf("probe %d", i)
-				b := time.Now()
-				if _, err := s.UpdateItem(probe.ID, models.ItemUpdate{Title: &title}); err != nil {
-					t.Errorf("writer: %v", err)
-				}
-				if d := time.Since(b); d > maxWrite {
-					maxWrite = d
-				}
-			}
-		}()
-		var worst time.Duration
-		var got int
-		for i := 0; i < 5; i++ {
-			b := time.Now()
-			c, err := s.ItemsMissingDecisionKey("attention", "needs_human_decision", "effort")
-			if err != nil {
-				t.Fatal(err)
-			}
-			got = len(c)
-			if d := time.Since(b); d > worst {
-				worst = d
-			}
-		}
-		<-done
-		t.Logf("MEASURE ItemsMissingDecisionKey over %d items (%d candidates): slowest of 5 reads %s; concurrent item writer max latency %s", n, got, worst, maxWrite)
-	}
-}
-
 // (b) The largest cross-workspace copy the UI allows. The copy is ONE item (no
 // children, comments, versions or links carry); what scales is the item's
 // body (the API caps a JSON body at 2 MiB) and the attachments it references,
