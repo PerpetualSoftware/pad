@@ -161,7 +161,10 @@ func totpEnrolError(err error) error {
 	if errors.As(err, &apiErr) {
 		switch apiErr.Code {
 		case "reauth_required":
-			return fmt.Errorf("sign in again ('pad auth login'), then run 'pad auth 2fa setup' within 10 minutes")
+			// A browser-approved CLI session keeps the browser session's
+			// sign-in time, so a fresh 'pad auth login' alone never satisfies
+			// this: the browser has to sign in afresh first.
+			return fmt.Errorf("no verification method is available for this account: sign out of Pad in the browser and sign in again, then run 'pad auth logout' and 'pad auth login' and 'pad auth 2fa setup' within 10 minutes")
 		case "session_required":
 			return fmt.Errorf("2FA can only be changed from a signed-in session, not an API token: run 'pad auth login' (and unset PAD_TOKEN if it is set)")
 		}
