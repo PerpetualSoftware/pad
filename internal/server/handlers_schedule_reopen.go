@@ -36,12 +36,13 @@ func (s *Server) handleReopenItemCommitment(w http.ResponseWriter, r *http.Reque
 		writeResolveField(w, "resolution_id", "required", "resolution_id is required")
 		return
 	}
-	if _, err = uuid.Parse(*body.ResolutionID); err != nil || len(*body.ResolutionID) != 36 {
+	parsedID, err := uuid.Parse(*body.ResolutionID)
+	if err != nil || len(*body.ResolutionID) != 36 {
 		writeResolveField(w, "resolution_id", "format", "resolution_id must be a UUID")
 		return
 	}
 	activity := s.activityForRequest(workspaceID, item.ID, "schedule_reopened", r, "")
-	result, err := s.store.ReopenOccurrence(workspaceID, item.ID, store.ReopenInput{ResolutionID: *body.ResolutionID, Actor: activity.Actor, ActorUserID: currentUserID(r), Activity: activity})
+	result, err := s.store.ReopenOccurrence(workspaceID, item.ID, store.ReopenInput{ResolutionID: parsedID.String(), Actor: activity.Actor, ActorUserID: currentUserID(r), Activity: activity})
 	var refusal *store.ReopenError
 	if errors.As(err, &refusal) {
 		writeError(w, http.StatusConflict, refusal.Code, refusal.Error())
