@@ -43,6 +43,11 @@ function answer(key: string, noul: number): ItemDecision {
 	};
 }
 
+// The one chip left (TASK-4643): a current convention break at or above .9.
+function conv(ref: string, noul: number): ItemDecision {
+	return { ...answer(`conv:${ref}`, noul), question_set: 'conventions' };
+}
+
 async function settle() {
 	await Promise.resolve();
 	await Promise.resolve();
@@ -74,6 +79,23 @@ describe('DecisionChips', () => {
 		expect(labels).toEqual(['Possibly breaks CONVE-9']);
 	});
 
+	it('TASK-4643: a current needs_human answer at .95 paints no chip', async () => {
+		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
+		flushSync();
+		pending.get('a')!({
+			ref: 'A-1',
+			decisions: [
+				answer('needs_human_decision', 0.95),
+				// Control: a convention break in the same response does paint.
+				{ ...answer('conv:CONVE-9', 0.96), question_set: 'conventions' },
+			],
+		});
+		await settle();
+		const labels = [...document.querySelectorAll('.decision-chip-label')].map((e) => e.textContent);
+		expect(labels).toEqual(['Possibly breaks CONVE-9']);
+		expect(document.body.textContent).not.toMatch(/Needs a human/);
+	});
+
 	it('renders nothing when the item has no answers', async () => {
 		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
 		flushSync();
@@ -89,14 +111,13 @@ describe('DecisionChips', () => {
 		props.itemRef = 'b';
 		props.itemId = 'B';
 		flushSync();
-		pending.get('b')!({ ref: 'B-1', decisions: [answer('needs_human_decision', 0.8)] });
+		pending.get('b')!({ ref: 'B-1', decisions: [conv('CONVE-8', 0.92)] });
 		await settle();
-		// The counterfactual: A answers LAST, with a value B does not have.
-		pending.get('a')!({ ref: 'A-1', decisions: [answer('needs_human_decision', 0.95)] });
+		// The counterfactual: A answers LAST, with a chip B does not have.
+		pending.get('a')!({ ref: 'A-1', decisions: [conv('CONVE-9', 0.95)] });
 		await settle();
-		const values = [...document.querySelectorAll('.decision-chip-value')].map((e) => e.textContent);
-		expect(values).toEqual(['80%']);
-		expect(document.querySelector('.decision-chip.flagged')).not.toBeNull();
+		const labels = [...document.querySelectorAll('.decision-chip-label')].map((e) => e.textContent);
+		expect(labels).toEqual(['Possibly breaks CONVE-8']);
 	});
 
 	it("does not paint a response issued under the previous identity (BUG-3130)", async () => {
@@ -106,7 +127,7 @@ describe('DecisionChips', () => {
 		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
 		flushSync();
 		auth.changeIdentity();
-		pending.get('a')!({ ref: 'A-1', decisions: [answer('needs_human_decision', 0.95)] });
+		pending.get('a')!({ ref: 'A-1', decisions: [conv('CONVE-9', 0.95)] });
 		await settle();
 		expect(document.querySelector('.decision-chips')).toBeNull();
 	});
@@ -115,7 +136,7 @@ describe('DecisionChips', () => {
 		// Without this the leg above passes for a component that never paints.
 		cmp = mount(DecisionChips, { target: document.body, props: { wsSlug: 'ws', itemRef: 'a', itemId: 'A' } });
 		flushSync();
-		pending.get('a')!({ ref: 'A-1', decisions: [answer('needs_human_decision', 0.95)] });
+		pending.get('a')!({ ref: 'A-1', decisions: [conv('CONVE-9', 0.95)] });
 		await settle();
 		expect(document.querySelector('.decision-chips')).not.toBeNull();
 	});
