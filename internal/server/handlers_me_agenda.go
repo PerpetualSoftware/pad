@@ -388,7 +388,7 @@ func (s *Server) appendAgendaItemEvents(run *agendaRead, workspaceID string, sco
 		for _, event := range events {
 			run.response.Entries = append(run.response.Entries, agendaEntry{
 				Type: source.kind, At: event.At.In(run.loc).Format(time.RFC3339), Day: event.At.In(run.loc).Format("2006-01-02"),
-				ItemRef: event.ItemRef, ItemTitle: event.ItemTitle, Collection: event.Collection, instant: event.At, subKey: event.ItemID,
+				ItemRef: event.ItemRef, ItemID: event.ItemID, ItemTitle: event.ItemTitle, Collection: event.Collection, instant: event.At, subKey: event.ItemID,
 			})
 		}
 	}
