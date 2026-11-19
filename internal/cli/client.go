@@ -2186,8 +2186,16 @@ func (c *Client) StepUpSendEmail() error {
 	return c.post("/auth/step-up/email", nil, nil)
 }
 
-func (c *Client) StepUpVerify(code, password string) error {
-	return c.post("/auth/step-up/verify", map[string]string{"code": code, "password": password}, nil)
+// StepUpVerify proves the current factor; the server reads only the field
+// that factor takes (code or recovery_code for totp, code for email,
+// password for password), so the others are left out.
+func (c *Client) StepUpVerify(code, recoveryCode, password string) error {
+	body := struct {
+		Code         string `json:"code,omitempty"`
+		RecoveryCode string `json:"recovery_code,omitempty"`
+		Password     string `json:"password,omitempty"`
+	}{code, recoveryCode, password}
+	return c.post("/auth/step-up/verify", body, nil)
 }
 
 // TOTPSetupResponse is POST /auth/2fa/setup's answer: a fresh secret (not yet

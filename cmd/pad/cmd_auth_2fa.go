@@ -171,50 +171,15 @@ func totpEnrolError(err error) error {
 
 // totpEnrolStepUp runs only after the server answered step_up_required, so it
 // always asks: the server's refusal outranks an active_until read against this
-// machine's clock.
+// machine's clock. An account with no factor proceeds (the server's
+// recent-sign-in exception decides), and setup sends an emailed code without
+// checking for a terminal, as it always has.
 func totpEnrolStepUp(client *cli.Client, in *bufio.Reader, out io.Writer) error {
-	status, err := client.StepUpStatus()
-	if err != nil {
-		return totpEnrolError(err)
-	}
-	var code, password string
-	switch status.Factor {
-	case "unavailable":
+	err := runStepUp(client, in, out, true, "2FA is still off")
+	if errors.Is(err, errStepUpUnavailable) {
 		return nil
-	case "email":
-		if err := client.StepUpSendEmail(); err != nil {
-			return totpEnrolError(err)
-		}
-		fmt.Fprintln(out, "We emailed you a verification code.")
-		fmt.Fprint(out, "Email code: ")
-		line, _ := in.ReadString('\n')
-		code = strings.TrimSpace(line)
-		if code == "" {
-			return fmt.Errorf("no verification code entered; 2FA is still off")
-		}
-	case "password":
-		fmt.Fprint(out, "Password: ")
-		password, err = readPasswordFrom(in)
-		fmt.Fprintln(out)
-		if err != nil {
-			return fmt.Errorf("read password: %w", err)
-		}
-		if password == "" {
-			return fmt.Errorf("no password entered; 2FA is still off")
-		}
-	default:
-		return fmt.Errorf("2FA enrolment verification factor %q is not supported", status.Factor)
 	}
-	if err := client.StepUpVerify(code, password); err != nil {
-		var apiErr *cli.APIError
-		if errors.As(err, &apiErr) {
-			switch apiErr.Code {
-			case "invalid_code":
-				return fmt.Errorf("incorrect verification code; 2FA is still off")
-			case "invalid_password":
-				return fmt.Errorf("incorrect password; 2FA is still off")
-			}
-		}
+	if err != nil {
 		return totpEnrolError(err)
 	}
 	return nil
