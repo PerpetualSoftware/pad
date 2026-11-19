@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -30,22 +31,101 @@ var ErrInvalidNeedsSnooze = errors.New("invalid needs snooze")
 // format (#2231 r1). Bind the user id.
 const needsOthersComment = `deleted_at IS NULL AND imported = 0 AND NOT (COALESCE(user_id, '') = ? AND created_by = 'user')`
 
+// needsStamp is one other comment with its created_at normalised to the
+// UTC whole second (needsCommentSecond).
+type needsStamp struct {
+	id, at string
+}
+
+// needsCommentSecond normalises a stored comments.created_at to the UTC whole
+// second in time.RFC3339 (truncated, never rounded), so the marker never
+// depends on how the row was stamped: a numeric offset and fractional seconds
+// read as the instant they name. ok is false when the text does not parse.
+func needsCommentSecond(raw string) (string, bool) {
+	t, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		return "", false
+	}
+	return t.UTC().Truncate(time.Second).Format(time.RFC3339), true
+}
+
+// needsOtherCommentStamps reads the other comments (needsOthersComment) on
+// the items, keyed by item id, each with its normalised second.
+func (s *Store) needsOtherCommentStamps(q Queryer, userID string, itemIDs []string) (map[string][]needsStamp, error) {
+	out := map[string][]needsStamp{}
+	for _, chunk := range chunkStrings(itemIDs, needsChunk) {
+		args := []any{userID}
+		for _, id := range chunk {
+			args = append(args, id)
+		}
+		rows, err := q.Query(s.q(`SELECT item_id, id, created_at FROM comments WHERE `+needsOthersComment+
+			` AND item_id IN (`+placeholders(len(chunk))+`)`), args...)
+		if err != nil {
+			return nil, fmt.Errorf("read other comments: %w", err)
+		}
+		for rows.Next() {
+			var itemID, id, raw string
+			if err := rows.Scan(&itemID, &id, &raw); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			at, ok := needsCommentSecond(raw)
+			if !ok {
+				// Skipped rather than failing the read: native writers stamp
+				// now(), so no native row is unparseable, and imported rows
+				// (bundle text verbatim) are excluded by needsOthersComment.
+				continue
+			}
+			out[itemID] = append(out[itemID], needsStamp{id: id, at: at})
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+// newestNeedsSecond is the newest normalised second among stamps ("" for
+// none). The normalised form is fixed-width UTC, so it orders as text.
+func newestNeedsSecond(stamps []needsStamp) string {
+	newest := ""
+	for _, st := range stamps {
+		if st.at > newest {
+			newest = st.at
+		}
+	}
+	return newest
+}
+
+// needsIDsAt lists, sorted, the ids of the stamps at the normalised second at
+// (none for "").
+func needsIDsAt(stamps []needsStamp, at string) []string {
+	ids := []string{}
+	if at == "" {
+		return ids
+	}
+	for _, st := range stamps {
+		if st.at == at {
+			ids = append(ids, st.id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // needsItemState is the item's state as the snoozing user would see it now:
-// the newest other comment's second, the ids at that second, and the latest
-// status-transition seq (legacy rows are 0).
+// the newest other comment's normalised second (needsCommentSecond), the ids
+// at that second, and the latest status-transition seq (legacy rows are 0).
 func (s *Store) needsItemState(q Queryer, userID, itemID string) (models.NeedsSnoozeMarker, error) {
 	var st models.NeedsSnoozeMarker
-	var at sql.NullString
-	if err := q.QueryRow(s.q(`SELECT MAX(created_at) FROM comments WHERE item_id = ? AND `+needsOthersComment),
-		itemID, userID).Scan(&at); err != nil {
-		return st, fmt.Errorf("read latest comment: %w", err)
-	}
-	st.SeenCommentAt = at.String
-	ids, err := s.needsCommentIDsAt(q, userID, itemID, st.SeenCommentAt)
+	stamps, err := s.needsOtherCommentStamps(q, userID, []string{itemID})
 	if err != nil {
 		return st, err
 	}
-	st.SeenCommentIDs = ids
+	st.SeenCommentAt = newestNeedsSecond(stamps[itemID])
+	st.SeenCommentIDs = needsIDsAt(stamps[itemID], st.SeenCommentAt)
 	if err := q.QueryRow(s.q(`SELECT COALESCE(MAX(seq), 0) FROM status_transitions WHERE item_id = ?`),
 		itemID).Scan(&st.SeenTransitionSeq); err != nil {
 		return st, fmt.Errorf("read latest transition: %w", err)
@@ -53,38 +133,28 @@ func (s *Store) needsItemState(q Queryer, userID, itemID string) (models.NeedsSn
 	return st, nil
 }
 
-// needsCommentIDsAt lists the other comments created at exactly `at`.
+// needsCommentIDsAt lists, sorted, the other comments whose normalised second
+// (needsCommentSecond) is `at`, itself a normalised second.
 func (s *Store) needsCommentIDsAt(q Queryer, userID, itemID, at string) ([]string, error) {
-	ids := []string{}
 	if at == "" {
-		return ids, nil
+		return []string{}, nil
 	}
-	rows, err := q.Query(s.q(`SELECT id FROM comments WHERE item_id = ? AND created_at = ? AND `+needsOthersComment+` ORDER BY id`),
-		itemID, at, userID)
+	stamps, err := s.needsOtherCommentStamps(q, userID, []string{itemID})
 	if err != nil {
-		return nil, fmt.Errorf("read comments at %s: %w", at, err)
+		return nil, err
 	}
-	defer rows.Close()
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			return nil, err
-		}
-		ids = append(ids, id)
-	}
-	return ids, rows.Err()
+	return needsIDsAt(stamps[itemID], at), nil
 }
 
 // clampNeedsMarker brings a client's marker within the server's state, so it
-// can only claim less was seen: the second is no later than the newest other
-// comment (an unparseable one is "", seen nothing), the ids are the other
-// comments that really exist at that second, and the seq is no higher than
-// the item's.
+// can only claim less was seen: the second, normalised by needsCommentSecond,
+// is no later than the newest other comment's (an
+// unparseable one is "", seen nothing), the ids are the other comments whose
+// normalised second it is, and the seq is no higher than the item's. Both
+// seconds are fixed-width UTC, so they order as text.
 func (s *Store) clampNeedsMarker(q Queryer, userID, itemID string, m models.NeedsSnoozeMarker, cur models.NeedsSnoozeMarker) (models.NeedsSnoozeMarker, error) {
 	var out models.NeedsSnoozeMarker
-	if t, err := time.Parse(time.RFC3339, m.SeenCommentAt); err == nil {
-		out.SeenCommentAt = t.UTC().Format(time.RFC3339)
-	}
+	out.SeenCommentAt, _ = needsCommentSecond(m.SeenCommentAt)
 	if out.SeenCommentAt > cur.SeenCommentAt {
 		out.SeenCommentAt = cur.SeenCommentAt
 	}
@@ -226,8 +296,10 @@ func (s *Store) GetNeedsSnooze(userID, itemID string, now time.Time) (*models.Ne
 }
 
 // needsDismissHolds compares a dismissal's marker with the item's current
-// state. A comment deleted since the marker leaves the newest second
-// earlier, which never breaks the hold.
+// state. Both seconds are normalised fixed-width UTC (needsCommentSecond,
+// clampNeedsMarker), never raw comments.created_at text, so they order as
+// text. A comment deleted since the marker leaves the newest second earlier,
+// which never breaks the hold.
 func needsDismissHolds(seen, cur models.NeedsSnoozeMarker) bool {
 	if cur.SeenTransitionSeq > seen.SeenTransitionSeq || cur.SeenCommentAt > seen.SeenCommentAt {
 		return false
