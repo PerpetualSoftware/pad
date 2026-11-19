@@ -19,6 +19,13 @@ const (
 	itemSeqChainActivityWindow = 500
 )
 
+// ActivityMetaAssignedUserID is stamped on an item's "updated" activity when
+// the write changed the assignee: the new assignee's user id, or "" when it
+// unassigned (TASK-4684). The "assigned: <before> → <after>" change text
+// beside it names display names, which a rename or a namesake makes
+// ambiguous; the id is what LatestAssignmentTimes matches on.
+const ActivityMetaAssignedUserID = "assigned_user_id"
+
 // ItemSeqChain walks the item's stamped activity entries from toSeq back to
 // fromSeq and returns them newest first, at most max. Complete is true only
 // when the walk reaches fromSeq exactly without a gap.

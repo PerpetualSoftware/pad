@@ -3,6 +3,7 @@ package store
 import (
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 	"time"
 
@@ -346,17 +347,100 @@ func TestLatestAssignmentTimes(t *testing.T) {
 	add("2024-02-01T00:00:00Z", "status: open → done; assigned: Alice → Bob")
 	add("2024-03-01T00:00:00Z", "assigned: Bob → Alice")
 	add("2024-04-01T00:00:00Z", "title: a → b")
-	got, err := f.s.LatestAssignmentTimes(f.ws.ID, map[string]string{f.item.ID: "Alice"})
+	got, err := f.s.LatestAssignmentTimes(f.ws.ID, map[string]AssigneeRef{f.item.ID: {UserID: "u-alice", Name: "Alice"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC); !got[f.item.ID].Equal(want) {
 		t.Fatalf("latest assignment to Alice = %v, want %v", got[f.item.ID], want)
 	}
-	got, _ = f.s.LatestAssignmentTimes(f.ws.ID, map[string]string{f.item.ID: "Carol"})
+	got, _ = f.s.LatestAssignmentTimes(f.ws.ID, map[string]AssigneeRef{f.item.ID: {UserID: "u-carol", Name: "Carol"}})
 	if _, ok := got[f.item.ID]; ok {
 		t.Fatal("an assignee with no assignment row must be absent (caller falls back to created_at)")
 	}
+}
+
+// TASK-4684: a row stamped with the assignee id matches by id, whatever
+// display name its text carries; an unstamped (legacy) row still matches by
+// the assignee's current name.
+func TestLatestAssignmentTimes_ByAssigneeID(t *testing.T) {
+	t.Parallel()
+	f := newMentionFixture(t)
+	add := func(itemID, at, meta string) {
+		t.Helper()
+		if _, err := f.s.db.Exec(f.s.q(`INSERT INTO activities (id, workspace_id, document_id, action, actor, source, metadata, created_at)
+			VALUES (?, ?, ?, 'updated', 'user', 'web', ?, ?)`), newID(), f.ws.ID, itemID, meta, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	latest := func(itemID string, ref AssigneeRef) (time.Time, bool) {
+		t.Helper()
+		got, err := f.s.LatestAssignmentTimes(f.ws.ID, map[string]AssigneeRef{itemID: ref})
+		if err != nil {
+			t.Fatal(err)
+		}
+		at, ok := got[itemID]
+		return at, ok
+	}
+	day := func(m int) time.Time { return time.Date(2024, time.Month(m), 1, 0, 0, 0, 0, time.UTC) }
+	alice := AssigneeRef{UserID: "u-alice", Name: "Alice Renamed"}
+
+	t.Run("rename: stamped row matches by id under the old name", func(t *testing.T) {
+		it := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Renamed", "")
+		add(it.ID, "2024-02-01T00:00:00Z", `{"changes":"assigned: (none) → Alice","assigned_user_id":"u-alice"}`)
+		if at, ok := latest(it.ID, alice); !ok || !at.Equal(day(2)) {
+			t.Fatalf("got %v %v, want %v", at, ok, day(2))
+		}
+	})
+	t.Run("same name, other user: stamped row for another id does not match", func(t *testing.T) {
+		it := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Namesake", "")
+		add(it.ID, "2024-02-01T00:00:00Z", `{"changes":"assigned: (none) → Alice Renamed","assigned_user_id":"u-other"}`)
+		if at, ok := latest(it.ID, alice); ok {
+			t.Fatalf("matched another user's assignment at %v", at)
+		}
+	})
+	t.Run("legacy row matches by current name; newest match wins across kinds", func(t *testing.T) {
+		it := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Mixed", "")
+		add(it.ID, "2024-01-01T00:00:00Z", `{"changes":"assigned: (none) → Alice Renamed"}`)
+		if at, ok := latest(it.ID, alice); !ok || !at.Equal(day(1)) {
+			t.Fatalf("legacy only: got %v %v, want %v", at, ok, day(1))
+		}
+		add(it.ID, "2024-03-01T00:00:00Z", `{"changes":"assigned: Bob → Alice","assigned_user_id":"u-alice"}`)
+		add(it.ID, "2024-04-01T00:00:00Z", `{"changes":"assigned: Alice Renamed → Bob"}`)
+		add(it.ID, "2024-05-01T00:00:00Z", `{"changes":"assigned: Bob → Alice Renamed"}`)
+		if at, ok := latest(it.ID, alice); !ok || !at.Equal(day(5)) {
+			t.Fatalf("newest legacy: got %v %v, want %v", at, ok, day(5))
+		}
+		add(it.ID, "2024-06-01T00:00:00Z", `{"changes":"status: open → done; assigned: Alice Renamed → Bob","assigned_user_id":"u-bob"}`)
+		add(it.ID, "2024-07-01T00:00:00Z", `{"changes":"assigned: Bob → Alicia","assigned_user_id":"u-alice"}`)
+		if at, ok := latest(it.ID, alice); !ok || !at.Equal(day(7)) {
+			t.Fatalf("newest stamped: got %v %v, want %v", at, ok, day(7))
+		}
+	})
+	t.Run("stamp whose change text the debounce collapsed away still matches", func(t *testing.T) {
+		it := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Away and back", "")
+		add(it.ID, "2024-01-01T00:00:00Z", `{"changes":"assigned: (none) → Alice","assigned_user_id":"u-alice"}`)
+		// The stored shape mergeActivityMeta leaves for A → B → A in one run.
+		merged := mergeActivityMeta(`{"changes":"assigned: Alice → Bob","assigned_user_id":"u-bob"}`, `{"changes":"assigned: Bob → Alice","assigned_user_id":"u-alice"}`)
+		if strings.Contains(merged, "assigned: ") {
+			t.Fatalf("fixture premise: the no-op run kept its text: %s", merged)
+		}
+		add(it.ID, "2024-02-01T00:00:00Z", merged)
+		if at, ok := latest(it.ID, alice); !ok || !at.Equal(day(2)) {
+			t.Fatalf("got %v %v, want %v", at, ok, day(2))
+		}
+	})
+	t.Run("unassign row never matches", func(t *testing.T) {
+		it := createTestItem(t, f.s, f.ws.ID, f.col.ID, "Unassigned", "")
+		add(it.ID, "2024-02-01T00:00:00Z", `{"changes":"assigned: Alice Renamed → (none)","assigned_user_id":""}`)
+		if at, ok := latest(it.ID, alice); ok {
+			t.Fatalf("an unassign matched at %v", at)
+		}
+		// Nor for an item with no assignee id at all.
+		if at, ok := latest(it.ID, AssigneeRef{Name: "(none)"}); ok {
+			t.Fatalf("an unassign matched an empty id at %v", at)
+		}
+	})
 }
 
 func TestWorkspaceOwnerIDs(t *testing.T) {

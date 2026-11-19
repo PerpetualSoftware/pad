@@ -440,11 +440,11 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	}
 
 	ids := make([]string, len(items))
-	mine := map[string]string{}
+	mine := map[string]store.AssigneeRef{}
 	for i, it := range items {
 		ids[i] = it.ID
-		if it.AssignedUserID != nil && *it.AssignedUserID == user.ID && it.AssignedUserName != "" {
-			mine[it.ID] = it.AssignedUserName
+		if it.AssignedUserID != nil && *it.AssignedUserID == user.ID {
+			mine[it.ID] = store.AssigneeRef{UserID: *it.AssignedUserID, Name: it.AssignedUserName}
 		}
 	}
 	mentions, err := s.store.OpenMentionsForItems(ids)
