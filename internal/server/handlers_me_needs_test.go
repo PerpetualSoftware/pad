@@ -629,13 +629,13 @@ func TestNeedsMe_DecisionRunnerNeverDegrades(t *testing.T) {
 		f.item(ws, open, "visible ask", alice, nfxDay(1))
 
 		// A provider that FAILS: an item in a collection alice cannot see
-		// gets a failing job, so the workspace-wide failing bit is set.
+		// gets a failing job.
 		p := attachAttentionRunner(t, srv)
 		p.fail = errors.New("upstream down")
-		f.item(ws, hidden, "hidden failing item", nil, nfxDay(2))
+		failingItem := f.item(ws, hidden, "hidden failing item", nil, nfxDay(2))
 		runDecisionTick(t, srv)
-		if failing, err := srv.store.DecisionJobsFailing(ws.ID, decision.AttentionSetName); err != nil || !failing {
-			t.Fatalf("the fixture must have a failing job: %v %v", failing, err)
+		if j, err := srv.store.GetDecisionJob(failingItem.ID, decision.AttentionSetName); err != nil || j == nil || j.LastError == "" {
+			t.Fatalf("the fixture must have a failing job: %+v %v", j, err)
 		}
 		resp := f.need(alice, "")
 		wantTitles(t, "rows", resp.Rows, "visible ask")

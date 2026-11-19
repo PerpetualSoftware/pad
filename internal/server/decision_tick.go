@@ -78,13 +78,6 @@ type decisionTickConfig struct {
 	// A cancelled job's claim is released without counting
 	// an attempt, so the new runner picks it up.
 	passCancel context.CancelFunc
-
-	// backfillCancel cancels the running effort backfill (TASK-3921), if any;
-	// backfillGen names the current run so a cancelled run exiting late cannot
-	// clear the state of the one that replaced it. Both live under mu, as the
-	// stopped check and the bg.Add of the run do.
-	backfillCancel context.CancelFunc
-	backfillGen    uint64
 }
 
 // SetDecisionRunner attaches the decision runner and wires its registry into
@@ -186,10 +179,6 @@ func (s *Server) stopDecisionTick() {
 	s.decisionTick.mu.Lock()
 	defer s.decisionTick.mu.Unlock()
 	s.decisionTick.stopped = true
-	if s.decisionTick.backfillCancel != nil {
-		s.decisionTick.backfillCancel()
-		s.decisionTick.backfillCancel = nil
-	}
 	if !s.decisionTick.running {
 		return
 	}

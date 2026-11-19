@@ -15,8 +15,8 @@ const maxTxTimeoutOverride = 30 * time.Minute
 // setTxTimeouts raises (or lowers) statement_timeout and lock_timeout for the
 // rest of this transaction only (SET LOCAL), for the few long paths that
 // legitimately outlast the runtime pool's bounds (workspace purge, import,
-// attachment remap, the effort backfill read). Call it as the FIRST statement
-// after Begin. A no-op on SQLite.
+// attachment remap). Call it as the FIRST statement after Begin. A no-op on
+// SQLite.
 //
 // There is no blanket zero: a value <= 0 is refused, because PostgreSQL reads 0
 // as "no timeout at all". A value above maxTxTimeoutOverride is clamped.

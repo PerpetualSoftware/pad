@@ -530,10 +530,10 @@ func TestCatchUpNeedsYouNoJudge(t *testing.T) {
 	p.fail = errors.New("upstream down")
 	p.mu.Unlock()
 	// A new item owes an undebounced first ask, which now fails.
-	f.create(t, f.bobTok, "tasks", "Anything")
+	anything := f.create(t, f.bobTok, "tasks", "Anything")
 	runDecisionTick(t, srv)
-	if failing, err := srv.store.DecisionJobsFailing(f.ws.ID, decision.AttentionSetName); err != nil || !failing {
-		t.Fatalf("precondition: the attention job is not recorded as failing (failing=%v, err=%v)", failing, err)
+	if j, err := srv.store.GetDecisionJob(anything.ID, decision.AttentionSetName); err != nil || j == nil || j.LastError == "" {
+		t.Fatalf("precondition: the attention job is not recorded as failing (job=%+v, err=%v)", j, err)
 	}
 	got = f.catchUp(t, f.aliceTok)
 	task3615Want(t, "needs_you with a failing provider", got.NeedsYou, "Assigned and blocked")

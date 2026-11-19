@@ -575,13 +575,12 @@ func (p *countingProvider) Ask(_ context.Context, _ any, qs map[string]decision.
 	return out, decision.Usage{}, nil
 }
 
-// TASK-3921, from the consuming side (CONVE-19): the effort backfill must run
-// when an admin enables the provider AFTER boot, not only at boot. Boot with no
-// provider, seed an item the attention set has answered for needs_human_decision
-// but never for effort, enable a provider through the admin endpoint, and see
-// the job owed and the marker set. A boot-only hook never runs here, so this
-// fails against one.
-func TestConfigureDecisions_BackfillsOnLaterEnable(t *testing.T) {
+// TASK-4687: enabling the provider after boot, and reconfiguring it again,
+// owes no attention job for an item whose stored answers lack `effort`. The
+// one-shot effort backfill that used to enqueue that job on every reconfigure
+// is gone; only a write to the item may owe it. The tick never fires here, so
+// nothing else writes a job row or the old backfill marker.
+func TestConfigureDecisions_LaterEnableOwesNoBackfillJob(t *testing.T) {
 	clearDecisionEnv(t)
 	srv, token := decisionSettingsServer(t)
 	if srv.decisionRunner() != nil {
@@ -605,21 +604,24 @@ func TestConfigureDecisions_BackfillsOnLaterEnable(t *testing.T) {
 	if _, code, body := putDecisionSettings(t, srv, token, map[string]interface{}{"enabled": true, "api_key": decisionTestKey}); code != http.StatusOK {
 		t.Fatalf("enable: %d %s", code, body)
 	}
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	if err := srv.ConfigureDecisions(); err != nil {
+		t.Fatalf("reconfigure: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
 		j, err := srv.store.GetDecisionJob(item.ID, decision.AttentionSetName)
 		if err != nil {
 			t.Fatal(err)
 		}
-		marker, err := srv.store.GetPlatformSetting(decision.EffortBackfillSetting)
+		if j != nil {
+			t.Fatal("reconfiguring the provider owed an attention job for an item nobody wrote to")
+		}
+		marker, err := srv.store.GetPlatformSetting("effort_decisions_backfilled")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if j != nil && marker != "" {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("after enabling: job owed = %v, marker = %q; the backfill did not run on a later enable", j != nil, marker)
+		if marker != "" {
+			t.Fatalf("reconfiguring the provider set the backfill marker %q", marker)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

@@ -48,9 +48,7 @@ func installDecisionJobTrigger(t *testing.T, s *Store, prefix string) {
 
 func claimOneAttentionJob(t *testing.T, s *Store, wsID, itemID string) DecisionJob {
 	t.Helper()
-	if err := s.OweDecisionJobs(wsID, "attention", []string{itemID}); err != nil {
-		t.Fatal(err)
-	}
+	oweJobsForTest(t, s, wsID, "attention", itemID)
 	claimed, err := s.ClaimDecisionJobs("r", 10, time.Hour)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("claim: %d, %v", len(claimed), err)
@@ -93,9 +91,6 @@ func TestFailDecisionJob_RefusedMessageIsRecordedFixed(t *testing.T) {
 	lease := decisionLease(t, s, item.ID)
 	if lease.Before(before.Add(time.Hour-time.Minute)) || lease.After(time.Now().Add(time.Hour+time.Minute)) {
 		t.Fatalf("lease = %v, want about now+1h", lease)
-	}
-	if failing, err := s.DecisionJobsFailing(ws.ID, "attention"); err != nil || !failing {
-		t.Fatalf("DecisionJobsFailing = %v, %v; want true", failing, err)
 	}
 	if again, _ := s.ClaimDecisionJobs("r2", 10, time.Hour); len(again) != 0 {
 		t.Fatalf("a job inside its backoff was claimed")
@@ -141,9 +136,6 @@ func TestFailDecisionJob_EmptyMessageIsAFailureNotASupersede(t *testing.T) {
 			}
 			if again, _ := s.ClaimDecisionJobs("r2", 10, time.Hour); len(again) != 0 {
 				t.Fatalf("an empty-message failure was claimable before its backoff")
-			}
-			if failing, err := s.DecisionJobsFailing(ws.ID, "attention"); err != nil || !failing {
-				t.Fatalf("DecisionJobsFailing = %v, %v; want true", failing, err)
 			}
 		})
 	}

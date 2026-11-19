@@ -132,8 +132,8 @@ const surfacedAttentionThreshold = 0.7
 
 // surfacedAttentionSet is the attention set as it shipped before TASK-4643:
 // needs_human_decision surfaced at 0.7. No production set surfaces it now, but
-// WorkspaceFlags, SurfacedDecisions and ItemReadDecisions still filter on
-// Unsurfaced and Threshold, and their mechanism tests run over this copy.
+// SurfacedDecisions and ItemReadDecisions still filter on Unsurfaced and
+// Threshold, and their mechanism tests run over this copy.
 func surfacedAttentionSet() QuestionSet {
 	qs := AttentionSet()
 	delete(qs.Unsurfaced, AttentionNeedsHuman)
@@ -215,7 +215,6 @@ func newAttentionFixtureWith(t *testing.T, reg *Registry) *attentionFixture {
 	// tick; the re-ask debounce (TASK-3916) has its own tests, which this
 	// would otherwise make every write-then-tick here wait an hour for.
 	fx.s.SetDecisionDebounce(nil)
-	fx.r.backfillPoll = time.Millisecond // the backfill's drain wait polls fast
 	return fx
 }
 
@@ -283,7 +282,7 @@ func (fx *attentionFixture) item(t *testing.T, collID, status string) *models.It
 // beside them is (the leg that shows the fixture CAN ask). Reopening the
 // terminal item makes it eligible again.
 func TestAttention_OnlyOpenItemsInUserCollectionsAreAsked(t *testing.T) {
-	fx := newSurfacedAttentionFixture(t)
+	fx := newAttentionFixture(t)
 	sys, err := fx.s.CreateCollection(fx.ws.ID, models.CollectionCreate{Name: "Conventions", Schema: statusSchema, IsSystem: true})
 	if err != nil {
 		t.Fatal(err)
@@ -305,12 +304,14 @@ func TestAttention_OnlyOpenItemsInUserCollectionsAreAsked(t *testing.T) {
 			t.Errorf("ineligible item %s kept its job: %+v", it.ID, j)
 		}
 	}
-	nouls, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := nouls[open.ID]; !ok || len(nouls) != 1 {
-		t.Fatalf("answers stored for %v, want only the open item", nouls)
+	for _, it := range []*models.Item{open, done, rule} {
+		ds, err := fx.r.Decisions(it.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := it == open; (len(ds) > 0) != want {
+			t.Errorf("item %s: %d answers stored, want any = %v (only the open item)", it.ID, len(ds), want)
+		}
 	}
 
 	reopened := `{"status":"open"}`
@@ -320,260 +321,6 @@ func TestAttention_OnlyOpenItemsInUserCollectionsAreAsked(t *testing.T) {
 	fx.tick(t)
 	if len(fx.f.requests) != 2 {
 		t.Fatalf("a reopened item was not asked (provider calls = %d, want 2)", len(fx.f.requests))
-	}
-}
-
-// WorkspaceFlags returns the LATEST answer per item and key, scoped to the
-// workspace, and drops answers to a question that has since been reworded.
-func TestWorkspaceFlags_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
-	fx := newSurfacedAttentionFixture(t)
-	it := fx.item(t, fx.tasks.ID, "open")
-	fx.tick(t)
-
-	fx.set(AttentionNeedsHuman, 0.3)
-	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "Dave picked vendor B"}); err != nil {
-		t.Fatal(err)
-	}
-	fx.tick(t)
-	nouls, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
-	if err != nil || failing {
-		t.Fatalf("WorkspaceFlags: failing=%v err=%v", failing, err)
-	}
-	if got := nouls[it.ID][AttentionNeedsHuman]; got != 0.3 {
-		t.Fatalf("needs_human = %v, want the LATEST answer 0.3 (first was 0.9)", got)
-	}
-
-	other, err := fx.s.CreateWorkspace(models.WorkspaceCreate{Name: "Other"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n, _, _ := fx.r.WorkspaceFlags(other.ID, AttentionSetName, 0); len(n) != 0 {
-		t.Fatalf("another workspace saw %v", n)
-	}
-
-	// Same store and rows, a registry whose needs_human question is worded
-	// differently: that key's stored answer no longer answers it.
-	reworded := surfacedAttentionSet()
-	q := reworded.Questions[AttentionNeedsHuman]
-	q.Instructions += " (reworded)"
-	reworded.Questions[AttentionNeedsHuman] = q
-	reg := NewRegistry()
-	if err := reg.Register(reworded); err != nil {
-		t.Fatal(err)
-	}
-	r2 := NewRunner(fx.s, fx.r.provider, reg)
-	n2, _, err := r2.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := n2[it.ID][AttentionNeedsHuman]; ok {
-		t.Error("an answer to the old wording was returned for the reworded question")
-	}
-	if _, ok := nouls[it.ID][AttentionNeedsHuman]; !ok {
-		t.Error("counterfactual: the registry as shipped no longer returns the answer, so the reworded leg proves nothing")
-	}
-
-	if err := fx.s.DeleteItem(it.ID); err != nil {
-		t.Fatal(err)
-	}
-	if n, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); len(n) != 0 {
-		t.Fatalf("a deleted item's answers were returned: %v", n)
-	}
-}
-
-func TestWorkspaceFlags_ReportsAFailingProvider(t *testing.T) {
-	fx := newSurfacedAttentionFixture(t)
-	fx.item(t, fx.tasks.ID, "open")
-	if _, failing, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); failing {
-		t.Fatal("precondition: failing before any attempt")
-	}
-	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"detail":"upstream down"}`, http.StatusServiceUnavailable)
-	})
-	fx.tick(t)
-	if _, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); err != nil || !failing {
-		t.Fatalf("after a provider failure: failing=%v err=%v, want failing", failing, err)
-	}
-}
-
-func TestWorkspaceFlags_NilRunner(t *testing.T) {
-	var r *Runner
-	n, failing, err := r.WorkspaceFlags("ws", AttentionSetName, 0)
-	if n != nil || failing || err != nil {
-		t.Fatalf("nil runner: %v %v %v", n, failing, err)
-	}
-}
-
-// An answer computed before the item's latest change is kept while its re-ask
-// is PENDING (TASK-3915): the change owes a job with no recorded failure, and
-// the set still applies. The legs: the fresh answer is flagged; after a
-// comment it is still flagged while the job is owed; with the job row removed
-// (nothing coming to replace it) it is dropped; and once the tick has re-asked,
-// the NEW answer is what counts (0.3, below the threshold, so no flag).
-func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
-	fx := newSurfacedAttentionFixture(t)
-	it := fx.item(t, fx.tasks.ID, "open")
-	fx.tick(t)
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := flags[it.ID][AttentionNeedsHuman]; !ok {
-		t.Fatalf("precondition: the fresh 0.9 answer is not flagged: %v", flags)
-	}
-
-	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "Dave decided: vendor B"}); err != nil {
-		t.Fatal(err)
-	}
-	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError != "" {
-		t.Fatalf("precondition: the comment owes a clean job, got %+v", j)
-	}
-	// The item page returns every key's row (four since TASK-3921), none current.
-	ds, _ := fx.r.Decisions(it.ID)
-	if len(ds) != len(AttentionSet().Questions) {
-		t.Fatalf("precondition: want a row per attention question, got %d", len(ds))
-	}
-	for _, d := range ds {
-		if d.Current {
-			t.Fatalf("precondition: the item page must read the moved answer as NOT current, got %+v", d)
-		}
-	}
-	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if p, ok := flags[it.ID][AttentionNeedsHuman]; !ok || p != 0.9 {
-		t.Fatalf("a pending re-ask dropped the answer it will replace: %v", flags[it.ID])
-	}
-	// A claimed job, its evaluation in flight, is still pending.
-	claimed, err := fx.s.ClaimDecisionJobs("in-flight", 10, time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.ClaimedBy != "in-flight" {
-		t.Fatalf("precondition: the attention job is not claimed (claimed %v, row %+v)", claimed, j)
-	}
-	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold); flags[it.ID] == nil {
-		t.Fatal("a re-ask in flight dropped the answer it will replace")
-	}
-
-	// No job owed: nothing will replace the moved answer, so it goes.
-	if _, err := fx.s.DB().Exec(`DELETE FROM decision_jobs WHERE item_id = ?`, it.ID); err != nil {
-		t.Fatal(err)
-	}
-	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := flags[it.ID]; ok {
-		t.Fatalf("a moved answer with no job owed was returned: %v", flags[it.ID])
-	}
-
-	fx.set(AttentionNeedsHuman, 0.3)
-	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "and the PO is signed"}); err != nil {
-		t.Fatal(err)
-	}
-	fx.tick(t)
-	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if _, ok := flags[it.ID]; ok {
-		t.Fatalf("after the re-ask answered 0.3, the old 0.9 still flags: %v", flags[it.ID])
-	}
-	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
-	if p := flags[it.ID][AttentionNeedsHuman]; p != 0.3 {
-		t.Fatalf("after the re-ask, needs_human = %v, want the new 0.3", p)
-	}
-}
-
-// Rewording ONE question of a set drops that key's answer and keeps the
-// others'. The production attention set has several questions, so the
-// set here adds one more Noul that this test rewords.
-func TestWorkspaceFlags_RewordingOneQuestionKeepsTheOthers(t *testing.T) {
-	fx := newSurfacedAttentionFixture(t)
-	two := surfacedAttentionSet()
-	two.Questions["probe"] = Noul("i", "t", "f")
-	reg := NewRegistry()
-	if err := reg.Register(two); err != nil {
-		t.Fatal(err)
-	}
-	r := NewRunner(fx.s, fx.r.provider, reg)
-	fx.set("probe", 0.9)
-	it := fx.item(t, fx.tasks.ID, "open")
-	if _, err := r.RunOnce(context.Background(), "two", 50, time.Minute); err != nil {
-		t.Fatal(err)
-	}
-	if flags, _, _ := r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); len(flags[it.ID]) != 2 {
-		t.Fatalf("precondition: both answers flagged, got %v", flags[it.ID])
-	}
-
-	reworded := surfacedAttentionSet()
-	reworded.Questions["probe"] = Noul("i", "t", "f")
-	q := reworded.Questions[AttentionNeedsHuman]
-	q.Instructions += " (reworded)"
-	reworded.Questions[AttentionNeedsHuman] = q
-	reg2 := NewRegistry()
-	if err := reg2.Register(reworded); err != nil {
-		t.Fatal(err)
-	}
-	flags, _, err := NewRunner(fx.s, fx.r.provider, reg2).WorkspaceFlags(fx.ws.ID, AttentionSetName, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := flags[it.ID][AttentionNeedsHuman]; ok {
-		t.Error("an answer to the old wording was returned for the reworded question")
-	}
-	if _, ok := flags[it.ID]["probe"]; !ok {
-		t.Error("an unchanged question's answer was dropped along with the reworded one")
-	}
-}
-
-// A pending answer is NOT kept once the job has failed: a provider outage
-// must not hold a stale flag up for as long as it lasts. failing reports it.
-func TestWorkspaceFlags_FailedPendingDropped(t *testing.T) {
-	fx := newSurfacedAttentionFixture(t)
-	it := fx.item(t, fx.tasks.ID, "open")
-	fx.tick(t)
-	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "Dave decided: vendor B"}); err != nil {
-		t.Fatal(err)
-	}
-	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold); flags[it.ID] == nil {
-		t.Fatal("precondition: the pending answer is not kept before the failure")
-	}
-	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"detail":"upstream down"}`, http.StatusServiceUnavailable)
-	})
-	fx.tick(t)
-	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError == "" {
-		t.Fatalf("precondition: the failed attempt is not recorded on the job: %+v", j)
-	}
-	flags, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if err != nil || !failing {
-		t.Fatalf("failing=%v err=%v, want failing", failing, err)
-	}
-	if _, ok := flags[it.ID]; ok {
-		t.Fatalf("a moved answer whose re-ask failed was returned: %v", flags[it.ID])
-	}
-}
-
-// A pending answer is NOT kept for an item the set no longer applies to:
-// closing the item owes a job too, but a done item has no next step to wait
-// on, and the dashboard must drop it at once rather than after the tick.
-func TestWorkspaceFlags_TerminalPendingDropped(t *testing.T) {
-	fx := newSurfacedAttentionFixture(t)
-	it := fx.item(t, fx.tasks.ID, "open")
-	fx.tick(t)
-	done := `{"status":"done"}`
-	if _, err := fx.s.UpdateItem(it.ID, models.ItemUpdate{Fields: &done}); err != nil {
-		t.Fatal(err)
-	}
-	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError != "" {
-		t.Fatalf("precondition: closing the item owes a clean job, got %+v", j)
-	}
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := flags[it.ID]; ok {
-		t.Fatalf("a closed item's pending answer was returned: %v", flags[it.ID])
 	}
 }
 

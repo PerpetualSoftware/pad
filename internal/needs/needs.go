@@ -319,7 +319,6 @@ func eligibleMentions(c Candidate, ok func(string) bool) []Mention {
 // Score is one scorer's verdict on a row. Value is 0-100.
 type Score struct {
 	Value int      `json:"value"`
-	Hint  string   `json:"hint,omitempty"`
 	Why   []string `json:"why,omitempty"`
 }
 

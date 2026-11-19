@@ -44,10 +44,9 @@ type QuestionSet struct {
 	// Unsurfaced names question keys that are asked and stored but that no
 	// surfacing read acts on (TASK-3921 staged keys; TASK-4643 the whole
 	// attention set).
-	// WorkspaceFlags, SurfacedDecisions (counters included) and
-	// ItemReadDecisions (item show, its --agent projection and MCP item get)
-	// skip them; Decisions, and the decisions endpoint that reads it, still
-	// return the rows.
+	// SurfacedDecisions (counters included) and ItemReadDecisions (item
+	// show, its --agent projection and MCP item get) skip them; Decisions,
+	// and the decisions endpoint that reads it, still return the rows.
 	Unsurfaced map[string]bool
 
 	// Eligible, when set, narrows the set to items whose CURRENT state it
@@ -92,7 +91,7 @@ type QuestionSet struct {
 	MaxPerCall int
 
 	// Threshold is the Noul probability at or above which an answer in this
-	// set is surfaced anywhere (a WorkspaceFlags flag, the item brief).
+	// set is surfaced anywhere (the item brief).
 	// Below it the product shows nothing, so a read that serves agents must
 	// not serve it either (TASK-3618). Zero surfaces every Noul answer.
 	Threshold float64
@@ -113,7 +112,7 @@ const (
 )
 
 // surfacing is THE row test every surfacing read applies (TASK-3618):
-// WorkspaceFlags, and SurfacedDecisions for the item brief.
+// SurfacedDecisions, for the item brief.
 // qhashNow is the fingerprint of the question as registered now, "" when
 // there is none. It says nothing about the ITEM's currency: each caller
 // decides what an item that moved on means for it.
@@ -381,13 +380,6 @@ type Runner struct {
 	// (TASK-3119: the per-write spend must be visible before any Cloud
 	// rollout). The server wires it to its metrics.
 	usage func(set string, u Usage)
-
-	// backfillChunk overrides effortBackfillChunk when positive, and
-	// beforeBackfillChunk, when set, runs before each chunk is owed (chunk
-	// index from 0) and may fail the backfill there. Both are TEST-ONLY seams.
-	backfillChunk       int
-	backfillPoll        time.Duration
-	beforeBackfillChunk func(ctx context.Context, chunk int) error
 
 	// logger receives the per-evaluation spend line; nil means slog.Default().
 	// A field rather than the global so a test can read its own lines.
@@ -778,30 +770,6 @@ func (r *Runner) Decisions(itemID string) ([]models.ItemDecision, error) {
 	return rows, err
 }
 
-// SetBackfillSeams sets the effort backfill's chunk size and its
-// before-each-chunk hook. Test affordance only (the server's tests live in
-// another package).
-func (r *Runner) SetBackfillSeams(chunk int, hook func(ctx context.Context, chunk int) error) {
-	if r == nil {
-		return
-	}
-	if chunk > 0 {
-		r.backfillChunk = chunk
-	}
-	r.beforeBackfillChunk = hook
-}
-
-// SetBackfillPacing sets how many items one backfill chunk owes (the tick's
-// per-pass limit) and how often the backfill re-checks that the chunk drained
-// (the tick interval). Non-positive values keep the defaults.
-func (r *Runner) SetBackfillPacing(chunk int, poll time.Duration) {
-	if r == nil {
-		return
-	}
-	r.backfillChunk = chunk
-	r.backfillPoll = poll
-}
-
 // ItemReadDecisions is Decisions without the Unsurfaced keys (TASK-3921,
 // TASK-4643): what the item read, the CLI --agent projection and MCP item get
 // carry. The raw Decisions stays behind the decisions endpoint, which shows
@@ -824,15 +792,13 @@ func (r *Runner) ItemReadDecisions(itemID string) ([]models.ItemDecision, error)
 
 // SurfacedDecisions is the item's latest answers that its set would surface
 // (TASK-3618, for the item brief): the question is current and the answer
-// reaches the set's Threshold, by the same row test WorkspaceFlags applies.
-// Every other row is only counted: belowThreshold for a current question
-// whose answer does not reach it, staleQuestion for an answer to a question
-// no longer asked as it was.
+// reaches the set's Threshold. Every other row is only counted:
+// belowThreshold for a current question whose answer does not reach it,
+// staleQuestion for an answer to a question no longer asked as it was.
 //
 // An answer whose ITEM has moved on is kept, with Current false: an agent
 // about to work the item is better told that a surfaced answer may be out of
-// date than not told at all. WorkspaceFlags keeps such an answer only while
-// its re-ask is pending (TASK-3915); the brief keeps it regardless.
+// date than not told at all.
 func (r *Runner) SurfacedDecisions(itemID string) (surfaced []models.ItemDecision, belowThreshold, staleQuestion int, err error) {
 	rows, qhashes, err := r.decisionsNow(itemID)
 	if err != nil {

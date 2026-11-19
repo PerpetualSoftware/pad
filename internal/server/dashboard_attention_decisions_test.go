@@ -132,14 +132,10 @@ func TestDashboardNoNeedsHumanAttention(t *testing.T) {
 	p.fail = errors.New("upstream down")
 	p.mu.Unlock()
 	// A new item owes an undebounced first ask, which now fails.
-	createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "Anything", "fields": `{"status":"open"}`})
+	anything := createItem(t, srv, slug, "tasks", map[string]interface{}{"title": "Anything", "fields": `{"status":"open"}`})
 	runDecisionTick(t, srv)
-	ws, err := srv.store.GetWorkspaceBySlug(slug)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if failing, err := srv.store.DecisionJobsFailing(ws.ID, decision.AttentionSetName); err != nil || !failing {
-		t.Fatalf("precondition: the attention job is not recorded as failing (failing=%v, err=%v)", failing, err)
+	if j, err := srv.store.GetDecisionJob(anything.ID, decision.AttentionSetName); err != nil || j == nil || j.LastError == "" {
+		t.Fatalf("precondition: the attention job is not recorded as failing (job=%+v, err=%v)", j, err)
 	}
 	resp = getDashboard(t, srv, slug)
 	if containsString(resp.DegradedSections, "attention.decisions") {

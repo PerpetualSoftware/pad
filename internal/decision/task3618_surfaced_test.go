@@ -18,10 +18,10 @@ func surfacedKeys(ds []models.ItemDecision) []string {
 	return keys
 }
 
-// TASK-3618: SurfacedDecisions keeps exactly the answers WorkspaceFlags would
-// flag, on both sides of the threshold (AT it is surfaced), and counts the
-// rest as below threshold. One item answers AT the threshold, the other just
-// under it (needs_human_decision is the one surfaced question since TASK-3921; the other three are staged).
+// TASK-3618: SurfacedDecisions keeps the answers at or above the threshold
+// (AT it is surfaced) and counts the rest as below threshold. One item
+// answers AT the threshold, the other just under it (needs_human_decision is
+// the one surfaced question since TASK-3921; the other three are staged).
 func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
 	fx := newSurfacedAttentionFixture(t)
 	fx.set(AttentionNeedsHuman, surfacedAttentionThreshold)
@@ -48,21 +48,10 @@ func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
 	if len(got) != 0 || below != 1 || staleQ != 0 {
 		t.Fatalf("under the threshold: surfaced=%v below=%d staleQuestion=%d, want none, 1, 0", surfacedKeys(got), below, staleQ)
 	}
-
-	// The dashboard's read agrees row for row: one predicate, two callers.
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, ok := flags[at.ID][AttentionNeedsHuman]; !ok || len(flags) != 1 {
-		t.Fatalf("WorkspaceFlags = %v, disagrees with SurfacedDecisions", flags)
-	}
 }
 
 // An above-threshold answer whose ITEM has moved on stays in the brief with
-// current=false. The dashboard keeps it too while the re-ask is pending
-// (TASK-3915), and drops it when no job is owed; the brief keeps it either
-// way.
+// current=false, whether or not a re-ask is owed.
 func TestTASK3618_SurfacedKeepsAnAnswerWhoseItemMovedOn(t *testing.T) {
 	fx := newSurfacedAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
@@ -84,13 +73,10 @@ func TestTASK3618_SurfacedKeepsAnAnswerWhoseItemMovedOn(t *testing.T) {
 	if below != 0 {
 		t.Fatalf("below = %d, want 0", below)
 	}
-	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold); len(flags[it.ID]) != 0 {
-		t.Fatalf("precondition: with no job owed the dashboard drops the moved-on answer, got %v", flags[it.ID])
-	}
 }
 
 // Answers stored under the attention set's RETIRED keys (TASK-3915 /
-// TASK-3924) are neither surfaced nor flagged, and the brief counts them as
+// TASK-3924) are not surfaced, and the brief counts them as
 // stale questions: no migration removes the rows, and none is needed. The
 // rows are written by a runner whose registry still asks the old questions,
 // which is exactly what the database holds from before the change.
@@ -133,13 +119,6 @@ func TestTASK3915_RetiredAttentionKeysReadAsStaleQuestions(t *testing.T) {
 	if below != 0 || staleQ != 2 {
 		t.Fatalf("below=%d staleQuestion=%d, want 0 and 2 (blocked, waiting_on_external)", below, staleQ)
 	}
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(flags[it.ID]) != 1 {
-		t.Fatalf("WorkspaceFlags = %v, want needs_human_decision only", flags[it.ID])
-	}
 }
 
 // An answer to a reworded question is neither surfaced nor counted below
@@ -169,6 +148,52 @@ func TestTASK3618_RewordedQuestionCountsAsStaleQuestion(t *testing.T) {
 	// Counterfactual: the unchanged registry surfaces that same 0.9 row.
 	if got, _, staleQ, _ := fx.r.SurfacedDecisions(it.ID); len(got) != 1 || staleQ != 0 {
 		t.Fatalf("control: surfaced=%v staleQuestion=%d", surfacedKeys(got), staleQ)
+	}
+}
+
+// The staged keys (TASK-3921) are not surfaced and not counted: one test per
+// filter, each failing when SurfacedDecisions drops its Unsurfaced line.
+
+// stagedFixture leaves an item whose only above-threshold answer is the staged
+// high_stakes (0.95) unless needsHuman reaches the threshold too.
+func stagedFixture(t *testing.T, needsHuman float64) (*attentionFixture, *models.Item) {
+	t.Helper()
+	fx := newSurfacedAttentionFixture(t)
+	fx.set(AttentionNeedsHuman, needsHuman)
+	fx.set(AttentionHighStakes, 0.95)
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	if ds, err := fx.r.Decisions(it.ID); err != nil || len(ds) != 4 {
+		t.Fatalf("precondition: Decisions returned %d rows, %v; want all four", len(ds), err)
+	}
+	return fx, it
+}
+
+func TestSurfacedDecisions_HidesStagedKeys(t *testing.T) {
+	fx, it := stagedFixture(t, 0.9)
+	got, _, _, err := fx.r.SurfacedDecisions(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if keys := surfacedKeys(got); len(keys) != 1 || keys[0] != AttentionNeedsHuman {
+		t.Fatalf("surfaced = %v; want only needs_human_decision", keys)
+	}
+}
+
+// The score and choice rows would each read as below threshold, and the low
+// high_stakes with them.
+func TestSurfacedDecisions_StagedKeysAreNotCounted(t *testing.T) {
+	fx := newSurfacedAttentionFixture(t)
+	fx.set(AttentionNeedsHuman, 0.9)
+	fx.set(AttentionHighStakes, 0.1)
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+	_, below, stale, err := fx.r.SurfacedDecisions(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if below != 0 || stale != 0 {
+		t.Fatalf("below=%d stale=%d; the staged keys must count in neither", below, stale)
 	}
 }
 
