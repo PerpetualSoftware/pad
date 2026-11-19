@@ -191,14 +191,22 @@ func needsRestoreCmd() *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
+			var done []string
 			var results []map[string]any
+			fail := func(ref string, err error) error {
+				if len(done) > 0 {
+					return fmt.Errorf("%s: %w (already done: %s)", ref, err, strings.Join(done, ", "))
+				}
+				return fmt.Errorf("%s: %w", ref, err)
+			}
 			for _, ref := range args {
 				if _, err := client.UnNotMineNeeds(ws, ref); err != nil {
-					return fmt.Errorf("%s: %w", ref, err)
+					return fail(ref, err)
 				}
 				if _, err := client.UnsnoozeNeeds(ws, ref); err != nil {
-					return fmt.Errorf("%s: %w", ref, err)
+					return fail(ref, err)
 				}
+				done = append(done, ref)
 				results = append(results, map[string]any{"ref": ref, "not_mine": nil, "snooze": nil})
 				if formatFlag != "json" {
 					fmt.Fprintf(cmd.OutOrStdout(), "%s restored\n", ref)

@@ -265,3 +265,25 @@ func TestNeedsList_HiddenShowsNotMineSince(t *testing.T) {
 		}
 	}
 }
+
+func TestNeedsRestore_StopNamesRefsDone(t *testing.T) {
+	f := newNeedsFake(t)
+	f.on("DELETE "+needsItemPath+"TASK-1/needs/not-mine", `{"ref":"TASK-1","not_mine":null}`)
+	f.on("DELETE "+needsItemPath+"TASK-1/needs/snooze", `{"ref":"TASK-1","snooze":null}`)
+	f.routes["DELETE "+needsItemPath+"TASK-2/needs/not-mine"] = func(w http.ResponseWriter, _ map[string]any) {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":{"code":"internal_error","message":"boom"}}`)
+	}
+	_, err := runNeedsCmd(t, f, "--workspace", "demo", "needs", "restore", "TASK-1", "TASK-2", "TASK-3")
+	if err == nil {
+		t.Fatal("want an error for TASK-2")
+	}
+	if msg := err.Error(); !strings.HasPrefix(msg, "TASK-2: ") || !strings.Contains(msg, "already done: TASK-1") {
+		t.Fatalf("error = %q, want TASK-2 named and TASK-1 reported done", msg)
+	}
+	for _, c := range f.calls {
+		if strings.Contains(c, "TASK-3") {
+			t.Fatalf("processing must stop at the first error; calls: %v", f.calls)
+		}
+	}
+}
