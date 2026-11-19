@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -817,7 +818,9 @@ func readPasswordFrom(fallback *bufio.Reader) (string, error) {
 	pw, err := term.ReadPassword(fd)
 	if err != nil {
 		line, err := fallback.ReadString('\n')
-		if err != nil {
+		// A password piped with no trailing newline (printf '%s' "$PW")
+		// arrives as a final partial line with io.EOF: keep it.
+		if err != nil && !(errors.Is(err, io.EOF) && strings.TrimSpace(line) != "") {
 			return "", err
 		}
 		return strings.TrimSpace(line), nil

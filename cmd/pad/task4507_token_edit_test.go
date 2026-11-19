@@ -493,3 +493,20 @@ func TestTask4507ScopeLabel(t *testing.T) {
 		}
 	}
 }
+
+// TestTask4507PasswordPipedWithoutNewline: printf '%s' "$PW" | pad token edit
+// ends the password with EOF, not a newline; it must still verify.
+func TestTask4507PasswordPipedWithoutNewline(t *testing.T) {
+	f := newTokenEditFixture(t)
+	u := f.passwordUser(t, "nonewline@example.com")
+	tok := f.mint(t, u, `["read"]`)
+	client, _ := f.session(t, u)
+
+	r := runTokenEditT(client, tok.ID, nil, strPtr("*"), twoFAPassword, false, false)
+	if r.err != nil {
+		t.Fatalf("edit: %v\n%s", r.err, r.errOut.String())
+	}
+	if got := f.stored(t, u, tok.ID).Scopes; got != `["*"]` {
+		t.Fatalf("scopes %s, want [\"*\"]", got)
+	}
+}
