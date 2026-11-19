@@ -68,7 +68,7 @@ func (s *Server) handleDismissEndedCommitment(w http.ResponseWriter, r *http.Req
 	if s.writeScheduleItemGone(w, r, workspaceID, err) || s.writeScheduleError(w, r, err) {
 		return
 	}
-	sc, err := s.store.GetSchedule(workspaceID, item.ID)
+	sc, rev, err := s.store.GetScheduleRevision(workspaceID, item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -85,5 +85,6 @@ func (s *Server) handleDismissEndedCommitment(w http.ResponseWriter, r *http.Req
 		writeInternalError(w, err)
 		return
 	}
+	v.CommitmentRevision = rev
 	writeJSON(w, http.StatusOK, map[string]any{"commitment": v})
 }

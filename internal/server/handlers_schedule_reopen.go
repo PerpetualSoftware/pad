@@ -51,7 +51,7 @@ func (s *Server) handleReopenItemCommitment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	s.publishItemVerified(workspaceID, item, r)
-	sc, err := s.store.GetSchedule(workspaceID, item.ID)
+	sc, rev, err := s.store.GetScheduleRevision(workspaceID, item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -61,5 +61,6 @@ func (s *Server) handleReopenItemCommitment(w http.ResponseWriter, r *http.Reque
 		writeInternalError(w, err)
 		return
 	}
+	view.CommitmentRevision = rev
 	writeJSON(w, http.StatusOK, map[string]any{"commitment": view, "reopen": result})
 }

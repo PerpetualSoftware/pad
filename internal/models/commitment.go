@@ -254,6 +254,8 @@ type CommitmentRenegotiateInput struct {
 	RemoveDeadline   bool                      `json:"remove_deadline"`
 	Revision         string                    `json:"revision"`
 	Preview          bool                      `json:"preview"`
+	// ExpectedRevision is the optional commitment_revision precondition (TASK-4630).
+	ExpectedRevision string `json:"expected_revision"`
 }
 
 type CommitmentRenegotiationPreview struct {

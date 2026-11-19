@@ -4116,6 +4116,8 @@ export interface CommitmentReopenResult {
 export interface ItemCommitmentView {
  /** GET only: whether this caller may POST/PATCH this item's commitment. A display hint; mutations re-check. Absent means false. */
  editable?: boolean;
+ /** Optimistic-concurrency token; send back as expected_revision. Absent on the resolve response. */
+ commitment_revision?: string;
  last_resolution?: ScheduleLastResolution;
  forecast: CommitmentForecast | null;
  milestone: CommitmentMilestone;
@@ -4228,6 +4230,7 @@ export interface CommitmentUpdateRequest {
   occupied_days: number | null; occupied_secs: number | null;
   target_days: number; target_secs: number;
  }>;
+ expected_revision?: string;
 }
 export interface CommitmentGateView {
  /** Top level of GET .../commitment/gates only, about the path item; the nested view.gates never carries it. Absent means false. */
@@ -4252,6 +4255,7 @@ export interface CommitmentRenegotiateRequest {
  revision?: string;
  preview?: boolean;
  acknowledge_violations?: boolean;
+ expected_revision?: string;
 }
 
 export type CommitmentCancelPolicy = 'waiting_on' | 'cancel_child_occurrence';

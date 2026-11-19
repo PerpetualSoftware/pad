@@ -523,7 +523,7 @@ func TestCommitmentPostNullMembers(t *testing.T) {
 
 	view := func(body map[string]any) map[string]any {
 		m := newSchedHTTP(t).create(body)
-		for _, k := range []string{"id", "schedule_id", "item_id", "item_ref", "reminder_id", "created_at", "updated_at"} {
+		for _, k := range []string{"id", "schedule_id", "item_id", "item_ref", "reminder_id", "created_at", "updated_at", "commitment_revision"} {
 			delete(m, k)
 		}
 		return m

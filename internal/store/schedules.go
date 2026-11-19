@@ -720,14 +720,14 @@ func (s *Store) UpdateSchedule(workspaceID, itemID string, upd models.ScheduleUp
 }
 
 func (s *Store) updateScheduleAt(workspaceID, itemID string, upd models.ScheduleUpdate, nowT time.Time) (*models.ItemSchedule, error) {
-	sc, err := s.updateCommitmentAt(workspaceID, itemID, upd, nil, nowT)
+	sc, err := s.updateCommitmentAt(workspaceID, itemID, upd, nil, nowT, "")
 	if errors.Is(err, ErrScheduleNotFound) {
 		return nil, nil
 	}
 	return sc, err
 }
 
-func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.ScheduleUpdate, partial *models.CommitmentRolesPatch, nowT time.Time) (*models.ItemSchedule, error) {
+func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.ScheduleUpdate, partial *models.CommitmentRolesPatch, nowT time.Time, expected string) (*models.ItemSchedule, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("update schedule: %w", err)
@@ -743,6 +743,17 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	}
 	if cur == nil {
 		return nil, ErrScheduleNotFound
+	}
+	// The optimistic precondition comes first, under the pin, so a caller that
+	// read stale state learns that before any other refusal and nothing is written.
+	if expected != "" {
+		rev, err := s.commitmentRevisionQ(tx, cur.ID)
+		if err != nil {
+			return nil, err
+		}
+		if rev != expected {
+			return nil, ErrCommitmentRevisionStale
+		}
 	}
 	storedRoles, err := s.scheduleRolesOf(tx, cur)
 	if err != nil {
