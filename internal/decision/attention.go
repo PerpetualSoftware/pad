@@ -9,10 +9,12 @@ import (
 )
 
 // The `attention` question set (PLAN-3114 unit 3, TASK-3118): four questions over
-// an open item and its recent trail, read by the dashboard's attention
-// section and shown as a chip on the item page.
-// One of the four, needs_human_decision, is read by both; the other three are
-// staged (below).
+// an open item and its recent trail. No surface reads the set (TASK-4643): the
+// dashboard, the item page chip, catch-up and the item brief all stopped
+// reading needs_human_decision, and Needs you reads only explicit signals. All
+// four keys are in Unsurfaced, so no flag, chip or brief entry is made from
+// them. Their answers are still asked and stored in item_decisions, for
+// re-measurement, and the item's decisions list returns them.
 //
 // The instruction and criteria of needs_human_decision are carried VERBATIM
 // from the eval in scripts/decision-eval (eval2.py, section D), which measured it at AUC 0.939
@@ -28,16 +30,11 @@ import (
 // answers stay in item_decisions and read as stale questions, since no
 // registered question carries their keys.
 //
-// THREE MORE QUESTIONS are STAGED here (TASK-3921, IDEA-3906 half B4a):
-// effort, effort_medium and high_stakes. They ride the same call as
-// needs_human_decision, so the cost is output tokens, not a second request.
-// Their reader is TASK-3959 (B4b): the needs-you scorers read effort and
-// effort_medium (effort_read.go), so the set lists all three in Unsurfaced and
-// no flag, chip or brief entry is made from them. high_stakes is read by
-// nothing yet (its labelled eval is TASK-4011). Their answers are stored, and
-// the item's decisions list returns them. The read rule that belongs to their
-// reader, not to the set: an effort_medium answer whose top probability is
-// under .5 means "unclear" (EffortMediumMinProb).
+// effort, effort_medium and high_stakes were STAGED here (TASK-3921, IDEA-3906
+// half B4a). They ride the same call as needs_human_decision, so the cost is
+// output tokens, not a second request. high_stakes is read by nothing yet (its
+// labelled eval is TASK-4011), and the needs-you simplicity score no longer
+// reads effort or effort_medium (TASK-4643): it is a text heuristic.
 //
 // The eval's state was {title, body}; the runner sends the richer
 // BuildItemState (collection, fields, and the recent trail as well), so the
@@ -48,16 +45,10 @@ const (
 
 	AttentionNeedsHuman = "needs_human_decision"
 
-	// Staged before their reader (TASK-3959); see the header.
+	// Staged keys; see the header.
 	AttentionEffort       = "effort"
 	AttentionEffortMedium = "effort_medium"
 	AttentionHighStakes   = "high_stakes"
-
-	// AttentionThreshold is the Noul probability at or above which the
-	// dashboard surfaces an item. 0.7 sits between the eval's 0.5 operating
-	// point (precision 93%, recall 76%) and the docs' 0.9 destructive-action
-	// band: a dashboard entry is advisory, not an action.
-	AttentionThreshold = 0.7
 )
 
 // AttentionSet returns the `attention` question set.
@@ -94,13 +85,15 @@ func AttentionSet() QuestionSet {
 				"an ordinary change that is easy to correct afterwards",
 			),
 		},
+		// Every key: no surface reads the set (TASK-4643). With nothing
+		// surfaced the set carries no Threshold.
 		Unsurfaced: map[string]bool{
+			AttentionNeedsHuman:   true,
 			AttentionEffort:       true,
 			AttentionEffortMedium: true,
 			AttentionHighStakes:   true,
 		},
-		Eligible:  attentionEligible,
-		Threshold: AttentionThreshold,
+		Eligible: attentionEligible,
 	}
 }
 
@@ -176,7 +169,7 @@ func ProductionRegistry() (*Registry, error) {
 // (TASK-3915): a job is owed for the item and set and has no recorded
 // failure, and the set still applies to the item. The change that moved the
 // item owes that job, and the answer it replaces is the best estimate until
-// the tick answers again; dropping it made the dashboard entry vanish for
+// the tick answers again; dropping it made the flag vanish for
 // the whole wait and come back, which a debounced re-ask (TASK-3916) would
 // stretch to an hour. Without a pending job, or once the job has failed, the
 // moved answer is dropped: nothing is coming to replace it, and a provider
@@ -185,6 +178,10 @@ func ProductionRegistry() (*Registry, error) {
 //
 // failing reports that some owed job in the set has a recorded failure — the
 // provider erroring. A nil runner returns nothing, not an error.
+//
+// No production caller reads it since TASK-4643 (the dashboard and catch-up
+// stopped reading the attention set); it stays, with its tests, pending
+// TASK-4687.
 func (r *Runner) WorkspaceFlags(workspaceID, setName string, threshold float64) (flags map[string]map[string]float64, failing bool, err error) {
 	return r.workspaceFlags(workspaceID, setName, threshold, nil)
 }

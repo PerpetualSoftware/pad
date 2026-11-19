@@ -23,11 +23,11 @@ func surfacedKeys(ds []models.ItemDecision) []string {
 // rest as below threshold. One item answers AT the threshold, the other just
 // under it (needs_human_decision is the one surfaced question since TASK-3921; the other three are staged).
 func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
-	fx := newAttentionFixture(t)
-	fx.set(AttentionNeedsHuman, AttentionThreshold)
+	fx := newSurfacedAttentionFixture(t)
+	fx.set(AttentionNeedsHuman, surfacedAttentionThreshold)
 	at := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
-	fx.set(AttentionNeedsHuman, AttentionThreshold-0.01)
+	fx.set(AttentionNeedsHuman, surfacedAttentionThreshold-0.01)
 	under := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 
@@ -50,7 +50,7 @@ func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
 	}
 
 	// The dashboard's read agrees row for row: one predicate, two callers.
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +64,7 @@ func TestTASK3618_SurfacedDecisionsThresholdBothSides(t *testing.T) {
 // (TASK-3915), and drops it when no job is owed; the brief keeps it either
 // way.
 func TestTASK3618_SurfacedKeepsAnAnswerWhoseItemMovedOn(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "new facts"}); err != nil {
@@ -84,7 +84,7 @@ func TestTASK3618_SurfacedKeepsAnAnswerWhoseItemMovedOn(t *testing.T) {
 	if below != 0 {
 		t.Fatalf("below = %d, want 0", below)
 	}
-	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold); len(flags[it.ID]) != 0 {
+	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold); len(flags[it.ID]) != 0 {
 		t.Fatalf("precondition: with no job owed the dashboard drops the moved-on answer, got %v", flags[it.ID])
 	}
 }
@@ -95,8 +95,8 @@ func TestTASK3618_SurfacedKeepsAnAnswerWhoseItemMovedOn(t *testing.T) {
 // rows are written by a runner whose registry still asks the old questions,
 // which is exactly what the database holds from before the change.
 func TestTASK3915_RetiredAttentionKeysReadAsStaleQuestions(t *testing.T) {
-	fx := newAttentionFixture(t)
-	old := AttentionSet()
+	fx := newSurfacedAttentionFixture(t)
+	old := surfacedAttentionSet()
 	old.Questions["blocked"] = Noul(
 		"The item's text says the work is currently blocked on something outside the item itself.",
 		"an explicit dependency, wait, or blocker is named",
@@ -133,7 +133,7 @@ func TestTASK3915_RetiredAttentionKeysReadAsStaleQuestions(t *testing.T) {
 	if below != 0 || staleQ != 2 {
 		t.Fatalf("below=%d staleQuestion=%d, want 0 and 2 (blocked, waiting_on_external)", below, staleQ)
 	}
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,11 +145,11 @@ func TestTASK3915_RetiredAttentionKeysReadAsStaleQuestions(t *testing.T) {
 // An answer to a reworded question is neither surfaced nor counted below
 // threshold: it is a stale question, however high its probability.
 func TestTASK3618_RewordedQuestionCountsAsStaleQuestion(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 
-	reworded := AttentionSet()
+	reworded := surfacedAttentionSet()
 	q := reworded.Questions[AttentionNeedsHuman]
 	q.Instructions += " (reworded)"
 	reworded.Questions[AttentionNeedsHuman] = q
@@ -172,10 +172,11 @@ func TestTASK3618_RewordedQuestionCountsAsStaleQuestion(t *testing.T) {
 	}
 }
 
-// Every production set that surfaces answers carries its threshold.
+// Every production set that surfaces answers carries its threshold. The
+// attention set surfaces nothing since TASK-4643, so it carries none.
 func TestTASK3618_ProductionSetsCarryTheirThreshold(t *testing.T) {
 	want := map[string]float64{
-		AttentionSetName:   AttentionThreshold,
+		AttentionSetName:   0,
 		ConventionsSetName: ConventionThreshold,
 	}
 	reg, err := ProductionRegistry()

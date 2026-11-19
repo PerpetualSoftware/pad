@@ -78,9 +78,12 @@ func TestAttentionSet_QuestionsAreTheEvalsVerbatim(t *testing.T) {
 	if len(got) != 4 {
 		t.Errorf("attention set has %d questions, want 4", len(got))
 	}
-	// The three staged keys, and only they, are unsurfaced.
-	if len(set.Unsurfaced) != 3 || !set.Unsurfaced["effort"] || !set.Unsurfaced["effort_medium"] || !set.Unsurfaced["high_stakes"] || set.Unsurfaced["needs_human_decision"] {
-		t.Errorf("Unsurfaced = %v, want exactly effort, effort_medium, high_stakes", set.Unsurfaced)
+	// Every key is unsurfaced (TASK-4643), and the set carries no threshold.
+	if len(set.Unsurfaced) != 4 || !set.Unsurfaced["effort"] || !set.Unsurfaced["effort_medium"] || !set.Unsurfaced["high_stakes"] || !set.Unsurfaced["needs_human_decision"] {
+		t.Errorf("Unsurfaced = %v, want all four keys", set.Unsurfaced)
+	}
+	if set.Threshold != 0 {
+		t.Errorf("Threshold = %v, want none", set.Threshold)
 	}
 	if set.MaxPerCall != 0 {
 		t.Errorf("MaxPerCall = %d; the set must go in one call", set.MaxPerCall)
@@ -123,7 +126,50 @@ type attentionFixture struct {
 
 const statusSchema = `{"fields":[{"key":"status","type":"select","options":["open","in-progress","done"],"terminal_options":["done"]}]}`
 
+// surfacedAttentionThreshold is the threshold the attention set surfaced
+// needs_human_decision at before TASK-4643.
+const surfacedAttentionThreshold = 0.7
+
+// surfacedAttentionSet is the attention set as it shipped before TASK-4643:
+// needs_human_decision surfaced at 0.7. No production set surfaces it now, but
+// WorkspaceFlags, SurfacedDecisions and ItemReadDecisions still filter on
+// Unsurfaced and Threshold, and their mechanism tests run over this copy.
+func surfacedAttentionSet() QuestionSet {
+	qs := AttentionSet()
+	delete(qs.Unsurfaced, AttentionNeedsHuman)
+	qs.Threshold = surfacedAttentionThreshold
+	return qs
+}
+
+// surfacedRegistry is the production registry with surfacedAttentionSet in
+// place of the attention set.
+func surfacedRegistry(t *testing.T) *Registry {
+	t.Helper()
+	reg := NewRegistry()
+	for _, qs := range []QuestionSet{surfacedAttentionSet(), ConventionsSet()} {
+		if err := reg.Register(qs); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return reg
+}
+
 func newAttentionFixture(t *testing.T) *attentionFixture {
+	t.Helper()
+	reg, err := ProductionRegistry()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return newAttentionFixtureWith(t, reg)
+}
+
+// newSurfacedAttentionFixture is the fixture over surfacedRegistry.
+func newSurfacedAttentionFixture(t *testing.T) *attentionFixture {
+	t.Helper()
+	return newAttentionFixtureWith(t, surfacedRegistry(t))
+}
+
+func newAttentionFixtureWith(t *testing.T, reg *Registry) *attentionFixture {
 	t.Helper()
 	fx := &attentionFixture{answers: map[string]float64{
 		AttentionNeedsHuman: 0.9,
@@ -163,10 +209,6 @@ func newAttentionFixture(t *testing.T) *attentionFixture {
 		})
 	})
 	fx.f = f
-	reg, err := ProductionRegistry()
-	if err != nil {
-		t.Fatal(err)
-	}
 	fx.r = NewRunner(fx.s, p, reg)
 	fx.r.Install(fx.s)
 	// These tests are about currency and eligibility, and re-ask on the next
@@ -241,7 +283,7 @@ func (fx *attentionFixture) item(t *testing.T, collID, status string) *models.It
 // beside them is (the leg that shows the fixture CAN ask). Reopening the
 // terminal item makes it eligible again.
 func TestAttention_OnlyOpenItemsInUserCollectionsAreAsked(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	sys, err := fx.s.CreateCollection(fx.ws.ID, models.CollectionCreate{Name: "Conventions", Schema: statusSchema, IsSystem: true})
 	if err != nil {
 		t.Fatal(err)
@@ -284,7 +326,7 @@ func TestAttention_OnlyOpenItemsInUserCollectionsAreAsked(t *testing.T) {
 // WorkspaceFlags returns the LATEST answer per item and key, scoped to the
 // workspace, and drops answers to a question that has since been reworded.
 func TestWorkspaceFlags_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 
@@ -311,7 +353,7 @@ func TestWorkspaceFlags_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 
 	// Same store and rows, a registry whose needs_human question is worded
 	// differently: that key's stored answer no longer answers it.
-	reworded := AttentionSet()
+	reworded := surfacedAttentionSet()
 	q := reworded.Questions[AttentionNeedsHuman]
 	q.Instructions += " (reworded)"
 	reworded.Questions[AttentionNeedsHuman] = q
@@ -340,7 +382,7 @@ func TestWorkspaceFlags_LatestCurrentQuestionAndWorkspaceScoped(t *testing.T) {
 }
 
 func TestWorkspaceFlags_ReportsAFailingProvider(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	fx.item(t, fx.tasks.ID, "open")
 	if _, failing, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, 0); failing {
 		t.Fatal("precondition: failing before any attempt")
@@ -369,10 +411,10 @@ func TestWorkspaceFlags_NilRunner(t *testing.T) {
 // (nothing coming to replace it) it is dropped; and once the tick has re-asked,
 // the NEW answer is what counts (0.3, below the threshold, so no flag).
 func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -396,7 +438,7 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 			t.Fatalf("precondition: the item page must read the moved answer as NOT current, got %+v", d)
 		}
 	}
-	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +453,7 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.ClaimedBy != "in-flight" {
 		t.Fatalf("precondition: the attention job is not claimed (claimed %v, row %+v)", claimed, j)
 	}
-	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold); flags[it.ID] == nil {
+	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold); flags[it.ID] == nil {
 		t.Fatal("a re-ask in flight dropped the answer it will replace")
 	}
 
@@ -419,7 +461,7 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 	if _, err := fx.s.DB().Exec(`DELETE FROM decision_jobs WHERE item_id = ?`, it.ID); err != nil {
 		t.Fatal(err)
 	}
-	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, err = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -432,7 +474,7 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 		t.Fatal(err)
 	}
 	fx.tick(t)
-	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, _ = fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if _, ok := flags[it.ID]; ok {
 		t.Fatalf("after the re-ask answered 0.3, the old 0.9 still flags: %v", flags[it.ID])
 	}
@@ -446,8 +488,8 @@ func TestWorkspaceFlags_PendingAnswerStillSurfaced(t *testing.T) {
 // others'. The production attention set has several questions, so the
 // set here adds one more Noul that this test rewords.
 func TestWorkspaceFlags_RewordingOneQuestionKeepsTheOthers(t *testing.T) {
-	fx := newAttentionFixture(t)
-	two := AttentionSet()
+	fx := newSurfacedAttentionFixture(t)
+	two := surfacedAttentionSet()
 	two.Questions["probe"] = Noul("i", "t", "f")
 	reg := NewRegistry()
 	if err := reg.Register(two); err != nil {
@@ -463,7 +505,7 @@ func TestWorkspaceFlags_RewordingOneQuestionKeepsTheOthers(t *testing.T) {
 		t.Fatalf("precondition: both answers flagged, got %v", flags[it.ID])
 	}
 
-	reworded := AttentionSet()
+	reworded := surfacedAttentionSet()
 	reworded.Questions["probe"] = Noul("i", "t", "f")
 	q := reworded.Questions[AttentionNeedsHuman]
 	q.Instructions += " (reworded)"
@@ -487,13 +529,13 @@ func TestWorkspaceFlags_RewordingOneQuestionKeepsTheOthers(t *testing.T) {
 // A pending answer is NOT kept once the job has failed: a provider outage
 // must not hold a stale flag up for as long as it lasts. failing reports it.
 func TestWorkspaceFlags_FailedPendingDropped(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 	if _, err := fx.s.CreateComment(fx.ws.ID, it.ID, "", models.CommentCreate{Author: "wren", Body: "Dave decided: vendor B"}); err != nil {
 		t.Fatal(err)
 	}
-	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold); flags[it.ID] == nil {
+	if flags, _, _ := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold); flags[it.ID] == nil {
 		t.Fatal("precondition: the pending answer is not kept before the failure")
 	}
 	fx.f.srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -503,7 +545,7 @@ func TestWorkspaceFlags_FailedPendingDropped(t *testing.T) {
 	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError == "" {
 		t.Fatalf("precondition: the failed attempt is not recorded on the job: %+v", j)
 	}
-	flags, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, failing, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil || !failing {
 		t.Fatalf("failing=%v err=%v, want failing", failing, err)
 	}
@@ -516,7 +558,7 @@ func TestWorkspaceFlags_FailedPendingDropped(t *testing.T) {
 // closing the item owes a job too, but a done item has no next step to wait
 // on, and the dashboard must drop it at once rather than after the tick.
 func TestWorkspaceFlags_TerminalPendingDropped(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	it := fx.item(t, fx.tasks.ID, "open")
 	fx.tick(t)
 	done := `{"status":"done"}`
@@ -526,11 +568,49 @@ func TestWorkspaceFlags_TerminalPendingDropped(t *testing.T) {
 	if j, _ := fx.s.GetDecisionJob(it.ID, AttentionSetName); j == nil || j.LastError != "" {
 		t.Fatalf("precondition: closing the item owes a clean job, got %+v", j)
 	}
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := flags[it.ID]; ok {
 		t.Fatalf("a closed item's pending answer was returned: %v", flags[it.ID])
+	}
+}
+
+// TASK-4643: needs_human_decision is stored for re-measurement and surfaced
+// nowhere. At 0.9 (above any threshold the set ever had), the item read and
+// the item brief carry no attention key and count nothing; the raw Decisions
+// still returns all four rows.
+func TestAttentionSet_NeedsHumanIsUnsurfaced(t *testing.T) {
+	fx := newAttentionFixture(t)
+	fx.set(AttentionNeedsHuman, 0.9)
+	it := fx.item(t, fx.tasks.ID, "open")
+	fx.tick(t)
+
+	raw, err := fx.r.Decisions(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(raw) != len(AttentionSet().Questions) {
+		t.Fatalf("Decisions returned %d rows, want all %d attention answers", len(raw), len(AttentionSet().Questions))
+	}
+	read, err := fx.r.ItemReadDecisions(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range read {
+		if d.QuestionSet == AttentionSetName {
+			t.Errorf("the item read carries attention key %s", d.QuestionKey)
+		}
+	}
+	got, below, stale, err := fx.r.SurfacedDecisions(it.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 0 || below != 0 || stale != 0 {
+		t.Fatalf("surfaced=%v below=%d stale=%d, want none, 0, 0", surfacedKeys(got), below, stale)
+	}
+	if !AttentionSet().Unsurfaced[AttentionNeedsHuman] {
+		t.Error("needs_human_decision is not in the attention set's Unsurfaced map")
 	}
 }

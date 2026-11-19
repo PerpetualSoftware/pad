@@ -313,7 +313,7 @@ func TestEffortBackfill_NoCallsOnlyJobs(t *testing.T) {
 // high_stakes (0.95); needs_human_decision is below threshold.
 func stagedFixture(t *testing.T, needsHuman float64) (*attentionFixture, *models.Item) {
 	t.Helper()
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	fx.set(AttentionNeedsHuman, needsHuman)
 	fx.set(AttentionHighStakes, 0.95)
 	it := fx.item(t, fx.tasks.ID, "open")
@@ -326,7 +326,7 @@ func stagedFixture(t *testing.T, needsHuman float64) (*attentionFixture, *models
 
 func TestWorkspaceFlags_IgnoresStagedKeys(t *testing.T) {
 	fx, it := stagedFixture(t, 0.3)
-	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, AttentionThreshold)
+	flags, _, err := fx.r.WorkspaceFlags(fx.ws.ID, AttentionSetName, surfacedAttentionThreshold)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,7 +349,7 @@ func TestSurfacedDecisions_HidesStagedKeys(t *testing.T) {
 // The staged keys are not counted anywhere: the score and choice rows would
 // each read as below threshold, and the low high_stakes with them.
 func TestSurfacedDecisions_StagedKeysAreNotCounted(t *testing.T) {
-	fx := newAttentionFixture(t)
+	fx := newSurfacedAttentionFixture(t)
 	fx.set(AttentionNeedsHuman, 0.9)
 	fx.set(AttentionHighStakes, 0.1)
 	it := fx.item(t, fx.tasks.ID, "open")

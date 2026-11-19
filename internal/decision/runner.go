@@ -42,7 +42,8 @@ type QuestionSet struct {
 	Questions map[string]Question
 
 	// Unsurfaced names question keys that are asked and stored but that no
-	// surfacing read acts on yet (TASK-3921: staged before their reader).
+	// surfacing read acts on (TASK-3921 staged keys; TASK-4643 the whole
+	// attention set).
 	// WorkspaceFlags, SurfacedDecisions (counters included) and
 	// ItemReadDecisions (item show, its --agent projection and MCP item get)
 	// skip them; Decisions, and the decisions endpoint that reads it, still
@@ -91,7 +92,7 @@ type QuestionSet struct {
 	MaxPerCall int
 
 	// Threshold is the Noul probability at or above which an answer in this
-	// set is surfaced anywhere (a dashboard flag, a chip, the item brief).
+	// set is surfaced anywhere (a WorkspaceFlags flag, the item brief).
 	// Below it the product shows nothing, so a read that serves agents must
 	// not serve it either (TASK-3618). Zero surfaces every Noul answer.
 	Threshold float64
@@ -112,7 +113,7 @@ const (
 )
 
 // surfacing is THE row test every surfacing read applies (TASK-3618):
-// WorkspaceFlags for the dashboard and SurfacedDecisions for the item brief.
+// WorkspaceFlags, and SurfacedDecisions for the item brief.
 // qhashNow is the fingerprint of the question as registered now, "" when
 // there is none. It says nothing about the ITEM's currency: each caller
 // decides what an item that moved on means for it.
@@ -801,9 +802,10 @@ func (r *Runner) SetBackfillPacing(chunk int, poll time.Duration) {
 	r.backfillPoll = poll
 }
 
-// ItemReadDecisions is Decisions without the staged keys (TASK-3921): what the
-// item read, the CLI --agent projection and MCP item get carry. The raw
-// Decisions stays behind the decisions endpoint, which shows staged data.
+// ItemReadDecisions is Decisions without the Unsurfaced keys (TASK-3921,
+// TASK-4643): what the item read, the CLI --agent projection and MCP item get
+// carry. The raw Decisions stays behind the decisions endpoint, which shows
+// every stored answer.
 func (r *Runner) ItemReadDecisions(itemID string) ([]models.ItemDecision, error) {
 	rows, err := r.Decisions(itemID)
 	if err != nil {

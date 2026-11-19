@@ -331,92 +331,21 @@ func TestNeedsYouSignals_HeuristicWithoutRunner(t *testing.T) {
 	})
 }
 
-func effortAnswer(probs string, qhash string) models.ItemDecision {
-	return models.ItemDecision{QuestionKey: decision.AttentionEffort, Kind: "score", QuestionHash: qhash,
-		Answer: json.RawMessage(`{"type":"score","score":1.5,"probabilities":` + probs + `}`)}
+// attentionQuestionHashes is the fingerprint of each attention question as
+// attachAttentionRunner's stub (model stub-1) asks it: the question_hash a
+// stored answer needs to read as current.
+func attentionQuestionHashes() map[string]string {
+	out := map[string]string{}
+	for k, q := range decision.AttentionSet().Questions {
+		out[k] = decision.QuestionFingerprint("stub-1", q)
+	}
+	return out
 }
 
-func mediumAnswer(choice string, p float64, qhash string) models.ItemDecision {
-	return models.ItemDecision{QuestionKey: decision.AttentionEffortMedium, Kind: "choice", QuestionHash: qhash,
-		Answer: json.RawMessage(fmt.Sprintf(`{"type":"choice","choice":%q,"probabilities":{%q:%v}}`, choice, choice, p))}
-}
-
-func TestNeedsYouSignals_HintTable(t *testing.T) {
+// high_stakes is never read: importance takes no stored answer at all
+// (TASK-4643). Importance tops out at 85 while S is 0 (not renormalised).
+func TestNeedsYouSignals_ImportanceTopsOutAt85(t *testing.T) {
 	t.Parallel()
-	qh := map[string]string{decision.AttentionEffort: "qe", decision.AttentionEffortMedium: "qm", decision.AttentionNeedsHuman: "qn", decision.AttentionHighStakes: "qs"}
-	row := &needs.Row{Item: needs.ItemInfo{Title: "Ship it"}}
-	level := func(l int) string {
-		return fmt.Sprintf(`{"%d":0.9,"%d":0.1}`, l, (l+1)%4)
-	}
-	heads := []string{"yes/no", "5 min", "under an hour", "research"}
-	suffixes := map[string]string{"desk": " at desk", "device": ", needs a device", "other_person": ", needs someone else", "unclear": ""}
-	longest := 0
-	for l := 0; l < 4; l++ {
-		for choice, suf := range suffixes {
-			s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(l), "qe"), mediumAnswer(choice, 0.8, "qm")}, qh, false)
-			if want := heads[l] + suf; s.Hint != want {
-				t.Errorf("level %d %s: hint %q, want %q", l, choice, s.Hint, want)
-			}
-			if want := []int{100, 67, 33, 0}[l]; s.Value != want {
-				t.Errorf("level %d: value %d, want %d", l, s.Value, want)
-			}
-			if len(s.Why) != 0 {
-				t.Errorf("an answered, fresh estimate carries Why %v", s.Why)
-			}
-			longest = max(longest, len(s.Hint))
-		}
-	}
-	if longest > needsHintMax || longest != len("under an hour, needs someone else") {
-		t.Fatalf("longest hint is %d bytes against a cap of %d", longest, needsHintMax)
-	}
-
-	// Value and Hint come from one level: the argmax, even where the
-	// probability-weighted mean score sits on another level.
-	skew := effortAnswer(`{"0":0.4,"1":0,"2":0,"3":0.6}`, "qe") // mean 1.8, argmax 3
-	skew.Answer = json.RawMessage(`{"type":"score","score":1.8,"probabilities":{"0":0.4,"3":0.6}}`)
-	if s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{skew}, qh, false); s.Value != 0 || s.Hint != "research" {
-		t.Fatalf("argmax: %+v, want value 0 and hint research", s)
-	}
-
-	// No effort_medium answer at all: the level's phrase alone.
-	if s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(2), "qe")}, qh, false); s.Hint != "under an hour" || s.Value != 33 {
-		t.Fatalf("no medium: %+v", s)
-	}
-	// EffortMediumMinProb is inclusive: exactly .5 adds the suffix.
-	if s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe"), mediumAnswer("device", decision.EffortMediumMinProb, "qm")}, qh, false); s.Hint != "5 min, needs a device" {
-		t.Fatalf("medium at exactly .5: hint %q", s.Hint)
-	}
-	// An unsure medium (top probability under .5) adds nothing.
-	s := simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe"), mediumAnswer("device", 0.49, "qm")}, qh, false)
-	if s.Hint != "5 min" {
-		t.Fatalf("unsure medium: hint %q", s.Hint)
-	}
-	// A medium answered to an older question is ignored; an effort answer to an
-	// older question falls back to the heuristic, with no hint.
-	s = simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe"), mediumAnswer("device", 0.9, "old")}, qh, false)
-	if s.Hint != "5 min" {
-		t.Fatalf("stale medium: hint %q", s.Hint)
-	}
-	s = simplicityOf(row, store.NeedsScoringItem{ContentRunes: 3000}, []models.ItemDecision{effortAnswer(level(0), "old")}, qh, false)
-	if s.Hint != "" || s.Value != 33 || strings.Join(s.Why, "|") != whyEstimated {
-		t.Fatalf("stale effort: %+v, want the heuristic (level 2)", s)
-	}
-	// A current effort answer whose level cannot be read (here 7, outside 0-3)
-	// is no answer: the heuristic, with no hint.
-	for _, probs := range []string{`{"7":0.9}`, `{"-1":0.9}`, `{"x":0.9}`} {
-		s = simplicityOf(row, store.NeedsScoringItem{ContentRunes: 3000}, []models.ItemDecision{effortAnswer(probs, "qe"), mediumAnswer("device", 0.9, "qm")}, qh, false)
-		if s.Hint != "" || s.Value != 33 || strings.Join(s.Why, "|") != whyEstimated {
-			t.Fatalf("unreadable effort %s: %+v, want the heuristic (level 2)", probs, s)
-		}
-	}
-	// An owed job adds the refreshing note, over the answer it still uses.
-	s = simplicityOf(row, store.NeedsScoringItem{}, []models.ItemDecision{effortAnswer(level(1), "qe")}, qh, true)
-	if s.Hint != "5 min" || strings.Join(s.Why, "|") != whyRefreshing {
-		t.Fatalf("owed job: %+v", s)
-	}
-
-	// high_stakes is never read: importance takes no stored answer at all
-	// (TASK-4643). Importance tops out at 85 while S is 0 (not renormalised).
 	now := nfxT0
 	top := &needs.Row{Item: needs.ItemInfo{Priority: "critical"}, Why: needs.Why{Rule: needs.RuleAsked}, Ask: true, WaitingSince: now.AddDate(0, -1, 0)}
 	if v := importanceOf(top, store.NeedsScoringItem{Fields: `{"due_date":"2020-01-01"}`}, 99, now).Value; v != 85 {
@@ -432,8 +361,6 @@ func TestNeedsYouSignals_WhyOnlyFromTheVocabulary(t *testing.T) {
 	for _, w := range needsWhyVocabulary {
 		vocab[w] = true
 	}
-	qh := map[string]string{decision.AttentionEffort: "qe", decision.AttentionNeedsHuman: "qn"}
-	human := models.ItemDecision{QuestionKey: decision.AttentionNeedsHuman, Kind: "noul", QuestionHash: "qn", Answer: json.RawMessage(`{"type":"noul","noul":0.95}`)}
 	now := time.Date(2024, 6, 1, 0, 0, 0, 0, time.UTC)
 	seen := map[string]bool{}
 	for _, prio := range []string{"", "low", "medium", "high", "critical"} {
@@ -441,17 +368,13 @@ func TestNeedsYouSignals_WhyOnlyFromTheVocabulary(t *testing.T) {
 			for _, waited := range []int{0, 8, 30} {
 				for _, rule := range []string{needs.RuleAsked, needs.RuleAssigned} {
 					for _, blocked := range []int{0, 7} {
-						for _, ds := range [][]models.ItemDecision{nil, {human}, {effortAnswer(`{"1":1}`, "qe")}} {
-							for _, owed := range []bool{false, true} {
-								r := &needs.Row{Item: needs.ItemInfo{Title: "SECRET-TITLE ENG-1", Priority: prio}, Why: needs.Why{Rule: rule}, Ask: rule == needs.RuleAsked, WaitingSince: now.AddDate(0, 0, -waited)}
-								it := store.NeedsScoringItem{Fields: `{"due_date":"` + due + `"}`, ContentRunes: waited * 300}
-								for _, sc := range []*needs.Score{importanceOf(r, it, blocked, now), simplicityOf(r, it, ds, qh, owed)} {
-									for _, w := range sc.Why {
-										seen[w] = true
-										if !vocab[w] || strings.Contains(w, "SECRET") {
-											t.Fatalf("Why %q is not in the published vocabulary", w)
-										}
-									}
+						r := &needs.Row{Item: needs.ItemInfo{Title: "SECRET-TITLE ENG-1", Priority: prio}, Why: needs.Why{Rule: rule}, Ask: rule == needs.RuleAsked, WaitingSince: now.AddDate(0, 0, -waited)}
+						it := store.NeedsScoringItem{Fields: `{"due_date":"` + due + `"}`, ContentRunes: waited * 300}
+						for _, sc := range []*needs.Score{importanceOf(r, it, blocked, now), simplicityOf(r, it)} {
+							for _, w := range sc.Why {
+								seen[w] = true
+								if !vocab[w] || strings.Contains(w, "SECRET") {
+									t.Fatalf("Why %q is not in the published vocabulary", w)
 								}
 							}
 						}
@@ -492,9 +415,15 @@ func TestNeedsYouSignals_MemoReadsOncePerRequest(t *testing.T) {
 				t.Fatalf("round %d: rows %+v", round, resp.Rows)
 			}
 			for _, ws := range []*models.Workspace{w1, w2} {
-				for _, read := range []string{"items", "blocks_edges", "collections", "question_hashes", "decisions", "owed_jobs"} {
+				for _, read := range []string{"items", "blocks_edges", "collections"} {
 					if n := loads[ws.ID+":"+read]; n != round {
 						t.Errorf("round %d: %s read %d times, want %d (once per request, never cached across them)", round, read, n, round)
+					}
+				}
+				// No stored decision answer is read (TASK-4643).
+				for _, read := range []string{"question_hashes", "decisions", "owed_jobs"} {
+					if n := loads[ws.ID+":"+read]; n != 0 {
+						t.Errorf("round %d: %s read %d times, want none", round, read, n)
 					}
 				}
 			}
@@ -828,10 +757,7 @@ func TestNeedsYouSignals_ImportanceIgnoresStoredNeedsHuman(t *testing.T) {
 	held := f.item(ws, tasks, "Pick a region", nil, nfxDay(1))
 	attachAttentionRunner(t, srv) // after the items: no job is queued for either
 	runner := srv.decisionRunner()
-	qh, err := runner.CurrentQuestionHashes(context.Background(), ws.ID, decision.AttentionSetName)
-	if err != nil || qh[decision.AttentionNeedsHuman] == "" {
-		t.Fatalf("question hashes %v %v", qh, err)
-	}
+	qh := attentionQuestionHashes()
 	_, st, err := runner.State(current.ID)
 	if err != nil {
 		t.Fatal(err)
@@ -1040,6 +966,64 @@ func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
 					t.Errorf("%s limit %d: pages %v, single page %v (a row was repeated or missed)", sortBy, limit, got, full)
 				}
 			}
+		}
+	})
+}
+
+// Simplicity reads no stored answer (TASK-4643): a current effort answer at
+// level 3, a confident effort_medium "device" and an owed job leave the score
+// at the text heuristic (a question title with a short body: 100), with no
+// hint and only "estimated from the text" in Why.
+func TestNeedsYouSignals_SimplicityIgnoresStoredEffort(t *testing.T) {
+	t.Parallel()
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		it := f.item(ws, f.collection(ws, "Asks", true), "Can we ship?", alice, nfxDay(1))
+		attachAttentionRunner(t, srv) // after the item: no job is queued for it
+		runner := srv.decisionRunner()
+		qh := attentionQuestionHashes()
+		_, st, err := runner.State(it.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		answer := func(key, kind, body string) models.ItemDecision {
+			return models.ItemDecision{ItemID: it.ID, QuestionSet: decision.AttentionSetName, QuestionKey: key, Kind: kind,
+				Answer: json.RawMessage(body), Provider: "stub", Model: "stub-1",
+				StateHash: st.Hash, QuestionHash: qh[key], ItemSeq: 1}
+		}
+		if err := srv.store.InsertItemDecisions(ws.ID, []models.ItemDecision{
+			answer(decision.AttentionEffort, "score", `{"type":"score","score":3,"probabilities":{"3":0.9,"2":0.1}}`),
+			answer(decision.AttentionEffortMedium, "choice", `{"type":"choice","choice":"device","probabilities":{"device":0.9}}`),
+		}); err != nil {
+			t.Fatal(err)
+		}
+		// The control: both answers are current for the question as asked now.
+		ds, err := runner.Decisions(it.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		current := 0
+		for _, d := range ds {
+			if (d.QuestionKey == decision.AttentionEffort || d.QuestionKey == decision.AttentionEffortMedium) && d.Current {
+				current++
+			}
+		}
+		if current != 2 {
+			t.Fatalf("precondition: %d of the 2 stored effort answers are current", current)
+		}
+		if err := srv.store.OweDecisionJobs(ws.ID, decision.AttentionSetName, []string{it.ID}); err != nil {
+			t.Fatal(err)
+		}
+		resp := f.need(alice, "")
+		if len(resp.Rows) != 1 {
+			t.Fatalf("rows %v", titles(resp.Rows))
+		}
+		sim := resp.Rows[0].Simplicity
+		if sim == nil || sim.Value != 100 || sim.Hint != "" || strings.Join(sim.Why, "|") != whyEstimated {
+			t.Fatalf("simplicity %+v, want the heuristic 100 with no hint and Why [%s]", sim, whyEstimated)
 		}
 	})
 }

@@ -1,12 +1,14 @@
 package server
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"sort"
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -481,4 +483,61 @@ func task3615TitlesInOrder(sec store.CatchUpSection) []string {
 		out = append(out, l.Title)
 	}
 	return out
+}
+
+// TASK-4643: catch-up's needs_you reads no judged answer. A stored, current
+// needs_human_decision answer at 0.9 on an open item assigned to the viewer
+// lists nothing, and a failing provider degrades nothing. The control: a
+// blocked item assigned to the viewer still lists as blocked.
+func TestCatchUpNeedsYouNoJudge(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	p := attachAttentionRunner(t, srv)
+	f := newTask3615Fixture(t, srv)
+	judged := f.create(t, f.bobTok, "tasks", "Pick vendor HUMAN-HIGH")
+	f.patch(t, f.bobTok, judged, map[string]any{"assigned_user_id": f.alice.ID})
+	blocked := f.create(t, f.bobTok, "tasks", "Assigned and blocked")
+	f.patch(t, f.bobTok, blocked, map[string]any{"assigned_user_id": f.alice.ID})
+	blocker := f.create(t, f.bobTok, "tasks", "Blocker")
+	if _, err := srv.store.CreateItemLink(f.ws.ID, models.ItemLinkCreate{TargetID: blocked.ID, LinkType: "blocks"}, blocker.ID); err != nil {
+		t.Fatalf("CreateItemLink: %v", err)
+	}
+	runDecisionTick(t, srv)
+
+	ds, err := srv.decisionRunner().Decisions(judged.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored := false
+	for _, d := range ds {
+		if pr, ok := decision.NoulValue(d); ok && d.QuestionKey == decision.AttentionNeedsHuman && d.Current && pr >= 0.7 {
+			stored = true
+		}
+	}
+	if !stored {
+		t.Fatal("precondition: no current needs_human_decision answer at or above 0.7 is stored")
+	}
+	got := f.catchUp(t, f.aliceTok)
+	task3615Want(t, "needs_you", got.NeedsYou, "Assigned and blocked")
+	if len(got.NeedsYou.Lines) == 1 && got.NeedsYou.Lines[0].What != "blocked" {
+		t.Errorf("needs_you what = %q, want blocked", got.NeedsYou.Lines[0].What)
+	}
+	if len(got.Degraded) != 0 {
+		t.Errorf("degraded = %v, want none", got.Degraded)
+	}
+
+	p.mu.Lock()
+	p.fail = errors.New("upstream down")
+	p.mu.Unlock()
+	// A new item owes an undebounced first ask, which now fails.
+	f.create(t, f.bobTok, "tasks", "Anything")
+	runDecisionTick(t, srv)
+	if failing, err := srv.store.DecisionJobsFailing(f.ws.ID, decision.AttentionSetName); err != nil || !failing {
+		t.Fatalf("precondition: the attention job is not recorded as failing (failing=%v, err=%v)", failing, err)
+	}
+	got = f.catchUp(t, f.aliceTok)
+	task3615Want(t, "needs_you with a failing provider", got.NeedsYou, "Assigned and blocked")
+	if len(got.Degraded) != 0 {
+		t.Errorf("a failing provider degraded catch-up: %v", got.Degraded)
+	}
 }

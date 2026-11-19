@@ -613,7 +613,9 @@ func TestNeedsMe_DegradedPerWorkspace(t *testing.T) {
 	})
 }
 
-func TestNeedsMe_DegradedOnlyOnProviderError(t *testing.T) {
+// Needs you reads no decision state (TASK-4643), so neither a failing
+// provider nor a runner erroring on the attention set degrades it.
+func TestNeedsMe_DecisionRunnerNeverDegrades(t *testing.T) {
 	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
@@ -641,11 +643,12 @@ func TestNeedsMe_DegradedOnlyOnProviderError(t *testing.T) {
 			t.Fatalf("a failing item alice cannot see set degraded: %v", resp.Degraded)
 		}
 
-		// A provider ERROR (the set is not registered) does degrade, by slug.
+		// A runner with the set unregistered, whose reads of it would error:
+		// still nothing degraded, since nothing reads it.
 		srv.SetDecisionRunner(decision.NewRunner(srv.store, p, decision.NewRegistry()))
 		resp = f.need(alice, "")
-		if len(resp.Degraded) != 1 || resp.Degraded[0] != ws.Slug {
-			t.Fatalf("degraded = %v, want [%s]", resp.Degraded, ws.Slug)
+		if len(resp.Degraded) != 0 {
+			t.Fatalf("degraded = %v, want none", resp.Degraded)
 		}
 		wantTitles(t, "rows still return", resp.Rows, "visible ask")
 	})
@@ -1020,10 +1023,7 @@ func TestMeNeeds_StoredJudgeAnswersIgnored(t *testing.T) {
 		if runner == nil {
 			t.Fatal("the runner must be live")
 		}
-		qh, err := runner.CurrentQuestionHashes(context.Background(), ws.ID, decision.AttentionSetName)
-		if err != nil || qh[decision.AttentionNeedsHuman] == "" {
-			t.Fatalf("question hashes %v %v", qh, err)
-		}
+		qh := attentionQuestionHashes()
 		_, st, err := runner.State(judged.ID)
 		if err != nil {
 			t.Fatal(err)

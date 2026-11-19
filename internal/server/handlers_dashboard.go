@@ -2,16 +2,13 @@ package server
 
 import (
 	"encoding/json"
-	"errors"
 	"log/slog"
-	"math"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
-	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/usertz"
@@ -886,47 +883,6 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		})
 	}
 
-	// (f) Content-aware attention (TASK-3118): the `attention` question
-	// set's latest answers. Nil runner (no provider) => no rows, no section,
-	// byte-identical to before. Only needs_human comes from here: "blocked"
-	// is the dependency graph's alone (section e). The text-derived blocked
-	// flag was retired in TASK-3915 (IDEA-3906; the measurements are on that
-	// idea's trail).
-	// Answers at or above the threshold come back when they are CURRENT (the
-	// item page's currency rule), or when the item has moved on but its
-	// re-ask is still pending: a job owed with no recorded failure, for an
-	// item the set still applies to (TASK-3915). With the re-ask debounced
-	// (TASK-3916) that pending window can last up to an hour. So the checks
-	// below need no threshold of their own beyond naming which key they read.
-	if nouls, failing, nerr := s.decisionRunner().WorkspaceFlags(workspaceID, decision.AttentionSetName, decision.AttentionThreshold); nerr != nil {
-		markDegraded("attention.decisions", nerr)
-	} else {
-		if failing {
-			markDegraded("attention.decisions", errors.New("decision provider is failing; attention answers may be out of date"))
-		}
-		if len(nouls) > 0 {
-			for _, item := range workItems {
-				answers, ok := nouls[item.ID]
-				// No done check here: WorkspaceFlags returns an answer only
-				// for an item the set still applies to, which excludes a
-				// terminal one — the same rule the item page's chips use.
-				if !ok {
-					continue
-				}
-				if p, ok := answers[decision.AttentionNeedsHuman]; ok {
-					resp.Attention = append(resp.Attention, DashboardAttention{
-						Type:       "needs_human",
-						ItemSlug:   item.Slug,
-						ItemRef:    item.Ref,
-						ItemTitle:  item.Title,
-						Collection: item.CollectionSlug,
-						Reason:     "Waiting on a human decision (" + attentionPercent(p) + " likely)",
-					})
-				}
-			}
-		}
-	}
-
 	// Recent activity — enriched with item titles and user names. The
 	// caller's visibility rides into the query (BUG-3687), so the 30 rows are
 	// rows this caller may see and the ten are not starved by a run of hidden
@@ -1588,11 +1544,6 @@ func extractFieldValue(fieldsJSON, key string) string {
 		}
 		return string(b)
 	}
-}
-
-// attentionPercent renders a Noul probability for an attention reason.
-func attentionPercent(p float64) string {
-	return strconv.Itoa(int(math.Round(p*100))) + "%"
 }
 
 // reorderBatchOf returns the reorder_batch id of a "reordered" activity row,
