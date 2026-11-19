@@ -53,6 +53,10 @@ type commitmentView struct {
 	// Editable is set on GET only: a display hint saying whether this caller
 	// may POST/PATCH the commitment. It authorises nothing; writes re-check.
 	Editable *bool `json:"editable,omitempty"`
+	// CommitmentRevision is the optimistic-concurrency token a PATCH or renegotiate
+	// may send back as expected_revision. Set only where the view's schedule was
+	// read fresh with GetScheduleRevision; absent on the resolve response.
+	CommitmentRevision string `json:"commitment_revision,omitempty"`
 }
 
 // commitmentWriteAllowed is the single decision for writing an item's
@@ -141,7 +145,11 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 }
 
 func (s *Server) writeItemCommitment(w http.ResponseWriter, r *http.Request, workspaceID string, item *models.Item, status int, note string) {
-	sc, err := s.store.GetSchedule(workspaceID, item.ID)
+	// The token and sc share one snapshot. The rest of the view (roles, links,
+	// gates) is read afterwards from the pool, so it is never older than the
+	// token; a write landing in between only makes the token stale, which costs
+	// a spurious 409 at worst and never a lost update.
+	sc, rev, err := s.store.GetScheduleRevision(workspaceID, item.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -159,6 +167,7 @@ func (s *Server) writeItemCommitment(w http.ResponseWriter, r *http.Request, wor
 		writeInternalError(w, err)
 		return
 	}
+	v.CommitmentRevision = rev
 	writeJSON(w, status, v)
 }
 
@@ -273,6 +282,8 @@ type commitmentPatchBody struct {
 	Audience    json.RawMessage `json:"audience,omitempty"`
 	LeadMinutes json.RawMessage `json:"lead_minutes,omitempty"`
 	Roles       json.RawMessage `json:"roles,omitempty"`
+	// ExpectedRevision is a precondition, not a change member (TASK-4630).
+	ExpectedRevision json.RawMessage `json:"expected_revision,omitempty"`
 }
 
 func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Request) {
@@ -301,6 +312,18 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 	declared, _ := json.Marshal(body)
 	var members map[string]json.RawMessage
 	_ = json.Unmarshal(declared, &members)
+	// Null and "" are absent, like renegotiate's revision. Deleting the key keeps
+	// it out of the required check, the activity fields and the update itself.
+	expected := ""
+	if raw, ok := members["expected_revision"]; ok {
+		delete(members, "expected_revision")
+		if !isJSONNull(raw) {
+			if err := json.Unmarshal(raw, &expected); err != nil {
+				writeScheduleBodyError(w)
+				return
+			}
+		}
+	}
 	if len(members) == 0 {
 		writeScheduleRequired(w, "body")
 		return
@@ -341,7 +364,7 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 			upd.Tz, note = &name, n
 		}
 	}
-	sc, err := s.store.UpdateCommitment(workspaceID, item.ID, upd, roles)
+	sc, err := s.store.UpdateCommitmentExpecting(workspaceID, item.ID, upd, roles, expected)
 	if s.writeScheduleItemGone(w, r, workspaceID, err) {
 		return
 	}
@@ -399,6 +422,7 @@ type commitmentRenegotiateBody struct {
 	Revision              string                           `json:"revision"`
 	Preview               bool                             `json:"preview"`
 	AcknowledgeViolations bool                             `json:"acknowledge_violations"`
+	ExpectedRevision      string                           `json:"expected_revision"`
 }
 
 func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.Request) {
@@ -431,7 +455,7 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		writeScheduleBodyError(w)
 		return
 	}
-	body := models.CommitmentRenegotiateInput{Reason: request.Reason, Scope: request.Scope, Deadline: request.Deadline, DeadlineOffset: request.DeadlineOffset, DeadlineBehavior: request.DeadlineBehavior, RemoveDeadline: request.RemoveDeadline, Revision: request.Revision, Preview: request.Preview, AcknowledgeViolations: request.AcknowledgeViolations}
+	body := models.CommitmentRenegotiateInput{Reason: request.Reason, Scope: request.Scope, Deadline: request.Deadline, DeadlineOffset: request.DeadlineOffset, DeadlineBehavior: request.DeadlineBehavior, RemoveDeadline: request.RemoveDeadline, Revision: request.Revision, ExpectedRevision: request.ExpectedRevision, Preview: request.Preview, AcknowledgeViolations: request.AcknowledgeViolations}
 	body.Access, err = s.buildCommitmentAccess(r, s.store.Q(), workspaceID, item.ID, commitmentAccessLive)
 	if err != nil {
 		writeInternalError(w, err)

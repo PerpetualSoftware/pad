@@ -52,6 +52,9 @@ type scheduleView struct {
 	TimezoneNote     string                     `json:"timezone_note"`
 	Links            []displayCommitmentLink    `json:"links"`
 	Gates            models.ScheduleGateView    `json:"gates"`
+	// CommitmentRevision is the token an edit derived from this read sends back
+	// as expected_revision.
+	CommitmentRevision string `json:"commitment_revision"`
 }
 
 const instantLayout = "2006-01-02 15:04 MST"
@@ -581,23 +584,31 @@ unchanged when it refuses: a rule that fires too often (a floor on HOURLY and
 MINUTELY rules), a rule that does not compile, --anchor completion with a
 rule that is not a plain interval, or the server being busy (retry). An edit
 that leaves no occurrence at or after now ends the schedule instead of failing.
-A timing edit that compiles clears a stored error.
+A timing edit that compiles clears a stored error. When --window needs the
+stored start, the edit is refused (409 commitment_changed) if the schedule
+changed after it was read; run it again.
 ` + scheduleFlagHelp,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
-			currentStart := ""
+			currentStart, rev := "", ""
 			// An end wall and a duration both need the stored start to form an offset.
+			// The body is then derived from that read, so the PATCH carries the
+			// read's commitment_revision and is refused if the schedule moved since.
 			if cmd.Flags().Changed("window") && !cmd.Flags().Changed("start") && !cmd.Flags().Changed("deadline") {
 				raw, err := client.GetItemCommitment(getWorkspace(), args[0])
 				if err != nil {
 					return err
 				}
-				currentStart = decodeScheduleView(raw).Dtstart
+				cur := decodeScheduleView(raw)
+				currentStart, rev = cur.Dtstart, cur.CommitmentRevision
 			}
 			body, err := buildScheduleUpdate(f, flagChanged(cmd), currentStart)
 			if err != nil {
 				return err
+			}
+			if rev != "" {
+				body["expected_revision"] = rev
 			}
 			raw, err := client.UpdateItemCommitment(getWorkspace(), args[0], body)
 			if err != nil {

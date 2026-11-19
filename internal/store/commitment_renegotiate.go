@@ -104,6 +104,17 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 	if sc.EndedAt != nil {
 		return nil, fieldErr("schedule", "ended", "the commitment has ended; there is no outstanding occurrence to renegotiate")
 	}
+	// The optional commitment_revision precondition, under the same pin, before
+	// the plan and the revision comparison.
+	if in.ExpectedRevision != "" {
+		rev, err := s.commitmentRevisionQ(tx, sc.ID)
+		if err != nil {
+			return nil, err
+		}
+		if rev != in.ExpectedRevision {
+			return nil, ErrCommitmentRevisionStale
+		}
+	}
 	if nowT.IsZero() {
 		nowT = time.Now()
 	}

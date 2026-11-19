@@ -188,3 +188,45 @@ it('lays each labelled review row out as a label cell and a value cell', async (
  for (const r of rows) { expect(r.classList.contains('row')).toBe(true); expect(r.children).toHaveLength(2); }
  expect(rows[0].children[1].textContent).toBe(`${roleText('2031-03-11T05:00:00Z', 'America/New_York')} · Still owed`);
 });
+const staleRevision = { status: 409, code: 'commitment_changed', message: 'x', details: { field: 'expected_revision', code: 'stale' } };
+it("sends the opened view's commitment_revision with the PATCH", async () => {
+ const opened = { ...plain(), commitment_revision: 'r0' };
+ h.get.mockResolvedValue(opened);
+ const { onsaved } = mount(opened);
+ await input('Target date', '2031-03-17'); await save();
+ await waitFor(() => expect(onsaved).toHaveBeenCalledTimes(1));
+ expect(h.update).toHaveBeenCalledWith('work', 'TASK-1', { dtstart: '2031-03-17T09:00:00', expected_revision: 'r0' });
+});
+it('a stale expected_revision on PATCH shows Reload and writes nothing more', async () => {
+ const opened = { ...plain(), commitment_revision: 'r0' };
+ h.get.mockResolvedValue(opened); h.update.mockRejectedValueOnce(staleRevision);
+ const { onsaved, onreload } = mount(opened);
+ await input('Target date', '2031-03-17'); await save();
+ expect(await screen.findByText(/This date changed\. Reload to edit the current values\./)).toBeTruthy();
+ expect(onsaved).not.toHaveBeenCalled();
+ expect((screen.getByRole('button', { name: 'Save' }) as HTMLButtonElement).disabled).toBe(true);
+ await fireEvent.click(screen.getByRole('button', { name: 'Reload' })); expect(onreload).toHaveBeenCalledTimes(1);
+ expect(h.calls).toEqual(['get', 'patch']);
+});
+it('sends expected_revision on preview only, not apply', async () => {
+ const opened = { ...native(), commitment_revision: 'r0' };
+ h.get.mockResolvedValue(opened); h.reneg.mockResolvedValueOnce(previewResult('rev1')).mockResolvedValueOnce(opened);
+ const { onsaved } = mount(opened);
+ await input('Days after the target', '2');
+ await input('Reason for the deadline change', 'Client asked'); await save();
+ await fireEvent.click(await screen.findByRole('button', { name: 'Change deadline' }));
+ await waitFor(() => expect(onsaved).toHaveBeenCalledTimes(1));
+ expect(h.reneg).toHaveBeenNthCalledWith(1, 'work', 'TASK-1', { scope: 'series', deadline_offset: { deadline_days: 2, deadline_secs: -28800 }, reason: 'Client asked', preview: true, expected_revision: 'r0' });
+ expect(h.reneg).toHaveBeenNthCalledWith(2, 'work', 'TASK-1', { scope: 'series', deadline_offset: { deadline_days: 2, deadline_secs: -28800 }, reason: 'Client asked', revision: 'rev1' });
+});
+it('a stale preview shows Reload', async () => {
+ const opened = { ...native(), commitment_revision: 'r0' };
+ h.get.mockResolvedValue(opened); h.reneg.mockRejectedValueOnce(staleRevision);
+ const { onsaved } = mount(opened);
+ await fireEvent.click(screen.getByLabelText('Lapses'));
+ await input('Reason for the deadline change', 'Softer'); await save();
+ expect(await screen.findByText(/This date changed\. Reload to edit the current values\./)).toBeTruthy();
+ expect(screen.getByRole('button', { name: 'Reload' })).toBeTruthy();
+ expect(onsaved).not.toHaveBeenCalled();
+ expect(h.calls).toEqual(['get', 'preview']);
+});

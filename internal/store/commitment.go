@@ -537,12 +537,19 @@ func mergeRolesPatch(stored scheduleRoles, p models.CommitmentRolesPatch) (sched
 // UpdateCommitment judges the stored timing and the partial roles request under
 // one pin, then writes both or neither. Authority is HTTP's job.
 func (s *Store) UpdateCommitment(workspaceID, itemID string, upd models.ScheduleUpdate, roles *models.CommitmentRolesPatch) (*models.ItemSchedule, error) {
+	return s.UpdateCommitmentExpecting(workspaceID, itemID, upd, roles, "")
+}
+
+// UpdateCommitmentExpecting is UpdateCommitment with an optimistic precondition:
+// a non-empty expected must equal the commitment_revision under the pin, else
+// ErrCommitmentRevisionStale and nothing is written. "" is UpdateCommitment.
+func (s *Store) UpdateCommitmentExpecting(workspaceID, itemID string, upd models.ScheduleUpdate, roles *models.CommitmentRolesPatch, expected string) (*models.ItemSchedule, error) {
 	if roles != nil {
 		if err := validateRolesPatch(*roles); err != nil {
 			return nil, err
 		}
 	}
-	return s.updateCommitmentAt(workspaceID, itemID, upd, roles, time.Now())
+	return s.updateCommitmentAt(workspaceID, itemID, upd, roles, time.Now(), expected)
 }
 
 // RenegotiateDeadline moves the outstanding occurrence's deadline to until: a

@@ -7,6 +7,7 @@
 	stored values (view.role_offsets), and only members whose controls changed
 	are sent. A native row's deadline changes through renegotiate alone (preview,
 	review, apply); everything else goes in one PATCH.
+	Writes carry the opened view's commitment_revision as expected_revision (TASK-4630).
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -74,6 +75,7 @@
 		const message = typeof err.message === 'string' ? err.message.trim() : '';
 		if (err.code === 'forbidden' || err.code === 'permission_denied') return permissionCopy;
 		if (['deadline_owner_required', 'schedule_linked', 'hard_deadline'].includes(err.code ?? '') && message) return message;
+		if (err.code === 'commitment_changed' && err.details?.field === 'expected_revision') { stale = true; return 'This date changed. Reload to edit the current values.'; }
 		if (err.status === 400 && message) { if (typeof err.details?.field === 'string') errorField = err.details.field; return message; }
 		if (err.status === 403) return permissionCopy;
 		return 'Could not update the date. Try again.';
@@ -87,8 +89,10 @@
 		catch (e) { if (live()) error = failure(e); }
 		finally { if (mine === ticket) pending = false; }
 	}
+	// The opened view's token, not the fence GET's: it guards opened-to-write.
+	const expectedRevision = () => opened?.commitment_revision ? { expected_revision: opened.commitment_revision } : {};
 	async function preview(body: Renegotiate, live: () => boolean) {
-		const result = await api.renegotiateCommitment(wsSlug, itemSlug, { ...body, reason: reason.trim(), preview: true }) as CommitmentRenegotiationResult;
+		const result = await api.renegotiateCommitment(wsSlug, itemSlug, { ...body, reason: reason.trim(), preview: true, ...expectedRevision() }) as CommitmentRenegotiationResult;
 		if (!live()) return;
 		review = { body, result };
 		if (result.cascade) onloadtitles?.(result.cascade);
@@ -109,7 +113,7 @@
 			if (!live()) return;
 			if (fresh.schedule_id !== was.schedule_id || fresh.updated_at !== was.updated_at) { stale = true; error = 'This date changed. Reload to edit the current values.'; return; }
 			if (plan.kind === 'patch') {
-				await api.updateCommitment(wsSlug, itemSlug, plan.body);
+				await api.updateCommitment(wsSlug, itemSlug, { ...plan.body, ...expectedRevision() });
 				if (live()) onsaved();
 				return;
 			}

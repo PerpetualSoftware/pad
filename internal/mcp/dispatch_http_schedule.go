@@ -220,13 +220,14 @@ func scheduleUpdateBody(p scheduleParams, currentStart string) (map[string]any, 
 }
 
 // dispatchItemCommitmentEdit prefetches only when a window offset needs the
-// current start. Other edits stay a single PATCH, including deadline refusals.
+// current start, and then sends that read's commitment_revision as
+// expected_revision. Other edits stay a single PATCH, including deadline refusals.
 func (d *HTTPHandlerDispatcher) dispatchItemCommitmentEdit(ctx context.Context, input map[string]any, user *models.User) (*CallToolResult, error) {
 	p, err := readScheduleParams(input)
 	if err != nil {
 		return validationFailedResult("item remind edit", err.Error(), "Check the schedule flags."), nil
 	}
-	start := ""
+	start, rev := "", ""
 	if p.given["window"] && !p.given["start"] && !p.given["deadline"] {
 		path, err := expandPath(itemSchedulePathTemplate, input)
 		if err != nil {
@@ -238,6 +239,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemCommitmentEdit(ctx context.Context, 
 		}
 		var current struct {
 			Dtstart string `json:"dtstart"`
+			Rev     string `json:"commitment_revision"`
 		}
 		raw, err := json.Marshal(result.StructuredContent)
 		if err != nil {
@@ -246,11 +248,14 @@ func (d *HTTPHandlerDispatcher) dispatchItemCommitmentEdit(ctx context.Context, 
 		if err := json.Unmarshal(raw, &current); err != nil {
 			return nil, err
 		}
-		start = current.Dtstart
+		start, rev = current.Dtstart, current.Rev
 	}
 	body, err := scheduleUpdateBody(p, start)
 	if err != nil {
 		return validationFailedResult("item remind edit", err.Error(), "Check the schedule flags."), nil
+	}
+	if rev != "" {
+		body["expected_revision"] = rev
 	}
 	method, path, raw, err := marshalScheduleRequest(http.MethodPatch, itemSchedulePathTemplate, input, body)
 	if err != nil {
