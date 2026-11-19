@@ -74,13 +74,34 @@ describe('TASK-4693: key create and rotate step-up', () => {
 		expect(vi.mocked(api.auth.tokens.create).mock.calls[0]).toEqual(vi.mocked(api.auth.tokens.create).mock.calls[1]);
 		expect(await screen.findByText('pad_cdNEWSECRET')).toBeInTheDocument();
 	});
+	it('the retry sends the refused request, not edits made while the prompt is open', async () => {
+		await startCreate();
+		await fireEvent.input(screen.getByLabelText('Token name'), { target: { value: 'renamed' } });
+		await fireEvent.click(screen.getByRole('radio', { name: /Read only/ }));
+		await verifyPassword();
+		await waitFor(() => expect(api.auth.tokens.create).toHaveBeenCalledTimes(2));
+		const calls = vi.mocked(api.auth.tokens.create).mock.calls;
+		expect(calls[0]).toEqual(['deploy', '["*"]']);
+		expect(calls[1]).toEqual(calls[0]);
+	});
+	it('the name and access are locked while the prompt is open; cancel unlocks them', async () => {
+		await startCreate();
+		expect(screen.getByLabelText('Token name')).toBeDisabled();
+		expect(screen.getByRole('radio', { name: /Read only/ })).toBeDisabled();
+		expect(screen.getByRole('radio', { name: /Read and write/ })).toBeDisabled();
+		await fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+		await waitFor(() => expect(screen.getByLabelText('Token name')).not.toBeDisabled());
+		expect(screen.getByRole('radio', { name: /Read only/ })).not.toBeDisabled();
+		expect((screen.getByLabelText('Token name') as HTMLInputElement).value).toBe('deploy');
+	});
 	it('rotate verifies, then retries the same rotate once', async () => {
 		await startRotate();
 		const dialog = screen.getByRole('dialog');
 		await fireEvent.input(await within(dialog).findByLabelText('Password'), { target: { value: 'fresh-password' } });
 		await fireEvent.click(within(dialog).getByRole('button', { name: 'Verify' }));
 		await waitFor(() => expect(api.auth.tokens.rotate).toHaveBeenCalledTimes(2));
-		expect(vi.mocked(api.auth.tokens.rotate).mock.calls[1][0]).toBe('t1');
+		expect(vi.mocked(api.auth.tokens.rotate).mock.calls[0]).toEqual(['t1']);
+		expect(vi.mocked(api.auth.tokens.rotate).mock.calls[1]).toEqual(vi.mocked(api.auth.tokens.rotate).mock.calls[0]);
 		expect(await screen.findByText('pad_efROTATEDSECRET')).toBeInTheDocument();
 	});
 	it('a refused retry is reported without prompting again', async () => {

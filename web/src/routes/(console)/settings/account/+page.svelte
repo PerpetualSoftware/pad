@@ -168,8 +168,10 @@
 	let tokenToRotate = $state<APIToken | null>(null);
 	let tokenRotating = $state(false);
 	// A key create or rotate the server refused for want of a step-up
-	// (TASK-4693): the prompt shows, then the same request is retried once.
-	let tokenStepUp = $state<{ status: StepUpStatus; retry: 'create' | 'rotate' } | null>(null);
+	// (TASK-4693): the prompt shows, then the refused request, captured when
+	// it was refused, is retried once.
+	type TokenRetry = { kind: 'create'; name: string; scopes: string } | { kind: 'rotate'; tokenId: string };
+	let tokenStepUp = $state<{ status: StepUpStatus; retry: 'create' | 'rotate'; request: TokenRetry } | null>(null);
 	let tokenStepUpBusy = $state(false);
 	let tokenStepUpCanVerify = $state(false);
 	let tokenRotateError = $state('');
@@ -690,11 +692,12 @@
 	}
 
 	// Opens the step-up prompt when the server asks for one; false otherwise.
-	async function promptTokenStepUp(err: unknown, retry: 'create' | 'rotate', isSameIdentity: () => boolean): Promise<boolean> {
+	async function promptTokenStepUp(err: unknown, request: TokenRetry, isSameIdentity: () => boolean): Promise<boolean> {
 		if (!(err instanceof PadApiError && err.code === 'step_up_required')) return false;
+		const retry = request.kind;
 		try {
 			const status = await api.auth.stepUp.status();
-			if (isSameIdentity()) tokenStepUp = { status, retry };
+			if (isSameIdentity()) tokenStepUp = { status, retry, request };
 		} catch (statusError) {
 			const message = statusError instanceof Error ? statusError.message : 'Could not load verification.';
 			if (!isSameIdentity()) return true;
@@ -705,10 +708,10 @@
 	}
 
 	function tokenIdentityVerified() {
-		const retry = tokenStepUp?.retry;
+		const request = tokenStepUp?.request;
 		tokenStepUp = null; tokenStepUpBusy = false;
-		if (retry === 'create') void createToken(false);
-		else if (retry === 'rotate') void rotateToken(false);
+		if (request?.kind === 'create') void createToken(request);
+		else if (request?.kind === 'rotate') void rotateToken(request);
 	}
 
 	function cancelTokenStepUp() {
@@ -716,18 +719,21 @@
 		tokenStepUp = null;
 	}
 
-	async function createToken(allowPrompt = true) {
+	// A retry after a step-up passes the captured request; it is sent as is
+	// and never prompts again.
+	async function createToken(retry?: Extract<TokenRetry, { kind: 'create' }>) {
 		tokenError = '';
 		createdToken = null;
-		if (!newTokenName.trim()) {
+		if (!retry && !newTokenName.trim()) {
 			tokenError = 'Please enter a token name.';
 			return;
 		}
+		const request = retry ?? { kind: 'create' as const, name: newTokenName.trim(), scopes: TOKEN_ACCESS_SCOPES[newTokenAccess] };
 
 		const isSameIdentity = authStore.identityFence();
 		tokenCreating = true;
 		try {
-			const token = await api.auth.tokens.create(newTokenName.trim(), TOKEN_ACCESS_SCOPES[newTokenAccess]);
+			const token = await api.auth.tokens.create(request.name, request.scopes);
 			if (!isSameIdentity()) return;
 			createdToken = token;
 			rotatedFrom = null;
@@ -739,7 +745,7 @@
 			if (!isSameIdentity()) return;
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
-			} else if (!(allowPrompt && (await promptTokenStepUp(err, 'create', isSameIdentity)))) {
+			} else if (!(!retry && (await promptTokenStepUp(err, request, isSameIdentity)))) {
 				tokenError = err instanceof Error ? err.message : 'Failed to create token';
 			}
 		} finally {
@@ -791,15 +797,18 @@
 		tokenRotateError = '';
 	}
 
-	async function rotateToken(allowPrompt = true) {
+	// A retry after a step-up passes the captured request: the same token id.
+	async function rotateToken(retry?: Extract<TokenRetry, { kind: 'rotate' }>) {
 		const target = tokenToRotate;
 		if (!target || tokenRotating) return;
+		if (retry && target.id !== retry.tokenId) return;
+		const request = retry ?? { kind: 'rotate' as const, tokenId: target.id };
 		tokenRotating = true;
 		tokenRotateError = '';
 		// IDENTITY fence (BUG-3105), as for delete.
 		const isSameIdentity = authStore.identityFence();
 		try {
-			const rotated = await api.auth.tokens.rotate(target.id);
+			const rotated = await api.auth.tokens.rotate(request.tokenId);
 			if (!isSameIdentity()) return;
 			// The list keeps metadata only; the secret lives in the one-time reveal.
 			const { token: _secret, ...meta } = rotated;
@@ -810,7 +819,7 @@
 			tokenToRotate = null;
 		} catch (err) {
 			if (!isSameIdentity()) return;
-			if (!(allowPrompt && (await promptTokenStepUp(err, 'rotate', isSameIdentity)))) {
+			if (!(!retry && (await promptTokenStepUp(err, request, isSameIdentity)))) {
 				tokenRotateError = err instanceof Error ? err.message : 'Failed to rotate the token.';
 			}
 		} finally {
@@ -1385,13 +1394,13 @@
 						type="text"
 						placeholder="Token name"
 						bind:value={newTokenName}
-						disabled={tokenCreating}
+						disabled={tokenCreating || tokenStepUp?.retry === 'create'}
 					/>
 					<Button variant="primary" onclick={() => createToken()} disabled={tokenCreating || !!tokenStepUp || !newTokenName.trim()}>
 						{tokenCreating ? 'Creating...' : 'Create'}
 					</Button>
 				</div>
-				<fieldset class="token-access" disabled={tokenCreating}>
+				<fieldset class="token-access" disabled={tokenCreating || tokenStepUp?.retry === 'create'}>
 					<legend>Access</legend>
 					<label class="token-access-option">
 						<input type="radio" name="token-access" value="write" bind:group={newTokenAccess} />
