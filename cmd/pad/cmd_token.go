@@ -379,9 +379,9 @@ func tokenEditError(id string, err error) error {
 		return wrap("the key's scopes changed meanwhile; check 'pad token list' and retry")
 	case apiErr.Status == http.StatusTooManyRequests:
 		if apiErr.RetryAfterSeconds > 0 {
-			return wrap(fmt.Sprintf("too many verification attempts; try again in about %ds; %s", apiErr.RetryAfterSeconds, tokenKeyUnchanged))
+			return wrap(fmt.Sprintf("too many attempts; try again in about %ds; %s", apiErr.RetryAfterSeconds, tokenKeyUnchanged))
 		}
-		return wrap("too many verification attempts; try again later; " + tokenKeyUnchanged)
+		return wrap("too many attempts; try again later; " + tokenKeyUnchanged)
 	case apiErr.Code == "email_send_failed":
 		return wrap(apiErr.Message + "; " + tokenKeyUnchanged)
 	}
@@ -389,8 +389,9 @@ func tokenEditError(id string, err error) error {
 }
 
 // tokenScopeLabel names a key's access level the way the server enforces
-// it: read and pad:read allow only reads, every other recognized scope (and
-// the legacy unrestricted forms) allows everything the user's role allows.
+// it (tokenScopeAllows): the scopes are a union, so any write-level scope
+// (or a legacy unrestricted form) gives full access, read or pad:read alone
+// gives reads only, and unrecognized scopes grant nothing.
 func tokenScopeLabel(scopesJSON string) string {
 	if strings.TrimSpace(scopesJSON) == "" {
 		return "full access"
@@ -402,12 +403,19 @@ func tokenScopeLabel(scopesJSON string) string {
 	if len(scopes) == 0 {
 		return "full access"
 	}
+	readOnly := false
 	for _, scope := range scopes {
-		if scope != "read" && scope != "pad:read" {
+		switch scope {
+		case "*", "write", "pad:write", "pad:admin":
 			return "full access"
+		case "read", "pad:read":
+			readOnly = true
 		}
 	}
-	return "read only"
+	if readOnly {
+		return "read only"
+	}
+	return "no access (unrecognized scopes " + scopesJSON + ")"
 }
 
 // tokenScopeVocabulary is the server's recognized scope set

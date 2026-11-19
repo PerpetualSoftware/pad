@@ -470,3 +470,26 @@ func TestTask4507TOTPSplit(t *testing.T) {
 		}
 	}
 }
+
+// TestTask4507ScopeLabel: the label follows the server's union rule, and a
+// key holding only unrecognized scopes is shown as having no access (the
+// server denies every request for it), never as full access.
+func TestTask4507ScopeLabel(t *testing.T) {
+	cases := map[string]string{
+		``:                    "full access",
+		`[]`:                  "full access",
+		`["*"]`:               "full access",
+		`["pad:admin"]`:       "full access",
+		`["read"]`:            "read only",
+		`["read","pad:read"]`: "read only",
+		`["read","write"]`:    "full access",
+		`["read","bogus"]`:    "read only",
+		`["bogus"]`:           `no access (unrecognized scopes ["bogus"])`,
+		`null`:                `null`,
+	}
+	for in, want := range cases {
+		if got := tokenScopeLabel(in); got != want {
+			t.Errorf("tokenScopeLabel(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
