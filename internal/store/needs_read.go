@@ -425,14 +425,30 @@ func (s *Store) NeedsMarkersForItems(userID string, itemIDs []string) (map[strin
 	return cur, nil
 }
 
-// LatestAssignmentTimes returns, per item, when it was last assigned to the
-// named person: the newest "updated" activity whose change list holds
-// "assigned: <before> → <name>". assigned maps item id to the assignee's
-// display name. An item with no such row is absent (the caller falls back to
-// the item's created_at: an item created already assigned has no row).
-// The activity trail records the name, not the id, so two people sharing a
-// display name can be confused; the worst effect is an age.
-func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]string) (map[string]time.Time, error) {
+// AssigneeRef names an item's current assignee for LatestAssignmentTimes.
+type AssigneeRef struct {
+	UserID string
+	Name   string // current display name, for rows written before the id was recorded
+}
+
+// LatestAssignmentTimes returns, per item, when it was last assigned to its
+// current assignee: the newest "updated" activity recording an assignment to
+// them. assigned maps item id to that assignee. An item with no such row is
+// absent (the caller falls back to the item's created_at: an item created
+// already assigned has no row).
+//
+// A row stamped with ActivityMetaAssignedUserID matches when the stamp equals
+// the assignee's id, so a rename after the assignment or a namesake does not
+// confuse it, and an unassign ("") never matches. A row written before the
+// stamp existed holds only "assigned: <before> → <after>" with display names,
+// and matches on the assignee's CURRENT name; for those rows a rename since
+// the assignment still loses the match and two people sharing a name can
+// still be confused, and the worst effect is an age.
+//
+// The prefilter admits a stamp without the text: a debounced run that
+// reassigns away and back (A → B → A) collapses its change text to a no-op
+// and drops it, but keeps the newest stamp, and that run did re-assign.
+func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]AssigneeRef) (map[string]time.Time, error) {
 	ids := make([]string, 0, len(assigned))
 	for id := range assigned {
 		ids = append(ids, id)
@@ -448,7 +464,7 @@ func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]st
 			SELECT a.document_id, `+s.activityMetaText("a")+`, a.created_at
 			FROM activities a
 			WHERE a.workspace_id = ? AND a.action = 'updated'
-			  AND `+s.activityMetaText("a")+` LIKE '%assigned: %'
+			  AND (`+s.activityMetaText("a")+` LIKE '%assigned: %' OR `+s.activityMetaText("a")+` LIKE '%"assigned_user_id"%')
 			  AND a.document_id IN (`+placeholders(len(chunk))+`)
 			ORDER BY a.created_at, a.id`), args...)
 		if err != nil {
@@ -464,11 +480,9 @@ func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]st
 			if json.Unmarshal([]byte(meta), &m) != nil {
 				continue
 			}
-			changes, _ := m["changes"].(string)
-			for _, part := range strings.Split(changes, "; ") {
-				if strings.HasPrefix(part, "assigned: ") && strings.HasSuffix(part, " → "+assigned[id]) {
-					out[id] = parseTime(at) // rows ascend, so the last match is the newest
-				}
+			// Rows ascend, so the last match is the newest.
+			if assignmentRowMatches(m, assigned[id]) {
+				out[id] = parseTime(at)
 			}
 		}
 		err = rows.Err()
@@ -478,4 +492,24 @@ func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]st
 		}
 	}
 	return out, nil
+}
+
+// assignmentRowMatches reports whether one "updated" activity's metadata
+// records an assignment to ref. A stamped row is decided by its id alone; an
+// unstamped (legacy) row by the suffix of its "assigned: " change text.
+func assignmentRowMatches(meta map[string]any, ref AssigneeRef) bool {
+	if v, stamped := meta[ActivityMetaAssignedUserID]; stamped {
+		id, _ := v.(string)
+		return id != "" && id == ref.UserID
+	}
+	if ref.Name == "" {
+		return false
+	}
+	changes, _ := meta["changes"].(string)
+	for _, part := range strings.Split(changes, "; ") {
+		if strings.HasPrefix(part, "assigned: ") && strings.HasSuffix(part, " → "+ref.Name) {
+			return true
+		}
+	}
+	return false
 }
