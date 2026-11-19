@@ -135,7 +135,7 @@ func TestTask4507WideningWithPassword(t *testing.T) {
 	f := newTokenEditFixture(t)
 	u := f.passwordUser(t, "widen@example.com")
 	tok := f.mint(t, u, `["read"]`)
-	client, _ := f.session(t, u)
+	client := f.staleSession(t, u) // widening needs a step-up only past the sign-in window
 
 	r := runTokenEditT(client, tok.ID, nil, strPtr("*"), twoFAPassword+"\n", false, false)
 	if r.err != nil {
@@ -175,7 +175,7 @@ func TestTask4507WideningWithTOTP(t *testing.T) {
 	f := newTokenEditFixture(t)
 	u, secret, _ := f.totpUser(t, "totp@example.com")
 	tok := f.mint(t, u, `["read"]`)
-	client, _ := f.session(t, u)
+	client := f.staleSession(t, u) // widening needs a step-up only past the sign-in window
 
 	// The next step's code: enrolment consumed the current one.
 	code, err := totp.GenerateCode(secret, time.Now().Add(30*time.Second))
@@ -201,7 +201,7 @@ func TestTask4507WideningWithRecoveryCode(t *testing.T) {
 		t.Fatal("setup printed no recovery codes")
 	}
 	tok := f.mint(t, u, `["read"]`)
-	client, _ := f.session(t, u)
+	client := f.staleSession(t, u) // widening needs a step-up only past the sign-in window
 
 	r := runTokenEditT(client, tok.ID, nil, strPtr("*"), codes[0]+"\n", false, false)
 	if r.err != nil {
@@ -216,7 +216,7 @@ func TestTask4507WrongPasswordLeavesKey(t *testing.T) {
 	f := newTokenEditFixture(t)
 	u := f.passwordUser(t, "wrong@example.com")
 	tok := f.mint(t, u, `["read"]`)
-	client, _ := f.session(t, u)
+	client := f.staleSession(t, u) // widening needs a step-up only past the sign-in window
 
 	r := runTokenEditT(client, tok.ID, nil, strPtr("*"), "not-the-password\n", false, false)
 	if r.err == nil || !strings.Contains(r.err.Error(), "incorrect password") || !strings.Contains(r.err.Error(), "the key is unchanged") {
@@ -249,11 +249,11 @@ func TestTask4507UnavailableGuidance(t *testing.T) {
 	f := newTokenEditFixture(t)
 	u := f.oauthUser(t, "oauth@example.com")
 	tok := f.mint(t, u, `["read"]`)
-	client, _ := f.session(t, u)
+	client := f.staleSession(t, u) // widening needs a step-up only past the sign-in window
 
 	r := runTokenEditT(client, tok.ID, nil, strPtr("*"), "anything\n", false, false)
-	if r.err == nil || !strings.Contains(r.err.Error(), "Turn on two-factor authentication") {
-		t.Fatalf("err = %v, want the 2FA guidance", r.err)
+	if r.err == nil || !strings.Contains(r.err.Error(), "sign in again ('pad auth login')") {
+		t.Fatalf("err = %v, want the sign-in-again guidance", r.err)
 	}
 	if n := f.count("POST step-up/verify"); n != 0 {
 		t.Fatalf("verify called %d times with no factor", n)
@@ -341,7 +341,7 @@ func TestTask4507StepUpErrors(t *testing.T) {
 			wantErr: "incorrect verification code; the key is unchanged"},
 		{name: "verify unavailable", factor: "password", stdin: "pw\n",
 			verify:  &reply{status: 409, code: "step_up_unavailable", msg: "No verification method is available for this account"},
-			wantErr: "Turn on two-factor authentication ('pad auth 2fa setup') to change key access; the key is unchanged"},
+			wantErr: "sign in again ('pad auth login') and run the command within 10 minutes, or turn on two-factor authentication ('pad auth 2fa setup'); the key is unchanged"},
 		{name: "empty code", factor: "totp", stdin: "",
 			wantErr: "no verification code entered; the key is unchanged", wantCalls: map[string]int{"POST step-up/verify": 0}},
 		{name: "conflict", factor: "password", patch: &reply{status: 409, code: "conflict", msg: "Token scopes changed; reload and try again"},
@@ -500,7 +500,7 @@ func TestTask4507PasswordPipedWithoutNewline(t *testing.T) {
 	f := newTokenEditFixture(t)
 	u := f.passwordUser(t, "nonewline@example.com")
 	tok := f.mint(t, u, `["read"]`)
-	client, _ := f.session(t, u)
+	client := f.staleSession(t, u) // widening needs a step-up only past the sign-in window
 
 	r := runTokenEditT(client, tok.ID, nil, strPtr("*"), twoFAPassword, false, false)
 	if r.err != nil {
