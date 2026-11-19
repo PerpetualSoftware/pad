@@ -252,3 +252,35 @@ func TestPadNeeds_ListPages(t *testing.T) {
 		}
 	}
 }
+
+// TestPadNeeds_RemotePutFailsAfterGiveSaysSo: when the reassignment lands and
+// only the not-mine PUT fails, the error tells the caller the item was already
+// given away, as the CLI does.
+func TestPadNeeds_RemotePutFailsAfterGiveSaysSo(t *testing.T) {
+	f := newClearFixture(t)
+	other, err := f.store.CreateAgentRole(f.workspace.ID, models.AgentRoleCreate{Name: "Reviewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failPut := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/needs/not-mine") {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":{"code":"internal_error","message":"boom"}}`))
+			return
+		}
+		f.srv.ServeHTTP(w, r)
+	})
+	res := f.needsDispatch(t, failPut, "not-mine", map[string]any{
+		"workspace": f.workspace.Slug, "ref": f.item.Slug, "to_role": other.Slug,
+	})
+	if !res.IsError {
+		t.Fatalf("want an error result, got %s", textOf(res))
+	}
+	if got := f.reload(t); got.AgentRoleID == nil || *got.AgentRoleID != other.ID {
+		t.Fatalf("the reassignment should have landed: role = %v", got.AgentRoleID)
+	}
+	if txt := textOf(res); !strings.Contains(txt, "already given to "+other.Slug+", but marking it not mine failed") {
+		t.Fatalf("error does not say the item was already reassigned: %s", txt)
+	}
+}

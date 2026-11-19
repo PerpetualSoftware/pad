@@ -8,6 +8,7 @@ import (
 	"net/url"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // Every hop of the needs actions goes through buildAuthedRequest (directly or
@@ -91,10 +92,47 @@ func (d *HTTPHandlerDispatcher) dispatchNeedsNotMine(ctx context.Context, input 
 		}
 	}
 	res, err := d.executeRequest(ctx, key, user, http.MethodPut, needsItemURL(ws, ref)+"/needs/not-mine", []byte(`{}`))
-	if err != nil || res.IsError {
+	if err != nil {
 		return res, err
 	}
+	if res.IsError {
+		if givenTo != nil {
+			notePartialGive(res, givenTo["label"].(string))
+		}
+		return res, nil
+	}
 	return needsResults(res, givenTo), nil
+}
+
+// notePartialGive prefixes the error message of a failed not-mine PUT that
+// followed a successful reassignment, so the caller knows the item has
+// already changed hands (the CLI says the same). Retrying the call is safe.
+func notePartialGive(res *CallToolResult, label string) {
+	prefix := "the item was already given to " + label + ", but marking it not mine failed: "
+	for i, c := range res.Content {
+		tc, ok := c.(mcp.TextContent)
+		if !ok {
+			continue
+		}
+		var env map[string]any
+		if json.Unmarshal([]byte(tc.Text), &env) == nil {
+			if e, ok := env["error"].(map[string]any); ok {
+				msg, _ := e["message"].(string)
+				e["message"] = prefix + msg
+				if raw, err := json.Marshal(env); err == nil {
+					tc.Text = string(raw)
+					res.Content[i] = tc
+					if res.StructuredContent != nil {
+						res.StructuredContent = env
+					}
+					return
+				}
+			}
+		}
+		tc.Text = prefix + tc.Text
+		res.Content[i] = tc
+		return
+	}
 }
 
 // dispatchNeedsRestore is `needs restore`: it removes the caller's not-mine
