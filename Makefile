@@ -53,9 +53,9 @@ install: build
 	@#
 	@# CAUTION: this target's `build` step runs `npm ci`, which deletes a
 	@# node_modules that sibling worktrees symlink to. When another
-	@# session's worktree is live, build by hand (`npx vite build`, then
-	@# `make build-go`) and run scripts/install-refresh.sh directly, per
-	@# CONVE-2687.
+	@# session's worktree is live, build by hand (`npm run build` in web/,
+	@# which builds every bundle embed.go needs, then `make build-go`) and
+	@# run scripts/install-refresh.sh directly, per CONVE-2687.
 	@bash scripts/install-refresh.sh $(BINARY) $(INSTALL_DIR)/$(BINARY) $(COMMIT)
 
 # -timeout matches CI (see .github/workflows/ci.yml). Without it `go test`
