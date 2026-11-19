@@ -87,3 +87,24 @@ func TestCommitmentReopenHistoryAndSSE(t *testing.T) {
 	case <-time.After(20 * time.Millisecond):
 	}
 }
+
+func TestCommitmentReopenUppercaseID(t *testing.T) {
+	f := ackHTTPFixture(t)
+	rr := f.resolve(map[string]any{"state": "done", "occurrence_at": resolveX, "end_schedule": true})
+	if rr.Code != 200 {
+		t.Fatal(rr.Body.String())
+	}
+	id := readReopenID(t, f)
+	upper := strings.ToUpper(id)
+	if upper == id {
+		t.Fatalf("id %q has no lowercase hex to uppercase", id)
+	}
+	rr = f.as(f.token(f.owner, ""), "POST", f.path(f.item)+"/reopen", map[string]any{"resolution_id": upper})
+	if rr.Code != 200 {
+		t.Fatalf("reopen=%d %s", rr.Code, rr.Body.String())
+	}
+	m := schedMap(t, rr)
+	if m["commitment"] == nil || m["reopen"].(map[string]any)["resolution_id"] != id {
+		t.Fatal(m)
+	}
+}
