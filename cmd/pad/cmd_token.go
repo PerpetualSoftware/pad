@@ -33,7 +33,17 @@ func tokenCmd() *cobra.Command {
 		Long: `Manage user-scoped API tokens (the pad_ tokens PAD_TOKEN carries).
 
 Tokens act as the user who minted them. The secret is shown exactly once,
-at mint time — the server stores only a hash and cannot show it again.`,
+at mint time — the server stores only a hash and cannot show it again.
+
+Creating or rotating a token, or widening its access, needs a session
+signed in within the last 10 minutes or a verified identity. A browser
+login ('pad auth login') keeps the browser's sign-in time, so to start
+the 10 minutes, sign out of Pad in the browser and sign in again, then
+run 'pad auth logout' and 'pad auth login'; with a password account,
+'pad auth login -i' signs in directly in the terminal. With an older
+session the command asks you to verify your identity first (a code from
+your authenticator app or a recovery code, a code sent by email, or your
+password) and then retries once.`,
 		Example: `  pad token create --name ci-agent
   pad token create --name cursor --expires-in 30
   pad token list
@@ -62,7 +72,16 @@ func tokenCreateCmd() *cobra.Command {
 		Use:     "create --name <name>",
 		Short:   "Mint a new API token (secret shown once)",
 		Example: `  pad token create ci-deploy --scopes read --expires-in 90`,
-		Args:    cobra.NoArgs,
+		Long: `Mint a new API token. The secret is shown exactly once.
+
+This needs a session signed in within the last 10 minutes (to start it,
+sign out of Pad in the browser and sign in again, then 'pad auth logout'
+and 'pad auth login'; or 'pad auth login -i' for a password account).
+With an older session you are asked to verify your identity first (an authenticator or recovery
+code, an emailed code, or your password; a code or password may be piped
+on stdin, an emailed code needs a terminal), then the create is retried
+once. A call authenticated by a pad_ API token is refused.`,
+		Args: cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			scopes, err := encodeTokenScopes(scopesFlag)
 			if err != nil {
@@ -77,7 +96,11 @@ func tokenCreateCmd() *cobra.Command {
 				ExpiresIn: expiresInFlag,
 			}
 
-			token, err := client.CreateUserToken(input)
+			var token *models.APITokenWithSecret
+			err = retryAfterStepUp(client, bufio.NewReader(os.Stdin), cmd.ErrOrStderr(), cli.IsTerminal(), "no token was created", func() (err error) {
+				token, err = client.CreateUserToken(input)
+				return err
+			})
 			if err != nil {
 				// Same structured marker as webhook create (TASK-788) so
 				// callers can tell a plan limit from a server fault.
@@ -87,7 +110,7 @@ func tokenCreateCmd() *cobra.Command {
 						return fmt.Errorf("token creation blocked: plan limit reached")
 					}
 				}
-				return err
+				return keyStepUpError(err, "no token was created")
 			}
 
 			if formatFlag == "json" {
@@ -184,15 +207,23 @@ its next call. Metadata (name, scopes) is preserved; last-used resets.
 The new secret is shown exactly once. --expires-in sets a new expiry in
 days; without it the original expiry is preserved.
 
-Like create, rotation needs a login session: a call authenticated by a
-pad_ API token is refused with 403 session_required.`,
+Like create, rotation needs a login session (a call authenticated by a
+pad_ API token is refused with 403 session_required) signed in within the
+last 10 minutes (to start it, sign out of Pad in the browser and sign in
+again, then 'pad auth logout' and 'pad auth login'; or 'pad auth login -i'
+for a password account). With an older session you are asked to verify
+your identity first, then the rotation is retried once.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 
-			token, err := client.RotateUserToken(args[0], expiresInFlag)
-			if err != nil {
+			var token *models.APITokenWithSecret
+			err := retryAfterStepUp(client, bufio.NewReader(os.Stdin), cmd.ErrOrStderr(), cli.IsTerminal(), "the old secret still works", func() (err error) {
+				token, err = client.RotateUserToken(args[0], expiresInFlag)
 				return err
+			})
+			if err != nil {
+				return keyStepUpError(err, "the old secret still works")
 			}
 
 			if formatFlag == "json" {
@@ -260,11 +291,15 @@ and everything else stay as they are.
 *, read, write, pad:read, pad:write, pad:admin.
 
 Renaming, narrowing access and keeping the same access need nothing more.
-Widening access (for example read to *) asks you to verify your identity
-first: a code from your authenticator app or a recovery code, a code sent
-by email, or your password, whichever the account uses. A code or password
-may be piped on stdin; an emailed code needs a terminal. An account with
-none of these must turn on two-factor authentication first.
+Widening access (for example read to *) needs a session signed in within
+the last 10 minutes; with an older one you are asked to verify your
+identity first: a code from your authenticator app or a recovery code, a
+code sent by email, or your password, whichever the account uses. A code
+or password may be piped on stdin; an emailed code needs a terminal. To
+start the 10 minutes instead, sign out of Pad in the browser and sign in
+again, then 'pad auth logout' and 'pad auth login'; or 'pad auth login -i'
+for a password account. An account with no verification method must do
+this.
 
 Like create, this needs a login session: a call authenticated by a pad_
 API token is refused.`,
@@ -318,16 +353,11 @@ func runTokenEdit(client *cli.Client, id string, name, scopes *string, in *bufio
 		scopes = &encoded
 	}
 
-	updated, err := client.UpdateUserToken(id, name, scopes)
-	if isStepUpRequired(err) {
-		if err := runStepUp(client, in, errOut, interactive, tokenKeyUnchanged); err != nil {
-			return tokenEditError(id, err)
-		}
+	var updated *models.APIToken
+	err := retryAfterStepUp(client, in, errOut, interactive, tokenKeyUnchanged, func() (err error) {
 		updated, err = client.UpdateUserToken(id, name, scopes)
-		if isStepUpRequired(err) {
-			return &tokenEditErr{msg: "verification did not take effect; run the command again", err: err}
-		}
-	}
+		return err
+	})
 	if err != nil {
 		return tokenEditError(id, err)
 	}
@@ -345,6 +375,44 @@ func runTokenEdit(client *cli.Client, id string, name, scopes *string, in *bufio
 	return nil
 }
 
+// retryAfterStepUp runs call and, only when the server answers
+// step_up_required, runs the step-up prompt and retries exactly once.
+// Prompts go to errOut. A refusal of the retry is returned as the server's
+// error, worded for a person.
+func retryAfterStepUp(client *cli.Client, in *bufio.Reader, errOut io.Writer, interactive bool, unchanged string, call func() error) error {
+	err := call()
+	if !isStepUpRequired(err) {
+		return err
+	}
+	if err := runStepUp(client, in, errOut, interactive, unchanged); err != nil {
+		return err
+	}
+	err = call()
+	if isStepUpRequired(err) {
+		return &tokenEditErr{msg: "verification did not take effect; run the command again", err: err}
+	}
+	return err
+}
+
+// keyStepUpError words the step-up refusals create and rotate share with
+// edit; any other error is returned as it came.
+func keyStepUpError(err error, unchanged string) error {
+	var apiErr *cli.APIError
+	switch {
+	case errors.Is(err, errStepUpUnavailable), errors.As(err, &apiErr) && apiErr.Code == "step_up_unavailable":
+		return &tokenEditErr{msg: signInAgainForKeys + unchanged, err: err}
+	case errors.As(err, &apiErr) && apiErr.Code == "step_up_factor_mismatch":
+		return &tokenEditErr{msg: "your verification method changed; run the command again", err: err}
+	}
+	return err
+}
+
+// signInAgainForKeys is the remedy for an account with no verification factor.
+// Such an account has no password, so only the browser sign-in applies, and a
+// browser-approved CLI session keeps the browser session's sign-in time: the
+// browser must sign in afresh first.
+const signInAgainForKeys = "No verification method is available for this account: sign out of Pad in the browser and sign in again, then run 'pad auth logout' and 'pad auth login' and the command within 10 minutes, or turn on two-factor authentication ('pad auth 2fa setup'); "
+
 // tokenEditErr words a refusal for a person while keeping the server's
 // error reachable through errors.As (the root's rate_limited marker reads it).
 type tokenEditErr struct {
@@ -357,9 +425,8 @@ func (e *tokenEditErr) Unwrap() error { return e.err }
 
 // tokenEditError maps the server's refusals to what to do about them.
 func tokenEditError(id string, err error) error {
-	turnOn2FA := "Turn on two-factor authentication ('pad auth 2fa setup') to change key access; " + tokenKeyUnchanged
 	if errors.Is(err, errStepUpUnavailable) {
-		return &tokenEditErr{msg: turnOn2FA, err: err}
+		return keyStepUpError(err, tokenKeyUnchanged)
 	}
 	var apiErr *cli.APIError
 	if !errors.As(err, &apiErr) {
@@ -371,10 +438,8 @@ func tokenEditError(id string, err error) error {
 		return wrap("Changing a key needs a signed-in session, not an API token: run 'pad auth login' (and unset PAD_TOKEN if it is set)")
 	case apiErr.Status == http.StatusNotFound:
 		return wrap(fmt.Sprintf("token %s not found", id))
-	case apiErr.Code == "step_up_unavailable":
-		return wrap(turnOn2FA)
-	case apiErr.Code == "step_up_factor_mismatch":
-		return wrap("your verification method changed; run the command again")
+	case apiErr.Code == "step_up_unavailable", apiErr.Code == "step_up_factor_mismatch":
+		return keyStepUpError(err, tokenKeyUnchanged)
 	case apiErr.Code == "conflict":
 		return wrap("the key's scopes changed meanwhile; check 'pad token list' and retry")
 	case apiErr.Status == http.StatusTooManyRequests:

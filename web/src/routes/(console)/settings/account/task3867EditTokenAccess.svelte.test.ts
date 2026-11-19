@@ -125,7 +125,7 @@ describe('TASK-3867: editing API key access', () => {
 	});
 	it('shows guidance when verification is unavailable', async () => {
 		const dialog = await widen('unavailable');
-		expect(await within(dialog).findByText(/Turn on two-factor authentication to change key access/)).toBeInTheDocument();
+		expect(await within(dialog).findByText(/Sign out and sign in again, then retry within 10 minutes, or turn on two-factor authentication/)).toBeInTheDocument();
 		expect(within(dialog).queryByRole('button', { name: 'Verify' })).toBeNull();
 		expect(api.auth.stepUp.verify).not.toHaveBeenCalled();
 		expect(api.auth.tokens.update).toHaveBeenCalledOnce();

@@ -167,6 +167,13 @@
 	// once, in the same reveal a new token uses.
 	let tokenToRotate = $state<APIToken | null>(null);
 	let tokenRotating = $state(false);
+	// A key create or rotate the server refused for want of a step-up
+	// (TASK-4693): the prompt shows, then the refused request, captured when
+	// it was refused, is retried once.
+	type TokenRetry = { kind: 'create'; name: string; scopes: string } | { kind: 'rotate'; tokenId: string };
+	let tokenStepUp = $state<{ status: StepUpStatus; retry: 'create' | 'rotate'; request: TokenRetry } | null>(null);
+	let tokenStepUpBusy = $state(false);
+	let tokenStepUpCanVerify = $state(false);
 	let tokenRotateError = $state('');
 	let rotatedFrom = $state<string | null>(null);
 	let tokenError = $state('');
@@ -322,6 +329,8 @@
 		tokenToEdit = null;
 		tokenRotating = false;
 		tokenRotateError = '';
+		tokenStepUp = null;
+		tokenStepUpBusy = false;
 		exportSaving = false;
 		exportMsg = '';
 		exportError = '';
@@ -682,18 +691,49 @@
 		URL.revokeObjectURL(url);
 	}
 
-	async function createToken() {
+	// Opens the step-up prompt when the server asks for one; false otherwise.
+	async function promptTokenStepUp(err: unknown, request: TokenRetry, isSameIdentity: () => boolean): Promise<boolean> {
+		if (!(err instanceof PadApiError && err.code === 'step_up_required')) return false;
+		const retry = request.kind;
+		try {
+			const status = await api.auth.stepUp.status();
+			if (isSameIdentity()) tokenStepUp = { status, retry, request };
+		} catch (statusError) {
+			const message = statusError instanceof Error ? statusError.message : 'Could not load verification.';
+			if (!isSameIdentity()) return true;
+			if (retry === 'create') tokenError = message;
+			else tokenRotateError = message;
+		}
+		return true;
+	}
+
+	function tokenIdentityVerified() {
+		const request = tokenStepUp?.request;
+		tokenStepUp = null; tokenStepUpBusy = false;
+		if (request?.kind === 'create') void createToken(request);
+		else if (request?.kind === 'rotate') void rotateToken(request);
+	}
+
+	function cancelTokenStepUp() {
+		if (tokenStepUpBusy) return;
+		tokenStepUp = null;
+	}
+
+	// A retry after a step-up passes the captured request; it is sent as is
+	// and never prompts again.
+	async function createToken(retry?: Extract<TokenRetry, { kind: 'create' }>) {
 		tokenError = '';
 		createdToken = null;
-		if (!newTokenName.trim()) {
+		if (!retry && !newTokenName.trim()) {
 			tokenError = 'Please enter a token name.';
 			return;
 		}
+		const request = retry ?? { kind: 'create' as const, name: newTokenName.trim(), scopes: TOKEN_ACCESS_SCOPES[newTokenAccess] };
 
 		const isSameIdentity = authStore.identityFence();
 		tokenCreating = true;
 		try {
-			const token = await api.auth.tokens.create(newTokenName.trim(), TOKEN_ACCESS_SCOPES[newTokenAccess]);
+			const token = await api.auth.tokens.create(request.name, request.scopes);
 			if (!isSameIdentity()) return;
 			createdToken = token;
 			rotatedFrom = null;
@@ -705,7 +745,7 @@
 			if (!isSameIdentity()) return;
 			if (isPlanLimitError(err)) {
 				showPlanLimitToast(err);
-			} else {
+			} else if (!(!retry && (await promptTokenStepUp(err, request, isSameIdentity)))) {
 				tokenError = err instanceof Error ? err.message : 'Failed to create token';
 			}
 		} finally {
@@ -751,20 +791,24 @@
 	}
 
 	function closeRotateToken() {
-		if (tokenRotating) return;
+		if (tokenRotating || tokenStepUpBusy) return;
+		if (tokenStepUp?.retry === 'rotate') tokenStepUp = null;
 		tokenToRotate = null;
 		tokenRotateError = '';
 	}
 
-	async function rotateToken() {
+	// A retry after a step-up passes the captured request: the same token id.
+	async function rotateToken(retry?: Extract<TokenRetry, { kind: 'rotate' }>) {
 		const target = tokenToRotate;
 		if (!target || tokenRotating) return;
+		if (retry && target.id !== retry.tokenId) return;
+		const request = retry ?? { kind: 'rotate' as const, tokenId: target.id };
 		tokenRotating = true;
 		tokenRotateError = '';
 		// IDENTITY fence (BUG-3105), as for delete.
 		const isSameIdentity = authStore.identityFence();
 		try {
-			const rotated = await api.auth.tokens.rotate(target.id);
+			const rotated = await api.auth.tokens.rotate(request.tokenId);
 			if (!isSameIdentity()) return;
 			// The list keeps metadata only; the secret lives in the one-time reveal.
 			const { token: _secret, ...meta } = rotated;
@@ -775,7 +819,9 @@
 			tokenToRotate = null;
 		} catch (err) {
 			if (!isSameIdentity()) return;
-			tokenRotateError = err instanceof Error ? err.message : 'Failed to rotate the token.';
+			if (!(!retry && (await promptTokenStepUp(err, request, isSameIdentity)))) {
+				tokenRotateError = err instanceof Error ? err.message : 'Failed to rotate the token.';
+			}
 		} finally {
 			if (isSameIdentity()) tokenRotating = false;
 		}
@@ -1334,18 +1380,27 @@
 					</div>
 				{/if}
 
+				{#if tokenStepUp?.retry === 'create'}
+					<StepUpPrompt factor={tokenStepUp.status.factor} onverified={tokenIdentityVerified} formId="token-create-step-up" bind:busy={tokenStepUpBusy} bind:canVerify={tokenStepUpCanVerify} description="Verify your identity to create this key. Verification lasts 10 minutes in this session." />
+					<div class="modal-actions">
+						<Button variant="secondary" onclick={cancelTokenStepUp} disabled={tokenStepUpBusy}>Cancel</Button>
+						{#if tokenStepUp.status.factor !== 'unavailable'}
+							<Button variant="primary" type="submit" form="token-create-step-up" disabled={!tokenStepUpCanVerify}>{tokenStepUpBusy ? 'Verifying…' : 'Verify'}</Button>
+						{/if}
+					</div>
+				{/if}
 				<div class="token-create-row">
 					<input aria-label="Token name"
 						type="text"
 						placeholder="Token name"
 						bind:value={newTokenName}
-						disabled={tokenCreating}
+						disabled={tokenCreating || tokenStepUp?.retry === 'create'}
 					/>
-					<Button variant="primary" onclick={createToken} disabled={tokenCreating || !newTokenName.trim()}>
+					<Button variant="primary" onclick={() => createToken()} disabled={tokenCreating || !!tokenStepUp || !newTokenName.trim()}>
 						{tokenCreating ? 'Creating...' : 'Create'}
 					</Button>
 				</div>
-				<fieldset class="token-access" disabled={tokenCreating}>
+				<fieldset class="token-access" disabled={tokenCreating || tokenStepUp?.retry === 'create'}>
 					<legend>Access</legend>
 					<label class="token-access-option">
 						<input type="radio" name="token-access" value="write" bind:group={newTokenAccess} />
@@ -1578,7 +1633,18 @@
 	--modal-radius="var(--radius)"
 	--modal-shadow="0 20px 60px rgba(0, 0, 0, 0.3)"
 >
-	{#if tokenToRotate}
+	{#if tokenToRotate && tokenStepUp?.retry === 'rotate'}
+		<div class="delete-token-modal">
+			<h3 id="rotate-token-title" class="modal-title">Rotate the token “{tokenToRotate.name}”?</h3>
+			<StepUpPrompt factor={tokenStepUp.status.factor} onverified={tokenIdentityVerified} formId="token-rotate-step-up" bind:busy={tokenStepUpBusy} bind:canVerify={tokenStepUpCanVerify} description="Verify your identity to rotate this key. Verification lasts 10 minutes in this session." />
+			<div class="modal-actions">
+				<Button variant="secondary" onclick={closeRotateToken} disabled={tokenStepUpBusy}>Cancel</Button>
+				{#if tokenStepUp.status.factor !== 'unavailable'}
+					<Button variant="primary" type="submit" form="token-rotate-step-up" disabled={!tokenStepUpCanVerify}>{tokenStepUpBusy ? 'Verifying…' : 'Verify'}</Button>
+				{/if}
+			</div>
+		</div>
+	{:else if tokenToRotate}
 		<div class="delete-token-modal">
 			<h3 id="rotate-token-title" class="modal-title">Rotate the token “{tokenToRotate.name}”?</h3>
 			<p class="modal-body">
@@ -1590,7 +1656,7 @@
 			{/if}
 			<div class="modal-actions">
 				<Button variant="secondary" onclick={closeRotateToken} disabled={tokenRotating}>Cancel</Button>
-				<Button variant="primary" onclick={rotateToken} disabled={tokenRotating}>
+				<Button variant="primary" onclick={() => rotateToken()} disabled={tokenRotating}>
 					{tokenRotating ? 'Rotating…' : 'Rotate token'}
 				</Button>
 			</div>
