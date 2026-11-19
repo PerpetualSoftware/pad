@@ -374,7 +374,7 @@ func TestNeedsSnooze_OffsetStampSameSecondResurfaces(t *testing.T) {
 	t.Parallel()
 	f := newNeedsFixture(t)
 	seen := f.rawComment(t, f.other, needsMarkerZ)
-	f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
+	first := f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
 	// The marker's instant, written with an offset, under a new id.
 	same := f.rawComment(t, f.other, "2026-11-19T08:00:00-05:00")
 	if f.holds(t, f.me, time.Now()) {
@@ -386,7 +386,7 @@ func TestNeedsSnooze_OffsetStampSameSecondResurfaces(t *testing.T) {
 	// A client marker that names both ids at that second keeps both after
 	// the clamp, so it holds.
 	sn := f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, &models.NeedsSnoozeMarker{
-		SeenCommentAt: needsMarkerZ, SeenCommentIDs: []string{seen.ID, same.ID},
+		SeenCommentAt: needsMarkerZ, SeenCommentIDs: []string{seen.ID, same.ID}, SeenTransitionSeq: first.Marker.SeenTransitionSeq,
 	})
 	if len(sn.Marker.SeenCommentIDs) != 2 || !sn.Holds || !f.batchHolds(t, f.me, time.Now()) {
 		t.Fatalf("clamped marker %+v holds=%v, want both ids and holding", sn.Marker, sn.Holds)
