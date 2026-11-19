@@ -49,7 +49,11 @@ func AgendaCountDays(from, to time.Time, loc *time.Location) (days []string, end
 
 // terminalStateExpr is the SQL test that a status_transitions row (alias st)
 // moved its item to a terminal value of the collection it was written under.
-func terminalStateExpr(colls []reportCollection) (string, []any) {
+// spellings maps collection_id + "\x00" + field_key to the to_status values
+// rows actually hold. A row is terminal when its value equals a terminal value
+// under strings.EqualFold, the replay rule, so the IN list names every held
+// spelling that folds to a terminal value as well as the values themselves.
+func terminalStateExpr(colls []reportCollection, spellings map[string][]string) (string, []any) {
 	var clauses []string
 	var args []any
 	for _, c := range colls {
@@ -57,18 +61,25 @@ func terminalStateExpr(colls []reportCollection) (string, []any) {
 			continue
 		}
 		// No SQL LOWER: SQLite lowercases ASCII only, Postgres all of Unicode.
-		// The stored value and its Go-lowercased form are listed instead, so
-		// both backends read the same set.
-		vals := make([]string, 0, 2*len(c.allTerminals))
+		// The fold is done in Go over the held spellings instead, so both
+		// backends read the same set.
 		seen := map[string]bool{}
+		var vals []string
+		add := func(x string) {
+			if !seen[x] {
+				seen[x] = true
+				vals = append(vals, x)
+			}
+		}
 		for _, v := range c.allTerminals {
-			for _, x := range []string{v, strings.ToLower(v)} {
-				if !seen[x] {
-					seen[x] = true
-					vals = append(vals, x)
+			add(v)
+			for _, x := range spellings[c.id+"\x00"+c.doneKey] {
+				if strings.EqualFold(x, v) {
+					add(x)
 				}
 			}
 		}
+		sort.Strings(vals)
 		args = append(args, c.id, c.doneKey)
 		for _, v := range vals {
 			args = append(args, v)
@@ -134,10 +145,10 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		if !ok {
 			return countOpen
 		}
-		// The same rule as terminalStateExpr: the stored spelling or its
-		// lowercase form, so the start-of-window count and this replay never
-		// disagree about an item.
-		same := func(p string) bool { return status == p || status == strings.ToLower(p) }
+		// The same rule as terminalStateExpr: a status equal to a terminal
+		// value under strings.EqualFold, so the start-of-window count and this
+		// replay never disagree about an item.
+		same := func(p string) bool { return strings.EqualFold(status, p) }
 		for _, p := range rc.positiveTerminals {
 			if same(p) {
 				return countDone
@@ -157,7 +168,25 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 
 	// Items open when the window starts: created before it, and not at a
 	// terminal value by their last transition before it.
-	terminal, termArgs := terminalStateExpr(colls)
+	spellings := map[string][]string{}
+	held, err := s.db.Query(s.q(`SELECT DISTINCT collection_id, field_key, to_status FROM status_transitions WHERE workspace_id = ? AND created_at < ?`), workspaceID, fromB)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("agenda counts spellings: %w", err)
+	}
+	for held.Next() {
+		var collID, key, status string
+		if err := held.Scan(&collID, &key, &status); err != nil {
+			held.Close()
+			return nil, 0, false, err
+		}
+		spellings[collID+"\x00"+key] = append(spellings[collID+"\x00"+key], status)
+	}
+	if err := held.Err(); err != nil {
+		held.Close()
+		return nil, 0, false, err
+	}
+	held.Close()
+	terminal, termArgs := terminalStateExpr(colls, spellings)
 	startQ := `SELECT COUNT(*) FROM items i JOIN collections c ON c.id = i.collection_id
   WHERE i.workspace_id = ? AND i.created_at < ?` + live + scopeSQL
 	startArgs := append([]any{workspaceID, fromB}, scopeArgs...)

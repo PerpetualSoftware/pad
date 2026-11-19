@@ -171,17 +171,61 @@ func TestAgendaCountsUnicodeTerminal(t *testing.T) {
 	}
 }
 
-// A status spelled outside the schema's terminal values (an import, a legacy
-// row) is open to the start-of-window query and to the replay alike, so the
-// burn-down never counts an item the replay cannot close.
-func TestAgendaCountsOddSpellingAgrees(t *testing.T) {
+// A status that is a case variant of a terminal value (written before a
+// schema edit recased the option) is terminal to the start-of-window query and
+// to the replay alike, so the burn-down never counts an item the replay cannot
+// close. DONE closed the item before the window, so the move to done inside it
+// is neither a completion nor a change in open: 0 done, 0 open, burn-down 0.
+func TestAgendaCountsCaseVariantAgrees(t *testing.T) {
 	f := countsFixture(t)
 	c := f.item.CollectionID
 	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
 	countsItem(t, f, c, "odd", "2031-03-01T00:00:00Z", [2]string{"2031-03-02T00:00:00Z", "DONE"}, [2]string{"2031-03-10T10:00:00Z", "done"})
 	days, _, _, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 100)
-	// Open at the start (DONE is not a schema value), closed on the day: 1 done, 0 open, burn-down 0.
+	if err != nil || countsGot(days) != "2031-03-10:0/0/0 " {
+		t.Fatalf("case variant: %s %v", countsGot(days), err)
+	}
+}
+
+// The schema now spells its terminal "done"; rows written while it was "Done"
+// still close the item, before the window and inside it.
+func TestAgendaCountsRecasedTerminal(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
+	countsItem(t, f, c, "closed before", "2031-03-01T00:00:00Z", [2]string{"2031-03-02T00:00:00Z", "Done"})
+	countsItem(t, f, c, "closes in window", "2031-03-01T00:00:00Z", [2]string{"2031-03-10T10:00:00Z", "Done"})
+	days, _, _, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 100)
+	// Open at the start: closes in window only. It completes on the day.
 	if err != nil || countsGot(days) != "2031-03-10:1/0/0 " {
-		t.Fatalf("odd spelling: %s %v", countsGot(days), err)
+		t.Fatalf("recased terminal: %s %v", countsGot(days), err)
+	}
+}
+
+// A recased abandoned value closes the item without counting a completion.
+func TestAgendaCountsRecasedAbandoned(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
+	countsItem(t, f, c, "abandoned before", "2031-03-01T00:00:00Z", [2]string{"2031-03-02T00:00:00Z", "Cancelled"})
+	countsItem(t, f, c, "abandoned in window", "2031-03-01T00:00:00Z", [2]string{"2031-03-10T10:00:00Z", "Cancelled"})
+	days, _, _, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 100)
+	if err != nil || countsGot(days) != "2031-03-10:0/0/0 " {
+		t.Fatalf("recased abandoned: %s %v", countsGot(days), err)
+	}
+}
+
+// A non-ASCII terminal recased in the row folds in Go, not in SQL, so SQLite
+// (which lowercases ASCII only) and Postgres read it closed alike.
+func TestAgendaCountsRecasedUnicodeTerminal(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	f.exec(t, `UPDATE collections SET schema = ? WHERE id = ?`, `{"fields":[{"key":"status","type":"select","options":["open","Готово"],"default":"open","terminal_options":["Готово"]}]}`, c)
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-11T00:00:00Z")
+	countsItem(t, f, c, "closed before", "2031-03-01T00:00:00Z", [2]string{"2031-03-02T00:00:00Z", "ГОТОВО"})
+	countsItem(t, f, c, "closes in window", "2031-03-01T00:00:00Z", [2]string{"2031-03-10T10:00:00Z", "ГОТОВО"})
+	days, _, _, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 100)
+	if err != nil || countsGot(days) != "2031-03-10:1/0/0 " {
+		t.Fatalf("recased unicode terminal: %s %v", countsGot(days), err)
 	}
 }
