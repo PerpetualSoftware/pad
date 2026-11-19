@@ -1,8 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"slices"
 	"strings"
@@ -33,12 +37,14 @@ at mint time — the server stores only a hash and cannot show it again.`,
 		Example: `  pad token create --name ci-agent
   pad token create --name cursor --expires-in 30
   pad token list
+  pad token edit 7fde5e41-... --scopes read
   pad token rotate 7fde5e41-...
   pad token revoke 7fde5e41-...`,
 	}
 	cmd.AddCommand(
 		tokenCreateCmd(),
 		tokenListCmd(),
+		tokenEditCmd(),
 		tokenRotateCmd(),
 		tokenRevokeCmd(),
 	)
@@ -235,6 +241,181 @@ typo is a not-found error rather than a wrong token revoked.`,
 			return nil
 		},
 	}
+}
+
+func tokenEditCmd() *cobra.Command {
+	var nameFlag, scopesFlag string
+
+	cmd := &cobra.Command{
+		Use:   "edit <token-id> [--name <name>] [--scopes <list>]",
+		Short: "Rename a token or change its scopes (the secret is unchanged)",
+		Example: `  pad token edit <token-id> --name ci-deploy
+  pad token edit <token-id> --scopes read
+  pad token edit <token-id> --scopes '*'`,
+		Long: `Change an API token's name and/or scopes by its exact id (from
+'pad token list'). Only the flags you pass are changed; the secret, expiry
+and everything else stay as they are.
+
+--scopes takes the same comma-separated values as 'pad token create':
+*, read, write, pad:read, pad:write, pad:admin.
+
+Renaming, narrowing access and keeping the same access need nothing more.
+Widening access (for example read to *) asks you to verify your identity
+first: a code from your authenticator app or a recovery code, a code sent
+by email, or your password, whichever the account uses. A code or password
+may be piped on stdin; an emailed code needs a terminal. An account with
+none of these must turn on two-factor authentication first.
+
+Like create, this needs a login session: a call authenticated by a pad_
+API token is refused.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var name, scopes *string
+			if cmd.Flags().Changed("name") {
+				name = &nameFlag
+			}
+			if cmd.Flags().Changed("scopes") {
+				scopes = &scopesFlag
+			}
+			client, _ := getClient()
+			return runTokenEdit(client, args[0], name, scopes, bufio.NewReader(os.Stdin),
+				cmd.OutOrStdout(), cmd.ErrOrStderr(), cli.IsTerminal(), formatFlag == "json")
+		},
+	}
+
+	cmd.Flags().StringVar(&nameFlag, "name", "", "new token name")
+	cmd.Flags().StringVar(&scopesFlag, "scopes", "", "new comma-separated scopes: *, read, write, pad:read, pad:write, pad:admin")
+
+	return cmd
+}
+
+// tokenKeyUnchanged ends every refusal token edit words itself.
+const tokenKeyUnchanged = "the key is unchanged"
+
+// runTokenEdit sends only the fields given (nil is left out, so the server
+// keeps it). It PATCHes first, and runs the step-up only when the server
+// answers step_up_required, then retries exactly once. Prompts go to errOut;
+// the result goes to out.
+func runTokenEdit(client *cli.Client, id string, name, scopes *string, in *bufio.Reader, out, errOut io.Writer, interactive, asJSON bool) error {
+	if name == nil && scopes == nil {
+		return fmt.Errorf("nothing to change: pass --name and/or --scopes")
+	}
+	if name != nil {
+		trimmed := strings.TrimSpace(*name)
+		if trimmed == "" {
+			return fmt.Errorf("--name must not be blank")
+		}
+		name = &trimmed
+	}
+	if scopes != nil {
+		encoded, err := encodeTokenScopes(*scopes)
+		if err != nil {
+			return err
+		}
+		if encoded == "" {
+			return fmt.Errorf("--scopes needs at least one value; allowed values: %s", strings.Join(tokenScopeVocabulary, ", "))
+		}
+		scopes = &encoded
+	}
+
+	updated, err := client.UpdateUserToken(id, name, scopes)
+	if isStepUpRequired(err) {
+		if err := runStepUp(client, in, errOut, interactive, tokenKeyUnchanged); err != nil {
+			return tokenEditError(id, err)
+		}
+		updated, err = client.UpdateUserToken(id, name, scopes)
+		if isStepUpRequired(err) {
+			return &tokenEditErr{msg: "verification did not take effect; run the command again", err: err}
+		}
+	}
+	if err != nil {
+		return tokenEditError(id, err)
+	}
+
+	if asJSON {
+		enc := json.NewEncoder(out)
+		enc.SetIndent("", "  ")
+		return enc.Encode(updated)
+	}
+	green := color.New(color.FgGreen)
+	fmt.Fprintf(out, "%s Token updated: %s\n", green.Sprint("✓"), updated.Name)
+	fmt.Fprintf(out, "  ID:      %s\n", updated.ID)
+	fmt.Fprintf(out, "  Scopes:  %s\n", tokenScopeLabel(updated.Scopes))
+	fmt.Fprintf(out, "  Expires: %s\n", formatTokenExpiry(updated.ExpiresAt))
+	return nil
+}
+
+// tokenEditErr words a refusal for a person while keeping the server's
+// error reachable through errors.As (the root's rate_limited marker reads it).
+type tokenEditErr struct {
+	msg string
+	err error
+}
+
+func (e *tokenEditErr) Error() string { return e.msg }
+func (e *tokenEditErr) Unwrap() error { return e.err }
+
+// tokenEditError maps the server's refusals to what to do about them.
+func tokenEditError(id string, err error) error {
+	turnOn2FA := "Turn on two-factor authentication ('pad auth 2fa setup') to change key access; " + tokenKeyUnchanged
+	if errors.Is(err, errStepUpUnavailable) {
+		return &tokenEditErr{msg: turnOn2FA, err: err}
+	}
+	var apiErr *cli.APIError
+	if !errors.As(err, &apiErr) {
+		return err
+	}
+	wrap := func(msg string) error { return &tokenEditErr{msg: msg, err: err} }
+	switch {
+	case apiErr.Code == "session_required":
+		return wrap("Changing a key needs a signed-in session, not an API token: run 'pad auth login' (and unset PAD_TOKEN if it is set)")
+	case apiErr.Status == http.StatusNotFound:
+		return wrap(fmt.Sprintf("token %s not found", id))
+	case apiErr.Code == "step_up_unavailable":
+		return wrap(turnOn2FA)
+	case apiErr.Code == "step_up_factor_mismatch":
+		return wrap("your verification method changed; run the command again")
+	case apiErr.Code == "conflict":
+		return wrap("the key's scopes changed meanwhile; check 'pad token list' and retry")
+	case apiErr.Status == http.StatusTooManyRequests:
+		if apiErr.RetryAfterSeconds > 0 {
+			return wrap(fmt.Sprintf("too many attempts; try again in about %ds; %s", apiErr.RetryAfterSeconds, tokenKeyUnchanged))
+		}
+		return wrap("too many attempts; try again later; " + tokenKeyUnchanged)
+	case apiErr.Code == "email_send_failed":
+		return wrap(apiErr.Message + "; " + tokenKeyUnchanged)
+	}
+	return err
+}
+
+// tokenScopeLabel names a key's access level the way the server enforces
+// it (tokenScopeAllows): the scopes are a union, so any write-level scope
+// (or a legacy unrestricted form) gives full access, read or pad:read alone
+// gives reads only, and unrecognized scopes grant nothing.
+func tokenScopeLabel(scopesJSON string) string {
+	if strings.TrimSpace(scopesJSON) == "" {
+		return "full access"
+	}
+	var scopes []string
+	if err := json.Unmarshal([]byte(scopesJSON), &scopes); err != nil || scopes == nil {
+		return scopesJSON
+	}
+	if len(scopes) == 0 {
+		return "full access"
+	}
+	readOnly := false
+	for _, scope := range scopes {
+		switch scope {
+		case "*", "write", "pad:write", "pad:admin":
+			return "full access"
+		case "read", "pad:read":
+			readOnly = true
+		}
+	}
+	if readOnly {
+		return "read only"
+	}
+	return "no access (unrecognized scopes " + scopesJSON + ")"
 }
 
 // tokenScopeVocabulary is the server's recognized scope set

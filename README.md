@@ -590,13 +590,16 @@ PAD_TOKEN=pad_xxxxxxxx pad item list
 pad token create --name ci-agent              # Mint a token (secret shown once)
 pad token create --name cursor --expires-in 30
 pad token list                                # Metadata only — never secrets
+pad token edit <token-id> --scopes read       # Rename or change scopes; widening asks you to verify
 pad token rotate <token-id>                   # New secret; the old one dies with the same write
 pad token revoke <token-id>                   # Immediate; the id must be exact
 ```
 
 Tokens are user-scoped and act as the user who minted them. `create` prints the secret exactly once — the server stores only a hash and cannot show it again — so pair each mint with wherever the token will live (CI secret store, an agent's `PAD_TOKEN`). `revoke` takes the exact id from `pad token list`; revocation is immediate, and anything still authenticating with that token fails on its next call. `rotate` keeps a token's metadata (name, scopes) and replaces its secret in place: the old secret stops working immediately — there is no grace window — so update whatever holds it before its next call, and use `--expires-in <days>` to set a new expiry (otherwise the original is preserved).
 
-**`create` and `rotate` need a login session; `list` and `revoke` do not.** A request authenticated by an API token (including a `pad_` token in `PAD_TOKEN`) is refused with `403 session_required`, because tokens a token mints would outlive its revocation. A browser session, a saved CLI login, or a `padsess_` token in `PAD_TOKEN` mints normally; on a headless machine, `pad auth login -i` prompts for email and password. `list` and `revoke` stay reachable by a token, since revoking is the response to a leaked one.
+`edit` changes only the name and/or scopes you pass (same `--scopes` values as `create`); the secret is untouched. Widening a key's access (for example `read` to `*`) first asks for a code from your authenticator app or a recovery code, a code sent by email, or your password, whichever the account uses; an account with none must turn on 2FA first.
+
+**`create`, `rotate` and `edit` need a login session; `list` and `revoke` do not.** A request authenticated by an API token (including a `pad_` token in `PAD_TOKEN`) is refused with `403 session_required`, because tokens a token mints would outlive its revocation. A browser session, a saved CLI login, or a `padsess_` token in `PAD_TOKEN` mints normally; on a headless machine, `pad auth login -i` prompts for email and password. `list` and `revoke` stay reachable by a token, since revoking is the response to a leaked one.
 
 ```bash
 pad workspace members               # List workspace members

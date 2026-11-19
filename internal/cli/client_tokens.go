@@ -66,3 +66,21 @@ func (c *Client) RotateUserToken(id string, expiresIn int) (*models.APITokenWith
 	}
 	return &out, nil
 }
+
+// UpdateUserToken changes an owned API token's name and/or scopes
+// (PATCH /auth/tokens/{id}). A nil field is left out of the body, so the
+// server keeps it; scopes is the same JSON-array string create takes.
+// Widening access needs a live step-up grant on the session (403
+// step_up_required otherwise), and like create it needs a session: a
+// PAT-authenticated call is refused 403 session_required.
+func (c *Client) UpdateUserToken(id string, name, scopes *string) (*models.APIToken, error) {
+	input := struct {
+		Name   *string `json:"name,omitempty"`
+		Scopes *string `json:"scopes,omitempty"`
+	}{Name: name, Scopes: scopes}
+	var out models.APIToken
+	if err := c.patch("/auth/tokens/"+url.PathEscape(id), input, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
