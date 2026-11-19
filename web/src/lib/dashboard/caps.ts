@@ -13,7 +13,6 @@ export const PLANS_CAP = 5;
 const ATTENTION_RANK = [
 	'overdue',
 	'blocked',
-	'needs_human',
 	'stalled',
 	'plan_complete',
 	'plan_completion',

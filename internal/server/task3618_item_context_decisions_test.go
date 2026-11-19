@@ -29,7 +29,7 @@ func (p keyedProvider) Ask(_ context.Context, _ any, qs map[string]decision.Ques
 func TestTASK3618_ItemContextCarriesOnlySurfacedDecisions(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
-	th := decision.AttentionThreshold
+	th := 0.7
 	set := func(wording string) decision.QuestionSet {
 		return decision.QuestionSet{
 			Name: "triage",

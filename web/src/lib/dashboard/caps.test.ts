@@ -11,9 +11,8 @@ describe('dashboard caps (TASK-2210)', () => {
 			{ type: 'blocked', id: 4 },
 			{ type: 'overdue', id: 5 },
 			{ type: 'blocked', id: 6 },
-			{ type: 'needs_human', id: 7 },
 		]).map((a) => a.id);
-		expect(got).toEqual([5, 4, 6, 7, 2, 1, 3]);
+		expect(got).toEqual([5, 4, 6, 2, 1, 3]);
 	});
 
 	it('caps a long list and shows all of it when expanded', () => {

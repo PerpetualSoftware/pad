@@ -1,12 +1,9 @@
 package server
 
 import (
-	"log/slog"
 	"net/http"
-	"sort"
 	"time"
 
-	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
@@ -35,7 +32,8 @@ type catchUpResponse struct {
 	Agents         store.CatchUpAgents  `json:"agents"`
 	// Degraded names a section whose source failed and came back empty, so a
 	// client can tell "nothing" from "could not read" (the dashboard's rule,
-	// BUG-2014). Today only needs_you's decision source can degrade.
+	// BUG-2014). No section currently degrades; the field stays in the
+	// shape for clients that read it.
 	Degraded []string `json:"degraded,omitempty"`
 }
 
@@ -112,68 +110,31 @@ func (s *Server) handleGetCatchUp(w http.ResponseWriter, r *http.Request) {
 		Agents:         cu.Agents,
 	}
 
-	needs, degraded, err := s.catchUpNeedsYou(r, workspaceID, user.ID, visibleIDs, fullCollIDs, grantedItemIDs, scope)
+	needs, err := s.catchUpNeedsYou(r, workspaceID, user.ID, visibleIDs, fullCollIDs, grantedItemIDs, scope)
 	if err != nil {
 		writeInternalError(w, err)
 		return
 	}
 	resp.NeedsYou = needs
-	if degraded {
-		resp.Degraded = []string{"needs_you"}
-	}
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// catchUpNeedsYou is current state, not windowed: items the attention set
-// says are waiting on a human, then open items assigned to the viewer that
-// something visible and unfinished still blocks. Roles are agent roles, so
-// "yours" means assigned to you. A failing decision
-// provider degrades the section rather than failing the digest.
-func (s *Server) catchUpNeedsYou(r *http.Request, workspaceID, viewerID string, visibleIDs, fullCollIDs, grantedItemIDs []string, scope store.CatchUpScope) (store.CatchUpSection, bool, error) {
+// catchUpNeedsYou is current state, not windowed: open items assigned to the
+// viewer that something visible and unfinished still blocks. Roles are agent
+// roles, so "yours" means assigned to you.
+func (s *Server) catchUpNeedsYou(r *http.Request, workspaceID, viewerID string, visibleIDs, fullCollIDs, grantedItemIDs []string, scope store.CatchUpScope) (store.CatchUpSection, error) {
 	var ids []string
 	what := map[string]string{}
-	degraded := false
-
-	flags, failing, err := s.decisionRunner().WorkspaceFlags(workspaceID, decision.AttentionSetName, decision.AttentionThreshold)
-	if err != nil {
-		slog.Error("catch-up: attention decisions failed; needs_you degraded", "workspace_id", workspaceID, "error", err)
-		degraded = true
-	} else {
-		if failing {
-			slog.Warn("catch-up: decision provider is failing; attention answers may be out of date", "workspace_id", workspaceID)
-			degraded = true
-		}
-		type flagged struct {
-			id string
-			p  float64
-		}
-		var fl []flagged
-		for id, answers := range flags {
-			if p, ok := answers[decision.AttentionNeedsHuman]; ok {
-				fl = append(fl, flagged{id, p})
-			}
-		}
-		sort.Slice(fl, func(a, b int) bool {
-			if fl[a].p != fl[b].p {
-				return fl[a].p > fl[b].p
-			}
-			return fl[a].id < fl[b].id
-		})
-		for _, f := range fl {
-			ids = append(ids, f.id)
-			what[f.id] = "needs a decision"
-		}
-	}
 
 	if !(scope.CollectionIDs != nil && len(scope.CollectionIDs) == 0 && len(scope.ItemIDs) == 0) {
 		collections, err := s.store.ListCollectionsMinimal(workspaceID)
 		if err != nil {
-			return store.CatchUpSection{}, false, err
+			return store.CatchUpSection{}, err
 		}
 		ctxMap := buildDoneContextMap(collections)
 		blockers, err := s.firstActiveBlockers(r, workspaceID, visibleIDs, fullCollIDs, grantedItemIDs, ctxMap)
 		if err != nil {
-			return store.CatchUpSection{}, false, err
+			return store.CatchUpSection{}, err
 		}
 		if len(blockers) > 0 {
 			mine, err := s.store.ListItems(workspaceID, models.ItemListParams{
@@ -182,7 +143,7 @@ func (s *Server) catchUpNeedsYou(r *http.Request, workspaceID, viewerID string, 
 				ItemIDs:        scope.ItemIDs,
 			})
 			if err != nil {
-				return store.CatchUpSection{}, false, err
+				return store.CatchUpSection{}, err
 			}
 			for _, it := range mine {
 				if _, blocked := blockers[it.ID]; !blocked {
@@ -193,9 +154,6 @@ func (s *Server) catchUpNeedsYou(r *http.Request, workspaceID, viewerID string, 
 				if isReferenceCollection(it.CollectionID, ctxMap) || isItemDone(it.Fields, it.CollectionID, ctxMap) {
 					continue
 				}
-				if _, dup := what[it.ID]; dup {
-					continue
-				}
 				ids = append(ids, it.ID)
 				what[it.ID] = "blocked"
 			}
@@ -204,9 +162,9 @@ func (s *Server) catchUpNeedsYou(r *http.Request, workspaceID, viewerID string, 
 
 	sec, err := s.store.CatchUpItemLines(workspaceID, ids, what, scope)
 	if err != nil {
-		return store.CatchUpSection{}, false, err
+		return store.CatchUpSection{}, err
 	}
-	return sec, degraded, nil
+	return sec, nil
 }
 
 // handleMarkCaughtUp moves the viewer's cursor for the workspace to now. It

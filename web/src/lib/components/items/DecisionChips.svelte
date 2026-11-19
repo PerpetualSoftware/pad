@@ -1,15 +1,16 @@
 <script lang="ts">
-	// Attention chips on the item page (TASK-3118). Self-fetching rather than
-	// read off the item object: the item page is also fed by list and delta
-	// projections that do not carry `decisions`, so a chip bound to the item
-	// would vanish whenever one of those replaced it.
+	// Decision chips on the item page (TASK-3118): convention chips only. The
+	// attention set's needs-human chip was removed in TASK-4643; its answers
+	// are stored for re-measurement and shown nowhere. Self-fetching rather
+	// than read off the item object: the item page is also fed by list and
+	// delta projections that do not carry `decisions`, so a chip bound to the
+	// item would vanish whenever one of those replaced it.
 	//
 	// Renders NOTHING when there are no current answers — which is every item
 	// on an instance with no decision provider, so that case is identical to
 	// before this component existed.
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
-	import { attentionChips, type AttentionChip } from '$lib/decisions/attentionChips';
 	import { conventionChips, type ConventionChip } from '$lib/decisions/conventionChips';
 
 	interface Props {
@@ -19,7 +20,6 @@
 	}
 	let { wsSlug, itemRef, itemId }: Props = $props();
 
-	let chips = $state<AttentionChip[]>([]);
 	// Convention chips (TASK-3119 U1b): only "Possibly breaks CONVE-N", never a
 	// "complies" state; none means nothing.
 	let convChips = $state<ConventionChip[]>([]);
@@ -36,14 +36,12 @@
 		// or an account swap does not change — the answer is computed from what
 		// the CALLER may see, so it must not paint for the next one (BUG-3130).
 		const isSameIdentity = authStore.identityFence();
-		chips = [];
 		convChips = [];
 		if (!ws || !ref) return;
 		api.items
 			.decisions(ws, ref)
 			.then((res) => {
 				if (token === latest && isSameIdentity()) {
-					chips = attentionChips(res.decisions);
 					convChips = conventionChips(res.decisions, ws);
 				}
 			})
@@ -81,21 +79,6 @@
 	</div>
 {/if}
 
-{#if chips.length > 0}
-	<div class="decision-chips" aria-label="Attention signals">
-		{#each chips as chip (chip.key)}
-			<span
-				class="decision-chip"
-				class:flagged={chip.flagged}
-				title="{chip.label}: {chip.percent}% likely, judged from the item's text and recent comments"
-			>
-				<span class="decision-chip-label">{chip.label}</span>
-				<span class="decision-chip-value">{chip.percent}%</span>
-			</span>
-		{/each}
-	</div>
-{/if}
-
 <style>
 	.decision-chips {
 		display: flex;
@@ -114,11 +97,6 @@
 		color: var(--text-muted);
 		background: transparent;
 	}
-	.decision-chip.flagged {
-		color: var(--text-primary);
-		border-color: var(--accent-amber, var(--accent-blue));
-		background: color-mix(in srgb, var(--accent-amber, var(--accent-blue)) 12%, transparent);
-	}
 	.convention-chip {
 		color: var(--text-primary);
 		border-color: var(--accent-amber, var(--accent-blue));
@@ -126,8 +104,5 @@
 	}
 	.convention-chip:hover {
 		background: color-mix(in srgb, var(--accent-amber, var(--accent-blue)) 12%, transparent);
-	}
-	.decision-chip-value {
-		font-variant-numeric: tabular-nums;
 	}
 </style>

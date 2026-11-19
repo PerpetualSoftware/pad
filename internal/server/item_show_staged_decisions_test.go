@@ -1,17 +1,16 @@
 package server
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
-// TASK-3921 F3, through the router (CONVE-19): item show carries
-// needs_human_decision and none of the staged keys, while the decisions
-// endpoint returns all four.
-func TestItemShow_OmitsStagedDecisionKeys(t *testing.T) {
+// TASK-3921 F3 and TASK-4643, through the router (CONVE-19): item show carries
+// no attention key (no surface reads the set), while the decisions endpoint
+// returns all four.
+func TestItemShow_OmitsAttentionDecisionKeys(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	reg, err := decision.ProductionRegistry()
@@ -40,18 +39,8 @@ func TestItemShow_OmitsStagedDecisionKeys(t *testing.T) {
 	}
 
 	show := itemJSONKeys(t, srv, slug, item.Slug)
-	raw, ok := show["decisions"]
-	if !ok {
-		t.Fatal("item show carries no decisions member")
-	}
-	got := string(raw)
-	if !strings.Contains(got, decision.AttentionNeedsHuman) {
-		t.Errorf("item show lost needs_human_decision: %s", got)
-	}
-	for _, k := range keys[1:] {
-		if strings.Contains(got, `"`+k+`"`) {
-			t.Errorf("item show carries staged key %s: %s", k, got)
-		}
+	if raw, ok := show["decisions"]; ok {
+		t.Errorf("item show carries a decisions member with only attention answers stored: %s", raw)
 	}
 
 	all := getDecisions(t, srv, slug, item.Slug)

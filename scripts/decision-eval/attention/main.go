@@ -1,6 +1,7 @@
 // Command attention re-runs the original decision-detector eval (eval2.py
 // section D) through the PRODUCTION state builder, to set
-// decision.AttentionThreshold from a measurement (TASK-3137).
+// the attention threshold (0.7, retired with the set's surfaces in TASK-4643)
+// from a measurement (TASK-3137).
 //
 // Inputs are local and fixed: population.json (ref, truth, day73_p) and, per
 // ref, <ref>.json and <ref>.comments.json as `pad item show|comments

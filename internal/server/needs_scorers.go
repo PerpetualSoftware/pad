@@ -8,7 +8,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/needs"
 	"github.com/PerpetualSoftware/pad/internal/store"
@@ -16,9 +15,9 @@ import (
 
 // The importance and simplicity scorers on GET /me/needs (TASK-3959, IDEA-3906
 // B4b). Both fill needs.Row scores after visibility, routing and snooze, and
-// neither calls a provider: simplicity reads the effort answers the decision
-// runner stored, and falls back to a text heuristic. The scores are computed at
-// read time for the viewer and stored nowhere.
+// neither calls a provider or reads a stored decision answer (TASK-4643):
+// simplicity is a text heuristic. The scores are computed at read time for the
+// viewer and stored nowhere.
 //
 // Score.Why carries a FIXED vocabulary (needsWhyVocabulary, listed in
 // docs/api.md): no title, ref, count or other free text ever enters it.
@@ -36,13 +35,12 @@ const (
 	whyWaitingTwoWeeks  = "waiting two weeks or more"
 	whyAsked            = "asked of you"
 	whyEstimated        = "estimated from the text"
-	whyRefreshing       = "estimate is being refreshed"
 )
 
 var needsWhyVocabulary = []string{
 	whyPriorityCritical, whyPriorityHigh, whyPriorityLow, whyBlocksWork,
 	whyOverdue, whyDueToday, whyDueSoon, whyWaitingWeek, whyWaitingTwoWeeks,
-	whyAsked, whyEstimated, whyRefreshing,
+	whyAsked, whyEstimated,
 }
 
 // Importance weights (the design's B3): priority, blocks, deadline, stakes,
@@ -70,36 +68,18 @@ const (
 	fanoutCap   = 99
 )
 
-// needsHintMax is the longest hint, in bytes (all ASCII).
-const needsHintMax = 40
-
-// effortHints are the hint heads by effort level; the medium suffix follows.
-var effortHints = [4]string{"yes/no", "5 min", "under an hour", "research"}
-
-// effortMediumSuffix is appended to the hint for a confident effort_medium
-// answer; "unclear", an unknown option and a low-probability answer add none.
-var effortMediumSuffix = map[string]string{
-	"desk":         " at desk",
-	"device":       ", needs a device",
-	"other_person": ", needs someone else",
-}
-
 // needsMemo holds ONE workspace's batch reads for ONE call of the scorers, so
 // importance and simplicity read each once. It is built per request per
 // workspace and dropped with it: never cached across requests, since every
-// input (links, answers, jobs, items) changes between them.
+// input (links, items, collections) changes between them.
 type needsMemo struct {
-	s      *Server
-	wsID   string
-	runner *decision.Runner
+	s    *Server
+	wsID string
 
 	mu     sync.Mutex
 	items  memoSlot[map[string]store.NeedsScoringItem]
 	edges  memoSlot[[]store.BlocksEdge]
 	colls  memoSlot[[]models.Collection]
-	decs   memoSlot[map[string][]models.ItemDecision]
-	owed   memoSlot[map[string]bool]
-	qhash  memoSlot[map[string]string]
 	graph  *blocksGraph
 	graphE error
 }
@@ -122,7 +102,7 @@ func memoLoad[T any](m *needsMemo, read string, slot *memoSlot[T], fn func() (T,
 }
 
 func (s *Server) newNeedsMemo(wsID string) *needsMemo {
-	return &needsMemo{s: s, wsID: wsID, runner: s.decisionRunner()}
+	return &needsMemo{s: s, wsID: wsID}
 }
 
 type needsMemoKey struct{}
@@ -150,7 +130,7 @@ func rowIDs(rows []*needs.Row) []string {
 
 // itemsFor reads the rows' items once and returns that read to every later
 // caller, whatever rows it passes: every scorer sharing a memo must pass the
-// same row slice (the handler does). The same holds for answers.
+// same row slice (the handler does).
 func (m *needsMemo) itemsFor(rows []*needs.Row) (map[string]store.NeedsScoringItem, error) {
 	return memoLoad(m, "items", &m.items, func() (map[string]store.NeedsScoringItem, error) {
 		return m.s.store.NeedsScoringItems(m.wsID, rowIDs(rows))
@@ -175,42 +155,7 @@ func (m *needsMemo) blocks() (*blocksGraph, error) {
 	return m.graph, err
 }
 
-// answers returns the latest attention answers of the rows' items, the owed
-// jobs, and the question hashes as the set asks them now. All three are nil
-// without a runner: no provider, no answers worth trusting.
-func (m *needsMemo) answers(ctx context.Context, rows []*needs.Row) (decs map[string][]models.ItemDecision, owed map[string]bool, qh map[string]string, err error) {
-	if m.runner == nil {
-		return nil, nil, nil, nil
-	}
-	if qh, err = memoLoad(m, "question_hashes", &m.qhash, func() (map[string]string, error) {
-		return m.runner.CurrentQuestionHashes(ctx, m.wsID, decision.AttentionSetName)
-	}); err != nil {
-		return
-	}
-	if decs, err = memoLoad(m, "decisions", &m.decs, func() (map[string][]models.ItemDecision, error) {
-		return m.s.store.LatestDecisionsForItems(m.wsID, rowIDs(rows), decision.AttentionSetName)
-	}); err != nil {
-		return
-	}
-	owed, err = memoLoad(m, "owed_jobs", &m.owed, func() (map[string]bool, error) {
-		return m.s.store.OwedDecisionJobs(m.wsID, rowIDs(rows), decision.AttentionSetName)
-	})
-	return
-}
-
-// currentAnswer is the item's latest answer for a question key, if it answers
-// the question as asked now.
-func currentAnswer(decs []models.ItemDecision, qh map[string]string, key string) (models.ItemDecision, bool) {
-	for _, d := range decs {
-		if d.QuestionKey == key && qh[key] != "" && d.QuestionHash == qh[key] {
-			return d, true
-		}
-	}
-	return models.ItemDecision{}, false
-}
-
-// newNeedsScorers is the pair New registers. The runner is read per call, not
-// here: it is attached after New (SetDecisionRunner).
+// newNeedsScorers is the pair New registers.
 func (s *Server) newNeedsScorers() []needs.Scorer {
 	return []needs.Scorer{&importanceScorer{s: s}, &simplicityScorer{s}}
 }
@@ -470,49 +415,21 @@ func (sc *simplicityScorer) Score(ctx context.Context, _ needs.Viewer, scope nee
 	if err != nil {
 		return true, err
 	}
-	decs, owed, qh, err := m.answers(ctx, rows)
-	if err != nil {
-		return true, err
-	}
 	for _, r := range rows {
-		r.Simplicity = simplicityOf(r, items[r.ItemID], decs[r.ItemID], qh, owed[r.ItemID])
+		r.Simplicity = simplicityOf(r, items[r.ItemID])
 	}
 	return false, nil
 }
 
-// simplicityOf is (3 - effort)/3 of 100. Effort is the level the stored effort
-// answer picked (argmax, so the value and the hint cannot disagree), when that
-// answer is to the question as asked now and its level reads as 0-3; otherwise
-// a heuristic on the text.
-// "Current" is the question hash only, not the item's state: an answer one edit
-// behind is used, and a job owed for the item says so in Why.
-func simplicityOf(r *needs.Row, it store.NeedsScoringItem, decs []models.ItemDecision, qh map[string]string, refreshing bool) *needs.Score {
-	var why []string
-	level, hint := 0, ""
-	if d, ok := currentAnswer(decs, qh, decision.AttentionEffort); ok {
-		if l, ok := decision.EffortLevel(d); ok {
-			level, hint = l, effortHints[l]
-			if md, ok := currentAnswer(decs, qh, decision.AttentionEffortMedium); ok {
-				if c, p, ok := decision.ChoiceValue(md); ok && p >= decision.EffortMediumMinProb {
-					hint += effortMediumSuffix[c]
-				}
-			}
-		} else {
-			level, hint = heuristicEffort(r.Item.Title, it.ContentRunes), ""
-		}
-	} else {
-		level = heuristicEffort(r.Item.Title, it.ContentRunes)
-	}
-	if hint == "" {
-		why = append(why, whyEstimated)
-	}
-	if refreshing {
-		why = append(why, whyRefreshing)
-	}
-	return &needs.Score{Value: int(math.Round(float64(3-level) / 3 * 100)), Hint: hint, Why: why}
+// simplicityOf is (3 - effort)/3 of 100, effort being the text heuristic. No
+// stored effort answer is read (TASK-4643), so every score says it is
+// estimated from the text, and none carries a hint.
+func simplicityOf(r *needs.Row, it store.NeedsScoringItem) *needs.Score {
+	level := heuristicEffort(r.Item.Title, it.ContentRunes)
+	return &needs.Score{Value: int(math.Round(float64(3-level) / 3 * 100)), Why: []string{whyEstimated}}
 }
 
-// heuristicEffort is the no-answer estimate: 0 for a question title with a
+// heuristicEffort is the effort estimate: 0 for a question title with a
 // short body, else by body length.
 func heuristicEffort(title string, bodyRunes int) int {
 	switch {
