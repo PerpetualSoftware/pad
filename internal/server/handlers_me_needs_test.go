@@ -1124,3 +1124,42 @@ func TestMeNeeds_WaitingStatusOptionSpelling(t *testing.T) {
 		wantTitles(t, "alice", f.need(alice, "").Rows, "asked of alice")
 	})
 }
+
+// TASK-4643: the row carries the item's seq, so a reassignment from the row
+// can send it as expected_seq and be refused if the item changed since the
+// list was read.
+func TestNeedsRow_ItemSeq(t *testing.T) {
+	needsBackends(t, func(t *testing.T, srv *Server) {
+		f := newNfx(t, srv)
+		owner, alice := f.user("owner"), f.user("alice")
+		ws := f.workspace("One", owner)
+		f.member(ws, alice, "editor")
+		tasks := f.collection(ws, "Tasks", false)
+		it := f.item(ws, tasks, "asked of alice", nil, nfxDay(1))
+		f.comment(ws, it, owner, "@alice-nx please decide")
+
+		seqOf := func() int64 {
+			t.Helper()
+			got, err := srv.store.GetItem(it.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			return got.Seq
+		}
+		first := f.need(alice, "")
+		wantTitles(t, "alice", first.Rows, "asked of alice")
+		if want := seqOf(); want == 0 || first.Rows[0].Item.Seq != want {
+			t.Fatalf("row seq %d, stored seq %d", first.Rows[0].Item.Seq, want)
+		}
+
+		title := "asked of alice, renamed"
+		if _, err := srv.store.UpdateItem(it.ID, models.ItemUpdate{Title: &title}); err != nil {
+			t.Fatal(err)
+		}
+		second := f.need(alice, "")
+		wantTitles(t, "alice after rename", second.Rows, title)
+		if want := seqOf(); second.Rows[0].Item.Seq != want || want == first.Rows[0].Item.Seq {
+			t.Fatalf("after update: row seq %d, stored seq %d, first seq %d", second.Rows[0].Item.Seq, want, first.Rows[0].Item.Seq)
+		}
+	})
+}

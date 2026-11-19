@@ -1,10 +1,12 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { api } from '$lib/api/client';
+	import { api, isUpdateConflictError } from '$lib/api/client';
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import NeedsRowView from '$lib/components/needs/NeedsRow.svelte';
-	import type { NeedsRow, NeedsSort, NeedsView, NeedsWorkspaceCount } from '$lib/types';
+	import { loadGiveTargets, type GiveTarget, type GiveTargets } from '$lib/components/needs/NotMinePicker.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
+	import type { Item, ItemUpdate, NeedsRow, NeedsSort, NeedsView, NeedsWorkspaceCount } from '$lib/types';
 
 	// "Needs you" (TASK-3923, IDEA-3906 unit A6): what is waiting on this person
 	// across every workspace, oldest first by default. Dismiss and Defer hide a
@@ -33,8 +35,10 @@
 	let loadError = $state('');
 	let actionError = $state('');
 	let busy = $state<Record<string, boolean>>({});
-	// The one row whose defer menu is open; opening another closes it.
+	// The one open row menu: a row key for its defer menu (or the compact
+	// row's sheet), the key plus MORE for its ⋯ menu. Opening another closes it.
 	let openMenu = $state('');
+	const MORE = '#more';
 
 	// Every list request takes a ticket; only the newest ticket may write state,
 	// so a slow response for an old sort or view cannot overwrite a newer one.
@@ -185,37 +189,56 @@
 		);
 	}
 
-	/** `from` is the view the action is taken in; the row leaves it for the other. */
-	async function act(row: NeedsRow, call: () => Promise<unknown>, from: NeedsView) {
+	/** The row's action completed and it moved from `from` to the other view. */
+	function landed(row: NeedsRow, from: NeedsView) {
+		const k = keyOf(row);
+		const to: NeedsView = from === 'active' ? 'hidden' : 'active';
+		acted[from].set(k, ++actionsDone);
+		acted[to].delete(k);
+		if (openMenu === k || openMenu === k + MORE) openMenu = '';
+		// Counts belong to the list that showed the row; a list loaded since
+		// (a quick sort or view change) never counted it as ours to adjust.
+		if (view === from && rows.some((r) => keyOf(r) === k)) {
+			settle(row, from === 'active' ? 1 : -1);
+			// H-F1: every loaded row is gone but the cursor says more waits. The
+			// server now excludes the held rows, so page 1 is the next work.
+			if (rows.length === 0 && nextCursor) requestRefetch();
+		} else {
+			// H-F2: the current rows were not settled (another view, or a list
+			// that started and landed while this call was in flight and so was
+			// accepted as fresh). Ask the server again.
+			requestRefetch();
+		}
+	}
+
+	const errMsg = (e: unknown, fallback = 'That did not go through') => (e instanceof Error ? e.message : fallback);
+
+	/** Runs `fn` with the row marked busy; a second action on it meanwhile is dropped. */
+	async function withBusy(row: NeedsRow, fn: () => Promise<void>) {
 		const k = keyOf(row);
 		if (busy[k]) return;
 		busy = { ...busy, [k]: true };
 		actionError = '';
 		try {
-			await call();
-			const to: NeedsView = from === 'active' ? 'hidden' : 'active';
-			acted[from].set(k, ++actionsDone);
-			acted[to].delete(k);
-			if (openMenu === k) openMenu = '';
-			// Counts belong to the list that showed the row; a list loaded since
-			// (a quick sort or view change) never counted it as ours to adjust.
-			if (view === from && rows.some((r) => keyOf(r) === k)) {
-				settle(row, from === 'active' ? 1 : -1);
-				// H-F1: every loaded row is gone but the cursor says more waits. The
-				// server now excludes the held rows, so page 1 is the next work.
-				if (rows.length === 0 && nextCursor) requestRefetch();
-			} else {
-				// H-F2: the current rows were not settled (another view, or a list
-				// that started and landed while this call was in flight and so was
-				// accepted as fresh). Ask the server again.
-				requestRefetch();
-			}
-		} catch (e) {
-			actionError = e instanceof Error ? e.message : 'That did not go through';
+			await fn();
 		} finally {
 			const { [k]: _gone, ...rest } = busy;
 			busy = rest;
 		}
+	}
+
+	/** `from` is the view the action is taken in; the row leaves it for the other. */
+	function act(row: NeedsRow, call: () => Promise<unknown>, from: NeedsView, after?: () => void) {
+		return withBusy(row, async () => {
+			try {
+				await call();
+			} catch (e) {
+				actionError = errMsg(e);
+				return;
+			}
+			landed(row, from);
+			after?.();
+		});
 	}
 
 	const dismiss = (row: NeedsRow) =>
@@ -231,8 +254,141 @@
 				}),
 			'active'
 		);
+	// A not-mine row is restored by deleting the mark, a snoozed one by
+	// deleting the snooze; a row holds at most one of the two.
 	const restore = (row: NeedsRow) =>
-		act(row, () => api.needs.restore(row.workspace.slug, row.item.ref), 'hidden');
+		act(
+			row,
+			() =>
+				row.not_mine
+					? api.needs.undoNotMine(row.workspace.slug, row.item.ref)
+					: api.needs.restore(row.workspace.slug, row.item.ref),
+			'hidden'
+		);
+
+	// ── Not mine (TASK-4643) ────────────────────────────────────────────────
+	// The marker goes back exactly as the server built it for the row
+	// (seen_at, collection and the caller's own assignee id included); the
+	// client adds nothing, and `source` is the server's to set.
+
+	/** What a give-to changed, so Undo can put back only those columns. */
+	interface Gave {
+		kind: GiveTarget['kind'];
+		prev: Item;
+		patched: Item;
+	}
+
+	// Roles and members per workspace, loaded once per page visit. A plain Map:
+	// nothing renders from it.
+	const targetCache = new Map<string, Promise<GiveTargets>>();
+	function loadTargets(ws: string): Promise<GiveTargets> {
+		let p = targetCache.get(ws);
+		if (!p) {
+			p = loadGiveTargets(ws);
+			targetCache.set(ws, p);
+			// A load with a failed half is not kept; the next open tries again.
+			p.then(
+				(t) => {
+					if (t.rolesError || t.peopleError) targetCache.delete(ws);
+				},
+				() => targetCache.delete(ws)
+			);
+		}
+		return p;
+	}
+
+	function offerUndo(row: NeedsRow, message: string, gave?: Gave) {
+		toastStore.show(message, 'success', undefined, undefined, {
+			label: 'Undo',
+			onAction: () => void undoNotMine(row, gave)
+		});
+	}
+
+	const notMine = (row: NeedsRow) =>
+		act(row, () => api.needs.notMine(row.workspace.slug, row.item.ref, { marker: row.marker }), 'active', () =>
+			offerUndo(row, `${row.item.ref} marked not mine`)
+		);
+
+	/**
+	 * Give the item to someone else, then mark it not mine. The reassignment
+	 * goes first and carries the row's seq, so a change made since the list was
+	 * read refuses it and nothing is written. The previous assignee is read
+	 * just before, for Undo: the row never names it.
+	 */
+	const give = (row: NeedsRow, target: GiveTarget) =>
+		withBusy(row, async () => {
+			const ws = row.workspace.slug;
+			const ref = row.item.ref;
+			let prev: Item;
+			let patched: Item;
+			try {
+				prev = await api.items.get(ws, ref);
+				// The row's seq, not the GET's: a change since the list was read must
+				// refuse the reassignment.
+				const expected_seq = row.item.seq;
+				const body: ItemUpdate =
+					target.kind === 'role'
+						? { agent_role_id: target.id, clear_assigned_user: true, expected_seq }
+						: { assigned_user_id: target.id, expected_seq };
+				patched = await api.items.update(ws, ref, body);
+			} catch (e) {
+				actionError = isUpdateConflictError(e)
+					? 'The item changed since you loaded the list. Reload and try again.'
+					: errMsg(e);
+				return;
+			}
+			try {
+				await api.needs.notMine(ws, ref, { marker: row.marker });
+			} catch (e) {
+				// The reassignment stands. Whether the row still needs the caller is
+				// the server's call (an open mention keeps it), so ask it once.
+				actionError = `Gave ${ref} to ${target.label}, but marking it not mine failed: ${errMsg(e)}`;
+				actionsDone++;
+				requestRefetch();
+				return;
+			}
+			landed(row, 'active');
+			offerUndo(row, `${ref} given to ${target.label} and marked not mine`, { kind: target.kind, prev, patched });
+		});
+
+	/**
+	 * Undo: delete the mark, then put back the columns a give-to changed,
+	 * guarded by the seq the give's PATCH returned. If the item changed after
+	 * that, the reassignment is kept and the person is told so.
+	 */
+	const undoNotMine = (row: NeedsRow, gave?: Gave) =>
+		withBusy(row, async () => {
+			const ws = row.workspace.slug;
+			const ref = row.item.ref;
+			const k = keyOf(row);
+			try {
+				await api.needs.undoNotMine(ws, ref);
+			} catch (e) {
+				toastStore.show(`Could not undo ${ref}: ${errMsg(e)}`, 'error');
+				return;
+			}
+			if (gave) {
+				const body: ItemUpdate = { expected_seq: gave.patched.seq };
+				if (gave.kind === 'role') {
+					if (gave.prev.agent_role_id) body.agent_role_id = gave.prev.agent_role_id;
+					else body.clear_agent_role = true;
+				}
+				if (gave.prev.assigned_user_id) body.assigned_user_id = gave.prev.assigned_user_id;
+				else body.clear_assigned_user = true;
+				try {
+					await api.items.update(ws, ref, body);
+				} catch (e) {
+					if (isUpdateConflictError(e)) toastStore.show('The item changed since; the reassignment was kept.', 'info');
+					else toastStore.show(`${ref} is no longer marked not mine, but the reassignment was kept: ${errMsg(e)}`, 'error');
+				}
+			}
+			// As a Restore from the hidden view: the row is back in active, and
+			// the server says where it now stands.
+			acted.hidden.set(k, ++actionsDone);
+			acted.active.delete(k);
+			if (view === 'hidden' && rows.some((r) => keyOf(r) === k)) settle(row, -1);
+			else requestRefetch();
+		});
 
 	// Groups by first appearance, so the server's sort carries through.
 	let groups = $derived.by(() => {
@@ -262,7 +418,7 @@
 	title={view === 'hidden' ? 'Hidden' : 'Needs you'}
 	count={loading ? undefined : total}
 	description={view === 'hidden'
-		? 'Dismissed items come back when something new happens on them. Deferred items come back at the time you chose, whatever happens.'
+		? 'Dismissed items come back when something new happens on them. Deferred items come back at the time you chose, whatever happens. Items you marked not mine come back only when they come back to you: a mention, a waiting status, an assignment or a reminder.'
 		: 'What is waiting on you, across every workspace.'}
 >
 	{#snippet actions()}
@@ -314,10 +470,15 @@
 						{view}
 						menuOpen={openMenu === keyOf(row)}
 						onmenu={(open) => (openMenu = open ? keyOf(row) : openMenu === keyOf(row) ? '' : openMenu)}
+						moreOpen={openMenu === keyOf(row) + MORE}
+						onmore={(open) => (openMenu = open ? keyOf(row) + MORE : openMenu === keyOf(row) + MORE ? '' : openMenu)}
 						busy={!!busy[keyOf(row)]}
 						ondismiss={dismiss}
 						ondefer={defer}
 						onrestore={restore}
+						onnotmine={notMine}
+						ongive={give}
+						loadtargets={loadTargets}
 					/>
 				{/each}
 			</ul>

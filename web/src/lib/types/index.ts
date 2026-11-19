@@ -3648,6 +3648,8 @@ export interface NeedsItemInfo {
 	created_at: string;
 	updated_at: string;
 	path: string;
+	/** The item's seq when the list was read: sent as expected_seq on a reassignment from the row (TASK-4643). */
+	seq: number;
 }
 
 export interface NeedsWhy {

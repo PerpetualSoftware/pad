@@ -2,7 +2,9 @@
 	import Button from '$lib/components/common/Button.svelte';
 	import Chip from '$lib/components/common/Chip.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
+	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import DeferMenu from './DeferMenu.svelte';
+	import NotMinePicker, { type GiveTarget, type GiveTargets } from './NotMinePicker.svelte';
 	import type { NeedsRow, NeedsView } from '$lib/types';
 
 	interface Props {
@@ -18,12 +20,49 @@
 		ondismiss: (row: NeedsRow) => void;
 		ondefer: (row: NeedsRow, deferUntil: string) => void;
 		onrestore: (row: NeedsRow) => void;
+		/**
+		 * "Not mine" (TASK-4643). The entries render only when the parent passes
+		 * these, so a parent that does not (Home) is unchanged. "Give to…" also
+		 * needs `ongive` and the caller's edit right on the item.
+		 */
+		onnotmine?: (row: NeedsRow) => void;
+		ongive?: (row: NeedsRow, target: GiveTarget) => void;
+		/** The give-to picker's loader; the page passes a per-workspace cache. */
+		loadtargets?: (ws: string) => Promise<GiveTargets>;
+		/** Whether the desktop row's ⋯ menu is open (one open menu per page). */
+		moreOpen?: boolean;
+		onmore?: (open: boolean) => void;
 	}
 
-	let { row, compact = false, showWorkspace = false, view, busy = false, menuOpen = false, onmenu = () => {}, ondismiss, ondefer, onrestore }: Props = $props();
+	let {
+		row,
+		compact = false,
+		showWorkspace = false,
+		view,
+		busy = false,
+		menuOpen = false,
+		onmenu = () => {},
+		ondismiss,
+		ondefer,
+		onrestore,
+		onnotmine,
+		ongive,
+		loadtargets,
+		moreOpen = false,
+		onmore = () => {}
+	}: Props = $props();
 
 	let trigger = $state<HTMLElement>();
+	let moreTrigger = $state<HTMLElement>();
 	let deferring = $state(false);
+	let giving = $state(false);
+
+	let canGive = $derived(!!onnotmine && !!ongive && row.can_edit === true);
+
+	function pick(target: GiveTarget) {
+		giving = false;
+		ongive?.(row, target);
+	}
 
 	function ago(iso: string): string {
 		const ms = Date.now() - new Date(iso).getTime();
@@ -40,6 +79,7 @@
 	);
 
 	let snoozeNote = $derived.by(() => {
+		if (row.not_mine) return `Not mine since ${new Date(row.not_mine.created_at).toLocaleDateString()}`;
 		const s = row.snooze;
 		if (!s) return '';
 		if (s.kind === 'defer' && s.defer_until) {
@@ -73,13 +113,21 @@
 	<div class="actions">
 		{#if compact && view === 'active'}
 			<Button size="sm" variant="ghost" aria-label={`Actions ${row.item.ref}`} aria-haspopup="dialog" aria-expanded={menuOpen} disabled={busy}
-				onclick={(event: MouseEvent) => { trigger = event.currentTarget as HTMLElement; deferring = false; onmenu(!menuOpen); }}>⋯</Button>
-			<Menu open={menuOpen} {trigger} mode="portal" sheetOnMobile sheetTitle={row.item.title} ariaLabel={`Actions ${row.item.ref}`} onclose={() => onmenu(false)} focusKey={deferring ? 'defer' : 'actions'}>
+				onclick={(event: MouseEvent) => { trigger = event.currentTarget as HTMLElement; deferring = false; giving = false; onmenu(!menuOpen); }}>⋯</Button>
+			<Menu open={menuOpen} {trigger} mode="portal" sheetOnMobile sheetTitle={row.item.title} ariaLabel={`Actions ${row.item.ref}`} onclose={() => onmenu(false)} focusKey={deferring ? 'defer' : giving ? 'give' : 'actions'}>
 				{#if deferring}
 					<DeferMenu onclose={() => onmenu(false)} onpick={(iso) => { onmenu(false); ondefer(row, iso); }} />
+				{:else if giving}
+					<NotMinePicker ws={row.workspace.slug} load={loadtargets} onpick={(t) => { onmenu(false); pick(t); }} />
 				{:else}
 					<Button size="sm" variant="ghost" disabled={busy} onclick={() => { onmenu(false); ondismiss(row); }}>Dismiss</Button>
 					<Button size="sm" variant="ghost" disabled={busy} onclick={() => deferring = true}>Defer</Button>
+					{#if onnotmine}
+						<Button size="sm" variant="ghost" disabled={busy} onclick={() => { onmenu(false); onnotmine(row); }}>Not mine</Button>
+					{/if}
+					{#if canGive}
+						<Button size="sm" variant="ghost" disabled={busy} onclick={() => giving = true}>Not mine, give to…</Button>
+					{/if}
 				{/if}
 			</Menu>
 		{:else if view === 'hidden'}
@@ -109,6 +157,44 @@
 					</div>
 				{/if}
 			</div>
+			{#if onnotmine}
+				<Button
+					size="sm"
+					variant="ghost"
+					disabled={busy}
+					aria-label={`More actions ${row.item.ref}`}
+					aria-haspopup="menu"
+					aria-expanded={moreOpen}
+					onclick={(event: MouseEvent) => {
+						moreTrigger = event.currentTarget as HTMLElement;
+						giving = false;
+						onmore(!moreOpen);
+					}}
+				>
+					⋯
+				</Button>
+				<Menu
+					open={moreOpen}
+					trigger={moreTrigger}
+					mode="portal"
+					width={240}
+					sheetOnMobile
+					sheetMenu
+					sheetTitle={row.item.title}
+					ariaLabel={`More actions ${row.item.ref}`}
+					onclose={() => onmore(false)}
+					focusKey={giving ? 'give' : 'more'}
+				>
+					{#if giving}
+						<NotMinePicker ws={row.workspace.slug} load={loadtargets} onpick={(t) => { onmore(false); pick(t); }} />
+					{:else}
+						<MenuItem disabled={busy} onclick={() => { onmore(false); onnotmine(row); }}>Not mine</MenuItem>
+						{#if canGive}
+							<MenuItem disabled={busy} onclick={() => (giving = true)}>Not mine, give to…</MenuItem>
+						{/if}
+					{/if}
+				</Menu>
+			{/if}
 		{/if}
 	</div>
 </li>

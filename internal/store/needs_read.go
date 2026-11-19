@@ -200,7 +200,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 
 	q := `
 		SELECT i.id, i.collection_id, i.title, i.slug, i.fields, i.assigned_user_id, COALESCE(au.name, ''), i.agent_role_id,
-		       i.item_number, i.created_at, i.updated_at, c.slug, c.name, c.prefix
+		       i.item_number, i.seq, i.created_at, i.updated_at, c.slug, c.name, c.prefix
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL AND NOT c.is_system
 		LEFT JOIN users au ON au.id = i.assigned_user_id
@@ -230,7 +230,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 		var it models.Item
 		var createdAt, updatedAt string
 		if err := rows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Fields, &it.AssignedUserID, &it.AssignedUserName, &it.AgentRoleID,
-			&it.ItemNumber, &createdAt, &updatedAt, &it.CollectionSlug, &it.CollectionName, &it.CollectionPrefix); err != nil {
+			&it.ItemNumber, &it.Seq, &createdAt, &updatedAt, &it.CollectionSlug, &it.CollectionName, &it.CollectionPrefix); err != nil {
 			return nil, fmt.Errorf("scan needs candidate: %w", err)
 		}
 		it.WorkspaceID = workspaceID

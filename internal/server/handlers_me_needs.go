@@ -523,7 +523,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 			Workspace: label,
 			Item: needs.ItemInfo{
 				Ref: it.Ref, Title: it.Title, Collection: it.CollectionName, CollectionSlug: it.CollectionSlug,
-				CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt,
+				Seq: it.Seq, CreatedAt: it.CreatedAt, UpdatedAt: it.UpdatedAt,
 				Path: path,
 			},
 			Why: rt.Why, Because: rt.Because, WaitingSince: rt.WaitingSince,
