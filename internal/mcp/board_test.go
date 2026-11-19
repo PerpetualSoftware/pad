@@ -445,13 +445,13 @@ func TestMCPApps_BoardInstructionsCount(t *testing.T) {
 	for _, enabled := range []bool{true, false} {
 		init := appsWireResult(t, appsTestServer(t, enabled), "initialize", map[string]any{"protocolVersion": "2025-06-18", "capabilities": map[string]any{}, "clientInfo": map[string]any{"name": "t", "version": "1"}})
 		text, _ := init["instructions"].(string)
-		if enabled && !strings.Contains(text, "Twelve tools total") {
+		if enabled && !strings.Contains(text, "Thirteen tools total") {
 			t.Fatal("base instructions missing")
 		}
 		// The apps text has its own heading, corrects the base count and says
 		// pad_board takes action like the others.
 		got := strings.Contains(text, "\n## MCP Apps (this connection only)\n") &&
-			strings.Contains(text, "thirteen tools total") &&
+			strings.Contains(text, "fourteen tools total") &&
 			strings.Contains(text, "Pass `action` to `pad_board`")
 		if got != enabled {
 			t.Fatalf("apps=%v: apps section present=%v", enabled, got)

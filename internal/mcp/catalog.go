@@ -363,7 +363,7 @@ func buildToolFromDef(def ToolDef) mcp.Tool {
 	actions := sortedActionNames(def)
 	opts = append(opts,
 		mcp.WithString("action",
-			mcp.Description("The action to perform. See tool description for required parameters per action."),
+			mcp.Description("See the tool description."),
 			mcp.Required(),
 			mcp.Enum(actions...),
 		),
@@ -376,9 +376,8 @@ func buildToolFromDef(def ToolDef) mcp.Tool {
 					// TASK-3536: the operative rule stays here, not only in the
 					// server instructions, because a client may never show those
 					// to the model.
-					"Workspace slug; an explicit value always wins. A remote server "+
-						"keeps no session default, so pass it on every call there; a "+
-						"local server falls back to pad_set_workspace, then .pad.toml.",
+					"Workspace slug; explicit wins. Remote: pass it on every call; "+
+						"local falls back to pad_set_workspace, then .pad.toml.",
 				),
 			),
 		)

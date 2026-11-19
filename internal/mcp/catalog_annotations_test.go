@@ -56,6 +56,8 @@ func TestCatalogTools_AnnotationsExplicit(t *testing.T) {
 		"pad_collection": destructive,
 		"pad_role":       destructive,
 		"pad_chat":       destructive,
+		// not-mine with to_role/to_user overwrites the item's assignee.
+		"pad_needs": destructive,
 	}
 
 	seen := map[string]bool{}

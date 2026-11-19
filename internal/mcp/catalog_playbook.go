@@ -204,13 +204,8 @@ func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv)
 
 const padPlaybookToolDescription = `Playbooks — first-class invokable procedures (PLAN-1377).
 
-Playbooks are agent-executed multi-step workflows that ship in a workspace's
-playbooks collection. Each can declare a kebab-case ` + "`invocation_slug`" + ` (e.g.
-"ship", "release"), and an ` + "`## Arguments`" + ` section that names + types the
-inputs it expects. Natural language is the canonical way to invoke one
-("ship these tasks"); the slug is a per-surface shortcut — this ` + "`pad_playbook`" + `
-tool with ` + "`action: run, ref: <slug>`" + ` here, ` + "`/pad <slug>`" + ` in Claude Code,
-` + "`$pad <slug>`" + ` in Codex — that resolves to the same playbook.
+Agent-executed workflows in the playbooks collection. Invoke by natural
+language or ` + "`action: run, ref: <invocation_slug>`" + `.
 
 Actions:
   list  — Workspace playbook catalog. Returns metadata only (no bodies):

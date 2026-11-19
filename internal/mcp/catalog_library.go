@@ -71,17 +71,12 @@ Actions:
              full bodies. Use action=get for the full body of one playbook.
              Optional: type (conventions|playbooks), category, full.
   get      — Full body of one entry by exact title. Conventions are checked first,
-             then playbooks — same precedence activate uses, so a title resolves to the
-             same kind in both surfaces.
+             then playbooks, as activate does.
              Required: title.
-  activate — Create a workspace item from a library entry by title. The destination is
-             whichever collection DECLARES that artifact kind — normally the workspace's
-             conventions / playbooks collections, but it follows them if they were
-             renamed rather than assuming the name. All fields (trigger, scope, surfaces,
-             enforcement, invocation_slug, arguments) carry through from the library
-             definition.
+  activate — Create a workspace item from a library entry by title, in whichever
+             collection DECLARES that artifact kind (it follows a rename). All fields
+             (trigger, scope, surfaces, enforcement, invocation_slug, arguments) carry
+             through.
              Required: workspace, title.
 
-The library is workspace-agnostic: list/get need no workspace context. The
-workspace param is still accepted (and honored by activate), so a session
-pinned via pad_set_workspace need not re-pass it on every call.`
+list/get need no workspace; activate uses it.`

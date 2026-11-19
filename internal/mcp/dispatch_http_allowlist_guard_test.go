@@ -184,6 +184,10 @@ var allowlistCoverage = map[string]allowlistClassification{
 			"token — 403 when TokenAllowedWorkspaceSet is non-nil. Exempt rather than filtersAllowlist because it " +
 			"does not narrow the response, it declines to serve one; the judgment is that deny-all is a stronger " +
 			"guarantee than filtering, not a weaker one"},
+	"needs list": {exempt,
+		"JUDGMENT: GET /me/needs filters the allow-list, but in a helper this guard cannot scan: handlers_me_needs.go " +
+			"needsAdmittedWorkspaces calls filterWorkspacesByTokenAllowlist, then applies the single-workspace token pin, " +
+			"before any row is read, and a workspace= query only selects from that admitted set (TASK-4643)"},
 	"auth whoami": {exempt,
 		"JUDGMENT: GET /auth/me reads the store, but only for the CALLER'S OWN profile. That is not workspace " +
 			"data, and a workspace allow-list scopes workspaces — so the exemption rests on what the endpoint " +
@@ -205,6 +209,10 @@ var allowlistCoverage = map[string]allowlistClassification{
 			"wrongly claimed no capability existed)"},
 
 	// --- specialRoutes: observed via the recording handler ---
+	"needs not-mine": {workspaceScoped,
+		"GET/PATCH /workspaces/{workspace}/items/{ref} and PUT .../needs/not-mine, all under the {slug} subrouter (TASK-4643)"},
+	"needs restore": {workspaceScoped,
+		"DELETE /workspaces/{workspace}/items/{ref}/needs/not-mine and .../needs/snooze, under the {slug} subrouter (TASK-4643)"},
 	"library activate": {workspaceScoped,
 		"POST /workspaces/{workspace}/items — activation writes a library entry INTO a workspace, so the write carries a " +
 			"workspace segment and the middleware gates it"},
