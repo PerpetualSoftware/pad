@@ -344,7 +344,7 @@ func (s *Server) readCalendarFeed(r *http.Request, f *store.CalendarFeed, u *mod
 			if e.Type == "date" {
 				// The agenda admits any value whose first ten characters are a
 				// date; only a full RFC 3339 timestamp is written as timed.
-				event.UID = e.itemID + "." + e.Field + "." + e.Day
+				event.UID = e.ItemID + "." + e.Field + "." + e.Day
 				event.Target = e.Day
 				if _, err := time.Parse(time.RFC3339, e.Date); err == nil {
 					event.Target = e.Date

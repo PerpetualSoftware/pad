@@ -28,6 +28,10 @@ const (
 	agendaBudget = 1500 * time.Millisecond
 )
 
+// agendaEntry is one agenda row. ItemID is the item's id on every row tied to
+// an item; the calendar feed also builds a dated event's UID from it. EndsOn is
+// the item's ends_on value, verbatim, on a date entry whose item has one, and
+// produces no entry of its own (TASK-4678).
 type agendaEntry struct {
 	SnoozedUntil   string                  `json:"snoozed_until,omitempty"`
 	Forecast       *models.ForecastSummary `json:"forecast,omitempty"`
@@ -41,6 +45,7 @@ type agendaEntry struct {
 	AcknowledgedAt *string                 `json:"acknowledged_at,omitempty"`
 	AcknowledgedBy *models.AcknowledgedBy  `json:"acknowledged_by,omitempty"`
 	ItemRef        string                  `json:"item_ref"`
+	ItemID         string                  `json:"item_id,omitempty"`
 	ItemTitle      string                  `json:"item_title"`
 	Collection     string                  `json:"collection"`
 	Roles          *models.CommitmentRoles `json:"roles,omitempty"`
@@ -54,6 +59,7 @@ type agendaEntry struct {
 	ScheduleID     string                  `json:"schedule_id,omitempty"`
 	Field          string                  `json:"field,omitempty"`
 	Date           string                  `json:"date,omitempty"`
+	EndsOn         string                  `json:"ends_on,omitempty"`
 	Fired          bool                    `json:"fired,omitempty"`
 	Overdue        bool                    `json:"overdue,omitempty"`
 	ResolvedAt     string                  `json:"resolved_at,omitempty"`
@@ -72,7 +78,6 @@ type agendaEntry struct {
 	OwnerUsername string `json:"owner_username,omitempty"`
 
 	instant time.Time // sort key, with Type, Workspace, ItemRef and subKey
-	itemID  string    // internal identity for calendar UIDs; never serialized
 	subKey  string
 }
 
@@ -344,6 +349,7 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 		if ref == "" {
 			ref = it.Slug
 		}
+		endsOn := extractFieldValue(it.Fields, "ends_on")
 		for _, key := range overdueDateFields {
 			v := extractFieldValue(it.Fields, key)
 			if len(v) < 10 || v[:10] < fromDay || v[:10] > toDay {
@@ -357,7 +363,8 @@ func (s *Server) appendWorkspaceAgenda(run *agendaRead, workspaceID string, scop
 			}
 			resp.Entries = append(resp.Entries, agendaEntry{
 				Type: "date", At: at.In(loc).Format(time.RFC3339), Day: v[:10], Field: key, Date: v, Overdue: v < today,
-				ItemRef: ref, ItemTitle: it.Title, Collection: it.CollectionSlug, instant: at, subKey: key, itemID: it.ID,
+				ItemRef: ref, ItemID: it.ID, ItemTitle: it.Title, Collection: it.CollectionSlug, instant: at, subKey: key,
+				EndsOn: endsOn,
 			})
 		}
 	}
@@ -500,7 +507,7 @@ func expandAgendaSchedules(st *store.Store, schedules []store.AgendaSchedule, lo
 				SnoozedUntil: agendaOptionalInstant(e.SnoozedUntil, loc),
 				Type:         "schedule", At: e.At.In(loc).Format(time.RFC3339), Day: e.At.In(loc).Format("2006-01-02"),
 				Wall: e.Wall.String(), AllDay: e.Roles.Target != nil && len(*e.Roles.Target) == 10, Floating: &sc.Floating, State: e.State, AcknowledgedAt: e.AcknowledgedAt, AcknowledgedBy: e.AcknowledgedBy,
-				ItemRef: as.ItemRef, ItemTitle: as.ItemTitle, Collection: as.Collection, Audience: sc.Audience,
+				ItemRef: as.ItemRef, ItemID: sc.ItemID, ItemTitle: as.ItemTitle, Collection: as.Collection, Audience: sc.Audience,
 				AgentRoleName: as.AgentRoleName, AgentRoleSlug: as.AgentRoleSlug,
 				Roles: &e.Roles, OccurrenceKey: e.OccurrenceKey, RolesOrigin: as.RolesOrigin, ScheduleID: sc.ID, Fired: e.Fired, Overdue: e.Overdue, ResolvedAt: e.ResolvedAt, Actor: e.Actor,
 				CommentID: e.CommentID, MissedCount: e.MissedCount, Stale: e.Stale, instant: e.At, subKey: sc.ID,

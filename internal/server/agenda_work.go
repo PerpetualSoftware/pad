@@ -90,7 +90,7 @@ func (s *Server) appendAgendaWork(run *agendaRead, workspaceID string, scope sto
 			}
 			gateState = gates.State
 		}
-		e := agendaEntry{Type: "item", ItemRef: c.ItemRef, ItemTitle: c.ItemTitle, Collection: c.Collection, subKey: c.ItemID}
+		e := agendaEntry{Type: "item", ItemRef: c.ItemRef, ItemID: c.ItemID, ItemTitle: c.ItemTitle, Collection: c.Collection, subKey: c.ItemID}
 		if gateState != models.GateStateReleased {
 			if sc != nil {
 				current, err := s.store.AgendaOutstanding(sc, run.loc, run.now)
