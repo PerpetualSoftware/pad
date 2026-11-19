@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +212,43 @@ func TestPadNeeds_ListIgnoresSessionWorkspace(t *testing.T) {
 		}
 		if got != tc.want {
 			t.Errorf("%s %v: --workspace %q, want %q (args %v)", tc.action, tc.input, got, tc.want, disp.gotArgs)
+		}
+	}
+}
+
+// TestPadNeeds_ListPages: list carries cursor and limit on both transports,
+// so a caller can follow next_cursor past the first page.
+func TestPadNeeds_ListPages(t *testing.T) {
+	input := map[string]any{"view": "hidden", "cursor": "abc", "limit": float64(10)}
+
+	_, path, _, err := routeTable["needs list"](input)
+	if err != nil {
+		t.Fatalf("remote route: %v", err)
+	}
+	u, err := url.Parse(path)
+	if err != nil {
+		t.Fatalf("parse %q: %v", path, err)
+	}
+	q := u.Query()
+	if q.Get("cursor") != "abc" || q.Get("limit") != "10" || q.Get("view") != "hidden" {
+		t.Errorf("remote query = %q, want cursor=abc limit=10 view=hidden", u.RawQuery)
+	}
+
+	disp := &fakeDispatcher{}
+	env := ActionEnv{Doc: liveCmdhelpDoc(t), Workspace: NewWorkspaceState(""), Dispatcher: disp}
+	handler := makeFanOutHandler(padNeedsTool, env)
+	call := map[string]any{"action": "list"}
+	for k, v := range input {
+		call[k] = v
+	}
+	res, err := handler(context.Background(), callToolRequest(call))
+	if err != nil || res.IsError {
+		t.Fatalf("stdio list: %v %s", err, textOf(res))
+	}
+	args := strings.Join(disp.gotArgs, " ")
+	for _, want := range []string{"--cursor abc", "--limit 10"} {
+		if !strings.Contains(args, want) {
+			t.Errorf("stdio args %q missing %q", args, want)
 		}
 	}
 }

@@ -15,6 +15,8 @@ var padNeedsTool = ToolDef{
 		Params: []ParamDef{
 			{Name: "ref", Type: "string", Description: "Item ref (TASK-5)."},
 			{Name: "view", Type: "string", Description: "list only.", Enum: []string{"active", "hidden"}},
+			{Name: "cursor", Type: "string", Description: "list: next_cursor of the previous page."},
+			{Name: "limit", Type: "number", Description: "list: rows per page; default 50, max 200."},
 			{Name: "to_role", Type: "string", Description: "Role slug; clears the person."},
 			{Name: "to_user", Type: "string", Description: "Member name or email."},
 		},
@@ -38,7 +40,7 @@ func actionNeedsList(ctx context.Context, input map[string]any, env ActionEnv) (
 const padNeedsToolDescription = `Your needs-you inbox across workspaces.
 
 Actions:
-  list — Items waiting on you. Optional: view, workspace (only an explicit one narrows).
+  list — Items waiting on you. Optional: view, cursor, limit, workspace (only an explicit one narrows).
   not-mine — Hide ref until it comes back to you (mention, waiting status, assignment, reminder).
     Required: ref. Optional: to_role OR to_user reassigns it first (seq-guarded; a refusal writes nothing).
   restore — Clear your not-mine and snooze. Required: ref.`

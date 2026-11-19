@@ -254,7 +254,7 @@ func init() {
 		"chat list":  routeSpec{method: http.MethodGet, pathTemplate: "/api/v1/me/conversations"}.toRouteMapper(),
 		"chat inbox": routeSpec{method: http.MethodGet, pathTemplate: "/api/v1/me/chat/unread", queryParams: map[string]string{"agent": "agent"}}.toRouteMapper(),
 		// The cross-workspace needs-you inbox (TASK-4643); not-mine and restore are special routes.
-		"needs list": routeSpec{method: http.MethodGet, pathTemplate: "/api/v1/me/needs", queryParams: map[string]string{"view": "view", "workspace": "workspace"}}.toRouteMapper(),
+		"needs list": routeSpec{method: http.MethodGet, pathTemplate: "/api/v1/me/needs", queryParams: map[string]string{"view": "view", "workspace": "workspace", "cursor": "cursor", "limit": "limit"}, numericQuery: []string{"limit"}}.toRouteMapper(),
 		// --- Item CRUD-ish ---
 		"item create": mapItemCreate,
 		"item show": routeSpec{

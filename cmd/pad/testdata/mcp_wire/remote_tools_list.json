@@ -892,7 +892,7 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "Your needs-you inbox across workspaces.\n\nActions:\n  list — Items waiting on you. Optional: view, workspace (only an explicit one narrows).\n  not-mine — Hide ref until it comes back to you (mention, waiting status, assignment, reminder).\n    Required: ref. Optional: to_role OR to_user reassigns it first (seq-guarded; a refusal writes nothing).\n  restore — Clear your not-mine and snooze. Required: ref.",
+      "description": "Your needs-you inbox across workspaces.\n\nActions:\n  list — Items waiting on you. Optional: view, cursor, limit, workspace (only an explicit one narrows).\n  not-mine — Hide ref until it comes back to you (mention, waiting status, assignment, reminder).\n    Required: ref. Optional: to_role OR to_user reassigns it first (seq-guarded; a refusal writes nothing).\n  restore — Clear your not-mine and snooze. Required: ref.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -903,6 +903,14 @@
               "restore"
             ],
             "type": "string"
+          },
+          "cursor": {
+            "description": "list: next_cursor of the previous page.",
+            "type": "string"
+          },
+          "limit": {
+            "description": "list: rows per page; default 50, max 200.",
+            "type": "number"
           },
           "ref": {
             "description": "Item ref (TASK-5).",

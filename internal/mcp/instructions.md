@@ -39,7 +39,7 @@ Reads: `relation_targets` beside `fields`, field key → `{id, ref, title}`. `fi
 - `pad_meta` — Introspection: server-info / version / tool-surface / bootstrap. `bootstrap` returns one-shot workspace context.
 - `pad_set_workspace` — Load workspace context; response embeds the bootstrap blob so you load context in one call. Whether it also pins a session default: see Workspace context below. Takes `workspace: <slug>` only (no `action`).
 
-For the eleven resource × action tools, always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
+For the twelve resource × action tools, always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
 
 ## Resources are cheaper than tool calls
 
