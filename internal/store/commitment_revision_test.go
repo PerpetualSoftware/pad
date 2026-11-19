@@ -165,8 +165,7 @@ func TestRenegotiateExpectedRevision(t *testing.T) {
 	in := models.CommitmentRenegotiateInput{Scope: "series", Reason: "agreed", DeadlineBehavior: ptr("lapses"), Preview: true, ExpectedRevision: r0}
 
 	// (a) A current token previews.
-	p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, schedNow, nil)
-	if err != nil {
+	if _, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, schedNow, nil); err != nil {
 		t.Fatalf("preview with a current token: %v", err)
 	}
 
@@ -178,7 +177,7 @@ func TestRenegotiateExpectedRevision(t *testing.T) {
 
 	// (c) A valid preview revision does not rescue a stale expected_revision.
 	in.ExpectedRevision = ""
-	p, err = f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, schedNow, nil)
+	p, err := f.s.renegotiateCommitmentAt(f.ws.ID, f.item.ID, "user", in, schedNow, nil)
 	if err != nil {
 		t.Fatalf("preview without a token: %v", err)
 	}
