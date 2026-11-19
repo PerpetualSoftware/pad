@@ -526,7 +526,7 @@ func TestTask4509SetupStepUp(t *testing.T) {
 	}{
 		{name: "password", factor: "password"},
 		{name: "email", factor: "email"},
-		{name: "reauth", factor: "unavailable", refusal: "reauth_required", wantErr: "sign in again ('pad auth login'), then run 'pad auth 2fa setup' within 10 minutes"},
+		{name: "reauth", factor: "unavailable", refusal: "reauth_required", wantErr: "sign out of Pad in the browser and sign in again, then run 'pad auth logout' and 'pad auth login' and 'pad auth 2fa setup' within 10 minutes"},
 		{name: "expired", factor: "password", lapse: true},
 		{name: "wrong password", factor: "password", refusal: "invalid_password", wantErr: "incorrect password"},
 		{name: "wrong email code", factor: "email", refusal: "invalid_code", wantErr: "verification code"},
