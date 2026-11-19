@@ -103,8 +103,5 @@ Actions:
           Required: workspace, attachment_id.
           Optional: variant (thumb-sm | thumb-md).
 
-Use pad_attachment to discover what files are attached to items and to
-size / confirm an attachment before deciding what to do with it. This
-surface is read-only: uploading, downloading, and viewing raw bytes are
-CLI-only (filesystem-bound); an agent that needs the bytes fetches them
-from the attachment URL directly.`
+Read-only: upload, download and raw bytes are CLI-only; fetch bytes from
+the attachment URL.`

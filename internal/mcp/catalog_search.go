@@ -72,6 +72,4 @@ Actions:
   query  — FTS search across items. Required: workspace, query.
            Optional filters: collection, status, priority, sort, limit, offset.
 
-Use pad_search when looking for items by content keywords or fuzzy title match.
-For ref-based lookup (TASK-5, IDEA-12), use pad_item.action=get directly — it's
-faster and doesn't require a query string.`
+For a known ref (TASK-5), use pad_item.action=get.`

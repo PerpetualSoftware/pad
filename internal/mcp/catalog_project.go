@@ -90,7 +90,6 @@ Actions:
   changelog  — Changelog of completed items.
                Required: workspace.
                Optional: days (default 7), since (ISO date), parent (item ref to scope).
-               Use parent=PLAN-N to generate a release-notes view for one plan.
   report     — Windowed project report: created-vs-completed throughput, net
                flow, completed-by-collection, current status distribution.
                Required: workspace.
@@ -98,8 +97,7 @@ Actions:
                collections (comma-separated slugs, default all visible).
   activity   — Recent workspace activity feed (non-streaming): what agents and
                users changed, with item refs, titles, and field-level change
-               details. Use to catch up on what other agents did since you last
-               worked.
+               details.
                Required: workspace.
                Optional: limit (default 20), actor (user | agent),
                since (ISO date).

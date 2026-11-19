@@ -64,6 +64,8 @@ type toolSurfaceToolSummary struct {
 //     changelog/report/activity).
 //   - pad_role:       list read; create/update/delete write.
 //   - pad_chat:       list/inbox read; show/send/delete/read write.
+//   - pad_needs:      list read; not-mine/restore write (not-mine with
+//     to_role/to_user reassigns the item, so the tool is destructive).
 //   - pad_search:     query read.
 //   - pad_playbook:   list/get read; run is side-effect-free (returns the
 //     body + bound args for the agent to execute) → read; match is a
@@ -74,6 +76,7 @@ type toolSurfaceToolSummary struct {
 var readOnlyActions = map[string]map[string]bool{
 	"pad_board": {"show": true, "changes": true},
 	"pad_chat":  {"list": true, "inbox": true},
+	"pad_needs": {"list": true},
 	"pad_item": {
 		"reminders":     true,
 		"get":           true,

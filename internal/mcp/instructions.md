@@ -6,9 +6,9 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.120)
+## Tool surface (v0.121)
 
-Eleven resource × action tools, plus `pad_set_workspace`. Twelve tools total.
+Twelve resource × action tools, plus `pad_set_workspace`. Thirteen tools total.
 
 Inputs are validated strictly: an undeclared top-level key is rejected with a structured `validation_failed` naming it, never accepted and silently dropped.
 
@@ -31,6 +31,7 @@ Reads: `relation_targets` beside `fields`, field key → `{id, ref, title}`. `fi
 - `pad_collection` — Collections: list / create / update / delete / list-archived / restore. `delete` archives: the collection and its items leave every view, and `restore` brings them back. An `update` that removes a field or a select option still in use answers with `warnings.orphaned`: tell the user how many items keep the removed value.
 - `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity / catch-up. Use `ready` for the ranked top items to work on next (blocked work is left out) and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details); `catch-up` for your own digest since you last marked caught up (read-only; marking is web-only).
 - `pad_role` — Agent roles: list / create / update / delete.
+- `pad_needs` — Your needs-you inbox: list / not-mine / restore.
 - `pad_search` — Full-text search across items: query.
 - `pad_playbook` — Invokable procedures: list / get / run / match. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free. `run` refuses a playbook whose status isn't `active` (a draft still being authored) with a `playbook_not_active` error — pass `allow_draft: true` to override. Both `run` and `get` echo the playbook's `status`. Both may also carry `content_state` (`"applied_pending_flush"`, or `"superseded_set_aside"` as under `pad_item`), meaning the BODY you are about to execute is behind the item's live collaborative document — an editor holds unflushed edits, so the steps may be superseded. It is a reason to re-read or to ask, not a reason to refuse to run; the body is still the best the server has. `match` finds a playbook from text.
 - `pad_library` — Convention + playbook library (the global catalog of pre-built entries workspaces activate): list / get / activate.

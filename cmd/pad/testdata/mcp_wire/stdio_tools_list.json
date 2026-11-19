@@ -7,11 +7,11 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Read-only attachment metadata.\n\nActions:\n  list  — List attachments in the workspace with optional filters.\n    Required: workspace.\n    Optional: item (ref/slug), category, collection (collection UUID, not slug), attached, unattached, sort, limit, offset. (attached / unattached are mutually exclusive; item and unattached are mutually exclusive.)\n  show  — Inspect one attachment's metadata (MIME, size, filename, ETag, last-modified) via a HEAD request — no bytes transferred.\n    Required: workspace, attachment_id.\n    Optional: variant (thumb-sm | thumb-md).\n\nUse pad_attachment to discover what files are attached to items and to\nsize / confirm an attachment before deciding what to do with it. This\nsurface is read-only: uploading, downloading, and viewing raw bytes are\nCLI-only (filesystem-bound); an agent that needs the bytes fetches them\nfrom the attachment URL directly.",
+      "description": "Read-only attachment metadata.\n\nActions:\n  list  — List attachments in the workspace with optional filters.\n    Required: workspace.\n    Optional: item (ref/slug), category, collection (collection UUID, not slug), attached, unattached, sort, limit, offset. (attached / unattached are mutually exclusive; item and unattached are mutually exclusive.)\n  show  — Inspect one attachment's metadata (MIME, size, filename, ETag, last-modified) via a HEAD request — no bytes transferred.\n    Required: workspace, attachment_id.\n    Optional: variant (thumb-sm | thumb-md).\n\nRead-only: upload, download and raw bytes are CLI-only; fetch bytes from\nthe attachment URL.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "list",
               "show"
@@ -59,7 +59,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -81,7 +81,7 @@
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "delete",
               "inbox",
@@ -155,7 +155,7 @@
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "create",
               "delete",
@@ -226,7 +226,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -252,7 +252,7 @@
             "type": "boolean"
           },
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "ack-reminder",
               "agenda",
@@ -732,7 +732,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -750,11 +750,11 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "Convention + playbook library — global catalog of pre-built entries that workspaces activate into whichever of their collections declares the matching artifact kind (by default, conventions and playbooks).\n\nActions:\n  list     — Browse the library. By default playbooks come back as metadata + a short summary (first non-heading paragraph, ~240 chars); conventions always carry full bodies. Use action=get for the full body of one playbook.\n    Optional: type (conventions|playbooks), category, full.\n  get      — Full body of one entry by exact title. Conventions are checked first, then playbooks — same precedence activate uses, so a title resolves to the same kind in both surfaces.\n    Required: title.\n  activate — Create a workspace item from a library entry by title. The destination is whichever collection DECLARES that artifact kind — normally the workspace's conventions / playbooks collections, but it follows them if they were renamed rather than assuming the name. All fields (trigger, scope, surfaces, enforcement, invocation_slug, arguments) carry through from the library definition.\n    Required: workspace, title.\n\nThe library is workspace-agnostic: list/get need no workspace context. The\nworkspace param is still accepted (and honored by activate), so a session\npinned via pad_set_workspace need not re-pass it on every call.",
+      "description": "Convention + playbook library — global catalog of pre-built entries that workspaces activate into whichever of their collections declares the matching artifact kind (by default, conventions and playbooks).\n\nActions:\n  list     — Browse the library. By default playbooks come back as metadata + a short summary (first non-heading paragraph, ~240 chars); conventions always carry full bodies. Use action=get for the full body of one playbook.\n    Optional: type (conventions|playbooks), category, full.\n  get      — Full body of one entry by exact title. Conventions are checked first, then playbooks, as activate does.\n    Required: title.\n  activate — Create a workspace item from a library entry by title, in whichever collection DECLARES that artifact kind (it follows a rename). All fields (trigger, scope, surfaces, enforcement, invocation_slug, arguments) carry through.\n    Required: workspace, title.\n\nlist/get need no workspace; activate uses it.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "activate",
               "get",
@@ -783,7 +783,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -801,11 +801,11 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Server introspection — version, capabilities, the hand-curated tool catalog, and the agent bootstrap blob.\n\nActions:\n  server-info   — Server name + runtime version. Lightweight; no params.\n  version       — Full version metadata (pad version, cmdhelp version, tool surface version, MCP protocol version). Same JSON as pad://_meta/version.\n  tool-surface  — catalog dump: every tool in the hand-curated catalog (the ten resource × action tools; pad_set_workspace is registered separately, not included), its actions, and its input schema. tools/list also holds pad_set_workspace and otherwise matches the catalog — the historical cmdhelp walker was retired in TASK-981.\n  bootstrap     — Consolidated agent context-load blob (workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity). On-demand refresh for agents that didn't get the resource prefetch, or want a fresh snapshot after many mutations. Equivalent to pad://workspace/{ws}/bootstrap and to pad_set_workspace's embedded response.",
+      "description": "Server introspection — version, capabilities, the hand-curated tool catalog, and the agent bootstrap blob.\n\nActions:\n  server-info   — Server name + runtime version. Lightweight; no params.\n  version       — Full version metadata (pad version, cmdhelp version, tool surface version, MCP protocol version). Same JSON as pad://_meta/version.\n  tool-surface  — catalog dump: every catalog tool, its actions and input schema (tools/list also holds pad_set_workspace, which this omits).\n  bootstrap     — Consolidated agent context-load blob (workspace + user + collections + always-on conventions + roles + playbook metadata + dashboard + recent activity). Same as pad://workspace/{ws}/bootstrap.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "bootstrap",
               "server-info",
@@ -815,7 +815,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -828,16 +828,67 @@
     },
     {
       "annotations": {
+        "readOnlyHint": false,
+        "destructiveHint": true,
+        "idempotentHint": false,
+        "openWorldHint": false
+      },
+      "description": "Your needs-you inbox across workspaces.\n\nActions:\n  list — Items waiting on you. Optional: view, workspace (only an explicit one narrows).\n  not-mine — Hide ref until it comes back to you (mention, waiting status, assignment, reminder).\n    Required: ref. Optional: to_role OR to_user reassigns it first (seq-guarded; a refusal writes nothing).\n  restore — Clear your not-mine and snooze. Required: ref.",
+      "inputSchema": {
+        "properties": {
+          "action": {
+            "description": "See the tool description.",
+            "enum": [
+              "list",
+              "not-mine",
+              "restore"
+            ],
+            "type": "string"
+          },
+          "ref": {
+            "description": "Item ref (TASK-5).",
+            "type": "string"
+          },
+          "to_role": {
+            "description": "Role slug; clears the person.",
+            "type": "string"
+          },
+          "to_user": {
+            "description": "Member name or email.",
+            "type": "string"
+          },
+          "view": {
+            "description": "list only.",
+            "enum": [
+              "active",
+              "hidden"
+            ],
+            "type": "string"
+          },
+          "workspace": {
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "action"
+        ],
+        "type": "object"
+      },
+      "name": "pad_needs"
+    },
+    {
+      "annotations": {
         "readOnlyHint": true,
         "destructiveHint": false,
         "idempotentHint": true,
         "openWorldHint": true
       },
-      "description": "Playbooks — first-class invokable procedures (PLAN-1377).\n\nPlaybooks are agent-executed multi-step workflows that ship in a workspace's\nplaybooks collection. Each can declare a kebab-case `invocation_slug` (e.g.\n\"ship\", \"release\"), and an `## Arguments` section that names + types the\ninputs it expects. Natural language is the canonical way to invoke one\n(\"ship these tasks\"); the slug is a per-surface shortcut — this `pad_playbook`\ntool with `action: run, ref: \u003cslug\u003e` here, `/pad \u003cslug\u003e` in Claude Code,\n`$pad \u003cslug\u003e` in Codex — that resolves to the same playbook.\n\nActions:\n  list  — Workspace playbook catalog. Returns metadata only (no bodies): ref, title, slug, invocation_slug, trigger, scope, status, has_arguments, summary. Sorted with invocation_slug-bearing playbooks first, so user-invokable candidates lead.\n    Required: workspace.\n  get   — Full item for one playbook, including body content + structured fields (which carry the canonical `arguments` JSON spec).\n    Required: workspace, ref.\n  run   — Parse args against the playbook's declared spec and return the body + bound_args + any required-but-unbound entries (so the agent can prompt the user instead of failing the call). Side-effect-free: the playbook body is markdown instructions for the agent, not a shell script — the server primes the call; the agent executes the steps.\n    Required: workspace, ref.\n    Optional: args (pre-parsed map), raw_args (CLI-style tokens). Pass exactly one or merge — see the per-param docs. Draft gate: run refuses a playbook whose status isn't \"active\" (e.g. one still being drafted), returning a playbook_not_active error. Pass allow_draft: true to override and run it anyway. The status is echoed on both the run and get responses.\n  match — Pick the ACTIVE playbook (or \"none\") that text asks for. Returns choice, confidence, probabilities, model.\n    Required: workspace, text. 404 = no provider; fall back to slug/trigger routing.",
+      "description": "Playbooks — first-class invokable procedures (PLAN-1377).\n\nAgent-executed workflows in the playbooks collection. Invoke by natural\nlanguage or `action: run, ref: \u003cinvocation_slug\u003e`.\n\nActions:\n  list  — Workspace playbook catalog. Returns metadata only (no bodies): ref, title, slug, invocation_slug, trigger, scope, status, has_arguments, summary. Sorted with invocation_slug-bearing playbooks first, so user-invokable candidates lead.\n    Required: workspace.\n  get   — Full item for one playbook, including body content + structured fields (which carry the canonical `arguments` JSON spec).\n    Required: workspace, ref.\n  run   — Parse args against the playbook's declared spec and return the body + bound_args + any required-but-unbound entries (so the agent can prompt the user instead of failing the call). Side-effect-free: the playbook body is markdown instructions for the agent, not a shell script — the server primes the call; the agent executes the steps.\n    Required: workspace, ref.\n    Optional: args (pre-parsed map), raw_args (CLI-style tokens). Pass exactly one or merge — see the per-param docs. Draft gate: run refuses a playbook whose status isn't \"active\" (e.g. one still being drafted), returning a playbook_not_active error. Pass allow_draft: true to override and run it anyway. The status is echoed on both the run and get responses.\n  match — Pick the ACTIVE playbook (or \"none\") that text asks for. Returns choice, confidence, probabilities, model.\n    Required: workspace, text. 404 = no provider; fall back to slug/trigger routing.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "get",
               "list",
@@ -871,7 +922,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -889,11 +940,11 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Project intelligence — computed views over workspace state.\n\nActions:\n  dashboard  — Project overview: collections, active items, plans, attention, blockers, suggested next.\n    Required: workspace.\n  next       — Recommended next item to work on (uses dashboard's suggestion logic).\n    Required: workspace.\n  ready      — Up to three items to work on next, best first (the same ranked list as next). Reminders, overdue, in-progress, active- plan and high/critical items lead; other open items from collections tracking priority or severity fill leftover slots. Blocked items are excluded (see stale).\n    Required: workspace.\n  stale      — Items needing attention — stalled, blocked, overdue, or otherwise falling out of the active workflow.\n    Required: workspace.\n  standup    — Daily standup report (recent done, in-progress, blockers).\n    Required: workspace.\n    Optional: days (default 1).\n  changelog  — Changelog of completed items.\n    Required: workspace.\n    Optional: days (default 7), since (ISO date), parent (item ref to scope). Use parent=PLAN-N to generate a release-notes view for one plan.\n  report     — Windowed project report: created-vs-completed throughput, net flow, completed-by-collection, current status distribution.\n    Required: workspace.\n    Optional: window (day|week|2wk|month, default week), collections (comma-separated slugs, default all visible).\n  activity   — Recent workspace activity feed (non-streaming): what agents and users changed, with item refs, titles, and field-level change details. Use to catch up on what other agents did since you last worked.\n    Required: workspace.\n    Optional: limit (default 20), actor (user | agent), since (ISO date).\n  catch-up   — Your own catch-up digest: what needs you, and what others finished, created, reopened, commented on or did as agents since you last marked caught up (max 14 days). Never marks caught up.\n    Required: workspace.",
+      "description": "Project intelligence — computed views over workspace state.\n\nActions:\n  dashboard  — Project overview: collections, active items, plans, attention, blockers, suggested next.\n    Required: workspace.\n  next       — Recommended next item to work on (uses dashboard's suggestion logic).\n    Required: workspace.\n  ready      — Up to three items to work on next, best first (the same ranked list as next). Reminders, overdue, in-progress, active- plan and high/critical items lead; other open items from collections tracking priority or severity fill leftover slots. Blocked items are excluded (see stale).\n    Required: workspace.\n  stale      — Items needing attention — stalled, blocked, overdue, or otherwise falling out of the active workflow.\n    Required: workspace.\n  standup    — Daily standup report (recent done, in-progress, blockers).\n    Required: workspace.\n    Optional: days (default 1).\n  changelog  — Changelog of completed items.\n    Required: workspace.\n    Optional: days (default 7), since (ISO date), parent (item ref to scope).\n  report     — Windowed project report: created-vs-completed throughput, net flow, completed-by-collection, current status distribution.\n    Required: workspace.\n    Optional: window (day|week|2wk|month, default week), collections (comma-separated slugs, default all visible).\n  activity   — Recent workspace activity feed (non-streaming): what agents and users changed, with item refs, titles, and field-level change details.\n    Required: workspace.\n    Optional: limit (default 20), actor (user | agent), since (ISO date).\n  catch-up   — Your own catch-up digest: what needs you, and what others finished, created, reopened, commented on or did as agents since you last marked caught up (max 14 days). Never marks caught up.\n    Required: workspace.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "activity",
               "catch-up",
@@ -940,7 +991,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -958,11 +1009,11 @@
         "idempotentHint": false,
         "openWorldHint": false
       },
-      "description": "Agent role management — what kind of thinking each item requires.\n\nActions:\n  list    — List roles in the workspace.\n    Required: workspace.\n  create  — Create a new role.\n    Required: workspace, name.\n    Optional: description, icon, tools.\n  update  — Update an existing role's name, slug, description, icon, tools, or sort_order. Only fields you explicitly set are mutated.\n    Required: workspace, slug.\n    Optional: name, description, icon, tools, sort_order, new_slug (the rename target; pass slug for lookup AND new_slug for the replacement value). This is the adaptation primitive for the /pad onboard playbook (PLAN-1496): rewriting seeded role descriptions/icons to match the team's division of work.\n  delete  — Delete a role by slug.\n    Required: workspace, slug.\n\nRoles let users organize items by what kind of work they require (Planner,\nImplementer, Reviewer, Researcher, etc.). To assign an item to a role, use\npad_item.action=update with the role parameter.",
+      "description": "Agent role management — what kind of thinking each item requires.\n\nActions:\n  list    — List roles in the workspace.\n    Required: workspace.\n  create  — Create a new role.\n    Required: workspace, name.\n    Optional: description, icon, tools.\n  update  — Update an existing role's name, slug, description, icon, tools, or sort_order. Only fields you explicitly set are mutated.\n    Required: workspace, slug.\n    Optional: name, description, icon, tools, sort_order, new_slug (the rename target; pass slug for lookup AND new_slug for the replacement value).\n  delete  — Delete a role by slug.\n    Required: workspace, slug.\n\nAssign an item a role with pad_item.action=update role=\u003cslug\u003e.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "create",
               "delete",
@@ -1000,7 +1051,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -1018,11 +1069,11 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Full-text search across items.\n\nActions:\n  query  — FTS search across items. Required: workspace, query.\n    Optional filters: collection, status, priority, sort, limit, offset.\n\nUse pad_search when looking for items by content keywords or fuzzy title match.\nFor ref-based lookup (TASK-5, IDEA-12), use pad_item.action=get directly — it's\nfaster and doesn't require a query string.",
+      "description": "Full-text search across items.\n\nActions:\n  query  — FTS search across items. Required: workspace, query.\n    Optional filters: collection, status, priority, sort, limit, offset.\n\nFor a known ref (TASK-5), use pad_item.action=get.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "query"
             ],
@@ -1057,7 +1108,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },
@@ -1097,11 +1148,11 @@
         "idempotentHint": false,
         "openWorldHint": true
       },
-      "description": "Workspace operations — discovery, membership, storage, audit log, and lifecycle.\n\nActions:\n  list       — List workspaces visible to the current user. No params; admins see all, regular users see their memberships.\n  members    — List members + pending invitations for a workspace.\n    Required: workspace.\n  invite     — Invite a user to a workspace.\n    Required: workspace, email.\n    Optional: role (owner | editor | viewer; default editor).\n  storage    — Workspace storage usage breakdown (attachments, items, total bytes).\n    Required: workspace.\n  audit-log  — Workspace audit log. ADMIN ONLY — non-admin users get an auth error.\n    Optional: action_filter, actor, days, limit. Note: the underlying endpoint is global, so this returns entries across all workspaces filtered by the supplied params.\n  create     — Create a new workspace.\n    Required: name.\n    Optional: slug (derived from name when omitted), template (e.g. \"startup\" / \"scrum\" / \"blank\"). When called over an OAuth-bound MCP session whose grant has may_create_workspaces=true, the new workspace is auto-added to that connection's allow-list, usable at once with no re-auth. When that grant has may_create_workspaces=FALSE the call is REFUSED with a 403 and no workspace is created (IDEA-2756); retrying will not help. Only the USER can lift it: re-authorize, or enable the flag on the existing connection at /settings/connected-apps.\n  claim      — Redeem a 6-digit claim code to add a workspace to the calling OAuth connection's allow-list.\n    Required: workspace, code. Generate the code in the workspace's web UI (\"Connect project\" modal). Valid for 5–10 minutes (sliding window). Errors: 401 invalid_code, 404 not_found (workspace doesn't exist or you're not a member), 412 connection_not_persisted (pre-Phase-C grant — re-authorize).\n  deleted    — List the caller's soft-deleted workspaces still inside the 30-day restore window, with days remaining before each is permanently purged. No params. Read-only.\n  restore    — Un-soft-delete a workspace by slug, provided it is still inside the restore window. Owner-only. Mutating but non-destructive.\n    Required: slug.",
+      "description": "Workspace operations — discovery, membership, storage, audit log, and lifecycle.\n\nActions:\n  list       — List workspaces visible to the current user. No params; admins see all, regular users see their memberships.\n  members    — List members + pending invitations for a workspace.\n    Required: workspace.\n  invite     — Invite a user to a workspace.\n    Required: workspace, email.\n    Optional: role (owner | editor | viewer; default editor).\n  storage    — Workspace storage usage breakdown (attachments, items, total bytes).\n    Required: workspace.\n  audit-log  — Workspace audit log. ADMIN ONLY — non-admin users get an auth error.\n    Optional: action_filter, actor, days, limit. Entries span all workspaces.\n  create     — Create a new workspace.\n    Required: name.\n    Optional: slug (derived from name when omitted), template (e.g. \"startup\" / \"scrum\" / \"blank\"). When called over an OAuth-bound MCP session whose grant has may_create_workspaces=true, the new workspace is auto-added to that connection's allow-list, usable at once with no re-auth. When that grant has may_create_workspaces=FALSE the call is REFUSED with a 403 and no workspace is created (IDEA-2756); retrying will not help. Only the USER can lift it: re-authorize, or enable the flag on the existing connection at /settings/connected-apps.\n  claim      — Redeem a 6-digit claim code to add a workspace to the calling OAuth connection's allow-list.\n    Required: workspace, code. Generate the code in the workspace's web UI (\"Connect project\" modal). Valid for 5–10 minutes (sliding window). Errors: 401 invalid_code, 404 not_found (workspace doesn't exist or you're not a member), 412 connection_not_persisted (pre-Phase-C grant — re-authorize).\n  deleted    — List the caller's soft-deleted workspaces still inside the 30-day restore window, with days remaining before each is permanently purged. No params. Read-only.\n  restore    — Un-soft-delete a workspace by slug, provided it is still inside the restore window. Owner-only. Mutating but non-destructive.\n    Required: slug.",
       "inputSchema": {
         "properties": {
           "action": {
-            "description": "The action to perform. See tool description for required parameters per action.",
+            "description": "See the tool description.",
             "enum": [
               "audit-log",
               "claim",
@@ -1161,7 +1212,7 @@
             "type": "string"
           },
           "workspace": {
-            "description": "Workspace slug; an explicit value always wins. A remote server keeps no session default, so pass it on every call there; a local server falls back to pad_set_workspace, then .pad.toml.",
+            "description": "Workspace slug; explicit wins. Remote: pass it on every call; local falls back to pad_set_workspace, then .pad.toml.",
             "type": "string"
           }
         },

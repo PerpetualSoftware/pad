@@ -142,8 +142,7 @@ Actions:
                Required: workspace.
   audit-log  — Workspace audit log. ADMIN ONLY — non-admin users get an auth error.
                Optional: action_filter, actor, days, limit.
-               Note: the underlying endpoint is global, so this returns entries
-               across all workspaces filtered by the supplied params.
+               Entries span all workspaces.
   create     — Create a new workspace.
                Required: name.
                Optional: slug (derived from name when omitted), template (e.g.

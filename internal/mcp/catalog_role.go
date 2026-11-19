@@ -80,11 +80,7 @@ Actions:
             Optional: name, description, icon, tools, sort_order, new_slug
                       (the rename target; pass slug for lookup AND
                       new_slug for the replacement value).
-            This is the adaptation primitive for the /pad onboard playbook
-            (PLAN-1496): rewriting seeded role descriptions/icons to match the team's division of work.
   delete  — Delete a role by slug.
             Required: workspace, slug.
 
-Roles let users organize items by what kind of work they require (Planner,
-Implementer, Reviewer, Researcher, etc.). To assign an item to a role, use
-pad_item.action=update with the role parameter.`
+Assign an item a role with pad_item.action=update role=<slug>.`

@@ -2345,7 +2345,13 @@ const CmdhelpVersion = "0.1"
 // v0.120: instant reminders create run-once commitments. Legacy ack keeps
 // work outstanding; closed items pause. Reminder create reuses an ended simple
 // run-once commitment without an alarm; other existing commitments refuse.
-const ToolSurfaceVersion = "0.120"
+// v0.121 — TASK-4643: adds pad_needs (list, not-mine, restore), the caller's
+// own needs-you inbox. not-mine with to_role or to_user first reassigns the
+// item through the item PATCH, guarded by the seq it has just read; a refusal
+// writes nothing. Additive: no existing tool, action or parameter changes
+// shape. Tool and parameter prose trimmed into docs/mcp.md for the prompt
+// budget, every rule kept. ChatGPT: all three excluded.
+const ToolSurfaceVersion = "0.121"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
