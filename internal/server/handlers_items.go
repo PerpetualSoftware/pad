@@ -914,6 +914,7 @@ func (s *Server) handleCreateItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	s.attachUnroutedAsk(workspaceID, item)
 
 	writeJSON(w, http.StatusCreated, item)
 }
@@ -3011,9 +3012,12 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	}
 
 	if b != nil && b.patch != nil {
+		// A content patch changes no ask state and its response carries no
+		// warnings.
 		s.writePatchResponse(w, updated, b.patch, contentAppliedPendingFlush)
 		return
 	}
+	s.attachUnroutedAsk(workspaceID, updated)
 	writeJSON(w, http.StatusOK, updated)
 }
 

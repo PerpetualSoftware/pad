@@ -141,6 +141,14 @@ type ItemWriteWarnings struct {
 	// you read) or replace: true.
 	UnguardedContentWrite bool `json:"unguarded_content_write,omitempty"`
 
+	// UnroutedAsk marks an item that, after this write, is an open ask (in a
+	// collection of asks, or in a waiting status) that reaches no person: it
+	// has an agent role, no eligible assigned person and no open @mention of
+	// an eligible person, so it waits in that role's queue and nobody sees it
+	// in Needs you. Advisory; the write was stored. To ask a person, @mention
+	// them, or assign them while the item is in a waiting status.
+	UnroutedAsk bool `json:"unrouted_ask,omitempty"`
+
 	// NotUnique describes each value a move or copy DROPPED because the
 	// destination collection declares that field unique and another item
 	// already holds the value (BUG-2367). Its keys are also in DroppedFields;

@@ -312,6 +312,47 @@ func needsWaitingSpellings(schema models.CollectionSchema, key string, vals []st
 	return out
 }
 
+// needsCollInfo is what the router reads from one collection: its parsed
+// schema and settings, whether it is a collection of asks, and its waiting
+// statuses.
+type needsCollInfo struct {
+	schema   models.CollectionSchema
+	settings models.CollectionSettings
+	awaits   bool
+	// waitKey and waiting are the done field and its waiting statuses
+	// (lowercased, trimmed); waiting is empty when it declares none.
+	waitKey string
+	waiting map[string]bool
+}
+
+// newNeedsCollInfo parses one collection for the router. vals are the done
+// field's waiting statuses as declared; a system collection has none and is
+// never a collection of asks.
+func newNeedsCollInfo(c models.Collection) (ci *needsCollInfo, vals []string) {
+	ci = &needsCollInfo{awaits: !c.IsSystem && models.CollectionAwaitsHumanJSON(c.Settings)}
+	_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &ci.schema)
+	if c.Settings != "" {
+		_ = json.Unmarshal([]byte(c.Settings), &ci.settings)
+	}
+	if c.IsSystem {
+		return ci, nil
+	}
+	key, vals := models.AwaitsHumanValuesForDoneField(ci.schema, ci.settings)
+	if len(vals) > 0 {
+		ci.waitKey, ci.waiting = key, map[string]bool{}
+		for _, v := range vals {
+			ci.waiting[strings.ToLower(strings.TrimSpace(v))] = true
+		}
+	}
+	return ci, vals
+}
+
+// isWaiting reports whether an item's done field holds a waiting status.
+func (ci *needsCollInfo) isWaiting(fields map[string]any) bool {
+	v, ok := fields[ci.waitKey].(string)
+	return ok && ci.waiting[strings.ToLower(strings.TrimSpace(v))]
+}
+
 // needsForWorkspace runs the router for one admitted workspace and returns the
 // rows routed to the caller, held ones included (the caller splits the views).
 // Order matters for what is read: visibility first (in the candidate SQL), then
@@ -347,37 +388,17 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 	if err != nil {
 		return nil, false, err
 	}
-	type collInfo struct {
-		schema   models.CollectionSchema
-		settings models.CollectionSettings
-		awaits   bool
-		// waitKey and waiting are the done field and its waiting statuses
-		// (lowercased, trimmed); waiting is empty when it declares none.
-		waitKey string
-		waiting map[string]bool
-	}
-	infos := map[string]*collInfo{}
+	infos := map[string]*needsCollInfo{}
 	var awaitsIDs []string
 	var awaitsStatus []store.NeedsAwaitsStatus
 	for _, c := range colls {
-		ci := &collInfo{awaits: !c.IsSystem && models.CollectionAwaitsHumanJSON(c.Settings)}
-		_ = models.UnmarshalItemFieldSchema([]byte(c.Schema), &ci.schema)
-		if c.Settings != "" {
-			_ = json.Unmarshal([]byte(c.Settings), &ci.settings)
-		}
+		ci, vals := newNeedsCollInfo(c)
 		infos[c.ID] = ci
 		if ci.awaits {
 			awaitsIDs = append(awaitsIDs, c.ID)
 		}
-		if c.IsSystem {
-			continue
-		}
-		if key, vals := models.AwaitsHumanValuesForDoneField(ci.schema, ci.settings); len(vals) > 0 {
-			ci.waitKey, ci.waiting = key, map[string]bool{}
-			for _, v := range vals {
-				ci.waiting[strings.ToLower(strings.TrimSpace(v))] = true
-			}
-			awaitsStatus = append(awaitsStatus, store.NeedsAwaitsStatus{CollectionID: c.ID, Key: key, Values: needsWaitingSpellings(ci.schema, key, vals)})
+		if len(vals) > 0 {
+			awaitsStatus = append(awaitsStatus, store.NeedsAwaitsStatus{CollectionID: c.ID, Key: ci.waitKey, Values: needsWaitingSpellings(ci.schema, ci.waitKey, vals)})
 		}
 	}
 
@@ -408,7 +429,7 @@ func (s *Server) needsForWorkspace(r *http.Request, user *models.User, ws *model
 		}
 		if !models.IsTerminalItem(fields, ci.schema, ci.settings) {
 			open = append(open, it)
-			if v, ok := fields[ci.waitKey].(string); ok && ci.waiting[strings.ToLower(strings.TrimSpace(v))] {
+			if ci.isWaiting(fields) {
 				waitingIDs[it.ID] = true
 			}
 		}

@@ -378,6 +378,7 @@ Run with --help-collections to see available collections and their status values
 			warnUndeclaredFields(item)
 			warnOptionsAdded(item)
 			warnContentPendingFlush(item)
+			warnUnroutedAsk(item)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(item)
@@ -1586,6 +1587,7 @@ A body write with neither prints a warning, and a future release refuses it
 			warnUndeclaredFields(updated)
 			warnContentPendingFlush(updated)
 			warnUnguardedContentWrite(&input)
+			warnUnroutedAsk(updated)
 
 			if formatFlag == "json" {
 				return cli.PrintJSON(updated)
@@ -4610,6 +4612,16 @@ func warnOptionsAdded(item *models.Item) {
 		parts = append(parts, k+": "+strings.Join(item.Warnings.OptionsAdded[k], ", "))
 	}
 	fmt.Fprintf(os.Stderr, "note: added to this collection's options (library vocabulary): %s\n", strings.Join(parts, "; "))
+}
+
+// warnUnroutedAsk prints one line to STDERR when the write left the item an
+// ask that reaches no person (warnings.unrouted_ask). Stderr for the same
+// reason as above.
+func warnUnroutedAsk(item *models.Item) {
+	if item == nil || item.Warnings == nil || !item.Warnings.UnroutedAsk {
+		return
+	}
+	fmt.Fprintln(os.Stderr, "warning: this item is an ask that reaches no person: @mention someone, or assign a person while it waits")
 }
 
 // warnContentStale prints one line to STDERR when a READ served a body the server

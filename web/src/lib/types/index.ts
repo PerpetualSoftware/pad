@@ -1023,6 +1023,13 @@ export interface ItemWriteWarnings {
 	content_outcome?: 'applied_pending_flush';
 	/** BUG-3133: unflushed edit rows a direct content write deleted. */
 	pruned_pending_edits?: number;
+	/**
+	 * After this write the item is an open ask that reaches no person: it has
+	 * an agent role, no eligible assigned person and no open @mention of an
+	 * eligible person, so nobody sees it in Needs you. Advisory; the write was
+	 * stored.
+	 */
+	unrouted_ask?: boolean;
 }
 
 // ─── Items index (skinny projection) ─────────────────────────────────────────
