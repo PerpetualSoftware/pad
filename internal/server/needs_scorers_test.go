@@ -308,7 +308,7 @@ func TestNeedsYouSignals_HeuristicWithoutRunner(t *testing.T) {
 			t.Errorf("heuristicEffort(%q, %d) = %d, want %d", c.title, c.runes, got, c.want)
 		}
 	}
-	// End to end with no runner attached: heuristic value, no hint, "estimated".
+	// End to end with no runner attached: heuristic value, "estimated".
 	needsBackends(t, func(t *testing.T, srv *Server) {
 		f := newNfx(t, srv)
 		owner, alice := f.user("owner"), f.user("alice")
@@ -320,7 +320,7 @@ func TestNeedsYouSignals_HeuristicWithoutRunner(t *testing.T) {
 			t.Fatalf("fixture: %d rows, runner %v", len(resp.Rows), srv.decisionRunner())
 		}
 		sim, imp := resp.Rows[0].Simplicity, resp.Rows[0].Importance
-		if sim == nil || imp == nil || sim.Value != 100 || sim.Hint != "" || strings.Join(sim.Why, "|") != whyEstimated {
+		if sim == nil || imp == nil || sim.Value != 100 || strings.Join(sim.Why, "|") != whyEstimated {
 			t.Fatalf("simplicity %+v", sim)
 		}
 		// asked: H = 1; priority unset: P = .5; waiting far over two weeks: A = 1.
@@ -969,8 +969,8 @@ func TestNeedsYouSort_OddBoundaryTimesPageThrough(t *testing.T) {
 
 // Simplicity reads no stored answer (TASK-4643): a current effort answer at
 // level 3 and a confident effort_medium "device" leave the score at the text
-// heuristic (a question title with a short body: 100), with no hint and only
-// "estimated from the text" in Why.
+// heuristic (a question title with a short body: 100), with only "estimated
+// from the text" in Why.
 func TestNeedsYouSignals_SimplicityIgnoresStoredEffort(t *testing.T) {
 	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {
@@ -1016,8 +1016,8 @@ func TestNeedsYouSignals_SimplicityIgnoresStoredEffort(t *testing.T) {
 			t.Fatalf("rows %v", titles(resp.Rows))
 		}
 		sim := resp.Rows[0].Simplicity
-		if sim == nil || sim.Value != 100 || sim.Hint != "" || strings.Join(sim.Why, "|") != whyEstimated {
-			t.Fatalf("simplicity %+v, want the heuristic 100 with no hint and Why [%s]", sim, whyEstimated)
+		if sim == nil || sim.Value != 100 || strings.Join(sim.Why, "|") != whyEstimated {
+			t.Fatalf("simplicity %+v, want the heuristic 100 and Why [%s]", sim, whyEstimated)
 		}
 	})
 }

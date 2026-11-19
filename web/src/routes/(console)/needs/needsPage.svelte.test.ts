@@ -144,9 +144,9 @@ afterEach(() => {
 });
 
 describe('needs page: grouping', () => {
-	it('groups by first appearance, takes header counts from workspaces[], and shows a hint chip only where there is one', async () => {
+	it('groups by first appearance and takes header counts from workspaces[]', async () => {
 		const rows = [
-			row('beta', 'TASK-1', { importance: { value: 80, hint: 'due soon' } }),
+			row('beta', 'TASK-1', { importance: { value: 80 } }),
 			row('alpha', 'TASK-2'),
 			row('beta', 'TASK-3')
 		];
@@ -163,19 +163,6 @@ describe('needs page: grouping', () => {
 			['WS alpha', '1']
 		]);
 		expect(refs()).toEqual(['TASK-1', 'TASK-3', 'TASK-2']);
-		const hints = [...host.querySelectorAll('[data-testid="needs-hint"]')];
-		expect(hints.map((h) => h.textContent?.trim())).toEqual(['due soon']);
-		expect(hints[0].closest('[data-testid="needs-row"]')?.getAttribute('data-ref')).toBe('TASK-1');
-	});
-});
-
-describe('needs page: hints', () => {
-	it('renders a row whose importance and simplicity carry the same hint', async () => {
-		await mountWith(
-			resp([row('a', 'TASK-1', { importance: { value: 1, hint: 'same' }, simplicity: { value: 2, hint: 'same' } })])
-		);
-		expect(refs()).toEqual(['TASK-1']);
-		expect(host.querySelectorAll('[data-testid="needs-hint"]').length).toBe(2);
 	});
 });
 

@@ -3706,7 +3706,6 @@ export interface NeedsNotMine {
 
 export interface NeedsScore {
 	value: number;
-	hint?: string;
 	why?: string[];
 }
 

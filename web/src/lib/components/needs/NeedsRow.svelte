@@ -74,10 +74,6 @@
 		return `${Math.floor(hours / 24)}d`;
 	}
 
-	let hints = $derived(
-		[row.importance?.hint, row.simplicity?.hint].filter((h): h is string => !!h)
-	);
-
 	let snoozeNote = $derived.by(() => {
 		if (row.not_mine) return `Not mine since ${new Date(row.not_mine.created_at).toLocaleDateString()}`;
 		const s = row.snooze;
@@ -103,9 +99,6 @@
 			<span>{row.item.collection}</span>
 			{#if row.item.status}<Chip size="sm">{row.item.status}</Chip>{/if}
 			<span class="wait" title={row.waiting_since}>waiting {ago(row.waiting_since)}</span>
-			{#each hints as hint, i (i)}
-				<span data-testid="needs-hint"><Chip size="sm" color="var(--accent-amber)">{hint}</Chip></span>
-			{/each}
 		</div>
 		<p class="why">{row.why.text}{#if row.why.by}{' '}<span class="by">({row.why.by})</span>{/if}</p>
 		{#if view === 'hidden' && snoozeNote}<p class="snooze">{snoozeNote}</p>{/if}
