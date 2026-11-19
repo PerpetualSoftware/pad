@@ -243,6 +243,7 @@ func newRootCmd() *cobra.Command {
 		githubCmd(),
 		roleCmd(),
 		chatCmd(),
+		needsCmd(),
 		tagCmd(),
 		webhooksCmd(),
 		tokenCmd(),

@@ -263,3 +263,18 @@ func chatCmd() *cobra.Command {
 	cmd.AddCommand(chatListCmd(), chatInboxCmd(), chatShowCmd(), chatSendCmd(), chatDeleteCmd(), chatReadCmd(), newChatArmCmd(), newChatDisarmCmd())
 	return cmd
 }
+
+// needsCmd is the caller's own needs-you inbox (TASK-3920) and its "not mine"
+// triage (TASK-4643). The inbox is cross-workspace, so list narrows to one
+// workspace only when --workspace is given explicitly; not-mine and restore
+// act on items and take the workspace the usual way.
+func needsCmd() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "needs",
+		Short: "Your needs-you inbox: list, mark not mine, restore",
+		Long:  "The items waiting on you across workspaces. A not-mine mark hides an item until it comes back to you: an @mention, a waiting status, an assignment or a reminder.",
+		RunE:  unknownSubcommandRun,
+	}
+	cmd.AddCommand(needsListCmd(), needsNotMineCmd(), needsRestoreCmd())
+	return cmd
+}
