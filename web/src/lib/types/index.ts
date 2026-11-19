@@ -1990,6 +1990,8 @@ export interface CalendarEntry {
 	at: string;
 	day: string;
 	item_ref: string;
+	/** The item's id (TASK-4678). */
+	item_id?: string;
 	item_title: string;
 	collection: string;
 	schedule_id?: string;
@@ -3911,6 +3913,8 @@ export interface AgendaEntry {
 	at: string;
 	day: string;
 	item_ref: string;
+	/** The item's id, on every row tied to an item (TASK-4678). */
+	item_id?: string;
 	item_title: string;
 	collection: string;
 	workspace?: string;
@@ -3929,6 +3933,8 @@ export interface AgendaEntry {
 	schedule_id?: string;
 	field?: string;
 	date?: string;
+	/** On a date entry: the item's ends_on value, verbatim, when it has one (TASK-4678). */
+	ends_on?: string;
 	fired?: boolean;
 	overdue?: boolean;
 	resolved_at?: string;
