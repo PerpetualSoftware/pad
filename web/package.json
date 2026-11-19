@@ -35,7 +35,7 @@
 		"esbuild": "0.28.2",
 		"fake-indexeddb": "6.2.8",
 		"jsdom": "^30.1.1",
-		"linkedom": "0.18.14",
+		"linkedom": "0.18.15",
 		"marked": "^18.2.0",
 		"svelte": "^5.57.3",
 		"svelte-check": "^4.7.8",
