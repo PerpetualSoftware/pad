@@ -59,7 +59,7 @@ A multi-user/remote server does **not** persist a session default — pass `work
 
 ## Update flow: read first, then patch
 
-For `pad_item.action: update`, the server merges your patch with the item's current state. Pass only the fields you want to change. When changing `status`, ALWAYS include a `comment` explaining why — it builds the audit trail that helps the team understand history.
+For `pad_item.action: update`, the server merges your patch with the item's current state. Pass only the fields you want to change. When changing `status`, ALWAYS include a `comment` explaining why — it builds the audit trail that helps the team understand history. To ask a person, @mention them, or set a waiting status and assign them; a question in a comment with neither reaches nobody (`warnings.unrouted_ask`).
 
 ## One error code you must not retry
 

@@ -423,6 +423,7 @@ Actions:
     Use dedicated params; field=["key=value"] handles other SCHEMA-DECLARED fields.
     fields OBJECT matches reads; conflicting values across placements refuse.
     tags: JSON string array, never comma-separated.
+    warnings.unrouted_ask: an ask only a role holds; no person sees it.
   update — Update an item; fields MERGE server-side, only supplied keys change.
     Required: ref, at least one mutable field.
     Optional: title, status, priority, content, role, assign, parent, comment, tags,
@@ -432,6 +433,7 @@ Actions:
     edit, send with read seq. On details.content_write conflict, NEVER resend stale
     content: re-read, edit CURRENT content, send new seq. replace=true skips seq checks.
     Neither: warnings.unguarded_content_write now, refusal in a later release.
+    warnings.unrouted_ask: as create; @mention or assign a person.
     content_outcome="applied_pending_flush": a browser holds the item; read lags,
     write succeeded. Re-read later, never re-send.
   delete — Archive. Required: ref.
@@ -501,6 +503,7 @@ Actions:
   unstar — Unstar. Required: ref.
   starred — List starred. Optional: all.
   comment — Add comment. Required: ref, message. Optional: reply_to (parent comment ID).
+    A question reaches a person only if it @mentions them.
   list-comments — List with id and edited flag. Required: ref.
   edit-comment — Replace body (author only). Required: ref, comment_id, message.
   delete-comment — Delete (item editors may). Required: ref, comment_id.
