@@ -58,6 +58,10 @@ Code lives in `internal/mcp/` (built on `github.com/mark3labs/mcp-go`). Public d
 
 The server instructions (`internal/mcp/instructions.md`) are sent in every MCP `initialize` and are held to a byte budget (`TestMCPPromptBudgets`). Detail an agent can look up rather than carry on every connection lives here, with a one-line summary left in the instructions (TASK-3489).
 
+### App attribution (v0.65)
+
+An item an installed app created, a comment an app wrote and a history row an app's write made carry `via_app` (the install id) and `via_app_name` (the app's name). On an item they name the app that CREATED it, not the last writer. They are absent for anything a person or an agent wrote.
+
 ### `relation` values (v0.31)
 
 A `relation` value may be a UUID, an issue ref (`COLO-3`), or the target item's EXACT TITLE — in that order, so an item literally titled `COLO-3` is unreachable by title while the ref resolves. Title matching is scoped to the collection the field declares: a title that is unique only workspace-wide is REFUSED, naming the collection searched, and a title matching two or more items inside the declared collection is refused as `ambiguous` rather than `not_found` — it matched too much, not too little. Only items YOU can see count towards any of that, so a match you have no access to never changes your answer.
@@ -739,6 +743,70 @@ Was:
 Now:
 ```text
                Entries span all workspaces.
+```
+
+### instructions.md (initialize)
+
+The initialize payload had 5 bytes of headroom after the `pad_needs` bullet, so these server-instructions sentences moved too. The App attribution paragraph is in full under "App attribution (v0.65)" below.
+
+Was (pad_library):
+```text
+- `pad_library` — Convention + playbook library (the global catalog of pre-built entries workspaces activate): list / get / activate.
+```
+
+Now:
+```text
+- `pad_library` — Convention + playbook library: list / get / activate.
+```
+
+Was (pad_attachment):
+```text
+`list` enumerates a workspace's attachments (filter by item / category / collection / attached / unattached); `show` returns one attachment's MIME, size, filename, and ETag via a HEAD request.
+```
+
+Now:
+```text
+`show` is a HEAD (MIME, size, filename, ETag).
+```
+
+Was (pad_meta):
+```text
+`bootstrap` returns one-shot workspace context (user + collections + always-on conventions + a metadata-only `convention_index` of every active convention + roles + playbook metadata + dashboard + recent activity).
+```
+
+Now:
+```text
+`bootstrap` returns one-shot workspace context.
+```
+
+Was (pad_project):
+```text
+`activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details);
+```
+
+Now:
+```text
+`activity` to catch up on what other agents/users changed since you last worked;
+```
+
+Was (resources):
+```text
+Read these directly when you need workspace state (described in the resource listings):
+```
+
+Now:
+```text
+Read these directly when you need workspace state:
+```
+
+Was (resources prefetch):
+```text
+A host can prefetch them once per session.
+```
+
+Now:
+```text
+(removed)
 ```
 
 ## Commitment links, gates and moves (v0.110)

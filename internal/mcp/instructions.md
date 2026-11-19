@@ -19,7 +19,7 @@ Inputs are validated strictly: an undeclared top-level key is rejected with a st
 
 **Library words in a blank workspace (v0.67).** A brand-new blank workspace lists one convention trigger (`always`) and one scope (`all`). Activating a library entry, or creating a convention or playbook with a trigger or scope the library itself uses, adds that word to the collection's options and says so in `warnings.options_added`. A trigger you invent is still refused until the workspace owner adds it to the collection's schema.
 
-**App attribution (v0.65).** An item an installed app created, a comment an app wrote and a history row an app's write made carry `via_app` (the install id) and `via_app_name` (the app's name). On an item they name the app that CREATED it, not the last writer. They are absent for anything a person or an agent wrote.
+**App attribution (v0.65).** `via_app` / `via_app_name` name the app that wrote a record; on an item, the app that CREATED it (detail: docs/mcp.md).
 
 **Relation fields (v0.31).** Write a UUID, issue ref (`COLO-3`) or EXACT TITLE, tried in that order (a title that is also a ref resolves as the ref). A title matches only inside the declared collection, among items you can see; found only elsewhere, it is refused naming that collection; several matches are `ambiguous`. Full rules: docs/mcp.md.
 
@@ -29,21 +29,21 @@ Reads: `relation_targets` beside `fields`, field key → `{id, ref, title}`. `fi
 
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
 - `pad_collection` — Collections: list / create / update / delete / list-archived / restore. `delete` archives: the collection and its items leave every view, and `restore` brings them back. An `update` that removes a field or a select option still in use answers with `warnings.orphaned`: tell the user how many items keep the removed value.
-- `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity / catch-up. Use `ready` for the ranked top items to work on next (blocked work is left out) and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked (non-streaming feed with item refs + change details); `catch-up` for your own digest since you last marked caught up (read-only; marking is web-only).
+- `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity / catch-up. Use `ready` for the ranked top items to work on next (blocked work is left out) and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked; `catch-up` for your own digest since you last marked caught up (read-only; marking is web-only).
 - `pad_role` — Agent roles: list / create / update / delete.
 - `pad_needs` — Your needs-you inbox: list / not-mine / restore.
 - `pad_search` — Full-text search across items: query.
 - `pad_playbook` — Invokable procedures: list / get / run / match. Use `run` to bind args against a playbook's declared spec and get the rendered body back; side-effect-free. `run` refuses a playbook whose status isn't `active` (a draft still being authored) with a `playbook_not_active` error — pass `allow_draft: true` to override. Both `run` and `get` echo the playbook's `status`. Both may also carry `content_state` (`"applied_pending_flush"`, or `"superseded_set_aside"` as under `pad_item`), meaning the BODY you are about to execute is behind the item's live collaborative document — an editor holds unflushed edits, so the steps may be superseded. It is a reason to re-read or to ask, not a reason to refuse to run; the body is still the best the server has. `match` finds a playbook from text.
-- `pad_library` — Convention + playbook library (the global catalog of pre-built entries workspaces activate): list / get / activate.
-- `pad_attachment` — Read-only metadata: list / show. `list` enumerates a workspace's attachments (filter by item / category / collection / attached / unattached); `show` returns one attachment's MIME, size, filename, and ETag via a HEAD request. Uploading and general file downloads stay CLI-only; bounded image bytes are available through the attachment resource below.
-- `pad_meta` — Introspection: server-info / version / tool-surface / bootstrap. `bootstrap` returns one-shot workspace context (user + collections + always-on conventions + a metadata-only `convention_index` of every active convention + roles + playbook metadata + dashboard + recent activity).
+- `pad_library` — Convention + playbook library: list / get / activate.
+- `pad_attachment` — Read-only metadata: list / show. `show` is a HEAD (MIME, size, filename, ETag). Uploading and general file downloads stay CLI-only; bounded image bytes are available through the attachment resource below.
+- `pad_meta` — Introspection: server-info / version / tool-surface / bootstrap. `bootstrap` returns one-shot workspace context.
 - `pad_set_workspace` — Load workspace context; response embeds the bootstrap blob so you load context in one call. Whether it also pins a session default: see Workspace context below. Takes `workspace: <slug>` only (no `action`).
 
 For the eleven resource × action tools, always pass `action` as a top-level field. Per-action required parameters are documented in each tool's description.
 
 ## Resources are cheaper than tool calls
 
-Read these directly when you need workspace state (described in the resource listings): `pad://workspaces`, `pad://workspace/{ws}/dashboard`, `.../collections`, `.../items` (use `pad_item` `list` to filter), `.../items/{ref}` (markdown), `.../attachments/{id}` (images only, at most 1 MiB, as base64 `thumb-md`), `.../bootstrap` (the same payload as `pad_meta` `bootstrap`), and `pad://_meta/version`. A host can prefetch them once per session.
+Read these directly when you need workspace state: `pad://workspaces`, `pad://workspace/{ws}/dashboard`, `.../collections`, `.../items` (use `pad_item` `list` to filter), `.../items/{ref}` (markdown), `.../attachments/{id}` (images only, at most 1 MiB, as base64 `thumb-md`), `.../bootstrap` (the same payload as `pad_meta` `bootstrap`), and `pad://_meta/version`.
 
 Load the bootstrap resource once per workspace and reuse its collections, conventions, roles, and playbook metadata. Refresh it after switching workspaces, after changing those configuration surfaces, when Pad reports stale schema/context, or when the user asks. For changing work state, read the affected item or use a targeted project tool instead of fetching the whole bootstrap again.
 
