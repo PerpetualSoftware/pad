@@ -335,6 +335,29 @@ func (s *Server) handleBulkItems(w http.ResponseWriter, r *http.Request) {
 			meta["from_collection"] = item.CollectionSlug
 			meta["to_collection"] = req.Collection
 		}
+		// TASK-4690: an assign records the same role and assignment change
+		// text, and the same assignee id stamp, as updateItem does
+		// (TASK-4684), so store.LatestAssignmentTimes sees a bulk assignment
+		// and the needs-you waiting_since does not fall back to created_at.
+		// The before-image is the store's locked in-transaction pre-write
+		// view (PreUpdate, BUG-2776), not this handler's earlier read; both
+		// it and `updated` are read with the joined display names. Without a
+		// pre-image nothing is written, as in updateItem. An unchanged
+		// assignee or role writes neither.
+		if req.Op == "assign" && updated != nil && updated.PreUpdate != nil {
+			before := updated.PreUpdate
+			var changes []string
+			if before.AgentRoleSlug != updated.AgentRoleSlug {
+				changes = append(changes, fmt.Sprintf("role: %s → %s", valueOrEmpty(before.AgentRoleName), valueOrEmpty(updated.AgentRoleName)))
+			}
+			if beforeID, afterID := derefOrEmpty(before.AssignedUserID), derefOrEmpty(updated.AssignedUserID); beforeID != afterID {
+				changes = append(changes, fmt.Sprintf("assigned: %s → %s", valueOrEmpty(before.AssignedUserName), valueOrEmpty(updated.AssignedUserName)))
+				meta[store.ActivityMetaAssignedUserID] = afterID
+			}
+			if len(changes) > 0 {
+				meta["changes"] = strings.Join(changes, "; ")
+			}
+		}
 		// Same key, same joined-string shape and the same reason as
 		// handleMoveItem's: this map is map[string]string, and a raw array
 		// renders as a Go map literal in the timeline (BUG-2628). Outside the
