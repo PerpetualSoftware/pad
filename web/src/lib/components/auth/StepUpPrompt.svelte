@@ -97,7 +97,7 @@
 <div class="step-up">
 	<h3 id={headingId} bind:this={headingEl} tabindex="-1">Verify it’s you</h3>
 	{#if factor === 'unavailable'}
-		<p>No verification method is available for this account. Sign in again, then retry within 10 minutes, or turn on two-factor authentication.</p>
+		<p>No verification method is available for this account. Sign out and sign in again, then retry within 10 minutes, or turn on two-factor authentication.</p>
 	{:else}
 		<form id={formId} onsubmit={verify} aria-labelledby={headingId}>
 			<p>{description}</p>

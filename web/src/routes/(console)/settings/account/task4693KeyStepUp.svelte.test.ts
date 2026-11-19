@@ -115,7 +115,7 @@ describe('TASK-4693: key create and rotate step-up', () => {
 	it('an account with no factor is told to sign in again', async () => {
 		state.factor = 'unavailable';
 		await startCreate();
-		expect(await screen.findByText(/Sign in again, then retry within 10 minutes/)).toBeInTheDocument();
+		expect(await screen.findByText(/Sign out and sign in again, then retry within 10 minutes/)).toBeInTheDocument();
 		expect(screen.queryByRole('button', { name: 'Verify' })).toBeNull();
 		expect(api.auth.tokens.create).toHaveBeenCalledOnce();
 	});

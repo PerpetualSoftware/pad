@@ -252,7 +252,7 @@ func TestTask4507UnavailableGuidance(t *testing.T) {
 	client := f.staleSession(t, u) // widening needs a step-up only past the sign-in window
 
 	r := runTokenEditT(client, tok.ID, nil, strPtr("*"), "anything\n", false, false)
-	if r.err == nil || !strings.Contains(r.err.Error(), "sign in again ('pad auth login')") {
+	if r.err == nil || !strings.Contains(r.err.Error(), "sign out of Pad in the browser and sign in again") {
 		t.Fatalf("err = %v, want the sign-in-again guidance", r.err)
 	}
 	if n := f.count("POST step-up/verify"); n != 0 {
@@ -341,7 +341,7 @@ func TestTask4507StepUpErrors(t *testing.T) {
 			wantErr: "incorrect verification code; the key is unchanged"},
 		{name: "verify unavailable", factor: "password", stdin: "pw\n",
 			verify:  &reply{status: 409, code: "step_up_unavailable", msg: "No verification method is available for this account"},
-			wantErr: "sign in again ('pad auth login') and run the command within 10 minutes, or turn on two-factor authentication ('pad auth 2fa setup'); the key is unchanged"},
+			wantErr: "sign out of Pad in the browser and sign in again, then run 'pad auth logout' and 'pad auth login' and the command within 10 minutes, or turn on two-factor authentication ('pad auth 2fa setup'); the key is unchanged"},
 		{name: "empty code", factor: "totp", stdin: "",
 			wantErr: "no verification code entered; the key is unchanged", wantCalls: map[string]int{"POST step-up/verify": 0}},
 		{name: "conflict", factor: "password", patch: &reply{status: 409, code: "conflict", msg: "Token scopes changed; reload and try again"},

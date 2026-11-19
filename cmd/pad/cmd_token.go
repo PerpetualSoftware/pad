@@ -36,12 +36,14 @@ Tokens act as the user who minted them. The secret is shown exactly once,
 at mint time — the server stores only a hash and cannot show it again.
 
 Creating or rotating a token, or widening its access, needs a session
-signed in within the last 10 minutes or a verified identity: sign in
-('pad auth login'), then run the command within 10 minutes. With an older
+signed in within the last 10 minutes or a verified identity. A browser
+login ('pad auth login') keeps the browser's sign-in time, so to start
+the 10 minutes, sign out of Pad in the browser and sign in again, then
+run 'pad auth logout' and 'pad auth login'; with a password account,
+'pad auth login -i' signs in directly in the terminal. With an older
 session the command asks you to verify your identity first (a code from
 your authenticator app or a recovery code, a code sent by email, or your
-password) and then retries once. A script that signs in and then creates
-a token straight away needs no prompt.`,
+password) and then retries once.`,
 		Example: `  pad token create --name ci-agent
   pad token create --name cursor --expires-in 30
   pad token list
@@ -72,9 +74,10 @@ func tokenCreateCmd() *cobra.Command {
 		Example: `  pad token create ci-deploy --scopes read --expires-in 90`,
 		Long: `Mint a new API token. The secret is shown exactly once.
 
-This needs a session signed in within the last 10 minutes: sign in
-('pad auth login'), then create within 10 minutes. With an older session
-you are asked to verify your identity first (an authenticator or recovery
+This needs a session signed in within the last 10 minutes (to start it,
+sign out of Pad in the browser and sign in again, then 'pad auth logout'
+and 'pad auth login'; or 'pad auth login -i' for a password account).
+With an older session you are asked to verify your identity first (an authenticator or recovery
 code, an emailed code, or your password; a code or password may be piped
 on stdin, an emailed code needs a terminal), then the create is retried
 once. A call authenticated by a pad_ API token is refused.`,
@@ -206,9 +209,10 @@ days; without it the original expiry is preserved.
 
 Like create, rotation needs a login session (a call authenticated by a
 pad_ API token is refused with 403 session_required) signed in within the
-last 10 minutes: sign in ('pad auth login'), then rotate within 10
-minutes. With an older session you are asked to verify your identity
-first, then the rotation is retried once.`,
+last 10 minutes (to start it, sign out of Pad in the browser and sign in
+again, then 'pad auth logout' and 'pad auth login'; or 'pad auth login -i'
+for a password account). With an older session you are asked to verify
+your identity first, then the rotation is retried once.`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
@@ -291,9 +295,11 @@ Widening access (for example read to *) needs a session signed in within
 the last 10 minutes; with an older one you are asked to verify your
 identity first: a code from your authenticator app or a recovery code, a
 code sent by email, or your password, whichever the account uses. A code
-or password may be piped on stdin; an emailed code needs a terminal. An
-account with none of these signs in again ('pad auth login') and widens
-within 10 minutes.
+or password may be piped on stdin; an emailed code needs a terminal. To
+start the 10 minutes instead, sign out of Pad in the browser and sign in
+again, then 'pad auth logout' and 'pad auth login'; or 'pad auth login -i'
+for a password account. An account with no verification method must do
+this.
 
 Like create, this needs a login session: a call authenticated by a pad_
 API token is refused.`,
@@ -402,7 +408,10 @@ func keyStepUpError(err error, unchanged string) error {
 }
 
 // signInAgainForKeys is the remedy for an account with no verification factor.
-const signInAgainForKeys = "No verification method is available for this account: sign in again ('pad auth login') and run the command within 10 minutes, or turn on two-factor authentication ('pad auth 2fa setup'); "
+// Such an account has no password, so only the browser sign-in applies, and a
+// browser-approved CLI session keeps the browser session's sign-in time: the
+// browser must sign in afresh first.
+const signInAgainForKeys = "No verification method is available for this account: sign out of Pad in the browser and sign in again, then run 'pad auth logout' and 'pad auth login' and the command within 10 minutes, or turn on two-factor authentication ('pad auth 2fa setup'); "
 
 // tokenEditErr words a refusal for a person while keeping the server's
 // error reachable through errors.As (the root's rate_limited marker reads it).

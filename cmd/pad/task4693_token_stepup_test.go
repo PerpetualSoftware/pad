@@ -96,7 +96,7 @@ func TestTask4693CreateNoFactorToldToSignIn(t *testing.T) {
 	client := f.staleSession(t, u)
 	var errOut bytes.Buffer
 	_, err := task4693Create(client, "anything\n", &errOut)
-	if err == nil || !strings.Contains(err.Error(), "sign in again ('pad auth login')") || !strings.Contains(err.Error(), "no token was created") {
+	if err == nil || !strings.Contains(err.Error(), "sign out of Pad in the browser and sign in again") || !strings.Contains(err.Error(), "no token was created") {
 		t.Fatalf("err = %v, want the sign-in-again guidance", err)
 	}
 	if n := f.count("POST step-up/verify"); n != 0 {
@@ -104,5 +104,36 @@ func TestTask4693CreateNoFactorToldToSignIn(t *testing.T) {
 	}
 	if toks, lerr := f.store.ListUserAPITokens(u.ID); lerr != nil || len(toks) != 0 {
 		t.Fatalf("a refused create left %d keys: %v", len(toks), lerr)
+	}
+}
+
+// A browser-approved CLI session carries the approving browser session's
+// sign-in time, so 'pad auth login' alone does not reopen the window: the
+// remedy must say to sign out and in again in the browser first, and to
+// drop the stored CLI session so 'pad auth login' does not short-circuit.
+func TestTask4693SignInAgainNamesBrowserSignOutAndIn(t *testing.T) {
+	for _, want := range []string{
+		"sign out of Pad in the browser and sign in again",
+		"'pad auth logout'",
+		"'pad auth login'",
+		"within 10 minutes",
+	} {
+		if !strings.Contains(signInAgainForKeys, want) {
+			t.Errorf("signInAgainForKeys = %q, want it to contain %q", signInAgainForKeys, want)
+		}
+	}
+	if strings.Contains(signInAgainForKeys, "sign in again ('pad auth login')") {
+		t.Errorf("signInAgainForKeys still says 'pad auth login' alone reopens the window: %q", signInAgainForKeys)
+	}
+}
+
+// The help must not promise that 'pad auth login' alone reopens the window.
+func TestTask4693HelpNamesTheWorkingSignIn(t *testing.T) {
+	cmds := map[string]string{"token": tokenCmd().Long, "create": tokenCreateCmd().Long, "rotate": tokenRotateCmd().Long, "edit": tokenEditCmd().Long}
+	for name, long := range cmds {
+		flat := strings.Join(strings.Fields(long), " ")
+		if !strings.Contains(flat, "sign out of Pad in the browser and sign in again") || !strings.Contains(flat, "'pad auth login -i'") {
+			t.Errorf("%s help does not name the browser sign-out-and-in and 'pad auth login -i' remedies:\n%s", name, long)
+		}
 	}
 }
