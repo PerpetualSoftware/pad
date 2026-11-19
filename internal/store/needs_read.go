@@ -356,41 +356,34 @@ func (s *Store) NeedsSnoozesForItems(userID, workspaceID string, itemIDs []strin
 }
 
 // needsItemStates is needsItemState for many items: the newest other comment's
-// second, the other comments at the second the snooze's marker names (the only
-// second whose ids matter; every item's newest second when snoozes is nil), and
-// the latest transition seq.
+// normalised second (needsCommentSecond), the other comments at the second the
+// snooze's marker names (the only second whose ids matter; every item's newest
+// second when snoozes is nil), and the latest transition seq.
 func (s *Store) needsItemStates(userID string, itemIDs []string, snoozes map[string]*models.NeedsSnooze) (map[string]models.NeedsSnoozeMarker, error) {
 	cur := make(map[string]models.NeedsSnoozeMarker, len(itemIDs))
 	for _, id := range itemIDs {
 		cur[id] = models.NeedsSnoozeMarker{}
 	}
+	stamps, err := s.needsOtherCommentStamps(s.db, userID, itemIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range itemIDs {
+		m := cur[id]
+		m.SeenCommentAt = newestNeedsSecond(stamps[id])
+		// The ids at a second matter only where the item's newest second is
+		// the marker's second.
+		if m.SeenCommentAt != "" && (snoozes == nil || m.SeenCommentAt == snoozes[id].Marker.SeenCommentAt) {
+			m.SeenCommentIDs = needsIDsAt(stamps[id], m.SeenCommentAt)
+		}
+		cur[id] = m
+	}
 	for _, chunk := range chunkStrings(itemIDs, needsChunk) {
-		args := []any{userID}
-		for _, id := range chunk {
-			args = append(args, id)
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
 		}
-		rows, err := s.db.Query(s.q(`SELECT item_id, MAX(created_at) FROM comments WHERE `+needsOthersComment+
-			` AND item_id IN (`+placeholders(len(chunk))+`) GROUP BY item_id`), args...)
-		if err != nil {
-			return nil, fmt.Errorf("read latest comments: %w", err)
-		}
-		for rows.Next() {
-			var id, at string
-			if err := rows.Scan(&id, &at); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			m := cur[id]
-			m.SeenCommentAt = at
-			cur[id] = m
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-		args = args[1:]
-		rows, err = s.db.Query(s.q(`SELECT item_id, COALESCE(MAX(seq), 0) FROM status_transitions WHERE item_id IN (`+
+		rows, err := s.db.Query(s.q(`SELECT item_id, COALESCE(MAX(seq), 0) FROM status_transitions WHERE item_id IN (`+
 			placeholders(len(chunk))+`) GROUP BY item_id`), args...)
 		if err != nil {
 			return nil, fmt.Errorf("read latest transitions: %w", err)
@@ -405,42 +398,6 @@ func (s *Store) needsItemStates(userID string, itemIDs []string, snoozes map[str
 			m := cur[id]
 			m.SeenTransitionSeq = seq
 			cur[id] = m
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-	// The ids at a second matter only where the item's newest second is the
-	// marker's second; fetch them for those (item, second) pairs together.
-	var pairs []string
-	for _, id := range itemIDs {
-		if at := cur[id].SeenCommentAt; at != "" && (snoozes == nil || at == snoozes[id].Marker.SeenCommentAt) {
-			pairs = append(pairs, id)
-		}
-	}
-	for _, chunk := range chunkStrings(pairs, needsChunk/2) {
-		args := []any{userID}
-		conds := make([]string, len(chunk))
-		for i, id := range chunk {
-			conds[i] = "(item_id = ? AND created_at = ?)"
-			args = append(args, id, cur[id].SeenCommentAt)
-		}
-		rows, err := s.db.Query(s.q(`SELECT item_id, id FROM comments WHERE `+needsOthersComment+
-			` AND (`+strings.Join(conds, " OR ")+`) ORDER BY item_id, id`), args...)
-		if err != nil {
-			return nil, fmt.Errorf("read comments at the marker second: %w", err)
-		}
-		for rows.Next() {
-			var itemID, id string
-			if err := rows.Scan(&itemID, &id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			m := cur[itemID]
-			m.SeenCommentIDs = append(m.SeenCommentIDs, id)
-			cur[itemID] = m
 		}
 		err = rows.Err()
 		rows.Close()
