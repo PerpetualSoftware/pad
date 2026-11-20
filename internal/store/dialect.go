@@ -164,6 +164,20 @@ type Dialect interface {
 	// need real date math and would diverge here to strftime (SQLite) vs
 	// date_trunc/to_char (Postgres); they're added when a window needs them.
 	DateBucket(column, granularity string) string
+
+	// EpochSeconds returns a SQL expression that is the UTC whole-second Unix
+	// epoch of an RFC3339 TEXT column (TASK-4689). A numeric offset ("+02:00")
+	// and fractional seconds are honoured, so two stamps naming the same second
+	// compare equal whatever their spelling; fractions are dropped, not rounded.
+	// SQLite:     CAST(strftime('%s', col) AS INTEGER). NULL on text strftime
+	//             cannot read; it also reads forms beyond RFC3339 (a space for
+	//             the T, no zone), as UTC.
+	// PostgreSQL: the timestamptz cast, guarded by an RFC3339 shape regex, so
+	//             text of any other shape is NULL. The regex checks shape, not
+	//             range: a well-shaped impossible instant (month 13, Feb 30)
+	//             still reaches the cast and fails the query. Only server-minted
+	//             stamps reach these columns, so none exists.
+	EpochSeconds(column string) string
 }
 
 // ---------- SQLite dialect ----------
@@ -411,6 +425,18 @@ func dateBucketSubstr(column, granularity string) string {
 		return fmt.Sprintf("SUBSTR(%s, 1, 16)", column)
 	}
 	return fmt.Sprintf("SUBSTR(%s, 1, 10)", column)
+}
+
+func (d *sqliteDialect) EpochSeconds(column string) string {
+	return "CAST(strftime('%s', " + column + ") AS INTEGER)"
+}
+
+// pgRFC3339Pattern is the shape the Postgres EpochSeconds accepts. It sits
+// inside a single-quoted literal, so rebindQuery copies its "?" unchanged.
+const pgRFC3339Pattern = `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$`
+
+func (d *postgresDialect) EpochSeconds(column string) string {
+	return "(CASE WHEN " + column + " ~ '" + pgRFC3339Pattern + "' THEN FLOOR(EXTRACT(EPOCH FROM " + column + "::timestamptz))::bigint END)"
 }
 
 // ---------- Helper ----------

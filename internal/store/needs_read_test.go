@@ -597,3 +597,63 @@ func TestNeedsCandidateItems_AwaitsStatusNonASCII(t *testing.T) {
 		t.Fatalf("candidates %+v, want only %s", got, it.ID)
 	}
 }
+
+// TASK-4689: a mention is answered by comparing instants, not stamp text. A
+// stamp with a numeric offset or fractional seconds is read as the UTC whole
+// second it names, and an unparseable stamp answers nothing (the mention stays
+// open), on both backends and through every read that uses the predicate.
+func TestOpenMentions_ComparesInstantsNotText(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name, mentionAt, replyAt string
+		open                     bool
+	}{
+		// 13:30+02:00 is 11:30Z, before the 12:00Z mention; text says after.
+		{"offset reply before", "2026-11-19T12:00:00Z", "2026-11-19T13:30:00+02:00", true},
+		// 12:00+02:00 is 10:00Z, so the 11:00Z reply is after; text says before.
+		{"offset mention after", "2026-11-19T12:00:00+02:00", "2026-11-19T11:00:00Z", false},
+		// Same whole second: the reply counts (>=). Text happens to agree here
+		// ('Z' sorts after '.'), so the reversed case below is the red one.
+		{"fractional mention same second", "2026-11-19T12:00:00.900Z", "2026-11-19T12:00:00Z", false},
+		// A fractional reply later in the same second; text says before.
+		{"fractional reply same second", "2026-11-19T12:00:00Z", "2026-11-19T12:00:00.100Z", false},
+		// Unparseable reply: seen as nothing, the mention stays open.
+		{"garbage reply", "2026-11-19T12:00:00Z", "garbage", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			f := newMentionFixture(t)
+			c := f.comment(t, f.author, "@alice please look")
+			f.setAt(t, "comments", c.ID, tc.mentionAt)
+			f.setAt(t, "comment_mentions", c.ID, tc.mentionAt)
+			r := f.comment(t, f.alice, "on it")
+			f.setAt(t, "comments", r.ID, tc.replyAt)
+
+			var want []string
+			if tc.open {
+				want = []string{f.alice.ID}
+			}
+			if got := f.open(t); !reflect.DeepEqual(got, want) {
+				t.Fatalf("OpenMentionsForItems: open = %v, want %v", got, want)
+			}
+			for _, forUser := range []string{"", f.alice.ID} {
+				got, err := f.s.NeedsCandidateItems(f.ws.ID, CatchUpScope{}, NeedsCandidateParams{ForUserID: forUser})
+				if err != nil {
+					t.Fatalf("NeedsCandidateItems(ForUserID=%q): %v", forUser, err)
+				}
+				var ids []string
+				for _, it := range got {
+					ids = append(ids, it.ID)
+				}
+				var wantIDs []string
+				if tc.open {
+					wantIDs = []string{f.item.ID}
+				}
+				if !reflect.DeepEqual(ids, wantIDs) {
+					t.Fatalf("NeedsCandidateItems(ForUserID=%q) = %v, want %v", forUser, ids, wantIDs)
+				}
+			}
+		})
+	}
+}
