@@ -212,8 +212,8 @@ func (s *Store) createScheduleGateAttempt(budget *linkBudget, workspaceID, block
 			return nil, errGateRetryWithBlockerSeed
 		}
 	}
-	access, err = reloadGraphAccess(tx, access, loaders, blockedItemID, blockerItemID)
-	if err != nil {
+	// Only the refusal matters here: nothing below reads the reloaded access.
+	if _, err := reloadGraphAccess(tx, access, loaders, blockedItemID, blockerItemID); err != nil {
 		return nil, err
 	}
 	var blocker *models.ItemSchedule
