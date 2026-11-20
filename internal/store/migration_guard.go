@@ -227,7 +227,7 @@ func pruneOldSnapshots(dbPath, keep string) {
 		path := filepath.Join(dir, name)
 		info, err := os.Lstat(path)
 		if err != nil {
-			slog.Warn("pre-migration snapshot prune: cannot stat a snapshot; leaving it", "path", path, "error", err)
+			slog.Warn("pre-migration snapshot prune: cannot stat a snapshot; leaving it", "file", path, "error", err)
 			continue
 		}
 		if !info.Mode().IsRegular() {
@@ -248,16 +248,16 @@ func pruneOldSnapshots(dbPath, keep string) {
 
 	for _, c := range candidates[1:] {
 		if err := os.Remove(c.path); err != nil {
-			slog.Warn("pre-migration snapshot prune: cannot remove an old snapshot", "path", c.path, "error", err)
+			slog.Warn("pre-migration snapshot prune: cannot remove an old snapshot", "file", c.path, "error", err)
 			continue
 		}
-		slog.Info("removed old pre-migration snapshot", "path", c.path)
+		slog.Info("removed old pre-migration snapshot", "file", c.path)
 		for _, suffix := range []string{"-wal", "-shm"} {
 			sib := c.path + suffix
 			info, err := os.Lstat(sib)
 			if err != nil {
 				if !os.IsNotExist(err) {
-					slog.Warn("pre-migration snapshot prune: cannot stat a snapshot sidecar; leaving it", "path", sib, "error", err)
+					slog.Warn("pre-migration snapshot prune: cannot stat a snapshot sidecar; leaving it", "file", sib, "error", err)
 				}
 				continue
 			}
@@ -265,10 +265,10 @@ func pruneOldSnapshots(dbPath, keep string) {
 				continue
 			}
 			if err := os.Remove(sib); err != nil {
-				slog.Warn("pre-migration snapshot prune: cannot remove a snapshot sidecar", "path", sib, "error", err)
+				slog.Warn("pre-migration snapshot prune: cannot remove a snapshot sidecar", "file", sib, "error", err)
 				continue
 			}
-			slog.Info("removed old pre-migration snapshot", "path", sib)
+			slog.Info("removed old pre-migration snapshot", "file", sib)
 		}
 	}
 }
