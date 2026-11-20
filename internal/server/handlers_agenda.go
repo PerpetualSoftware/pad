@@ -222,6 +222,12 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	run := s.newAgendaRead(from, to, zone, note)
 	run.response.Forecasts, run.response.ForecastsComplete = []agendaForecast{}, true
 	run.recipient = strings.TrimSpace(r.URL.Query().Get("recipient"))
+	if run.recipient == "me" {
+		// The caller. With no caller user (an open instance, or a principal
+		// with no user) there is no one to list undated work for, so the read
+		// is the workspace scope.
+		run.recipient = currentUserID(r)
+	}
 	run.listNoDate = run.recipient != ""
 	if !run.listNoDate {
 		run.response.NoDateScope = "personal_only"

@@ -78,11 +78,15 @@ func (c *Client) RenegotiateItemCommitment(wsSlug, ref string, in map[string]any
 	return result, c.post(commitmentBase(wsSlug, ref)+"/renegotiate", in, &result)
 }
 
-// GetAgenda returns the workspace agenda for [from, to). tz is optional.
-func (c *Client) GetAgenda(wsSlug, from, to, tz string) (json.RawMessage, error) {
+// GetAgenda returns the workspace agenda for [from, to). tz and recipient
+// are optional; an empty recipient reads the workspace scope.
+func (c *Client) GetAgenda(wsSlug, from, to, tz, recipient string) (json.RawMessage, error) {
 	q := url.Values{"from": {from}, "to": {to}}
 	if tz != "" {
 		q.Set("tz", tz)
+	}
+	if recipient != "" {
+		q.Set("recipient", recipient)
 	}
 	var result json.RawMessage
 	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/agenda?"+q.Encode(), &result)

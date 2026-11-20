@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -707,6 +709,29 @@ type agendaResponse struct {
 		ItemRef string `json:"item_ref"`
 		Code    string `json:"code"`
 	} `json:"unavailable"`
+	PriorityList         []agendaGroupRow `json:"priority_list"`
+	PriorityListComplete bool             `json:"priority_list_complete"`
+	WaitingOn            []agendaGroupRow `json:"waiting_on"`
+	WaitingOnComplete    bool             `json:"waiting_on_complete"`
+	NoDate               []agendaGroupRow `json:"no_date"`
+	NoDateComplete       bool             `json:"no_date_complete"`
+	NoDateScope          string           `json:"no_date_scope"`
+}
+
+// agendaGroupRow is a priority_list, waiting_on or no_date row (docs/api.md
+// "Actionable groups"). An item-level row has no at.
+type agendaGroupRow struct {
+	Type       string                 `json:"type"`
+	ItemRef    string                 `json:"item_ref"`
+	ItemTitle  string                 `json:"item_title"`
+	Collection string                 `json:"collection"`
+	Reason     string                 `json:"reason"`
+	Rank       string                 `json:"rank"`
+	At         string                 `json:"at"`
+	AllDay     bool                   `json:"all_day"`
+	Roles      models.CommitmentRoles `json:"roles"`
+	ScheduleID string                 `json:"schedule_id"`
+	EndedAt    string                 `json:"ended_at"`
 }
 
 const agendaMaxDays = 92
@@ -763,7 +788,7 @@ func agendaBounds(from, to string, days int, daysSet bool, loc *time.Location, n
 }
 
 func remindAgendaCmd() *cobra.Command {
-	var from, to, tz string
+	var from, to, tz, recipient string
 	var days int
 	var stale bool
 	c := &cobra.Command{
@@ -779,10 +804,13 @@ today in your zone) and runs --days days (default 7) or to --to. It is capped at
 92 days. --tz names the zone floating schedules are read in and times are shown in.
 
 When the list is cut short, the last line says where to continue.
-The workspace JSON marker no_date_scope: "personal_only" means undated work is
-not listed here; it never means "nothing undated". GET /me/agenda lists the caller's
-own work in priority_list, waiting_on and no_date: assigned to the caller, or
-created by the caller when nobody is assigned, for their human/agent audience.
+
+After the window come three groups: Priority, Waiting on and No date. --recipient
+chooses whose work they list: me (the default, you), all (the whole workspace's
+scheduled work) or a user ID. A person's work is what is assigned to them, or
+created by them when nobody is assigned. A workspace-scope call (--recipient all)
+returns the personal_only marker (no_date_scope: "personal_only"): undated work
+is not listed here, never that there is none.
 
 --stale lists instead what 'pad bootstrap' collapses into "stale: K items": your
 occurrences unresolved for more than 14 days, oldest first. It takes no window;
@@ -798,7 +826,18 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 				loc = l
 			}
 			if stale {
+				if cmd.Flags().Changed("recipient") {
+					return errors.New("--stale lists your own occurrences; drop --recipient")
+				}
 				return runStaleAgenda(cmd, from, to, cmd.Flags().Changed("days"), tz, loc)
+			}
+			recipient = strings.TrimSpace(recipient)
+			if recipient == "" {
+				return errors.New("--recipient: want me, all or a user ID")
+			}
+			sendRecipient := recipient
+			if recipient == "all" {
+				sendRecipient = ""
 			}
 			start, end, clamped, err := agendaBounds(from, to, days, cmd.Flags().Changed("days"), loc, time.Now())
 			if err != nil {
@@ -808,7 +847,12 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 				fmt.Fprintf(os.Stderr, "note: the window was shortened to the server's 92-day limit; it ends %s\n", end.In(loc).Format("2006-01-02 15:04 MST"))
 			}
 			client, _ := getClient()
-			raw, err := client.GetAgenda(getWorkspace(), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), tz)
+			if recipient == "me" {
+				if sendRecipient, err = agendaCallerID(client); err != nil {
+					return err
+				}
+			}
+			raw, err := client.GetAgenda(getWorkspace(), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), tz, sendRecipient)
 			if err != nil {
 				return err
 			}
@@ -826,7 +870,7 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 			if tz != "" {
 				showLoc = loc
 			}
-			renderAgenda(cmd, resp, showLoc, end, tz)
+			renderAgenda(cmd, resp, showLoc, end, tz, recipient)
 			return nil
 		},
 	}
@@ -834,6 +878,7 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 	c.Flags().IntVar(&days, "days", 7, "window length in days (max 92)")
 	c.Flags().StringVar(&to, "to", "", "window end: RFC3339 instant or date (exclusive with --days)")
 	c.Flags().StringVar(&tz, "tz", "", "IANA zone for floating schedules and for the times shown")
+	c.Flags().StringVar(&recipient, "recipient", "me", "whose work the groups list: me, all (workspace scope; No date not listed) or a user ID")
 	c.Flags().BoolVar(&stale, "stale", false, "list your occurrences unresolved for more than 14 days instead (no window; --from resumes)")
 	return c
 }
@@ -942,9 +987,10 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 	return nil
 }
 
-// renderAgenda prints the list. end and tz are the request's window end and
-// the --tz the user gave (empty if none); the resume hint repeats them.
-func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, end time.Time, tz string) {
+// renderAgenda prints the list, then the actionable groups. end, tz and
+// recipient are the request's window end, the --tz the user gave (empty if
+// none) and the --recipient; the resume hint repeats them.
+func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, end time.Time, tz, recipient string) {
 	out := cmd.OutOrStdout()
 	if len(resp.Entries) == 0 {
 		if resp.WindowComplete {
@@ -1012,6 +1058,9 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 			if tz != "" {
 				hint += " --tz " + tz
 			}
+			if recipient != "" && recipient != "me" {
+				hint += " --recipient " + recipient
+			}
 			fmt.Fprintf(out, "more after %s: %s\n", fmtInstant(resp.NextFrom, loc), hint)
 		} else {
 			fmt.Fprintln(out, "list incomplete; narrow the window")
@@ -1023,6 +1072,87 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 	for _, u := range resp.Unavailable {
 		fmt.Fprintf(out, "%s  unavailable  %s\n", u.ItemRef, u.Code)
 	}
+	renderAgendaGroups(out, resp, loc, recipient)
+}
+
+// agendaCallerID resolves --recipient me to the caller's user ID. It is
+// resolved here rather than sent as "me" so a server that predates the me
+// keyword (which reads it as a user ID and answers empty, complete groups)
+// still lists the caller's work. A caller with no user (401 from /auth/me, an
+// open instance) gets the workspace scope: no recipient, and the server's
+// personal_only marker.
+func agendaCallerID(client *cli.Client) (string, error) {
+	u, err := client.GetCurrentUser()
+	if err != nil {
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
+			return "", nil
+		}
+		return "", fmt.Errorf("--recipient me: cannot read your user: %w", err)
+	}
+	return strings.TrimSpace(u.ID), nil
+}
+
+// renderAgendaGroups prints priority_list, waiting_on and no_date, each under
+// its own header, after a blank line.
+func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location, recipient string) {
+	title := func(t string) string { return strings.Join(strings.Fields(t), " ") }
+	group := func(header, columns string, rows []agendaGroupRow, complete bool, line func(agendaGroupRow) string) {
+		fmt.Fprintf(out, "\n%s (%d):\n", header, len(rows))
+		if len(rows) == 0 {
+			if complete {
+				fmt.Fprintln(out, "  none")
+			} else {
+				fmt.Fprintln(out, "  list incomplete")
+			}
+			return
+		}
+		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
+		fmt.Fprintln(w, columns)
+		for _, r := range rows {
+			fmt.Fprintln(w, line(r))
+		}
+		_ = w.Flush()
+		if !complete {
+			fmt.Fprintln(out, "  list incomplete: more not shown")
+		}
+	}
+	group("Priority", "RANK\tWHEN\tREF\tTITLE\tREASON", resp.PriorityList, resp.PriorityListComplete, func(r agendaGroupRow) string {
+		return strings.Join([]string{r.Rank, agendaGroupWhen(r, loc), r.ItemRef, title(r.ItemTitle), r.Reason}, "\t")
+	})
+	item := func(r agendaGroupRow) string {
+		return strings.Join([]string{r.ItemRef, title(r.ItemTitle), r.Reason}, "\t")
+	}
+	group("Waiting on", "REF\tTITLE\tREASON", resp.WaitingOn, resp.WaitingOnComplete, item)
+	if resp.NoDateScope == "personal_only" {
+		if recipient == "all" {
+			fmt.Fprintln(out, "\nNo date: not listed for the whole workspace; run with --recipient me to list your undated work.")
+		} else {
+			// The server reads me as the workspace scope when the caller has
+			// no user (an open instance), so there is nobody to list it for.
+			fmt.Fprintln(out, "\nNo date: not listed: this caller has no user account (an open instance); undated work is listed per person.")
+		}
+		return
+	}
+	group("No date", "REF\tTITLE\tREASON", resp.NoDate, resp.NoDateComplete, item)
+}
+
+// agendaGroupWhen is a group row's at as the main table shows it: date and
+// time in loc, or "<date> all day". An item-level row (no at) is empty.
+func agendaGroupWhen(r agendaGroupRow, loc *time.Location) string {
+	t, err := time.Parse(time.RFC3339, r.At)
+	if err != nil {
+		return r.At
+	}
+	if r.AllDay {
+		// An all-day at is local midnight in the read's zone; its own date is
+		// the day, as the main table shows it, not shifted by loc.
+		return t.Format("2006-01-02") + " all day"
+	}
+	if loc == nil {
+		loc = cli.DisplayLocation()
+	}
+	return t.In(loc).Format("2006-01-02 15:04 MST")
 }
 
 func addRemindSubcommands(cmd *cobra.Command) {
