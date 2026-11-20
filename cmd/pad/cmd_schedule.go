@@ -1066,12 +1066,12 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 	for _, u := range resp.Unavailable {
 		fmt.Fprintf(out, "%s  unavailable  %s\n", u.ItemRef, u.Code)
 	}
-	renderAgendaGroups(out, resp, loc)
+	renderAgendaGroups(out, resp, loc, recipient)
 }
 
 // renderAgendaGroups prints priority_list, waiting_on and no_date, each under
 // its own header, after a blank line.
-func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location) {
+func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location, recipient string) {
 	title := func(t string) string { return strings.Join(strings.Fields(t), " ") }
 	group := func(header, columns string, rows []agendaGroupRow, complete bool, line func(agendaGroupRow) string) {
 		fmt.Fprintf(out, "\n%s (%d):\n", header, len(rows))
@@ -1101,7 +1101,13 @@ func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location) 
 	}
 	group("Waiting on", "REF\tTITLE\tREASON", resp.WaitingOn, resp.WaitingOnComplete, item)
 	if resp.NoDateScope == "personal_only" {
-		fmt.Fprintln(out, "\nNo date: not listed for the whole workspace; run with --recipient me to list your undated work.")
+		if recipient == "all" {
+			fmt.Fprintln(out, "\nNo date: not listed for the whole workspace; run with --recipient me to list your undated work.")
+		} else {
+			// The server reads me as the workspace scope when the caller has
+			// no user (an open instance), so there is nobody to list it for.
+			fmt.Fprintln(out, "\nNo date: not listed: this caller has no user account (an open instance); undated work is listed per person.")
+		}
 		return
 	}
 	group("No date", "REF\tTITLE\tREASON", resp.NoDate, resp.NoDateComplete, item)

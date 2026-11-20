@@ -54,9 +54,9 @@ func TestTASK4489_AgendaRecipientRefusals(t *testing.T) {
 		want string
 	}{
 		"non-string":     {map[string]any{"from": "2026-11-09T00:00:00Z", "to": "2026-11-16T00:00:00Z", "recipient": 5}, "recipient must be a string"},
-		"stale + id":     {map[string]any{"stale": true, "recipient": "user-123"}, "--stale lists your own occurrences; drop --recipient"},
-		"stale + me":     {map[string]any{"stale": true, "recipient": "me"}, "--stale lists your own occurrences; drop --recipient"},
-		"stale + nonstr": {map[string]any{"stale": true, "recipient": false}, "--stale lists your own occurrences; drop --recipient"},
+		"stale + id":     {map[string]any{"stale": true, "recipient": "user-123"}, "stale lists your own occurrences; drop recipient"},
+		"stale + me":     {map[string]any{"stale": true, "recipient": "me"}, "stale lists your own occurrences; drop recipient"},
+		"stale + nonstr": {map[string]any{"stale": true, "recipient": false}, "stale lists your own occurrences; drop recipient"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			sres, disp := stdioCall(t, "agenda", copyInput(tc.in))

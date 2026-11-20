@@ -120,3 +120,13 @@ func TestAgendaResumeHintRepeatsRecipient(t *testing.T) {
 		t.Fatalf("default hint repeats --recipient:\n%s", out)
 	}
 }
+
+func TestAgendaGroupsPersonalOnlyForMeWithNoUser(t *testing.T) {
+	out := agendaGroupsOut(t, agendaEmptyWindow+`,"priority_list":[],"priority_list_complete":true,"waiting_on":[],"waiting_on_complete":true,"no_date":[],"no_date_complete":true,"no_date_scope":"personal_only"}`)
+	if want := "\nNo date: not listed: this caller has no user account (an open instance); undated work is listed per person.\n"; !strings.Contains(out, want) {
+		t.Errorf("missing %q in:\n%s", want, out)
+	}
+	if strings.Contains(out, "run with --recipient me") {
+		t.Errorf("told a default (me) caller to pass --recipient me:\n%s", out)
+	}
+}
