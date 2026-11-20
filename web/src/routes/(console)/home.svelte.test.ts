@@ -95,6 +95,19 @@ it('keeps completed and created events out of existing Home rows, figures, audie
 	expect(document.querySelector('.summary')).toHaveTextContent('0 need you · 2 owed today · 1 past deadline');
 });
 
+it('counts a lapsed occurrence today as owed, since a late done is still accepted, and a missed one as missed', async () => {
+	const schedule = (item_ref: string, extra: Partial<AgendaEntry> = {}): AgendaEntry => ({
+		...completed(item_ref), type: 'schedule', state: 'outstanding', schedule_id: item_ref, ...extra,
+	});
+	const today = await renderCompleted([
+		schedule('TASK-1', { state: 'lapsed' }),
+		schedule('TASK-2', { state: 'lapsed', audience: 'agent' }), schedule('TASK-3', { state: 'missed', audience: 'agent' }),
+	]);
+	expect(document.querySelector('.summary')).toHaveTextContent(/ 2 owed today /);
+	expect(today.getByText('Agents: 2 reminders today, 1 owed, 1 missed')).toBeInTheDocument();
+	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 3 entries, 2 owed');
+});
+
 it('matches the agenda audience filter: even agent completions appear in Mine and All, never Agents', async () => {
 	const today = await renderCompleted([completed(), { ...completed('TASK-91'), audience: 'agent' }]);
 	await fireEvent.click(today.getByRole('button', { name: '2 completed' }));
