@@ -278,7 +278,11 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 // count; the route takes neither). With stale=true the window is replaced by the
 // caller's occurrences unresolved for more than 14 days (TASK-4237): to is
 // refused, from (optional) resumes a long list, and the stale flag itself is
-// validated here, once, so stdio and /mcp read it the same way.
+// validated here, once, so stdio and /mcp read it the same way. recipient
+// (TASK-4489) chooses whose work the groups list: absent or blank is me (the
+// caller), all is the workspace scope and is sent as no recipient on either
+// transport, anything else is a user ID. stale lists the caller's own
+// occurrences and refuses a recipient.
 func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	stale := false
 	if v, present := input["stale"]; present && v != nil {
@@ -292,8 +296,14 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 		if v, present := input["to"]; present && v != nil {
 			return errStructured("pad_item.agenda", fmt.Errorf("to is not allowed with stale: it lists everything unresolved for more than 14 days; pass from to resume a long list")), nil
 		}
+		if v, present := input["recipient"]; present && v != nil {
+			if s, isString := v.(string); !isString || strings.TrimSpace(s) != "" {
+				return errStructured("pad_item.agenda", fmt.Errorf("--stale lists your own occurrences; drop --recipient")), nil
+			}
+		}
 		in := copyInputMap(input)
 		delete(in, "to")
+		delete(in, "recipient")
 		if v, present := in["from"]; present {
 			from, isString := v.(string)
 			switch {
@@ -328,10 +338,24 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 	if err := agendaTzIsText(input); err != nil {
 		return errStructured("pad_item.agenda", err), nil
 	}
+	recipient := "me"
+	if v, present := input["recipient"]; present && v != nil {
+		s, ok := v.(string)
+		if !ok {
+			return errStructured("pad_item.agenda", fmt.Errorf("recipient must be a string, got %T", v)), nil
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			recipient = s
+		}
+	}
 	// A stale of false is not sent: stdio would pass --stale=false and the route
 	// a "false" the server rejects.
 	in := copyInputMap(input)
 	delete(in, "stale")
+	// all stays in the input: the CLI reads a missing --recipient as me, so
+	// stdio needs --recipient all, and the route mapper drops it so the
+	// request carries no recipient (the workspace scope) on /mcp too.
+	in["recipient"] = recipient
 	return env.Dispatch(ctx, []string{"item", "remind", "agenda"}, in)
 }
 

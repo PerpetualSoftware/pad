@@ -252,6 +252,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required: agenda; with stale, resumes the list."},
 	{Name: "to", Type: "string", Description: "Required RFC3339 agenda end (<=92 days after from; excludes stale) or schedule-move destination."},
 	{Name: "stale", Type: "bool", Description: "agenda: yours unresolved over 14 days, not a window."},
+	{Name: "recipient", Type: "string", Description: "agenda: me (default), all (workspace scope; no_date not listed), or a user ID."},
 
 	{Name: "child", Type: "string", Description: "Child ref for schedule-link creation; ref is the parent."},
 	{Name: "parent_role", Type: "string", Description: "schedule-link: parent's target | earliest | deadline | occupied_until."},
@@ -488,6 +489,7 @@ Actions:
   schedule-dismiss — Clear an ended schedule from Outstanding. ref required.
   schedule-delete — Irreversibly delete schedule/rule/history/managed reminder; stops pending firing. ref required. Keeps item/comments.
   agenda — Occurrences/dated items: from, to (RFC3339, <=92 days); tz optional.
+    Plus priority_list, waiting_on, no_date for recipient (default me; all: workspace).
     no_date_scope:personal_only means undated work is not listed, never empty.
   ack-reminder — Acknowledge by reminder_id OR ref, never both; leaves next/ready.
     ref selects a fired, unacknowledged run-once alarm. By-id retry is idempotent.

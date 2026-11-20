@@ -829,7 +829,7 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item remind gate rm":   {Args: mkArgs("gate-id"), Flags: mkFlags("workspace")},
 			"item remind gate list": {Args: mkArgs("ref"), Flags: mkFlags("workspace")},
 			"item remind agenda": {Summary: "the agenda", Flags: func() map[string]cmdhelp.Flag {
-				f := mkFlags("workspace", "from", "to", "tz", "days")
+				f := mkFlags("workspace", "from", "to", "tz", "days", "recipient")
 				f["stale"] = cmdhelp.Flag{Type: "bool"}
 				return f
 			}()},

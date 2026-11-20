@@ -496,11 +496,7 @@ func init() {
 		"item remind gate add":    routeSpec{method: http.MethodPost, pathTemplate: itemSchedulePathTemplate + "/gates", bodyKeys: []string{"blocker"}}.toRouteMapper(),
 		"item remind gate list":   routeSpec{method: http.MethodGet, pathTemplate: itemSchedulePathTemplate + "/gates"}.toRouteMapper(),
 		"item remind gate rm":     routeSpec{method: http.MethodDelete, pathTemplate: "/api/v1/workspaces/{workspace}/commitment-gates/{gate_id}"}.toRouteMapper(),
-		"item remind agenda": routeSpec{
-			method:       http.MethodGet,
-			pathTemplate: "/api/v1/workspaces/{workspace}/agenda",
-			queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz", "stale": "stale"},
-		}.toRouteMapper(),
+		"item remind agenda":      mapAgenda,
 		"item ack": func(input map[string]any) (string, string, []byte, error) {
 			path := "/api/v1/workspaces/{workspace}/reminders/{reminder_id}/ack"
 			if ref, _ := input["ref"].(string); ref != "" {
@@ -2281,4 +2277,19 @@ func mapItemComment(input map[string]any) (string, string, []byte, error) {
 	urlPath := fmt.Sprintf("/api/v1/workspaces/%s/items/%s/comments",
 		url.PathEscape(workspace), url.PathEscape(ref))
 	return http.MethodPost, urlPath, body, nil
+}
+
+// mapAgenda is the agenda route. recipient all (TASK-4489) is the workspace
+// scope, which the server reads as no recipient, so it is not sent; me and a
+// user ID pass through.
+func mapAgenda(input map[string]any) (string, string, []byte, error) {
+	if r, _ := input["recipient"].(string); r == "all" {
+		input = copyInputMap(input)
+		delete(input, "recipient")
+	}
+	return routeSpec{
+		method:       http.MethodGet,
+		pathTemplate: "/api/v1/workspaces/{workspace}/agenda",
+		queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz", "stale": "stale", "recipient": "recipient"},
+	}.toRouteMapper()(input)
 }

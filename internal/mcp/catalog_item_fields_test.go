@@ -1662,6 +1662,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"target_collection": true, // move's destination
 		"link_type":         true, // the relationship kind, not a field
 		"stale":             true, // agenda: a read filter (TASK-4237)
+		"recipient":         true, // agenda: whose work the groups list (TASK-4489)
 
 		// Forecasts affect schedule forecast rows, never item fields.
 		"forecast": true, "clear_forecast": true, "forecast_source": true,
