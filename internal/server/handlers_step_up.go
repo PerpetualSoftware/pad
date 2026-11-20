@@ -47,7 +47,10 @@ func (s *Server) requireKeyMintStepUp(w http.ResponseWriter, r *http.Request, us
 }
 
 // requireTOTPEnrolStepUp gates both creating and confirming a pending secret.
-// Accounts without a verification factor must have signed in recently instead.
+// Accounts without a verification factor must instead have a stored sign-in
+// time within accountDeleteReauthWindow. A session with no stored sign-in
+// time (a row from before the column) is never fresh: its created_at does
+// not stand in for a sign-in.
 func (s *Server) requireTOTPEnrolStepUp(w http.ResponseWriter, r *http.Request, user *models.User) bool {
 	if s.sessionHasStepUp(r, user.ID) {
 		return true
@@ -56,9 +59,11 @@ func (s *Server) requireTOTPEnrolStepUp(w http.ResponseWriter, r *http.Request, 
 	if session != nil && session.User != nil && session.User.ID == user.ID {
 		factor, _ := s.stepUpFactor(user, session)
 		if factor == "unavailable" {
-			age := time.Since(session.SignedInAt)
-			if age >= 0 && age <= accountDeleteReauthWindow {
-				return true
+			if session.SignInStamp != nil {
+				age := time.Since(*session.SignInStamp)
+				if age >= 0 && age <= accountDeleteReauthWindow {
+					return true
+				}
 			}
 			writeError(w, http.StatusForbidden, "reauth_required", "Sign in again, then turn on two-factor authentication within 10 minutes")
 			return false
