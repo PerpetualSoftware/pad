@@ -6,8 +6,11 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 // appliedMigrations returns the set of migration version strings recorded
@@ -131,8 +134,10 @@ func (s *Store) snapshotBeforeMigrate(targetMigration string) {
 	// version-only key was written once and then preserved forever, and
 	// every later dev-build upgrade ran against that stale snapshot. A build
 	// that ships a new migration therefore gets a new key and a fresh
-	// snapshot, while a retry of the same upgrade keeps the same key. Older
-	// keys' files are left alone.
+	// snapshot, while a retry of the same upgrade keeps the same key. Once
+	// the run that wrote this key's snapshot completes successfully,
+	// pruneOldSnapshots keeps it plus the newest earlier one and removes
+	// older snapshots of this shape.
 	if _, err := os.Stat(dst); err == nil {
 		slog.Info("pre-migration snapshot already exists; preserving it", "snapshot", dst)
 		return
@@ -156,6 +161,126 @@ func (s *Store) snapshotBeforeMigrate(targetMigration string) {
 		return
 	}
 	slog.Info("wrote pre-migration database snapshot", "snapshot", dst)
+}
+
+// pruneSnapshotsAfterMigrate is called at the end of a migrate run that
+// completed successfully and in which a snapshot was due. It applies the same
+// guards as snapshotBeforeMigrate (SQLite, a real file path) and then keeps
+// this run's snapshot plus the newest earlier one; see pruneOldSnapshots.
+func (s *Store) pruneSnapshotsAfterMigrate(targetMigration string) {
+	if s.dialect.Driver() != DriverSQLite {
+		return // Postgres: no snapshot files.
+	}
+	if s.dbPath == "" || strings.HasPrefix(s.dbPath, ":memory:") || strings.Contains(s.dbPath, "mode=memory") {
+		return
+	}
+	pruneOldSnapshots(s.dbPath, s.snapshotPath(targetMigration))
+}
+
+// pruneOldSnapshots removes pre-migration snapshots of dbPath older than the
+// newest one other than keep, so each upgrade does not leave another full
+// copy of the database behind. keep is this run's snapshot; it and the single
+// newest other snapshot (by modification time, ties broken by name
+// descending) survive. copyFileContents renames a fresh temp file into place,
+// so a snapshot's mtime is its creation time.
+//
+// If keep is not on disk (the copy failed), nothing is removed: the older
+// snapshots are then the only rollback point.
+//
+// Only regular files whose name is exactly what snapshotPathFor produces for
+// this database are candidates (see snapshotNamePattern). A name the builder
+// did not produce (a hand-made copy, an older version-only snapshot, a
+// .tmp, a symlink, a directory) is left for a person to deal with. For a
+// removed snapshot, its -wal and -shm siblings are removed too, if they
+// exist as regular files.
+//
+// Best-effort: every failure is a warning and the sweep continues.
+func pruneOldSnapshots(dbPath, keep string) {
+	if _, err := os.Stat(keep); err != nil {
+		if !os.IsNotExist(err) {
+			slog.Warn("pre-migration snapshot prune: cannot stat the current snapshot; removing nothing", "snapshot", keep, "error", err)
+		}
+		return
+	}
+
+	dir := filepath.Dir(dbPath)
+	keepName := filepath.Base(keep)
+	pattern := snapshotNamePattern(filepath.Base(dbPath))
+
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		slog.Warn("pre-migration snapshot prune: cannot list the database directory", "dir", dir, "error", err)
+		return
+	}
+
+	type candidate struct {
+		path  string
+		name  string
+		mtime time.Time
+	}
+	var candidates []candidate
+	for _, e := range entries {
+		name := e.Name()
+		if name == keepName || !pattern.MatchString(name) {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		info, err := os.Lstat(path)
+		if err != nil {
+			slog.Warn("pre-migration snapshot prune: cannot stat a snapshot; leaving it", "path", path, "error", err)
+			continue
+		}
+		if !info.Mode().IsRegular() {
+			continue // symlink, directory, device: not something we wrote.
+		}
+		candidates = append(candidates, candidate{path: path, name: name, mtime: info.ModTime()})
+	}
+	if len(candidates) <= 1 {
+		return
+	}
+
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].mtime.Equal(candidates[j].mtime) {
+			return candidates[i].mtime.After(candidates[j].mtime)
+		}
+		return candidates[i].name > candidates[j].name
+	})
+
+	for _, c := range candidates[1:] {
+		if err := os.Remove(c.path); err != nil {
+			slog.Warn("pre-migration snapshot prune: cannot remove an old snapshot", "path", c.path, "error", err)
+			continue
+		}
+		slog.Info("removed old pre-migration snapshot", "path", c.path)
+		for _, suffix := range []string{"-wal", "-shm"} {
+			sib := c.path + suffix
+			info, err := os.Lstat(sib)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					slog.Warn("pre-migration snapshot prune: cannot stat a snapshot sidecar; leaving it", "path", sib, "error", err)
+				}
+				continue
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			if err := os.Remove(sib); err != nil {
+				slog.Warn("pre-migration snapshot prune: cannot remove a snapshot sidecar", "path", sib, "error", err)
+				continue
+			}
+			slog.Info("removed old pre-migration snapshot", "path", sib)
+		}
+	}
+}
+
+// snapshotNamePattern matches exactly the file names snapshotPathFor builds
+// for a database file named base: <base>.pre-<version>-m<digits>, where
+// <version> is "dev", "unknown", or a sanitized semver-like build version
+// (optional "v", then <digits>.<digits>, then any of [A-Za-z0-9._-]) and the
+// key is the numeric migration prefix. Anything else is not ours to remove.
+func snapshotNamePattern(base string) *regexp.Regexp {
+	return regexp.MustCompile(`^` + regexp.QuoteMeta(base) +
+		`\.pre-(?:dev|unknown|v?[0-9]+\.[0-9]+[A-Za-z0-9._-]*)-m[0-9]+$`)
 }
 
 // sanitizeVersion makes a build-version string safe as a filename suffix.
