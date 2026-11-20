@@ -359,7 +359,8 @@
 			const refreshed = await load(day, zone, true);
 			if (!sameIdentity()) return;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
-			succeed(operation === 'snooze' || operation === 'move' ? 'Undone. The occurrence is back where it was.' : 'Undone. The occurrence is open again.');
+			succeed(operation === 'snooze' || operation === 'move' ? 'Undone. The occurrence is back where it was.'
+				: operation === 'history_done' ? 'Undone. The occurrence is lapsed again.' : 'Undone. The occurrence is open again.');
 		} catch (error) {
 			if (!sameIdentity()) return;
 			const message = (error as { message?: unknown })?.message;
@@ -693,8 +694,8 @@
 				if (!sameIdentity()) return false;
 			}
 			const [undo, refreshed] = await Promise.all([
-				!history && state !== 'ack' && !itemClosed
-					? readUndo({ ...entry, occurrence_key: occurrenceKey }, sameIdentity, state) : undefined,
+				state !== 'ack' && !itemClosed
+					? readUndo({ ...entry, occurrence_key: occurrenceKey }, sameIdentity, history ? 'history_done' : state) : undefined,
 				load(day, zone, true)
 			]);
 			if (!sameIdentity()) return false;

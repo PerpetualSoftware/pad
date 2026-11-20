@@ -10,7 +10,8 @@ export function hasUndoMenu(entry: AgendaEntry): boolean {
   ['done', 'skipped', 'moved', 'outstanding'].includes(entry.state ?? '');
 }
 
-const resolutionLabels: Record<string, string> = { done: 'Done', skip: 'Skip', snooze: 'Snooze', move: 'Move' };
+// history_done is a done recorded on a lapsed occurrence; undoing it makes the row lapsed again.
+const resolutionLabels: Record<string, string> = { done: 'Done', skip: 'Skip', snooze: 'Snooze', move: 'Move', history_done: 'Late done' };
 
 export function resolutionLabel(state: unknown): string | undefined {
  return typeof state === 'string' && Object.hasOwn(resolutionLabels, state) ? resolutionLabels[state] : undefined;

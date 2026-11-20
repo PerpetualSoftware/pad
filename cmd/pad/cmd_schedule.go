@@ -1224,6 +1224,8 @@ func remindReopenCmd() *cobra.Command {
 		}
 		if result.Reopen.State == "snooze" || result.Reopen.State == "move" {
 			fmt.Printf("Undid the last %s on %s.", result.Reopen.State, args[0])
+		} else if result.Reopen.State == "history_done" {
+			fmt.Printf("Restored %s’s lapsed occurrence; undid the late done.", args[0])
 		} else {
 			fmt.Printf("Reopened %s’s occurrence; undid %s.", args[0], result.Reopen.State)
 		}

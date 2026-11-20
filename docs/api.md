@@ -749,6 +749,15 @@ with the reversing actor and original actor metadata, then publishes one item
 refresh. Supporting corrections remain in history with `reversed_by` identifying
 the reopening journal row. No reversal reminder or comment notification is sent.
 
+A `done` on a lapsed history row (`state: "history_done"`, TASK-4579) reopens
+too. Its stored history row returns to `lapsed`, actor `system`, with no
+actual completion or comment reference; the miss fact, any on-time correction
+(marked `reversed_by`), the comment and activity remain. The schedule row and
+its reminder are never changed, so the current occurrence's deadline and a
+schedule error do not refuse it, and an item closed before the late done may
+still reopen it. A later resolution, lapse, reminder fire or item change
+invalidates it as usual.
+
 | HTTP | Code | Meaning |
 | --- | --- | --- |
 | 400 | `invalid_body` | Unknown/repeated member, wrong type, NUL or non-object |
@@ -756,7 +765,7 @@ the reopening journal row. No reversal reminder or comment notification is sent.
 | 404 | `not_found` | Item or schedule unavailable |
 | 409 | `archived` | Item archived |
 | 409 | `reopen_unavailable` | No local checkpoint, including imported or pre-migration history |
-| 409 | `reopen_not_supported` | Ack, automatic lapse, lapsed-history done or non-target role move |
+| 409 | `reopen_not_supported` | Ack, automatic lapse or non-target role move |
 | 409 | `reopen_conflict` | Wrong, superseded or consumed ID; later schedule/reminder/item change |
 | 409 | `reopen_dependency` | This schedule has a link, gate or live milestone child now or at resolution |
 | 409 | `reopen_deadline_passed` | Restoring would immediately lapse or generate a new deadline miss |

@@ -232,6 +232,7 @@ describe('eventVerb', () => {
 		['skip', 'reopened an occurrence (undid Skip)'],
 		['snooze', 'reopened an occurrence (undid Snooze)'],
 		['move', 'reopened an occurrence (undid Move)'],
+		['history_done', 'reopened an occurrence (undid Late done)'],
 		['unknown', 'reopened an occurrence']
 	])('describes a reopened occurrence with state %s', (state, phrase) => {
 		const [ev] = events([activity('a', 0, { action: 'schedule_reopened', meta: { state } })]);
