@@ -330,3 +330,35 @@ func TestGateWritesWorkWithOneConnection(t *testing.T) {
 	}
 	_ = fmt.Sprint
 }
+
+// TASK-4440. The blocker's schedule is read through the pool before the
+// transaction, so one created between that read and the pin is missed there. The
+// read inside the transaction is authoritative: the gate is fixed on the new
+// schedule's outstanding occurrence, not left judged by the item status. Not
+// parallel: it sets a package-level hook.
+func TestCreateScheduleGateSeesABlockerScheduleCreatedAfterThePoolRead(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.another(t, "build")
+	var created *models.ItemSchedule
+	createScheduleGateAfterBlockerReadHook = func() {
+		createScheduleGateAfterBlockerReadHook = nil
+		created = f.native(t, blocker, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	}
+	t.Cleanup(func() { createScheduleGateAfterBlockerReadHook = nil })
+	g := f.gate(t, f.items[0].ID, blocker.ID, f.gateAccess(blocker))
+	if created == nil {
+		t.Fatal("the hook did not run")
+	}
+	var sched sql.NullString
+	var key string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT blocker_schedule_id, blocker_occurrence_key FROM schedule_gates WHERE id=?`), g.ID).Scan(&sched, &key); err != nil {
+		t.Fatal(err)
+	}
+	sc := f.reload(t, blocker.ID)
+	if sc.NextAt == nil || sc.NextWall == nil {
+		t.Fatalf("the blocker's new schedule has no outstanding occurrence: %+v", sc)
+	}
+	if want := *sc.NextAt + "|" + *sc.NextWall; !sched.Valid || sched.String != created.ID || key != want {
+		t.Fatalf("schedule=%v key=%q, want %s %q", sched, key, created.ID, want)
+	}
+}
