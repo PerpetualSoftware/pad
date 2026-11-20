@@ -606,12 +606,13 @@ func TestImportKeepsTheLiveDeclarationWhenAnArchivedCollectionSharesIt(t *testin
 // steps, which is the whole of what it asserts.
 //
 // The repair changes data — it strips a declaration, moving which collection
-// owns a kernel behavior — and `<db>.pre-<version>` is the operator's rollback
-// for a bad upgrade. Calling the repair from the constructor, ahead of
-// migrate(), put the altered ownership INSIDE the snapshot: restoring after a
-// failed migration handed back the old schema with the repair already applied
-// and no record of it, so the one thing the rollback could not undo was the
-// only thing that had silently changed routing.
+// owns a kernel behavior — and `<db>.pre-<version>-m<migration>` is the
+// operator's rollback for a bad upgrade. Calling the repair from the
+// constructor, ahead of migrate(), put the altered ownership INSIDE the
+// snapshot: restoring after a failed migration handed back the old schema with
+// the repair already applied and no record of it, so the one thing the
+// rollback could not undo was the only thing that had silently changed
+// routing.
 //
 // SQLite only. Postgres takes no snapshot — backups there are the operator's
 // pg_dump/PITR job — so on that dialect there is no ordering to pin.
@@ -660,7 +661,13 @@ func TestTheSnapshotIsTakenBeforeTheRepairWrites(t *testing.T) {
 		t.Fatalf("close: %v", err)
 	}
 
-	snapshot := dbPath + ".pre-" + sanitizeVersion(BinaryVersion)
+	// The path for the target migrate() will use: the highest embedded
+	// migration.
+	embedded, err := readMigrationNames(migrationsFS, "migrations")
+	if err != nil || len(embedded) == 0 {
+		t.Fatalf("read embedded migrations: %v (n=%d)", err, len(embedded))
+	}
+	snapshot := snapshotPathFor(dbPath, embedded[len(embedded)-1])
 	if _, err := os.Stat(snapshot); err == nil {
 		t.Fatalf("control leg failed: a snapshot at %s already existed before the reopen, and snapshotBeforeMigrate preserves the first one", snapshot)
 	}

@@ -291,7 +291,7 @@ that includes those migrations, or re-run with `pad start --force`.
 
 To recover, reinstall the newer binary (`brew upgrade pad`, pull the newer Docker tag, etc.). If you have *intentionally* downgraded and accept the risk, start with `pad start --force` (or set `PAD_ALLOW_SCHEMA_AHEAD=1`) to override the guard.
 
-**Automatic pre-migration snapshot (SQLite).** Whenever a SQLite-backed instance has pending migrations to apply, Pad first copies the database file to `pad.db.pre-<version>` next to it. If an upgrade ever goes wrong, stop the server and copy that snapshot back over `pad.db`. This is a convenience net, not a backup strategy — keep your own backups (see [docs/backup.md](docs/backup.md)). PostgreSQL instances are skipped here; use `pg_dump` or a provider snapshot before upgrading.
+**Automatic pre-migration snapshot (SQLite).** Whenever a SQLite-backed instance has pending migrations to apply, Pad first copies the database file to `pad.db.pre-<version>-m<migration>` next to it, where `<migration>` is the number of the newest migration the binary ships, so each upgrade that adds migrations gets its own snapshot. If an upgrade ever goes wrong, stop the server and copy that snapshot back over `pad.db`. This is a convenience net, not a backup strategy — keep your own backups (see [docs/backup.md](docs/backup.md)). PostgreSQL instances are skipped here; use `pg_dump` or a provider snapshot before upgrading.
 
 Recommended upgrade flow:
 
