@@ -404,3 +404,67 @@ func TestCreateScheduleGateWritesWhenTheBlockerScheduleIsDeletedAfterThePoolRead
 		t.Fatalf("schedule=%v key=%q, want none", sched, key)
 	}
 }
+
+// TASK-4702. DeleteScheduleGate reads the gate through the pool before its
+// transaction; the blocker's schedule id there says whether the blocker joins the
+// pin as a seed. A schedule deleted in between is gone by the pin, and the gate
+// still exists: the delete removes it, not answer not found. Not parallel: it sets
+// a package-level hook.
+func TestDeleteScheduleGateDeletesWhenTheBlockerScheduleIsDeletedAfterTheGateRead(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.another(t, "build")
+	f.native(t, blocker, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	acc := f.gateAccess(blocker)
+	g := f.gate(t, f.items[0].ID, blocker.ID, acc)
+	var sched sql.NullString
+	if err := f.s.db.QueryRow(f.s.q(`SELECT blocker_schedule_id FROM schedule_gates WHERE id=?`), g.ID).Scan(&sched); err != nil {
+		t.Fatal(err)
+	}
+	if !sched.Valid {
+		t.Fatal("the gate was not fixed on the blocker's schedule")
+	}
+	ran := false
+	deleteScheduleGateAfterGateReadHook = func() {
+		deleteScheduleGateAfterGateReadHook = nil
+		ran = true
+		if ok, err := f.s.DeleteSchedule(f.ws.ID, blocker.ID); err != nil || !ok {
+			t.Fatalf("delete blocker schedule: ok=%v err=%v", ok, err)
+		}
+	}
+	t.Cleanup(func() { deleteScheduleGateAfterGateReadHook = nil })
+	if err := f.s.DeleteScheduleGate(f.ws.ID, g.ID, acc); err != nil {
+		t.Fatalf("DeleteScheduleGate: %v", err)
+	}
+	if !ran {
+		t.Fatal("the hook did not run")
+	}
+	if n := f.gateRows(t); n != 0 {
+		t.Fatalf("%d gate rows left, want 0", n)
+	}
+}
+
+// TASK-4702, the reverse race. The gate was written while the blocker had no
+// schedule, so the pool read does not seed the blocker; a schedule created on it
+// before the pin is seen under the workspace lock and the delete goes round again
+// with it as a seed. Not parallel: it sets a package-level hook.
+func TestDeleteScheduleGateWithAScheduleCreatedOnTheBlockerAfterTheGateRead(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.another(t, "build")
+	acc := f.gateAccess(blocker)
+	g := f.gate(t, f.items[0].ID, blocker.ID, acc)
+	var created *models.ItemSchedule
+	deleteScheduleGateAfterGateReadHook = func() {
+		deleteScheduleGateAfterGateReadHook = nil
+		created = f.native(t, blocker, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	}
+	t.Cleanup(func() { deleteScheduleGateAfterGateReadHook = nil })
+	if err := f.s.DeleteScheduleGate(f.ws.ID, g.ID, acc); err != nil {
+		t.Fatalf("DeleteScheduleGate: %v", err)
+	}
+	if created == nil {
+		t.Fatal("the hook did not run")
+	}
+	if n := f.gateRows(t); n != 0 {
+		t.Fatalf("%d gate rows left, want 0", n)
+	}
+}

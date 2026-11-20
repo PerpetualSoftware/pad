@@ -139,7 +139,7 @@ func (s *Store) CreateScheduleGate(workspaceID, blockedItemID, blockerItemID str
 	}
 	// One budget across the attempts, so a retry cannot outlast it.
 	budget := s.newLinkBudget()
-	for attempt := 0; attempt < maxCreateScheduleGateAttempts; attempt++ {
+	for attempt := 0; attempt < maxScheduleGateAttempts; attempt++ {
 		g, err := s.createScheduleGateAttempt(budget, workspaceID, blockedItemID, blockerItemID, access, loaders, seeded)
 		if errors.Is(err, errGateRetryWithBlockerSeed) {
 			seeded = true
@@ -155,17 +155,19 @@ func (s *Store) CreateScheduleGate(workspaceID, blockedItemID, blockerItemID str
 	return nil, markRolledBack(ErrLinkBudget)
 }
 
-// maxCreateScheduleGateAttempts bounds the rounds CreateScheduleGate makes when
-// the blocker's schedule keeps appearing or vanishing between the hint read and
-// the pin.
-const maxCreateScheduleGateAttempts = 3
+// maxScheduleGateAttempts bounds the rounds CreateScheduleGate and
+// DeleteScheduleGate make when the blocker's schedule keeps appearing or
+// vanishing between the hint read and the pin.
+const maxScheduleGateAttempts = 3
 
-// errGateRetryWithBlockerSeed is what one attempt returns, after rolling back,
-// when the blocker has a live schedule under the lock but was not a seed of the
-// pin. errGateRetryWithoutBlockerSeed is the reverse: the blocker was a seed and
-// the pin found no live schedule for it (the only extra seed, so the pin's
-// ErrScheduleLinkNotFound is about it). The unseeded attempt then writes a gate
-// judged by the blocker's status, or refuses if the blocker item is gone.
+// errGateRetryWithBlockerSeed is what one attempt of CreateScheduleGate or
+// DeleteScheduleGate returns, after rolling back, when the blocker has a schedule
+// under the lock (as that attempt's pin counts it: live for a create, any row for
+// a delete) but was not a seed of the pin. errGateRetryWithoutBlockerSeed is the
+// reverse: the blocker was a seed and the pin found no schedule for it (the only
+// extra seed, so the pin's ErrScheduleLinkNotFound is about it). The unseeded
+// create attempt then writes a gate judged by the blocker's status, or refuses if
+// the blocker item is gone; the unseeded delete attempt removes the gate.
 var (
 	errGateRetryWithBlockerSeed    = errors.New("retry the gate write with the blocker as a seed")
 	errGateRetryWithoutBlockerSeed = errors.New("retry the gate write without the blocker as a seed")
@@ -290,6 +292,11 @@ func (s *Store) createScheduleGateAttempt(budget *linkBudget, workspaceID, block
 // before its transaction begins. Nil in production.
 var createScheduleGateAfterBlockerReadHook func()
 
+// deleteScheduleGateAfterGateReadHook, when set by a test, runs right after
+// DeleteScheduleGate reads the gate row through the pool, before its transaction
+// begins. Nil in production.
+var deleteScheduleGateAfterGateReadHook func()
+
 // itemHasSchedule reports whether the item has a schedule row in the workspace,
 // whether or not the item is soft-deleted (the pin judges liveness).
 func (s *Store) itemHasSchedule(q Queryer, workspaceID, itemID string) (bool, error) {
@@ -356,6 +363,11 @@ func (s *Store) gateClosureTx(tx *sql.Tx, workspaceID, from string) ([]schedule.
 // DeleteScheduleGate removes a gate. It needs edit on both ends, as a link does,
 // and works whether or not either end is soft-deleted: an end absent from
 // access.Readable, or a gate that does not exist, is ErrScheduleLinkNotFound.
+// The gate row is read through the pool, so whether the blocker has a schedule
+// is only a hint: each attempt re-checks it under the workspace lock, and a
+// schedule created or deleted on the blocker in between sends the attempt round
+// again with the blocker seeded to match, at most maxScheduleGateAttempts times
+// within one budget.
 func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.CommitmentAccess, loaders ...CommitmentAccessLoader) error {
 	var blocked, blocker string
 	var blockerSchedule sql.NullString
@@ -366,17 +378,43 @@ func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.Com
 	} else if err != nil {
 		return fmt.Errorf("read schedule gate: %w", err)
 	}
+	if deleteScheduleGateAfterGateReadHook != nil {
+		deleteScheduleGateAfterGateReadHook()
+	}
 	if !readableLinkEnds(access, blocked, blocker) {
 		return ErrScheduleLinkNotFound
 	}
 	if !access.Editable[blocked] || !access.Editable[blocker] {
 		return ErrLinkEditRequired
 	}
+	// The blocker joins the pin as a seed when it has a schedule, so its schedule
+	// row is locked in id order with the rest. The gate's schedule id is a hint.
+	seeded := blockerSchedule.Valid
+	// One budget across the attempts, so a retry cannot outlast it.
+	budget := s.newLinkBudget()
+	for attempt := 0; attempt < maxScheduleGateAttempts; attempt++ {
+		err := s.deleteScheduleGateAttempt(budget, workspaceID, gateID, blocked, blocker, access, loaders, seeded)
+		if errors.Is(err, errGateRetryWithBlockerSeed) {
+			seeded = true
+			continue
+		}
+		if errors.Is(err, errGateRetryWithoutBlockerSeed) {
+			seeded = false
+			continue
+		}
+		return err
+	}
+	// Nothing was committed: every attempt rolled back.
+	return markRolledBack(ErrLinkBudget)
+}
+
+// deleteScheduleGateAttempt is one transaction of DeleteScheduleGate. seeded says
+// whether the blocker joins the pin as a seed.
+func (s *Store) deleteScheduleGateAttempt(budget *linkBudget, workspaceID, gateID, blocked, blocker string, access models.CommitmentAccess, loaders []CommitmentAccessLoader, seeded bool) error {
 	var extra []string
-	if blockerSchedule.Valid {
+	if seeded {
 		extra = append(extra, blocker)
 	}
-	budget := s.newLinkBudget()
 	tx, err := s.db.Begin()
 	if err != nil {
 		return fmt.Errorf("delete schedule gate: %w", err)
@@ -386,10 +424,28 @@ func (s *Store) DeleteScheduleGate(workspaceID, gateID string, access models.Com
 		return err
 	}
 	// Same pin as a link delete: deleted ends are found, and never live.
-	if _, err := s.pinCommitmentRoot(tx, workspaceID, "", nil, true, true, true, blocked, extra...); errors.Is(err, ErrScheduleItemGone) || errors.Is(err, ErrScheduleNotFound) {
+	_, err = s.pinCommitmentRoot(tx, workspaceID, "", nil, true, true, true, blocked, extra...)
+	if seeded && errors.Is(err, ErrScheduleLinkNotFound) {
+		return errGateRetryWithoutBlockerSeed
+	}
+	if errors.Is(err, ErrScheduleItemGone) || errors.Is(err, ErrScheduleNotFound) {
 		return ErrScheduleLinkNotFound
 	} else if err != nil {
 		return err
+	}
+	// Authoritative now: every schedule writer holds the workspace lock the pin
+	// took. A schedule row the hint missed means the blocker was not a seed; go
+	// round again with it. Any row counts, live item or not, as this pin (with
+	// deleted items) counts it, so the two retries cannot bounce on a deleted
+	// blocker.
+	if !seeded {
+		has, err := s.itemHasSchedule(tx, workspaceID, blocker)
+		if err != nil {
+			return err
+		}
+		if has {
+			return errGateRetryWithBlockerSeed
+		}
 	}
 	if _, err = reloadGraphAccess(tx, access, loaders, blocked, blocker); err != nil {
 		return err
