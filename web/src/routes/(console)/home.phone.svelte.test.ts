@@ -226,3 +226,41 @@ it('shows no strip counts or banner on failure and ignores a response from an ol
 	expect(firstStripDay()).toHaveAttribute('data-load', 'none');
 	expect(firstStripDay().querySelectorAll('.pip')).toHaveLength(0);
 });
+
+// TASK-4708: the summary's owed count follows the audience toggle, its separator is spaced, and the agents footer pluralises.
+async function mountAudienceHome(entries: AgendaEntry[]) {
+	h.agenda.mockResolvedValueOnce(weekResponse(entries));
+	await homeOverview.load('/', true);
+	render(DesktopHome);
+	await tick();
+}
+const summaryText = () => document.querySelector('.summary p')!.textContent;
+const mineOwed = weekEntry('2026-11-13', { item_ref: 'TASK-51', item_title: 'Mine owed' });
+const agentOwed = (ref: string) => weekEntry('2026-11-13', { item_ref: ref, item_title: `Agent owed ${ref}`, audience: 'agent' });
+
+it('counts owed today in the summary for the audience the toggle shows', async () => {
+	await mountAudienceHome([mineOwed, agentOwed('TASK-52')]);
+	const today = within(screen.getByRole('region', { name: 'Today' }));
+	expect(summaryText()).toContain('1 owed today');
+	await fireEvent.click(today.getByRole('button', { name: /^All/ }));
+	expect(summaryText()).toContain('2 owed today');
+	await fireEvent.click(today.getByRole('button', { name: /^Agents/ }));
+	expect(summaryText()).toContain('1 owed today');
+	await fireEvent.click(today.getByRole('button', { name: /^Mine/ }));
+	expect(summaryText()).toContain('1 owed today');
+});
+
+it('spaces the summary separator after the date and keeps it inside the date span', async () => {
+	await mountAudienceHome([]);
+	expect(summaryText()).toContain('Friday, November 13 · 7 need you · 0 owed today');
+	// The date span is hidden on phones, so the separator must go with it and the visible text starts at the count.
+	const span = document.querySelector('.summary-date')!;
+	expect(span.textContent).toBe('Friday, November 13 · ');
+	expect(summaryText().slice(span.textContent!.length)).toMatch(/^7 need you/);
+});
+
+it.each([[1, 'Agents: 1 reminder today'], [2, 'Agents: 2 reminders today'], [0, 'Agents: 0 reminders today']] as const)('pluralises the agents footer for %i reminder(s)', async (n, text) => {
+	await mountAudienceHome(Array.from({ length: n }, (_, i) => agentOwed(`TASK-6${i}`)));
+	const footer = screen.getByRole('region', { name: 'Today' }).querySelector('footer')!;
+	expect(footer.textContent).toContain(`${text}, ${n} owed, 0 missed`);
+});

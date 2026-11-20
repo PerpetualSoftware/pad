@@ -80,11 +80,11 @@ it('keeps completed and created events out of existing Home rows, figures, audie
 		completed(), { ...completed('TASK-91'), audience: 'agent' },
 		completed('TASK-92', '2026-11-12'), { ...completed('TASK-93'), type: 'created' },
 	]);
-	expect(document.querySelector('.summary')).toHaveTextContent('0 need you · 2 owed today · 1 past deadline');
+	expect(document.querySelector('.summary')).toHaveTextContent('0 need you · 1 owed today · 1 past deadline');
 	const refs = () => [...screen.getByRole('region', { name: 'Today' }).querySelectorAll('.agenda-row')].map(row => row.getAttribute('data-ref'));
 	expect(refs()).toEqual(['TASK-3', 'TASK-1']);
 	for (const name of ['Mine 1', 'Agents 1', 'All 2']) expect(today.getByRole('button', { name })).toBeInTheDocument();
-	expect(today.getByText('Agents: 1 reminders today, 1 owed, 0 missed')).toBeInTheDocument();
+	expect(today.getByText('Agents: 1 reminder today, 1 owed, 0 missed')).toBeInTheDocument();
 	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 2 entries, 2 owed');
 	expect(document.querySelector('[data-strip-day="2026-11-12"]')).toHaveAttribute('aria-label', 'Thursday 12 November, 1 entry, 1 owed');
 	expect(document.querySelectorAll('.pip')).toHaveLength(3);
@@ -103,7 +103,7 @@ it('counts a lapsed occurrence today as owed, since a late done is still accepte
 		schedule('TASK-1', { state: 'lapsed' }),
 		schedule('TASK-2', { state: 'lapsed', audience: 'agent' }), schedule('TASK-3', { state: 'missed', audience: 'agent' }),
 	]);
-	expect(document.querySelector('.summary')).toHaveTextContent(/ 2 owed today /);
+	expect(document.querySelector('.summary')).toHaveTextContent(/ 1 owed today /);
 	expect(today.getByText('Agents: 2 reminders today, 1 owed, 1 missed')).toBeInTheDocument();
 	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 3 entries, 2 owed');
 });
