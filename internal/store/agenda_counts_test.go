@@ -229,3 +229,145 @@ func TestAgendaCountsRecasedUnicodeTerminal(t *testing.T) {
 		t.Fatalf("recased unicode terminal: %s %v", countsGot(days), err)
 	}
 }
+
+// countsSchedule gives it a UTC check schedule created at createdAt. rrule ""
+// is a one-shot.
+func countsSchedule(t *testing.T, f *schedFixture, it *models.Item, dtstart, rrule, createdAt string) *models.ItemSchedule {
+	t.Helper()
+	sc, err := f.s.createScheduleAt(f.ws.ID, it.ID, models.ScheduleCreate{Kind: "check", Dtstart: dtstart, Tz: "UTC", Rrule: rrule}, rt(createdAt))
+	if err != nil {
+		t.Fatalf("createScheduleAt: %v", err)
+	}
+	// A reported completion may not precede the schedule's creation.
+	f.exec(t, `UPDATE item_schedules SET created_at=? WHERE id=?`, createdAt, sc.ID)
+	return f.reload(t, it.ID)
+}
+
+func countsDone(t *testing.T, f *schedFixture, it *models.Item, in ResolveInput, now string) *ResolveResult {
+	t.Helper()
+	if in.State == "" {
+		in.State, in.Actor, in.View = "done", "user", time.UTC
+	}
+	res, err := f.s.resolveOccurrenceAt(f.ws.ID, it.ID, in, rt(now))
+	if err != nil {
+		t.Fatalf("resolve done at %s: %v", now, err)
+	}
+	return res
+}
+
+func countsSeries(t *testing.T, f *schedFixture, scope PendingReminderScope, from, to string, loc *time.Location) string {
+	t.Helper()
+	days, _, truncated, err := f.s.AgendaCounts(f.ws.ID, scope, rt(from), rt(to), loc, 1000)
+	if err != nil || truncated {
+		t.Fatalf("counts: %v truncated=%v", err, truncated)
+	}
+	return countsGot(days)
+}
+
+// An on-time Done of a repeating occurrence completes the item that day
+// without closing it: Open and Burndown do not move.
+func TestAgendaCountsOccurrenceDone(t *testing.T) {
+	f := countsFixture(t)
+	it := countsItem(t, f, f.item.CollectionID, "daily", "2031-03-01T00:00:00Z")
+	countsSchedule(t, f, it, "2031-03-10T09:00", "FREQ=DAILY", "2031-03-10T00:00:00Z")
+	countsDone(t, f, it, ResolveInput{OccurrenceAt: rt("2031-03-10T09:00:00Z")}, "2031-03-10T10:00:00Z")
+	if got, want := countsSeries(t, f, PendingReminderScope{}, "2031-03-10T00:00:00Z", "2031-03-12T00:00:00Z", time.UTC), "2031-03-10:1/1/1 2031-03-11:0/1/1 "; got != want {
+		t.Fatalf("series = %s, want %s", got, want)
+	}
+	// The occurrence is the window's only row, and it counts toward the cap.
+	from, to := rt("2031-03-10T00:00:00Z"), rt("2031-03-12T00:00:00Z")
+	if _, rows, truncated, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 0); err != nil || !truncated || rows != 1 {
+		t.Fatalf("cap 0: rows=%d truncated=%v err=%v", rows, truncated, err)
+	}
+	if _, rows, truncated, err := f.s.AgendaCounts(f.ws.ID, PendingReminderScope{}, from, to, time.UTC, 1); err != nil || truncated || rows != 1 {
+		t.Fatalf("cap 1: rows=%d truncated=%v err=%v", rows, truncated, err)
+	}
+}
+
+// A late Done of a lapsed occurrence buckets on the reported completion, not
+// on the day it was recorded, and its Undo (back to lapsed) removes the count.
+func TestAgendaCountsOccurrenceLateDoneAndUndo(t *testing.T) {
+	f := countsFixture(t)
+	it := countsItem(t, f, f.item.CollectionID, "lapsing", "2026-09-01T00:00:00Z")
+	sc := countsSchedule(t, f, it, "2026-10-01T09:00", "FREQ=DAILY", "2026-10-01T00:00:00Z")
+	f.nativeDeadline(t, sc, "lapses", 3600)
+	f.eval(t, lapseNow, 0)
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND state='lapsed'`, sc.ID); n != 1 {
+		t.Fatalf("lapsed rows = %d, want 1", n)
+	}
+	actual := rt("2026-10-26T09:30:00Z")
+	res := f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "done", Actor: "user", ActualDoneAt: &actual}, "2026-10-27T13:00:00Z")
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND state='done' AND actual_done_at=? AND resolved_at=?`, sc.ID, "2026-10-26T09:30:00Z", "2026-10-27T13:00:00Z"); n != 1 {
+		t.Fatalf("late done rows = %d, want 1", n)
+	}
+	from, to := "2026-10-26T00:00:00Z", "2026-10-28T00:00:00Z"
+	if got, want := countsSeries(t, f, PendingReminderScope{}, from, to, time.UTC), "2026-10-26:1/1/1 2026-10-27:0/1/1 "; got != want {
+		t.Fatalf("late done = %s, want %s", got, want)
+	}
+	if res.ScheduleLastResolution == nil || !res.ScheduleLastResolution.CanReopen {
+		t.Fatalf("late done not reopenable: %+v", res.ScheduleLastResolution)
+	}
+	if _, err := f.s.reopenOccurrenceAt(f.ws.ID, it.ID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user"}, rt("2026-10-27T13:01:00Z")); err != nil {
+		t.Fatalf("undo: %v", err)
+	}
+	assertHistoryLapsedAgain(t, f, sc.ID, deadlineOccAt)
+	if got, want := countsSeries(t, f, PendingReminderScope{}, from, to, time.UTC), "2026-10-26:0/1/1 2026-10-27:0/1/1 "; got != want {
+		t.Fatalf("after undo = %s, want %s", got, want)
+	}
+}
+
+// An item closed and its one-shot resolved Done on the same day is one
+// completion. Closed one day and resolved Done the next, it completes on both.
+func TestAgendaCountsOccurrenceDedupesWithClose(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	same := countsItem(t, f, c, "same day", "2031-03-01T00:00:00Z", [2]string{"2031-03-10T11:00:00Z", "done"})
+	countsSchedule(t, f, same, "2031-03-10T09:00", "", "2031-03-10T00:00:00Z")
+	countsDone(t, f, same, ResolveInput{State: "done", Actor: "user", View: time.UTC, OccurrenceAt: rt("2031-03-10T09:00:00Z"), EndSchedule: true}, "2031-03-10T10:00:00Z")
+	next := countsItem(t, f, c, "next day", "2031-03-01T00:00:00Z", [2]string{"2031-03-10T11:00:00Z", "done"})
+	countsSchedule(t, f, next, "2031-03-11T09:00", "", "2031-03-10T00:00:00Z")
+	countsDone(t, f, next, ResolveInput{State: "done", Actor: "user", View: time.UTC, OccurrenceAt: rt("2031-03-11T09:00:00Z"), EndSchedule: true}, "2031-03-11T10:00:00Z")
+	if got, want := countsSeries(t, f, PendingReminderScope{}, "2031-03-10T00:00:00Z", "2031-03-12T00:00:00Z", time.UTC), "2031-03-10:2/0/0 2031-03-11:1/0/0 "; got != want {
+		t.Fatalf("series = %s, want %s", got, want)
+	}
+}
+
+// A done occurrence counts only for an item the caller can see: one outside
+// the scope and one deleted count nothing.
+func TestAgendaCountsOccurrenceScope(t *testing.T) {
+	f := countsFixture(t)
+	c := f.item.CollectionID
+	hidden := createTestCollection(t, f.s, f.ws.ID, "Hidden")
+	f.exec(t, `UPDATE collections SET schema = ? WHERE id = ?`, countsSchema, hidden.ID)
+	for _, x := range []struct{ coll, title string }{{c, "visible"}, {hidden.ID, "hidden"}, {c, "deleted"}} {
+		it := countsItem(t, f, x.coll, x.title, "2031-03-01T00:00:00Z")
+		countsSchedule(t, f, it, "2031-03-10T09:00", "FREQ=DAILY", "2031-03-10T00:00:00Z")
+		countsDone(t, f, it, ResolveInput{OccurrenceAt: rt("2031-03-10T09:00:00Z")}, "2031-03-10T10:00:00Z")
+		if x.title == "deleted" {
+			f.exec(t, `UPDATE items SET deleted_at = ? WHERE id = ?`, "2031-03-10T11:00:00Z", it.ID)
+		}
+	}
+	if got, want := countsSeries(t, f, PendingReminderScope{CollectionIDs: []string{c}}, "2031-03-10T00:00:00Z", "2031-03-11T00:00:00Z", time.UTC), "2031-03-10:1/1/1 "; got != want {
+		t.Fatalf("scoped = %s, want %s", got, want)
+	}
+}
+
+// A reported completion at 23:30 in Los Angeles, recorded after local
+// midnight, lands on the earlier local day; in UTC both are the later day.
+func TestAgendaCountsOccurrenceLocalDay(t *testing.T) {
+	f := countsFixture(t)
+	la, err := time.LoadLocation("America/Los_Angeles")
+	if err != nil {
+		t.Fatal(err)
+	}
+	it := countsItem(t, f, f.item.CollectionID, "late local", "2031-03-01T00:00:00Z")
+	countsSchedule(t, f, it, "2031-03-11T06:00", "FREQ=DAILY", "2031-03-10T00:00:00Z")
+	actual := rt("2031-03-11T06:30:00Z") // 2031-03-10 23:30 PDT
+	countsDone(t, f, it, ResolveInput{State: "done", Actor: "user", View: time.UTC, OccurrenceAt: rt("2031-03-11T06:00:00Z"), ActualDoneAt: &actual}, "2031-03-11T08:00:00Z")
+	if got, want := countsSeries(t, f, PendingReminderScope{}, "2031-03-10T07:00:00Z", "2031-03-12T07:00:00Z", la), "2031-03-10:1/1/1 2031-03-11:0/1/1 "; got != want {
+		t.Fatalf("local = %s, want %s", got, want)
+	}
+	if got, want := countsSeries(t, f, PendingReminderScope{}, "2031-03-10T00:00:00Z", "2031-03-12T00:00:00Z", time.UTC), "2031-03-10:0/1/1 2031-03-11:1/1/1 "; got != want {
+		t.Fatalf("utc = %s, want %s", got, want)
+	}
+}

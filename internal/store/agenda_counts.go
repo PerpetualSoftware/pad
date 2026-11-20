@@ -8,7 +8,11 @@ import (
 )
 
 // AgendaDayCount is one local day of the agenda's counts series (TASK-4244).
-// Completed is the items that reached a positive terminal value that day.
+// Completed is the distinct items that, that day, reached a positive terminal
+// value or had a schedule occurrence that is now done; an occurrence counts on
+// its reported completion (actual_done_at) when it has one, else on the
+// instant it was resolved. An item counts once per day however many of these
+// it had. Occurrences never change Open or Burndown.
 // Open is the items still open at the day's end. Burndown is how many of the
 // items open at the window's start are still open at the day's end; items
 // created later never add to it.
@@ -107,6 +111,9 @@ type countEvent struct {
 	collID      string
 	from, to    string
 	itemCreated time.Time
+	// occDone marks a done schedule occurrence: a completion that leaves the
+	// item open or closed as it was.
+	occDone bool
 }
 
 // AgendaCounts reads the counts series for one workspace over [from, to) in
@@ -261,7 +268,42 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		return nil, len(events), true, nil
 	}
 
-	// Creations first at an instant, then transitions in write order.
+	// Schedule occurrences now done complete their item on the day of their
+	// reported completion, else the day they were resolved. Both columns hold
+	// whole-second UTC RFC 3339 text, the form of the bounds, so the text
+	// comparison orders them as instants.
+	occs, err := s.db.Query(s.q(`SELECT o.id, i.id, COALESCE(o.actual_done_at, o.resolved_at) AS done_at
+  FROM schedule_occurrences o JOIN item_schedules sc ON sc.id = o.schedule_id
+  JOIN items i ON i.id = sc.item_id JOIN collections c ON c.id = i.collection_id
+  WHERE sc.workspace_id = ? AND i.workspace_id = ? AND o.state = 'done'
+   AND COALESCE(o.actual_done_at, o.resolved_at) >= ? AND COALESCE(o.actual_done_at, o.resolved_at) < ?`+live+scopeSQL+`
+  ORDER BY done_at, o.id LIMIT ?`),
+		append(append([]any{workspaceID, workspaceID, fromB, toB}, scopeArgs...), maxRows+1-len(events))...)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("agenda counts occurrences: %w", err)
+	}
+	for occs.Next() {
+		var e countEvent
+		var at string
+		if err := occs.Scan(&e.id, &e.itemID, &at); err != nil {
+			occs.Close()
+			return nil, 0, false, err
+		}
+		e.occDone, e.at = true, parseTime(at)
+		events = append(events, e)
+	}
+	if err := occs.Err(); err != nil {
+		occs.Close()
+		return nil, 0, false, err
+	}
+	occs.Close()
+	if len(events) > maxRows {
+		return nil, len(events), true, nil
+	}
+
+	// Creations first at an instant, then transitions in write order. A done
+	// occurrence only marks a completion, so where it falls among them at one
+	// instant changes nothing.
 	sort.SliceStable(events, func(i, j int) bool {
 		a, b := events[i], events[j]
 		switch {
@@ -292,6 +334,13 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		}
 		if day >= len(out) {
 			break
+		}
+		if e.occDone {
+			if !completedOn[e.itemID+"|"+out[day].Day] {
+				completedOn[e.itemID+"|"+out[day].Day] = true
+				out[day].Completed++
+			}
+			continue
 		}
 		if e.create {
 			state[e.itemID] = &itemState{known: true, kind: countOpen}
