@@ -769,7 +769,10 @@ describe('week strip, attention band and states', () => {
   h.agenda.mockResolvedValue(response([row(), lapsed])); await mount();
   await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-42' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-42', { occurrence_at: '2026-11-05T10:00:00Z', state: 'done' }));
-  expect(h.view).not.toHaveBeenCalled(); await said('Occurrence marked done.', 'success'); expect(h.agenda).toHaveBeenCalledTimes(2);
+  // The only commitment read is the Undo eligibility read, after the write: never a preflight for the next occurrence.
+  await said('Occurrence marked done.', 'success'); expect(h.agenda).toHaveBeenCalledTimes(2);
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-42');
+  expect(h.view.mock.invocationCallOrder[0]).toBeGreaterThan(h.resolve.mock.invocationCallOrder[0]);
   h.resolve.mockRejectedValueOnce({ code: 'stale' }); await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-42' }));
   await said(staleCopy); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
  });
@@ -1841,12 +1844,32 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
   expect(successAction()).toBeUndefined();
  });
- it.each(['ack', 'history'] as const)('does no eligibility read and offers no Undo for %s', async kind => {
-  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: kind === 'history' ? 'lapsed' : 'outstanding', fired: true })]));
+ it('does no eligibility read and offers no Undo for ack', async () => {
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: 'outstanding', fired: true })]));
   h.resolve.mockImplementation(() => { h.view.mockClear(); return Promise.resolve({}); });
-  await mount(); await fireEvent.click(screen.getByRole('button', { name: `${kind === 'history' ? 'Mark done' : 'Acknowledge'} EX-30` }));
-  await said(kind === 'history' ? 'Occurrence marked done.' : 'Acknowledged. The work stays outstanding.', 'success');
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Acknowledge EX-30' }));
+  await said('Acknowledged. The work stays outstanding.', 'success');
   expect(h.view).not.toHaveBeenCalled(); expect(successAction()).toBeUndefined();
+ });
+ it('reads eligibility once after a late done on a lapsed row, with no preflight, and its Undo makes the row lapsed again (TASK-4579)', async () => {
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: 'lapsed' })]));
+  let preflight = -1;
+  h.resolve.mockImplementation(() => { preflight = h.view.mock.calls.length; h.view.mockClear(); h.view.mockResolvedValue({ last_resolution: eligible({ state: 'history_done' }) }); return Promise.resolve({}); });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-30' }));
+  await said('Occurrence marked done.', 'success');
+  expect(preflight).toBe(0);
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(successAction()).toEqual({ label: 'Undo', onAction: expect.any(Function) });
+  await successAction().onAction();
+  expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' });
+  await said('Undone. The occurrence is lapsed again.', 'success');
+ });
+ it('offers no Undo after a late done when the checkpoint is a plain done', async () => {
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: 'lapsed' })]));
+  h.resolve.mockImplementation(() => { h.view.mockClear(); h.view.mockResolvedValue({ last_resolution: eligible() }); return Promise.resolve({}); });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-30' }));
+  await said('Occurrence marked done.', 'success');
+  expect(h.view).toHaveBeenCalledTimes(1); expect(successAction()).toBeUndefined();
  });
  it.each([false, true])('close-item-too failure=%s controls Undo eligibility', async fails => {
   h.resolve.mockRejectedValueOnce({ code: 'item_still_open', details: { state: 'done', done_field: 'status', close_options: ['done'] } })
