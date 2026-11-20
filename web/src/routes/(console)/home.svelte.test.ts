@@ -85,11 +85,14 @@ it('keeps completed and created events out of existing Home rows, figures, audie
 	expect(refs()).toEqual(['TASK-3', 'TASK-1']);
 	for (const name of ['Mine 1', 'Agents 1', 'All 2']) expect(today.getByRole('button', { name })).toBeInTheDocument();
 	expect(today.getByText('Agents: 1 reminder today, 1 owed, 0 missed')).toBeInTheDocument();
-	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 2 entries, 2 owed');
+	// The strip follows the toggle (Mine here), so the agent schedule waits for All.
+	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 1 entry, 1 owed');
 	expect(document.querySelector('[data-strip-day="2026-11-12"]')).toHaveAttribute('aria-label', 'Thursday 12 November, 1 entry, 1 owed');
-	expect(document.querySelectorAll('.pip')).toHaveLength(3);
+	expect(document.querySelectorAll('.pip')).toHaveLength(2);
 	await fireEvent.click(today.getByRole('button', { name: 'All 2' }));
 	expect(refs()).toEqual(['TASK-3', 'TASK-1', 'TASK-2']);
+	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 2 entries, 2 owed');
+	expect(document.querySelectorAll('.pip')).toHaveLength(3);
 	await fireEvent.click(today.getByRole('button', { name: '2 completed' }));
 	expect(today.queryByText('Finished TASK-93')).not.toBeInTheDocument();
 	expect(document.querySelector('.summary')).toHaveTextContent('0 need you · 2 owed today · 1 past deadline');
@@ -105,6 +108,8 @@ it('counts a lapsed occurrence today as owed, since a late done is still accepte
 	]);
 	expect(document.querySelector('.summary')).toHaveTextContent(/ 1 owed today /);
 	expect(today.getByText('Agents: 2 reminders today, 1 owed, 1 missed')).toBeInTheDocument();
+	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 1 entry, 1 owed');
+	await fireEvent.click(today.getByRole('button', { name: /^All/ }));
 	expect(document.querySelector('[data-strip-day="2026-11-13"]')).toHaveAttribute('aria-label', 'Friday 13 November, Today, 3 entries, 2 owed');
 });
 
@@ -196,7 +201,7 @@ it('opens the agenda on the tapped strip day (BUG-4569)', async () => {
 	render(Home);
 	await fireEvent.click(document.querySelector<HTMLButtonElement>('[data-strip-day="2026-11-11"]')!);
 	expect(goto).toHaveBeenCalledTimes(1);
-	expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-11');
+	expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-11&audience=mine');
 });
 it('refetches the overview when the time zone changes on the same date (TASK-4595 review)', async () => {
 	vi.useFakeTimers({ toFake: ['Date'] }); vi.setSystemTime(new Date('2026-11-13T14:00:00Z'));
