@@ -969,7 +969,8 @@ this schedule action to v2, consistent with the other schedule mutations.
 The command is also available as `pad remind reopen REF`. Without `--resolution`,
 the CLI reads the commitment once and freezes its latest ID before posting once.
 A refusal never causes a retry with a newer ID. There is no confirmation or force
-option. Resolution comments remain. See [the REST contract](api.md#reopen-the-last-schedule-resolution-task-4539)
+option. Resolution comments remain. Undoing a late done on a lapsed occurrence
+(`previous_state: "history_done"`) puts that occurrence back to lapsed. See [the REST contract](api.md#reopen-the-last-schedule-resolution-task-4539)
 for restoration and dependency limits.
 
 Both MCP transports preserve `reopen_unavailable`, `reopen_not_supported`,
