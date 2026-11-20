@@ -127,7 +127,8 @@ func TestMigrate_RefusesSchemaAheadDB(t *testing.T) {
 }
 
 // TestSnapshotBeforeMigrate_WritesCopy verifies the SQLite snapshot writes a
-// byte-faithful copy next to the DB, named for the binary version.
+// byte-faithful copy next to the DB, named for the binary version and the
+// migration the run is migrating to.
 func TestSnapshotBeforeMigrate_WritesCopy(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific path")
@@ -144,9 +145,12 @@ func TestSnapshotBeforeMigrate_WritesCopy(t *testing.T) {
 	t.Cleanup(func() { BinaryVersion = prev })
 	BinaryVersion = "9.9.9 (deadbee)" // exercises sanitizeVersion
 
-	s.snapshotBeforeMigrate()
+	s.snapshotBeforeMigrate("042_some_target.sql")
 
-	dst := dbPath + ".pre-9.9.9--deadbee-"
+	dst := s.snapshotPath("042_some_target.sql")
+	if want := dbPath + ".pre-9.9.9--deadbee--m042"; dst != want {
+		t.Fatalf("snapshotPath = %q, want %q", dst, want)
+	}
 	info, err := os.Stat(dst)
 	if err != nil {
 		t.Fatalf("snapshot not written at %s: %v", dst, err)
@@ -170,9 +174,9 @@ func TestSnapshotBeforeMigrate_WritesCopy(t *testing.T) {
 	}
 }
 
-// TestSnapshotBeforeMigrate_PreservesExisting verifies a retry doesn't
-// clobber the original pre-upgrade snapshot with a later (partially-migrated)
-// DB state.
+// TestSnapshotBeforeMigrate_PreservesExisting verifies a retry of the same
+// upgrade (same binary version, same target migration) doesn't clobber the
+// original pre-upgrade snapshot with a later (partially-migrated) DB state.
 func TestSnapshotBeforeMigrate_PreservesExisting(t *testing.T) {
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
 		t.Skip("SQLite-specific path")
@@ -188,14 +192,15 @@ func TestSnapshotBeforeMigrate_PreservesExisting(t *testing.T) {
 	prev := BinaryVersion
 	t.Cleanup(func() { BinaryVersion = prev })
 	BinaryVersion = "1.0.0"
-	dst := dbPath + ".pre-1.0.0"
+	const target = "120_target.sql"
+	dst := s.snapshotPath(target)
 
 	// Pre-seed a sentinel snapshot as if a prior boot already wrote it.
 	if err := os.WriteFile(dst, []byte("ORIGINAL-PRE-UPGRADE-STATE"), 0o600); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
 	}
 
-	s.snapshotBeforeMigrate() // must NOT overwrite the existing snapshot
+	s.snapshotBeforeMigrate(target) // must NOT overwrite the existing snapshot
 
 	got, err := os.ReadFile(dst)
 	if err != nil {
@@ -210,13 +215,88 @@ func TestSnapshotBeforeMigrate_PreservesExisting(t *testing.T) {
 // no-op for a store with no on-disk file (defensive: guards the dbPath gate).
 func TestSnapshotBeforeMigrate_SkipsNoFile(t *testing.T) {
 	s := &Store{dialect: &sqliteDialect{}, dbPath: ""}
-	s.snapshotBeforeMigrate() // must not panic; nothing to do
+	s.snapshotBeforeMigrate("001_initial.sql") // must not panic; nothing to do
 
 	// A path that doesn't exist on disk is also a silent no-op.
 	s2 := &Store{dialect: &sqliteDialect{}, dbPath: filepath.Join(t.TempDir(), "does-not-exist.db")}
-	s2.snapshotBeforeMigrate()
-	if _, err := os.Stat(s2.dbPath + ".pre-" + sanitizeVersion(BinaryVersion)); !os.IsNotExist(err) {
+	s2.snapshotBeforeMigrate("001_initial.sql")
+	if _, err := os.Stat(s2.snapshotPath("001_initial.sql")); !os.IsNotExist(err) {
 		t.Fatalf("expected no snapshot for a missing DB file")
+	}
+}
+
+// TestSnapshotBeforeMigrate_NewTargetTakesFreshSnapshot is the dev-build case:
+// BinaryVersion stays "dev" across builds, so a snapshot keyed on the version
+// alone was written once and then preserved forever. A run migrating to a
+// newer migration must write a fresh, real snapshot under the new key and
+// leave the older key's file exactly as it was.
+func TestSnapshotBeforeMigrate_NewTargetTakesFreshSnapshot(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific path")
+	}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "snap.db")
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	prev := BinaryVersion
+	t.Cleanup(func() { BinaryVersion = prev })
+	BinaryVersion = "dev"
+
+	const oldTarget, newTarget = "183_old.sql", "184_new.sql"
+	oldDst, newDst := s.snapshotPath(oldTarget), s.snapshotPath(newTarget)
+	if oldDst == newDst {
+		t.Fatalf("control leg failed: old and new targets share the snapshot path %q", oldDst)
+	}
+	const sentinel = "SNAPSHOT-FROM-AN-EARLIER-DEV-UPGRADE"
+	if err := os.WriteFile(oldDst, []byte(sentinel), 0o600); err != nil {
+		t.Fatalf("seed old snapshot: %v", err)
+	}
+
+	s.snapshotBeforeMigrate(newTarget)
+
+	got, err := os.ReadFile(oldDst)
+	if err != nil {
+		t.Fatalf("read old snapshot: %v", err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("old snapshot at %s was modified; want the sentinel, got %d bytes", oldDst, len(got))
+	}
+
+	if _, err := os.Stat(newDst); err != nil {
+		t.Fatalf("no fresh snapshot at %s: %v", newDst, err)
+	}
+	snap, err := New(newDst)
+	if err != nil {
+		t.Fatalf("fresh snapshot is not a usable DB: %v", err)
+	}
+	defer snap.Close()
+	var n int
+	if err := snap.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&n); err != nil {
+		t.Fatalf("query fresh snapshot: %v", err)
+	}
+	if n == 0 {
+		t.Fatalf("fresh snapshot has no applied migrations recorded")
+	}
+}
+
+func TestSnapshotTargetKey(t *testing.T) {
+	cases := map[string]string{
+		"183_foo.sql":     "183",
+		"007_a_b_c.sql":   "007",
+		"noprefix.sql":    "noprefix",
+		"noprefix":        "noprefix",
+		"12 3/x_rest.sql": "12-3-x",
+		"weird name.sql":  "weird-name",
+		"":                "unknown",
+	}
+	for in, want := range cases {
+		if got := snapshotTargetKey(in); got != want {
+			t.Errorf("snapshotTargetKey(%q) = %q, want %q", in, got, want)
+		}
 	}
 }
 

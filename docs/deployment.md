@@ -1799,10 +1799,13 @@ includes those migrations, or ... re-run with `pad start --force`.
 ### Pre-migration snapshot (SQLite)
 
 When a SQLite-backed instance has pending migrations, Pad copies the database
-file to `pad.db.pre-<version>` (next to the DB) *before* applying them. If an
-upgrade goes wrong, stop the server and copy that file back over `pad.db`. It
-is a convenience net, not a substitute for backups — take a real backup first
-(see [backup.md](backup.md)). The copy is best-effort: if it can't be written
+file to `pad.db.pre-<version>-m<migration>` (next to the DB) *before* applying
+them. `<migration>` is the number of the newest migration the binary ships, so
+each upgrade that adds migrations takes a new snapshot; a retried upgrade keeps
+the first one, and older snapshots are left in place. If an upgrade goes
+wrong, stop the server and copy that file back over `pad.db`. It is a
+convenience net, not a substitute for backups — take a real backup first (see
+[backup.md](backup.md)). The copy is best-effort: if it can't be written
 (read-only volume, full disk) the server logs a warning and proceeds, so keep
 your own backups regardless.
 

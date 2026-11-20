@@ -96,15 +96,17 @@ func guardSchemaAhead(applied map[string]bool, embedded []string) error {
 }
 
 // snapshotBeforeMigrate copies the live SQLite database file to
-// <db>.pre-<VERSION> before any pending migrations run, so a botched
-// upgrade can be rolled back by copying the snapshot back over the DB.
+// <db>.pre-<VERSION>-m<NNN> (see snapshotPathFor) before any pending
+// migrations run, so a botched upgrade can be rolled back by copying the
+// snapshot back over the DB. targetMigration is the migration this run is
+// migrating TO: the highest embedded migration filename.
 //
 // SQLite-only and best-effort: any failure (checkpoint, copy, missing
 // file) is logged as a warning and migration proceeds. Refusing to boot
 // because a backup file couldn't be written (read-only volume, full disk)
 // would be worse than proceeding — the operator following the upgrade docs
 // keeps their own backup regardless.
-func (s *Store) snapshotBeforeMigrate() {
+func (s *Store) snapshotBeforeMigrate(targetMigration string) {
 	if s.dialect.Driver() != DriverSQLite {
 		return // Postgres: snapshots are the operator's pg_dump/PITR job.
 	}
@@ -115,14 +117,22 @@ func (s *Store) snapshotBeforeMigrate() {
 		return // no file yet (fresh DB) — nothing to snapshot.
 	}
 
-	dst := s.dbPath + ".pre-" + sanitizeVersion(BinaryVersion)
+	dst := s.snapshotPath(targetMigration)
 
-	// Preserve the FIRST snapshot taken for this binary version. Migrations
-	// apply one file at a time, so a failed migration can leave some already
-	// committed; the next boot still sees pending migrations and would call
-	// us again. Overwriting here would replace the true pre-upgrade snapshot
-	// with a half-migrated DB — destroying the rollback point. If a snapshot
-	// for this version already exists, keep it.
+	// Preserve the FIRST snapshot taken for this key. Migrations apply one
+	// file at a time, so a failed migration can leave some already committed;
+	// the next boot of the same binary still sees pending migrations and
+	// would call us again. Overwriting here would replace the true
+	// pre-upgrade snapshot with a half-migrated DB — destroying the rollback
+	// point. If a snapshot for this key already exists, keep it.
+	//
+	// The key is the binary version AND the target migration, not the
+	// version alone: a dev build's version is always "dev", so a
+	// version-only key was written once and then preserved forever, and
+	// every later dev-build upgrade ran against that stale snapshot. A build
+	// that ships a new migration therefore gets a new key and a fresh
+	// snapshot, while a retry of the same upgrade keeps the same key. Older
+	// keys' files are left alone.
 	if _, err := os.Stat(dst); err == nil {
 		slog.Info("pre-migration snapshot already exists; preserving it", "snapshot", dst)
 		return
@@ -203,4 +213,29 @@ func copyFileContents(src, dst string) (err error) {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+// snapshotPath is snapshotPathFor for this store's database file.
+func (s *Store) snapshotPath(targetMigration string) string {
+	return snapshotPathFor(s.dbPath, targetMigration)
+}
+
+// snapshotPathFor is the one place the pre-migration snapshot filename is
+// built: <dbPath>.pre-<sanitized BinaryVersion>-m<target key>, e.g.
+// pad.db.pre-0.21.0-m183 or pad.db.pre-dev-m183.
+func snapshotPathFor(dbPath, targetMigration string) string {
+	return dbPath + ".pre-" + sanitizeVersion(BinaryVersion) + "-m" + snapshotTargetKey(targetMigration)
+}
+
+// snapshotTargetKey reduces a migration filename to the part of the snapshot
+// key that names it: the numeric prefix before the first "_" ("183" from
+// "183_foo.sql"), or, for a name with no "_", the name without its ".sql"
+// suffix. The result gets the same character sanitisation as the version.
+func snapshotTargetKey(name string) string {
+	if i := strings.Index(name, "_"); i >= 0 {
+		name = name[:i]
+	} else {
+		name = strings.TrimSuffix(name, ".sql")
+	}
+	return sanitizeVersion(name)
 }
