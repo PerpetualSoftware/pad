@@ -733,7 +733,8 @@ func (s *Store) migrate() error {
 	// worth snapshotting. Best-effort; a failed snapshot warns, not fatal.
 	// The snapshot is keyed on the migration this run migrates TO, the
 	// highest embedded one (readMigrationNames sorts ascending).
-	if len(applied) > 0 && len(migrations) > 0 && hasPending(applied, migrations) {
+	snapshotDue := len(applied) > 0 && len(migrations) > 0 && hasPending(applied, migrations)
+	if snapshotDue {
 		s.snapshotBeforeMigrate(migrations[len(migrations)-1])
 	}
 
@@ -822,6 +823,14 @@ func (s *Store) migrate() error {
 	// from a silent loss into a no-op.
 	if err := s.ensureNULTriggers(); err != nil {
 		return err
+	}
+
+	// Only now, with every step above succeeded: keep this run's snapshot and
+	// the newest earlier one, and remove older snapshots this builder wrote.
+	// A run that returned an error above never reaches here, so a failed
+	// upgrade leaves every earlier snapshot in place. Best-effort.
+	if snapshotDue {
+		s.pruneSnapshotsAfterMigrate(migrations[len(migrations)-1])
 	}
 
 	return nil
