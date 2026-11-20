@@ -23,6 +23,11 @@ const (
 	rolesWriteReason = "Commitment roles updated"
 )
 
+// commitmentJournalAckLimit is how many ack rows a commitment view carries:
+// a recurring schedule journals one per acknowledged occurrence, so the view
+// keeps the newest ones and counts the rest in JournalAcksOmitted.
+const commitmentJournalAckLimit = 50
+
 // roleResolution is one role's value for the outstanding occurrence.
 type roleResolution struct {
 	value    string    // a date for an all-day role, else an RFC3339 UTC instant
@@ -284,10 +289,37 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 			BeforeJSON: c.BeforeJSON, AfterJSON: c.AfterJSON, Actor: c.Actor, Reason: c.Reason, ReasonSource: c.ReasonSource, RootChangeID: c.RootChangeID,
 			ParentChangeID: c.ParentChangeID, RecordedAt: c.RecordedAt})
 	}
+	out.Journal, out.JournalAcksOmitted = capJournalAcks(out.Journal, commitmentJournalAckLimit)
 	if err := s.milestoneForRead(s.db, out, sc, milestoneRead); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// capJournalAcks keeps the newest limit ack rows of an ascending journal and
+// reports how many older ones it dropped. Every other row type stays, and the
+// order is unchanged.
+func capJournalAcks(journal []models.CommitmentChange, limit int) ([]models.CommitmentChange, int) {
+	acks := 0
+	for _, c := range journal {
+		if c.ChangeType == "ack" {
+			acks++
+		}
+	}
+	drop := acks - limit
+	if drop <= 0 {
+		return journal, 0
+	}
+	kept := make([]models.CommitmentChange, 0, len(journal)-drop)
+	skipped := 0
+	for _, c := range journal {
+		if c.ChangeType == "ack" && skipped < drop {
+			skipped++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept, drop
 }
 
 func rolesFromInput(in models.CommitmentRolesInput) (scheduleRoles, error) {

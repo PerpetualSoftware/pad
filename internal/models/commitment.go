@@ -25,9 +25,12 @@ type Commitment struct {
 	RoleOffsets *CommitmentRoleOffsets `json:"role_offsets,omitempty"`
 	// OccurrenceKey names the outstanding occurrence; empty once the schedule
 	// ended.
-	OccurrenceKey string                   `json:"occurrence_key,omitempty"`
-	Journal       []CommitmentChange       `json:"journal"`
-	Conflicts     []CommitmentDateConflict `json:"conflicts,omitempty"`
+	OccurrenceKey string             `json:"occurrence_key,omitempty"`
+	Journal       []CommitmentChange `json:"journal"`
+	// JournalAcksOmitted counts the older ack rows Journal leaves out; it
+	// carries only the newest ack rows, and every other row type in full.
+	JournalAcksOmitted int                      `json:"journal_acks_omitted,omitempty"`
+	Conflicts          []CommitmentDateConflict `json:"conflicts,omitempty"`
 	// Forecast is the hand-set estimate, null when none. It is not a role: it
 	// arms nothing and passing it is never a missed deadline.
 	Forecast *CommitmentForecast `json:"forecast"`
