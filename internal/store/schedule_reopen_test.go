@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -436,7 +437,7 @@ func TestReopenPostgresSerializesWriters(t *testing.T) {
 	t.Run("double reopen", TestReopenConcurrentDoubleReopen)
 }
 
-func TestReopenDeadlineAndUnsupportedHistory(t *testing.T) {
+func TestReopenDeadlineAndHistoryDone(t *testing.T) {
 	for _, behavior := range []string{"stays_owed", "lapses"} {
 		t.Run(behavior, func(t *testing.T) {
 			f := newSchedFixture(t)
@@ -464,17 +465,15 @@ func TestReopenDeadlineAndUnsupportedHistory(t *testing.T) {
 			}
 			actual := rt("2026-10-26T08:00:00Z")
 			result := f.resolveForReopenTest(t, item, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "done", Actor: "user", ActualDoneAt: &actual, EndSchedule: true}, lapseNow)
-			before := reopenState(t, f.s)
-			_, err = f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: result.ResolutionID, Actor: "user"}, rt(lapseNow).Add(time.Minute))
-			if behavior == "lapses" {
-				var refusal *ReopenError
-				if !errors.As(err, &refusal) || refusal.Code != "reopen_not_supported" || !reflect.DeepEqual(before, reopenState(t, f.s)) {
-					t.Fatalf("history done refusal: %v", err)
-				}
-				return
+			if behavior == "lapses" && (result.ScheduleLastResolution == nil || !result.ScheduleLastResolution.CanReopen || result.ScheduleLastResolution.State != "history_done") {
+				t.Fatalf("history done availability %+v", result.ScheduleLastResolution)
 			}
+			_, err = f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: result.ResolutionID, Actor: "user"}, rt(lapseNow).Add(time.Minute))
 			if err != nil {
 				t.Fatal(err)
+			}
+			if behavior == "lapses" {
+				assertHistoryLapsedAgain(t, f, sc.ID, deadlineOccAt)
 			}
 			if f.deadlineEvidence(t) != 1 {
 				t.Fatal("genuine miss removed")
@@ -678,4 +677,246 @@ func (f *schedFixture) resolveForReopenTest(t *testing.T, item *models.Item, in 
 		t.Fatal(err)
 	}
 	return &resolvedForReopenTest{res, view.LastResolution}
+}
+
+// assertHistoryLapsedAgain proves a reopened late Done put the history row back
+// exactly as the deadline evaluator left it.
+func assertHistoryLapsedAgain(t *testing.T, f *schedFixture, scheduleID, at string) {
+	t.Helper()
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='lapsed' AND actor='system' AND comment_id IS NULL AND actual_done_at IS NULL AND actual_source IS NULL`, scheduleID, at); n != 1 {
+		t.Fatalf("lapsed rows at %s = %d, want 1", at, n)
+	}
+	if n := f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND state='done'`, scheduleID); n != 0 {
+		t.Fatalf("done rows = %d, want 0", n)
+	}
+}
+
+func (f *schedFixture) lateDoneForReopenTest(t *testing.T, sc *models.ItemSchedule, in ResolveInput, now string) *resolvedForReopenTest {
+	t.Helper()
+	item, err := f.s.GetItem(sc.ItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if in.State == "" {
+		in.State, in.Actor = "done", "user"
+	}
+	return f.resolveForReopenTest(t, item, in, now)
+}
+
+func TestReopenHistoryDoneRecurring(t *testing.T) {
+	f := newSchedFixture(t)
+	u := f.user(t, "late-done@example.com", "")
+	sc := lapseSchedule(t, f, true)
+	f.eval(t, lapseNow, 0)
+	lapsedRow := renegotiateRows(t, f.s, "schedule_occurrences", "")
+	schedule := renegotiateRows(t, f.s, "item_schedules", "")
+	reminders := renegotiateRows(t, f.s, "item_reminders", "")
+	item, err := f.s.GetItem(sc.ItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual := rt("2026-10-26T09:30:00Z")
+	res := f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt(deadlineOccAt), State: "done", Actor: "user", ActorUserID: u.ID, ActualDoneAt: &actual, Comment: f.comment(item, u.ID, "Done late")}, "2026-10-26T13:00:00Z")
+	if res.ScheduleLastResolution == nil || !res.ScheduleLastResolution.CanReopen || res.ScheduleLastResolution.State != "history_done" {
+		t.Fatalf("availability %+v", res.ScheduleLastResolution)
+	}
+	if want := OccurrenceKey(sc, deadlineOccAt, "2026-10-26T09:00:00"); res.ScheduleLastResolution.OccurrenceKey != want {
+		t.Fatalf("key %s want %s", res.ScheduleLastResolution.OccurrenceKey, want)
+	}
+	got, err := f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user", ActorUserID: u.ID}, rt("2026-10-26T13:01:00Z"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PreviousState != "history_done" || got.MissedRemoved != 0 || got.CommentID == "" {
+		t.Fatalf("result %+v", got)
+	}
+	assertHistoryLapsedAgain(t, f, sc.ID, deadlineOccAt)
+	if after := renegotiateRows(t, f.s, "schedule_occurrences", ""); after != lapsedRow {
+		t.Fatal("history row not restored byte for byte")
+	}
+	if renegotiateRows(t, f.s, "item_schedules", "") != schedule {
+		t.Fatal("reopen touched the schedule row")
+	}
+	if renegotiateRows(t, f.s, "item_reminders", "") != reminders {
+		t.Fatal("reopen touched the managed reminder")
+	}
+	if f.deadlineEvidence(t) != 1 {
+		t.Fatal("miss evidence removed")
+	}
+	if f.count(t, `SELECT COUNT(*) FROM comments WHERE id=? AND deleted_at IS NULL`, got.CommentID) != 1 {
+		t.Fatal("comment removed")
+	}
+	view, err := f.s.GetCommitment(f.ws.ID, sc.ItemID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	corrected := false
+	for _, row := range view.Journal {
+		if row.ChangeType == "done" && row.Role != nil && *row.Role == "deadline" {
+			corrected = row.ReversedBy == got.ChangeID
+		}
+	}
+	if !corrected {
+		t.Fatal("on-time correction not kept and marked reversed")
+	}
+	if view.LastResolution == nil || view.LastResolution.CanReopen || view.LastResolution.ReopenCode != "reopen_conflict" {
+		t.Fatalf("consumed checkpoint %+v", view.LastResolution)
+	}
+	// The restored row is lapsed again, so the late Done can be recorded anew.
+	f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt(deadlineOccAt)}, "2026-10-26T13:02:00Z")
+}
+
+func TestReopenHistoryDoneFloatingViewIdentity(t *testing.T) {
+	for _, allDay := range []bool{false, true} {
+		t.Run(strconv.FormatBool(allDay), func(t *testing.T) {
+			f := newSchedFixture(t)
+			u := f.user(t, "reopen-floating@example.com", "America/Los_Angeles")
+			f.assign(t, f.item.ID, u.ID)
+			start, storedAt, viewerAt, now := "2026-10-26T09:00", "2026-10-26T16:00:00Z", "2026-10-26T00:00:00Z", "2026-10-26T20:00:00Z"
+			if allDay {
+				start, storedAt, viewerAt, now = "2026-10-26", "2026-10-26T07:00:00Z", "2026-10-25T15:00:00Z", "2026-10-27T08:00:00Z"
+			}
+			sc, err := f.s.createScheduleAt(f.ws.ID, f.item.ID, models.ScheduleCreate{Kind: "check", Dtstart: start, Floating: true, Rrule: "FREQ=DAILY"}, rt("2026-10-01T00:00:00Z"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			f.exec(t, `UPDATE item_schedules SET roles_origin='native',deadline_days=0,deadline_secs=0,deadline_behavior='lapses' WHERE id=?`, sc.ID)
+			f.eval(t, now, 0)
+			lapsed := renegotiateRows(t, f.s, "schedule_occurrences", "")
+			view, err := time.LoadLocation("Asia/Tokyo")
+			if err != nil {
+				t.Fatal(err)
+			}
+			res := f.lateDoneForReopenTest(t, sc, ResolveInput{State: "done", Actor: "user", View: view, OccurrenceAt: rt(viewerAt)}, now)
+			if f.count(t, `SELECT COUNT(*) FROM schedule_occurrences WHERE schedule_id=? AND occurrence_at=? AND state='done'`, sc.ID, storedAt) != 1 {
+				t.Fatal("late Done did not land on the stored history row")
+			}
+			if _, err := f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user"}, rt(now).Add(time.Minute)); err != nil {
+				t.Fatal(err)
+			}
+			assertHistoryLapsedAgain(t, f, sc.ID, storedAt)
+			if renegotiateRows(t, f.s, "schedule_occurrences", "") != lapsed {
+				t.Fatal("floating history row not restored")
+			}
+		})
+	}
+}
+
+func TestReopenHistoryDoneInvalidation(t *testing.T) {
+	for _, name := range []string{"other lapsed done", "current done", "reminder fire", "item seq", "item close", "closed before done", "gate added", "journal write", "later lapse"} {
+		t.Run(name, func(t *testing.T) {
+			f := newSchedFixture(t)
+			sc := lapseSchedule(t, f, true)
+			f.eval(t, lapseNow, 0)
+			if name == "other lapsed done" {
+				f.eval(t, "2026-10-27T12:00:00Z", 0)
+			}
+			if name == "closed before done" {
+				if _, err := f.s.UpdateItem(sc.ItemID, models.ItemUpdate{Fields: ptr(`{"status":"done"}`), Force: true}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			doneAt := "2026-10-26T13:00:00Z"
+			if name == "other lapsed done" {
+				doneAt = "2026-10-27T12:30:00Z"
+			}
+			res := f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt(deadlineOccAt)}, doneAt)
+			reopenAt, code := rt("2026-10-27T13:30:00Z"), "reopen_conflict"
+			switch name {
+			case "other lapsed done":
+				f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt("2026-10-27T09:00:00Z")}, "2026-10-27T13:00:00Z")
+			case "current done":
+				f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt("2026-10-27T09:00:00Z")}, "2026-10-26T14:00:00Z")
+				reopenAt = rt("2026-10-26T14:01:00Z")
+			case "reminder fire":
+				if len(f.fire(t, "2026-10-27T09:01:00Z")) != 1 {
+					t.Fatal("reminder did not fire")
+				}
+			case "item seq":
+				if _, err := f.s.UpdateItem(sc.ItemID, models.ItemUpdate{Title: ptr("Changed title")}); err != nil {
+					t.Fatal(err)
+				}
+			case "item close":
+				if _, err := f.s.UpdateItem(sc.ItemID, models.ItemUpdate{Fields: ptr(`{"status":"done"}`), Force: true}); err != nil {
+					t.Fatal(err)
+				}
+			case "closed before done":
+				code = ""
+			case "gate added":
+				other := f.another(t, "blocker")
+				f.exec(t, `INSERT INTO schedule_gates(id,workspace_id,blocked_item_id,blocker_item_id,created_at) VALUES(?,?,?,?,?)`, newID(), f.ws.ID, sc.ItemID, other.ID, "2026-10-26T13:01:00Z")
+				code = "reopen_dependency"
+			case "journal write":
+				if _, err := f.s.updateScheduleAt(f.ws.ID, sc.ItemID, models.ScheduleUpdate{LeadMinutes: i(15)}, rt("2026-10-26T13:01:00Z")); err != nil {
+					t.Fatal(err)
+				}
+			case "later lapse":
+				f.eval(t, "2026-10-27T12:00:00Z", 0)
+			}
+			before := reopenState(t, f.s)
+			_, err := f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user"}, reopenAt)
+			if code == "" {
+				if err != nil {
+					t.Fatalf("closed item reopen: %v", err)
+				}
+				assertHistoryLapsedAgain(t, f, sc.ID, deadlineOccAt)
+				return
+			}
+			var refusal *ReopenError
+			if !errors.As(err, &refusal) || refusal.Code != code {
+				t.Fatalf("error %v want %s", err, code)
+			}
+			if !reflect.DeepEqual(before, reopenState(t, f.s)) {
+				t.Fatal("refusal wrote")
+			}
+		})
+	}
+}
+
+func TestReopenHistoryDoneGraphBlocked(t *testing.T) {
+	for _, kind := range []string{"gate", "milestone"} {
+		t.Run(kind, func(t *testing.T) {
+			f := newSchedFixture(t)
+			sc := lapseSchedule(t, f, true)
+			f.eval(t, lapseNow, 0)
+			other := f.another(t, "partner")
+			if kind == "gate" {
+				f.exec(t, `INSERT INTO schedule_gates(id,workspace_id,blocked_item_id,blocker_item_id,created_at) VALUES(?,?,?,?,?)`, newID(), f.ws.ID, other.ID, sc.ItemID, "x")
+			} else {
+				f.exec(t, `INSERT INTO milestone_children(id,workspace_id,schedule_id,child_item_id,kind,added_at) VALUES(?,?,?,?,'child','x')`, newID(), f.ws.ID, sc.ID, other.ID)
+			}
+			res := f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt(deadlineOccAt)}, "2026-10-26T13:00:00Z")
+			if res.ScheduleLastResolution == nil || res.ScheduleLastResolution.ReopenCode != "reopen_dependency" {
+				t.Fatalf("availability %+v", res.ScheduleLastResolution)
+			}
+			f.exec(t, `DELETE FROM schedule_gates WHERE workspace_id=?`, f.ws.ID)
+			f.exec(t, `UPDATE milestone_children SET removed_at='x' WHERE schedule_id=?`, sc.ID)
+			before := reopenState(t, f.s)
+			_, err := f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user"}, rt("2026-10-26T13:01:00Z"))
+			var refusal *ReopenError
+			if !errors.As(err, &refusal) || refusal.Code != "reopen_dependency" || !reflect.DeepEqual(before, reopenState(t, f.s)) {
+				t.Fatalf("dependency refusal: %v", err)
+			}
+		})
+	}
+}
+
+// The forward late Done does not consult error_code (it never touches the
+// current occurrence), so neither does its inverse.
+func TestReopenHistoryDoneIgnoresScheduleError(t *testing.T) {
+	f := newSchedFixture(t)
+	sc := lapseSchedule(t, f, true)
+	f.eval(t, lapseNow, 0)
+	f.exec(t, `UPDATE item_schedules SET error_code='unsupported' WHERE id=?`, sc.ID)
+	res := f.lateDoneForReopenTest(t, sc, ResolveInput{OccurrenceAt: rt(deadlineOccAt)}, "2026-10-26T13:00:00Z")
+	if res.ScheduleLastResolution == nil || !res.ScheduleLastResolution.CanReopen {
+		t.Fatalf("availability %+v", res.ScheduleLastResolution)
+	}
+	if _, err := f.s.reopenOccurrenceAt(f.ws.ID, sc.ItemID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user"}, rt("2026-10-26T13:01:00Z")); err != nil {
+		t.Fatal(err)
+	}
+	assertHistoryLapsedAgain(t, f, sc.ID, deadlineOccAt)
+	if got := f.reload(t, sc.ItemID); got.ErrorCode == nil || *got.ErrorCode != "unsupported" {
+		t.Fatal("reopen rewrote the schedule error")
+	}
 }
