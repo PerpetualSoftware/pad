@@ -47,9 +47,15 @@ describe('AgendaWeekStrip', () => {
 		mount({ entries: busy }); expect(tones()).toEqual(['bad', 'bad', 'owed', 'owed', 'quiet', 'quiet']);
 		cleanup();
 		mount({ entries: busy, compact: true }); expect(tones()).toEqual(['bad', 'bad', 'owed', 'owed']);
-		expect(button('2031-03-10')).toHaveAccessibleName(/8 entries, 4 owed/);
+		expect(button('2031-03-10')).toHaveAccessibleName(/8 entries, 3 owed/);
 		cleanup();
 		mount({ entries: busy.slice(0, 5), compact: true }); expect(tones()).toEqual(['owed', 'quiet', 'quiet', 'done']);
+	});
+	it('counts a lapsed occurrence as owed, since a late done is still accepted, and a missed one not', () => {
+		mount({ entries: [entry({ day: '2031-03-11', state: 'lapsed' }), entry({ state: 'missed' })] });
+		expect(button('2031-03-11')).toHaveAccessibleName('Tuesday 11 March, Today, 1 entry, 1 owed');
+		expect(button('2031-03-11').querySelector('.n')?.textContent).toBe('1 owed');
+		expect(button('2031-03-10')).toHaveAccessibleName('Monday 10 March, 1 entry');
 	});
 	it('claims nothing about a day that was not loaded, and no total for one partly loaded', () => {
 		const state = (day: string) => day === '2031-03-10' ? 'full' : day === '2031-03-11' ? 'partial' : 'none';

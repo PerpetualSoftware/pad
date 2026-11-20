@@ -351,10 +351,26 @@ export function attentionEntries(entries: AgendaEntry[], priorityList: AgendaWor
 	return [...found.values()].sort((a, b) => ATTENTION_ORDER.indexOf(a.reason) - ATTENTION_ORDER.indexOf(b.reason));
 }
 
+/**
+ * A day's schedule occurrences by what they ask of the owner. Owed: outstanding, acknowledged and
+ * lapsed, because a lapsed occurrence (deadline passed, unresolved) still accepts a late done.
+ * Done: done. Missed: missed, which is final. Entries that are not schedule occurrences are ignored.
+ */
+export function dayCounts(entries: AgendaEntry[]): { owed: number; done: number; missed: number } {
+	const counts = { owed: 0, done: 0, missed: 0 };
+	for (const entry of entries) {
+		if (entry.type !== 'schedule') continue;
+		if (isOpenState(entry.state) || entry.state === 'lapsed') counts.owed++;
+		else if (entry.state === 'done') counts.done++;
+		else if (entry.state === 'missed') counts.missed++;
+	}
+	return counts;
+}
+
 /** One line for a day heading: "2 owed · 1 done". Empty when the day has nothing owed, done or missed. */
 export function daySummary(entries: AgendaEntry[]): string {
-	const count = (...states: OccurrenceState[]) => entries.filter(entry => entry.type === 'schedule' && entry.state !== undefined && states.includes(entry.state)).length;
-	return ([[count('outstanding', 'acknowledged'), 'owed'], [count('done'), 'done'], [count('lapsed', 'missed'), 'missed']] as const)
+	const { owed, done, missed } = dayCounts(entries);
+	return ([[owed, 'owed'], [done, 'done'], [missed, 'missed']] as const)
 		.filter(([n]) => n > 0).map(([n, word]) => `${n} ${word}`).join(' · ');
 }
 

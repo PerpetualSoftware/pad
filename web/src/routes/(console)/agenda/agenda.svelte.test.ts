@@ -746,7 +746,7 @@ describe('week strip, attention band and states', () => {
   expect(within(band).getByText('3')).toBeTruthy(); expect(band.querySelector('[draggable="true"]')).toBeNull();
   expect(band.querySelector('li[data-ref="EX-40"] .time')?.textContent).toMatch(/Tue 3.*09:00/);
   expect([...daySection('2026-11-05').querySelectorAll('li[data-ref]')].map(li => li.getAttribute('data-ref'))).toEqual(['EX-30']);
-  expect(within(daySection('2026-11-05')).getByText('2 owed · 1 missed')).toBeTruthy();
+  expect(within(daySection('2026-11-05')).getByText('3 owed')).toBeTruthy();
   expect(stripDay('2026-11-05').querySelectorAll('.pip')).toHaveLength(3);
   h.view.mockResolvedValue({ next_occurrence: { at: '2026-11-03T14:00:00Z', wall: '2026-11-03T09:00:00' } });
   await fireEvent.click(within(band).getByRole('button', { name: 'Done EX-40' }));
@@ -757,7 +757,7 @@ describe('week strip, attention band and states', () => {
   h.agenda.mockResolvedValue(response([row(), lapsed])); await mount();
   const day = daySection('2026-11-06');
   expect(within(screen.getByRole('region', { name: 'Needs attention' })).getByText('Lapsed item')).toBeTruthy();
-  expect(within(day).getByText('1 missed')).toBeTruthy(); expect(day.querySelector('li[data-ref]')).toBeNull();
+  expect(within(day).getByText('1 owed')).toBeTruthy(); expect(day.querySelector('li[data-ref]')).toBeNull();
   expect(within(day).getByText('Listed under Needs attention.')).toBeTruthy(); expect(within(day).queryByText('Nothing scheduled.')).toBeNull();
   expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy();
  });
@@ -1237,7 +1237,7 @@ describe('agenda Month page', () => {
  it('lists attention entries first in day detail, under a title and summary for the day', async () => {
   h.agenda.mockResolvedValue(crowded()); render(Agenda); await screen.findByRole('grid'); await fireEvent.click(dateButton('2026-11-05'));
   const detail = screen.getByRole('dialog', { name: 'Thursday, 5 November 2026, Today' });
-  expect(detail.querySelector('.subject')).toHaveTextContent('5 entries · 4 owed · 1 missed');
+  expect(detail.querySelector('.subject')).toHaveTextContent('5 entries · 5 owed');
   expect([...detail.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-40', 'EX-41', 'EX-30', 'EX-31', 'EX-32']);
   expect(detail.textContent).not.toContain('Time zone');
  });

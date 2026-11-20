@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { on } from 'svelte/events';
-	import { isSnoozed, deadlineTone, isOpenState, longDay, roleDay } from '$lib/calendar/presentation';
+	import { isSnoozed, deadlineTone, isOpenState, dayCounts, longDay, roleDay } from '$lib/calendar/presentation';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
@@ -134,7 +134,7 @@
 		const state = loadState(day);
 		const rows = state === 'none' ? [] : entries.filter(entry => entry.day === day && (entry.type === 'schedule' || entry.type === 'date'));
 		const tones = rows.map(tone).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
-		const owed = rows.filter(entry => entry.type === 'schedule' && (isOpenState(entry.state) || entry.state === 'lapsed' || entry.state === 'missed')).length;
+		const { owed } = dayCounts(rows);
 		return [day, { state, count: rows.length, owed, tones: tones.slice(0, compact ? MAX_PIPS_COMPACT : MAX_PIPS) }] as const;
 	})));
 	// One tab stop: the day last focused, else the selected day, else today, else the first.
