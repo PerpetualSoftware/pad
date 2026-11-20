@@ -9,7 +9,9 @@
 // Why each exists: entities' decode-data table uses atob when present and
 // falls back to Buffer (goja failed at load with `Buffer is not defined`);
 // lib0/webcrypto (yjs) reads crypto.subtle and crypto.getRandomValues at
-// module load.
+// module load; cssomnom (linkedom's CSS layer) builds an
+// Intl.NumberFormat("en-US", {useGrouping: false, ...}) at module load (goja
+// failed at load with `Intl is not defined`).
 const g = globalThis as any;
 const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
 if (typeof g.atob !== 'function') {
@@ -98,6 +100,101 @@ if (JSON.stringify('(text | image)*'.split(/\s*(?=\b|\W|$)/)) !== '["(","text","
 			return A;
 		},
 	});
+}
+// Exactly the slice of Intl.NumberFormat cssomnom uses: en-US, no grouping,
+// minimumFractionDigits 0, an integer maximumFractionDigits. Anything else
+// throws, so a dependency that needs more fails the bundle load in tests
+// instead of formatting silently wrong. Rounds half away from zero on the
+// shortest round-trip decimal digits (what Intl does), not on the binary
+// value: toFixed would give "0" for 5e-7 where Intl gives "0.000001".
+if (typeof g.Intl === 'undefined') {
+	const unsupported = (what: string): never => {
+		throw new TypeError('Intl.NumberFormat polyfill: unsupported ' + what);
+	};
+	class NumberFormat {
+		private readonly maxFD: number;
+		constructor(locales?: unknown, options?: unknown) {
+			const okLocale =
+				locales === undefined ||
+				locales === 'en-US' ||
+				(Array.isArray(locales) && locales.length === 1 && locales[0] === 'en-US');
+			if (!okLocale) unsupported('locale ' + JSON.stringify(locales));
+			// Grouping is not implemented, so useGrouping: false must be explicit.
+			if (options === null || typeof options !== 'object') unsupported('options (useGrouping: false is required)');
+			const o = options as Record<string, unknown>;
+			for (const k of Object.keys(o)) {
+				if (k !== 'useGrouping' && k !== 'minimumFractionDigits' && k !== 'maximumFractionDigits') unsupported('option ' + k);
+			}
+			if (o.useGrouping !== false) unsupported('useGrouping ' + String(o.useGrouping));
+			if (o.minimumFractionDigits !== undefined && o.minimumFractionDigits !== 0) {
+				unsupported('minimumFractionDigits ' + String(o.minimumFractionDigits));
+			}
+			const max = o.maximumFractionDigits === undefined ? 3 : o.maximumFractionDigits;
+			if (typeof max !== 'number' || !Number.isInteger(max) || max < 0 || max > 20) {
+				unsupported('maximumFractionDigits ' + String(max));
+			}
+			this.maxFD = max as number;
+		}
+		format(value: unknown): string {
+			const x = Number(value);
+			if (Number.isNaN(x)) return 'NaN';
+			const sign = x < 0 || Object.is(x, -0) ? '-' : '';
+			if (!Number.isFinite(x)) return sign + '∞';
+			// Shortest round-trip digits, exponent form expanded: the digit
+			// string plus how many of them precede the decimal point (may be
+			// <= 0 or exceed its length).
+			let s = String(Math.abs(x));
+			let exp = 0;
+			const e = s.indexOf('e');
+			if (e >= 0) {
+				exp = Number(s.slice(e + 1));
+				s = s.slice(0, e);
+			}
+			const dot = s.indexOf('.');
+			const digits = dot < 0 ? s : s.slice(0, dot) + s.slice(dot + 1);
+			const intLen = (dot < 0 ? s.length : dot) + exp;
+			let int: string, frac: string;
+			if (intLen <= 0) {
+				int = '0';
+				frac = '0'.repeat(-intLen) + digits;
+			} else if (intLen >= digits.length) {
+				int = digits + '0'.repeat(intLen - digits.length);
+				frac = '';
+			} else {
+				int = digits.slice(0, intLen);
+				frac = digits.slice(intLen);
+			}
+			const n = this.maxFD;
+			if (frac.length > n) {
+				const up = frac.charCodeAt(n) >= 53; // '5' or above
+				frac = frac.slice(0, n);
+				if (up) {
+					const d = (int + frac).split('');
+					let i = d.length - 1;
+					while (i >= 0 && d[i] === '9') d[i--] = '0';
+					if (i >= 0) d[i] = String.fromCharCode(d[i].charCodeAt(0) + 1);
+					else d.unshift('1');
+					const all = d.join('');
+					int = all.slice(0, all.length - n);
+					frac = all.slice(all.length - n);
+				}
+			}
+			int = int.replace(/^0+(?=\d)/, '');
+			frac = frac.replace(/0+$/, '');
+			return sign + int + (frac ? '.' + frac : '');
+		}
+		resolvedOptions() {
+			return {
+				locale: 'en-US',
+				numberingSystem: 'latn',
+				style: 'decimal',
+				useGrouping: false,
+				minimumFractionDigits: 0,
+				maximumFractionDigits: this.maxFD,
+			};
+		}
+	}
+	g.Intl = { NumberFormat };
 }
 if (typeof g.btoa !== 'function') {
 	g.btoa = (s: string): string => {
