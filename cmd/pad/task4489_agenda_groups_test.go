@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -14,8 +16,8 @@ func TestAgendaRecipientFlagMapsToQuery(t *testing.T) {
 		args []string
 		want string // "" means no recipient is sent
 	}{
-		{"default", nil, "me"},
-		{"me", []string{"--recipient", "me"}, "me"},
+		{"default", nil, "user-viewer"},
+		{"me", []string{"--recipient", "me"}, "user-viewer"},
 		{"all", []string{"--recipient", "all"}, ""},
 		{"id", []string{"--recipient", "user-123"}, "user-123"},
 	} {
@@ -128,5 +130,31 @@ func TestAgendaGroupsPersonalOnlyForMeWithNoUser(t *testing.T) {
 	}
 	if strings.Contains(out, "run with --recipient me") {
 		t.Errorf("told a default (me) caller to pass --recipient me:\n%s", out)
+	}
+}
+
+// --recipient me is resolved by the CLI, so "me" never reaches a server that
+// would read it as a user ID; a 401 from /auth/me (an open instance) is the
+// workspace scope.
+func TestAgendaRecipientMeOnOpenInstanceSendsNone(t *testing.T) {
+	var queries []string
+	h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v1/auth/me" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error":{"code":"unauthorized","message":"Not logged in"}}`)
+			return
+		}
+		if r.URL.Path == "/api/v1/workspaces/test/agenda" {
+			queries = append(queries, r.URL.RawQuery)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, agendaEmptyWindow+`,"priority_list":[],"priority_list_complete":true,"waiting_on":[],"waiting_on_complete":true,"no_date":[],"no_date_complete":true,"no_date_scope":"personal_only"}`)
+	})
+	if _, _, err := tzRun(t, tzCLIWithLocal(t, h, time.UTC), "item", "remind", "agenda", "--from", "2031-03-10"); err != nil {
+		t.Fatal(err)
+	}
+	if len(queries) != 1 || strings.Contains(queries[0], "recipient") {
+		t.Fatalf("agenda queries=%q; want one with no recipient", queries)
 	}
 }

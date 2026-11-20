@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"regexp"
 	"strconv"
@@ -846,6 +847,11 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 				fmt.Fprintf(os.Stderr, "note: the window was shortened to the server's 92-day limit; it ends %s\n", end.In(loc).Format("2006-01-02 15:04 MST"))
 			}
 			client, _ := getClient()
+			if recipient == "me" {
+				if sendRecipient, err = agendaCallerID(client); err != nil {
+					return err
+				}
+			}
 			raw, err := client.GetAgenda(getWorkspace(), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), tz, sendRecipient)
 			if err != nil {
 				return err
@@ -1067,6 +1073,24 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 		fmt.Fprintf(out, "%s  unavailable  %s\n", u.ItemRef, u.Code)
 	}
 	renderAgendaGroups(out, resp, loc, recipient)
+}
+
+// agendaCallerID resolves --recipient me to the caller's user ID. It is
+// resolved here rather than sent as "me" so a server that predates the me
+// keyword (which reads it as a user ID and answers empty, complete groups)
+// still lists the caller's work. A caller with no user (401 from /auth/me, an
+// open instance) gets the workspace scope: no recipient, and the server's
+// personal_only marker.
+func agendaCallerID(client *cli.Client) (string, error) {
+	u, err := client.GetCurrentUser()
+	if err != nil {
+		var apiErr *cli.APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
+			return "", nil
+		}
+		return "", fmt.Errorf("--recipient me: cannot read your user: %w", err)
+	}
+	return strings.TrimSpace(u.ID), nil
 }
 
 // renderAgendaGroups prints priority_list, waiting_on and no_date, each under
