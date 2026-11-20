@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/cli"
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 // ─────────────────────────────────────────────────────────────────────
@@ -1955,7 +1956,7 @@ func classifyCommitmentStderr(message string) (ErrorCode, string, json.RawMessag
 		"commitment link or gate not found":                                                                    ErrScheduleLinkNotFound,
 		"schedule link not found":                                                                              ErrScheduleLinkNotFound,
 		"this linked change needs a commitment move preview before applying":                                   ErrCommitmentPreviewRequired,
-		"this occurrence has not fired yet, so there is nothing to acknowledge.":                               ErrOccurrenceNotFired,
+		strings.ToLower(store.ErrOccurrenceNotFired.Error()):                                                   ErrOccurrenceNotFired,
 		"invalid commitment link configuration":                                                                ErrLinkInvalid,
 		"the schedule has an outstanding occurrence; there is nothing ended to dismiss.":                       ErrNotEnded,
 	}

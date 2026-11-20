@@ -4132,6 +4132,8 @@ export interface ItemCommitmentView {
  role_offsets?: CommitmentRoleOffsets;
  occurrence_key?: string;
  journal: CommitmentChange[];
+ /** Older `ack` rows left out of `journal`, which carries the newest 50; absent when none. */
+ journal_acks_omitted?: number;
  id: string;
  dtstart: string;
  tz?: string;
