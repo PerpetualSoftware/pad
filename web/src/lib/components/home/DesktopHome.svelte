@@ -17,7 +17,7 @@
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import AgendaCompleted from '$lib/components/calendar/AgendaCompleted.svelte';
 	import { audienceCounts, filterAudience, type AudienceView } from '$lib/calendar/audience';
-	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, outstandingMatches, shiftDay, dayWindow, weekLabel, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, dayCounts, outstandingMatches, shiftDay, dayWindow, weekLabel, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaResponse, AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
@@ -76,7 +76,7 @@
 	const todayCompleted = $derived(filterAudience((homeOverview.agenda?.entries ?? []).filter(e => isCompleted(e) && e.day === today), audience));
 	const todayEntries = $derived(entries.filter(e => e.day === today && (e.type === 'schedule' || e.type === 'date')));
 	const counts = $derived(audienceCounts(todayEntries));
-	const owed = $derived(todayEntries.filter(e => e.type === 'schedule' && isOpenState(e.state)).length);
+	const owed = $derived(dayCounts(todayEntries).owed);
 	const isPastDeadline = (entry: AgendaEntry) => !!((entry.overdue && !isSnoozed(entry)) || (entry.roles?.deadline && deadlineTone(entry.roles.deadline, zone, new Date()) === 'passed'));
 	const attention = $derived.by(() => {
 		const rows = attentionEntries(entries, homeOverview.agenda?.priority_list ?? []).flatMap(row => {
@@ -89,6 +89,7 @@
 	const pastDeadline = $derived(attention.filter(isPastDeadline).length);
 	const todayRows = $derived(filterAudience(todayEntries, audience).filter(e => !attention.some(a => entryKey(a) === entryKey(e))));
 	const agents = $derived(filterAudience(todayEntries, 'agents'));
+	const agentCounts = $derived(dayCounts(agents));
 	const greeting = $derived.by(() => {
 		const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hourCycle: 'h23', timeZone: zone }).format(new Date()));
 		return `Good ${hour < 12 ? 'morning' : hour < 18 ? 'afternoon' : 'evening'}${authStore.user?.name?.trim() ? ', ' + authStore.user.name.trim().split(/\s+/)[0] : ''}`;
@@ -168,7 +169,7 @@
 			{#if !homeOverview.loading && !todayRows.length}<p class="empty">Nothing scheduled today.</p>{/if}
 			{#if showCompleted}<ul><AgendaCompleted {audience} completed={todayCompleted} {zone} compact={viewport.isMobile} onaction={action} /></ul>{/if}
 			{#if showCompleted && homeOverview.agenda?.events_truncated}<p class="empty">Some completed items today may not be shown. <a href="/agenda">Open the full agenda →</a></p>{/if}
-			<footer><span>Agents: {agents.length} reminders today, {agents.filter(e => isOpenState(e.state)).length} owed, {agents.filter(e => e.state === 'missed' || e.state === 'lapsed').length} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
+			<footer><span>Agents: {agents.length} reminders today, {agentCounts.owed} owed, {agentCounts.missed} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
 	</div>
 	<section class="workspaces" aria-label="Workspaces">
