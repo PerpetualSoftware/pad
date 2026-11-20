@@ -76,7 +76,7 @@
 	const todayCompleted = $derived(filterAudience((homeOverview.agenda?.entries ?? []).filter(e => isCompleted(e) && e.day === today), audience));
 	const todayEntries = $derived(entries.filter(e => e.day === today && (e.type === 'schedule' || e.type === 'date')));
 	const counts = $derived(audienceCounts(todayEntries));
-	const owed = $derived(dayCounts(todayEntries).owed);
+	const owed = $derived(dayCounts(filterAudience(todayEntries, audience)).owed);
 	const isPastDeadline = (entry: AgendaEntry) => !!((entry.overdue && !isSnoozed(entry)) || (entry.roles?.deadline && deadlineTone(entry.roles.deadline, zone, new Date()) === 'passed'));
 	const attention = $derived.by(() => {
 		const rows = attentionEntries(entries, homeOverview.agenda?.priority_list ?? []).flatMap(row => {
@@ -145,7 +145,7 @@
 <div class="home">
 	<header class="greeting">
 		<h1>{greeting}</h1>
-		<div class="summary"><p><span class="summary-date">{date} · </span><strong>{homeOverview.needs?.total ?? '…'}</strong> need you · <strong>{owed}</strong> owed today · <strong>{pastDeadline}</strong> past deadline</p><a href="/agenda">Open the full agenda →</a></div>
+		<div class="summary"><p><span class="summary-date">{`${date} · `}</span><strong>{homeOverview.needs?.total ?? '…'}</strong> need you · <strong>{owed}</strong> owed today · <strong>{pastDeadline}</strong> past deadline</p><a href="/agenda">Open the full agenda →</a></div>
 	</header>
 	{#if homeOverview.error}<p role="alert">{homeOverview.error} <button onclick={() => homeOverview.load('/', true)}>Retry</button></p>{/if}
 	{#if actionError}<p role="alert">{actionError}</p>{/if}
@@ -169,7 +169,7 @@
 			{#if !homeOverview.loading && !todayRows.length}<p class="empty">Nothing scheduled today.</p>{/if}
 			{#if showCompleted}<ul><AgendaCompleted {audience} completed={todayCompleted} {zone} compact={viewport.isMobile} onaction={action} /></ul>{/if}
 			{#if showCompleted && homeOverview.agenda?.events_truncated}<p class="empty">Some completed items today may not be shown. <a href="/agenda">Open the full agenda →</a></p>{/if}
-			<footer><span>Agents: {agents.length} reminders today, {agentCounts.owed} owed, {agentCounts.missed} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
+			<footer><span>Agents: {agents.length} {agents.length === 1 ? 'reminder' : 'reminders'} today, {agentCounts.owed} owed, {agentCounts.missed} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
 	</div>
 	<section class="workspaces" aria-label="Workspaces">
