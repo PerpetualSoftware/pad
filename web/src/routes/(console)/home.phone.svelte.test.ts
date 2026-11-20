@@ -177,7 +177,7 @@ it('swipes Home to next week, fetches only the strip and returns to This week wi
 	const { goto } = await import('$app/navigation');
 	await stripPointer(firstStripDay(), 'pointerdown', 200);
 	await stripPointer(firstStripDay(), 'pointerup', 200);
-	await fireEvent.click(firstStripDay()); expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-09');
+	await fireEvent.click(firstStripDay()); expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-09&audience=mine');
 });
 
 it('opens the agenda on the tapped day after swiping to another week (BUG-4569)', async () => {
@@ -192,7 +192,7 @@ it('opens the agenda on the tapped day after swiping to another week (BUG-4569)'
 	await stripPointer(target, 'pointerup', 200);
 	await fireEvent.click(target);
 	expect(goto).toHaveBeenCalledTimes(1);
-	expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-18');
+	expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-18&audience=mine');
 });
 
 it('keeps the second swipe response when the first response arrives late', async () => {
@@ -263,4 +263,42 @@ it.each([[1, 'Agents: 1 reminder today'], [2, 'Agents: 2 reminders today'], [0, 
 	await mountAudienceHome(Array.from({ length: n }, (_, i) => agentOwed(`TASK-6${i}`)));
 	const footer = screen.getByRole('region', { name: 'Today' }).querySelector('footer')!;
 	expect(footer.textContent).toContain(`${text}, ${n} owed, 0 missed`);
+});
+
+// TASK-4709: the week strip follows the audience toggle, and a strip tap carries the audience to the Agenda.
+const todayStripDay = () => document.querySelector<HTMLButtonElement>('[data-strip-day="2026-11-13"]')!;
+it('counts this week’s strip cells for the audience the toggle shows', async () => {
+	await mountAudienceHome([mineOwed, agentOwed('TASK-52')]);
+	const today = within(screen.getByRole('region', { name: 'Today' }));
+	expect(todayStripDay()).toHaveAccessibleName(/1 entry, 1 owed/);
+	await fireEvent.click(today.getByRole('button', { name: /^All/ }));
+	expect(todayStripDay()).toHaveAccessibleName(/2 entries, 2 owed/);
+	await fireEvent.click(today.getByRole('button', { name: /^Agents/ }));
+	expect(todayStripDay()).toHaveAccessibleName(/1 entry, 1 owed/);
+});
+
+it('counts a swiped week’s strip cells for the audience the toggle shows', async () => {
+	await mountAudienceHome([mineOwed]);
+	h.agenda.mockResolvedValueOnce(weekResponse([weekEntry('2026-11-17', { item_ref: 'TASK-71' }), weekEntry('2026-11-17', { item_ref: 'TASK-72', audience: 'agent' })]));
+	await swipeStrip(screen.getByRole('group', { name: 'Days' }));
+	expect(firstStripDay().dataset.stripDay).toBe('2026-11-16');
+	const cell = () => document.querySelector<HTMLButtonElement>('[data-strip-day="2026-11-17"]')!;
+	expect(cell()).toHaveAccessibleName(/1 entry/);
+	const today = within(screen.getByRole('region', { name: 'Today' }));
+	await fireEvent.click(today.getByRole('button', { name: /^All/ }));
+	expect(cell()).toHaveAccessibleName(/2 entries/);
+	await fireEvent.click(today.getByRole('button', { name: /^Agents/ }));
+	expect(cell()).toHaveAccessibleName(/1 entry/);
+});
+
+it('opens the agenda on the tapped day in the audience the toggle shows', async () => {
+	await mountAudienceHome([mineOwed, agentOwed('TASK-52')]);
+	await fireEvent.click(within(screen.getByRole('region', { name: 'Today' })).getByRole('button', { name: /^Agents/ }));
+	const { goto } = await import('$app/navigation');
+	vi.mocked(goto).mockClear();
+	await stripPointer(todayStripDay(), 'pointerdown', 200);
+	await stripPointer(todayStripDay(), 'pointerup', 200);
+	await fireEvent.click(todayStripDay());
+	expect(goto).toHaveBeenCalledTimes(1);
+	expect(goto).toHaveBeenCalledWith('/agenda?day=2026-11-13&audience=agents');
 });
