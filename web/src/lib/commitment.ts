@@ -278,3 +278,9 @@ export function describeGate(gate: CommitmentGateView | CommitmentGate, otherLab
  if (gate.opened_at || gate.outcome === 'succeeded') return `Released by ${otherLabel}`;
  return gate.outcome === 'pending' ? `Waiting for ${otherLabel}` : `${otherLabel} ${gate.outcome} — decision needed`;
 }
+
+/** A gate this item blocks, from the blocker's side: otherLabel is the item it holds. */
+export function describeDependent(gate: CommitmentGate, otherLabel = 'Linked item'): string {
+ if (gate.opened_at || gate.outcome === 'succeeded') return `Released ${otherLabel}`;
+ return gate.outcome === 'pending' ? `Releases ${otherLabel} when done` : `Holding ${otherLabel}: this ${gate.outcome}, decision needed`;
+}

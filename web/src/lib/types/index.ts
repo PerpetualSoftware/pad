@@ -4240,6 +4240,8 @@ export interface CommitmentGateView {
  state: 'released' | 'waiting' | 'blocked_needs_decision';
  gates: CommitmentGate[];
  unresolved?: string[];
+ /** The gates this item blocks (the items its success releases); readable live ones only, absent when none. state and unresolved never describe them. */
+ dependents?: CommitmentGate[];
 }
 export interface CommitmentDateConflict {
  role: CommitmentLinkRole;
