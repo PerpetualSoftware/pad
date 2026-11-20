@@ -3,7 +3,7 @@
  import { api } from '$lib/api/client';
  import { authStore } from '$lib/stores/auth.svelte';
  import { browserZone } from '$lib/timezone';
- import { describeGate, describeLinkOffset, type ItemCommitmentSnapshot } from '$lib/commitment';
+ import { describeDependent, describeGate, describeLinkOffset, type ItemCommitmentSnapshot } from '$lib/commitment';
  import { formatItemRef, itemUrlId, type CommitmentGateView, type Item, type PaneTarget } from '$lib/types';
  import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 
@@ -29,6 +29,7 @@
  const links = $derived(result?.source.view?.links ?? []);
  const gates = $derived(result?.gates);
  const hasGates = $derived(gates && (gates.gates.length > 0 || gates.state !== 'released'));
+ const dependents = $derived(gates?.dependents ?? []);
 
  async function load() {
   const ticket = ++generation;
@@ -43,7 +44,8 @@
   const current = () => !disposed && ticket === generation && target === source;
   const ids = new Set([
    ...(target.view?.links ?? []).map(link => link.child_item_id === target.itemId ? link.parent_item_id : link.child_item_id),
-   ...gateView.gates.map(gate => gate.blocker_item_id)
+   ...gateView.gates.map(gate => gate.blocker_item_id),
+   ...(gateView.dependents ?? []).map(gate => gate.blocked_item_id)
   ]);
   const entries = await Promise.all([...ids].map(async id => {
    const known = previous?.items[id];
@@ -77,7 +79,7 @@
  {parts[0]}{#if other?.href}<a href={other.href} onclick={(event) => navigate(event, other)}>{other.label}</a>{:else}<span>{other?.label ?? 'Linked item'}</span>{/if}{parts[1]}
 {/snippet}
 
-{#if links.length || hasGates}
+{#if links.length || hasGates || dependents.length}
  <section class="commitment-links" aria-label="Date relationships">
   <h3>Date relationships</h3>
   {#each links as link (link.id)}
@@ -87,6 +89,7 @@
    <p class="aggregate">{describeGate(gates)}</p>
    {#each gates.gates as gate (gate.id)}<p>{@render sentence(describeGate(gate, '\u0000'), gate.blocker_item_id)}</p>{/each}
   {/if}
+  {#each dependents as gate (gate.id)}<p>{@render sentence(describeDependent(gate, '\u0000'), gate.blocked_item_id)}</p>{/each}
  </section>
 {/if}
 

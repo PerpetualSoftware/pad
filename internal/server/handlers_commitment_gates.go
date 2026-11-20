@@ -64,6 +64,20 @@ func (s *Server) handleDeleteCommitmentGate(w http.ResponseWriter, r *http.Reque
 	}
 	w.WriteHeader(204)
 }
+
+// itemGateView is an item's gate view for one reader: the gates holding it, and
+// the dependents it releases. Agenda and work-list reads keep ScheduleGates.
+func (s *Server) itemGateView(workspaceID, itemID string, access models.CommitmentAccess) (*models.ScheduleGateView, error) {
+	view, err := s.store.ScheduleGates(workspaceID, itemID, access)
+	if err != nil {
+		return nil, err
+	}
+	if view.Dependents, err = s.store.ScheduleGateDependents(workspaceID, itemID, access); err != nil {
+		return nil, err
+	}
+	return view, nil
+}
+
 func (s *Server) handleGetCommitmentGates(w http.ResponseWriter, r *http.Request) {
 	ws, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -77,7 +91,7 @@ func (s *Server) handleGetCommitmentGates(w http.ResponseWriter, r *http.Request
 	if s.writeGraphError(w, r, err) {
 		return
 	}
-	view, err := s.store.ScheduleGates(ws, item.ID, access)
+	view, err := s.itemGateView(ws, item.ID, access)
 	if s.writeGraphError(w, r, err) {
 		return
 	}

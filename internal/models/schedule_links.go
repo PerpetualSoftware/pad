@@ -199,4 +199,9 @@ type ScheduleGateView struct {
 	State      string         `json:"state"` // released | waiting | blocked_needs_decision
 	Gates      []ScheduleGate `json:"gates"`
 	Unresolved []string       `json:"unresolved,omitempty"` // blocker item ids, readable only
+	// Dependents are the gates whose blocker is this item: the items its
+	// success releases. Only live dependents the reader can read appear, with no
+	// count of the rest. State and Unresolved stay about the gates holding this
+	// item, never its dependents.
+	Dependents []ScheduleGate `json:"dependents,omitempty"`
 }

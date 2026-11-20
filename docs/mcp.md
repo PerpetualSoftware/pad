@@ -856,6 +856,7 @@ Gates release permanently when the blocker succeeds. A scheduled blocker uses
 the occurrence fixed at creation; an unscheduled blocker uses its item status. Cancelled,
 lapsed or skipped blockers require a decision (`blocked_needs_decision`); a gate
 is not a time offset. Read `gates.state` and the readable `gates.gates` details.
+The gate view also carries `gates.dependents`, the readable live items this one releases.
 
 For the CLI use `pad remind link add|list|edit|rm`, `pad remind gate add|list|rm`,
 and `pad remind move <ref> --role <role> --to <RFC3339-or-wall>`; `pad item remind`

@@ -136,7 +136,7 @@ func (s *Server) buildCommitmentView(r *http.Request, workspaceID string, item *
 		if err != nil {
 			return nil, err
 		}
-		out.Gates, err = s.store.ScheduleGates(workspaceID, item.ID, access)
+		out.Gates, err = s.itemGateView(workspaceID, item.ID, access)
 		if err != nil {
 			return nil, err
 		}

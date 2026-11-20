@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildCommitmentCreate, buildCommitmentEdit, COMMITMENT_RECURRENCES, commitmentAgendaEntry, commitmentDisplayState, describeGate, describeLinkOffset, describeRecurrence, editStateFromView, offsetWall, wallOffset, type CommitmentEditState } from './commitment';
+import { buildCommitmentCreate, buildCommitmentEdit, COMMITMENT_RECURRENCES, commitmentAgendaEntry, commitmentDisplayState, describeDependent, describeGate, describeLinkOffset, describeRecurrence, editStateFromView, offsetWall, wallOffset, type CommitmentEditState } from './commitment';
 import { collection, gate, item, link, otherId, view } from './test/commitmentFixtures';
 import type { ItemCommitmentView } from '$lib/types';
 
@@ -87,6 +87,12 @@ describe('incoming gates', () => {
   expect(describeGate(gate({ outcome }), 'Prep')).toBe(text);
  });
  it('opened_at is evidence of release', () => expect(describeGate(gate({ opened_at: '2031-03-09' }), 'Prep')).toBe('Released by Prep'));
+});
+describe('dependents', () => {
+ it.each([['pending', 'Releases Ship when done'], ['succeeded', 'Released Ship'], ['cancelled', 'Holding Ship: this cancelled, decision needed'], ['lapsed', 'Holding Ship: this lapsed, decision needed'], ['skipped', 'Holding Ship: this skipped, decision needed']] as const)('%s dependent', (outcome, text) => {
+  expect(describeDependent(gate({ outcome }), 'Ship')).toBe(text);
+ });
+ it('opened_at is evidence of release', () => expect(describeDependent(gate({ outcome: 'lapsed', opened_at: '2031-03-09' }), 'Ship')).toBe('Released Ship'));
 });
 describe('agenda entry adapter', () => {
  const ctx = { wsSlug: 'work', item, collection, zone: 'UTC' };

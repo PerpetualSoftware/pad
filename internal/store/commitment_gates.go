@@ -713,6 +713,56 @@ func (s *Store) ScheduleGates(workspaceID, itemID string, access models.Commitme
 	return view, nil
 }
 
+// ScheduleGateDependents is what one reader is shown of the gates an item
+// blocks: the items its success releases. It is DISPLAY only, like
+// ScheduleGates, and judges each gate the same way. A gate whose blocked item
+// the reader cannot read (hidden, soft-deleted, or outside the workspace) is
+// left out with no count, so all-hidden reads as none. The slice is never nil.
+func (s *Store) ScheduleGateDependents(workspaceID, itemID string, access models.CommitmentAccess) ([]models.ScheduleGate, error) {
+	if !access.Readable[itemID] {
+		return nil, ErrScheduleNotFound
+	}
+	rows, err := s.db.Query(s.q(`SELECT g.id,g.blocked_item_id,g.blocker_schedule_id,g.blocker_occurrence_key,g.opened_at,g.created_at FROM schedule_gates g
+ WHERE g.blocker_item_id=? AND g.workspace_id=? ORDER BY g.id`), itemID, workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("read schedule gate dependents: %w", err)
+	}
+	var gates []gateRow
+	for rows.Next() {
+		g := gateRow{}
+		var opened sql.NullString
+		g.BlockerItemID = itemID
+		if err := rows.Scan(&g.ID, &g.BlockedItemID, &g.blockerSchedule, &g.key, &opened, &g.CreatedAt); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if opened.Valid {
+			g.OpenedAt = &opened.String
+		}
+		if access.Readable[g.BlockedItemID] {
+			gates = append(gates, g)
+		}
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	out := []models.ScheduleGate{}
+	eval := &gateEvaluator{s: s, q: s.db, workspaceID: workspaceID}
+	for _, g := range gates {
+		outcome := schedule.OutcomeSucceeded
+		if g.OpenedAt == nil {
+			if outcome, err = eval.outcome(g); err != nil {
+				return nil, err
+			}
+		}
+		g.Outcome = string(outcome)
+		out = append(out, g.ScheduleGate)
+	}
+	return out, nil
+}
+
 // evaluateAndOpenGates records successful gates and their notices atomically.
 func (s *Store) evaluateAndOpenGates(workspaceID, itemID string) (*gateEvaluation, error) {
 	tx, err := s.db.Begin()
