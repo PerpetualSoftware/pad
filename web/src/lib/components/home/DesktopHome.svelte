@@ -41,6 +41,8 @@
 	const days = $derived(Array.from({ length: 7 }, (_, i) => shiftDay(firstDay, i)));
 	const entries = $derived(filterEntries(homeOverview.agenda?.entries ?? [], false));
 	const stripEntries = $derived(weekOffset === 0 ? entries : filterEntries(stripAgenda?.entries ?? [], false));
+	// The strip follows the audience toggle, so its counts agree with the summary and Today.
+	const stripAudienceEntries = $derived(filterAudience(stripEntries, audience));
 	const stripLoad = () => weekOffset === 0
 		? homeOverview.loading ? 'none' : homeOverview.agenda?.window_complete === false ? 'partial' : 'full'
 		: !stripAgenda ? 'none' : stripAgenda.window_complete === false ? 'partial' : 'full';
@@ -120,9 +122,9 @@
 	function openAgenda() {
 		void goto('/agenda');
 	}
-	// A strip tap opens the agenda on the day tapped, in whichever week the strip shows.
+	// A strip tap opens the agenda on the day tapped, in whichever week the strip shows, in the audience the strip counted.
 	function openAgendaOn(day: string) {
-		void goto(`/agenda?day=${day}`);
+		void goto(`/agenda?day=${day}&audience=${audience}`);
 	}
 	async function action(entry: AgendaEntry, kind: AgendaAction) {
 		// The full agenda records a lapsed occurrence at its own instant; Home hands it over.
@@ -152,7 +154,7 @@
 	{#if weekOffset !== 0}
 		<div class="strip-week"><span>{weekLabel(firstDay, viewport.isMobile)}</span><button type="button" class="invitations-toggle" onclick={backToThisWeek}>This week</button></div>
 	{/if}
-	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripEntries} {zone} dragging={null} hoverDay="" onselect={openAgendaOn} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} />
+	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripAudienceEntries} {zone} dragging={null} hoverDay="" onselect={openAgendaOn} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} />
 	<div class="overview-columns">
 		<section class="panel needs-panel" aria-label="Needs you">
 			<header><h2>Needs you <span class="badge">{homeOverview.needs?.total ?? '…'}</span></h2><span class="sort">Oldest waiting</span></header>
