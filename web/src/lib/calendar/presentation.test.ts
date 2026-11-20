@@ -220,8 +220,8 @@ describe('daySummary', () => {
   [['outstanding', 'outstanding', 'done'], '2 owed · 1 done'],
   [['done', 'done', 'skipped'], '2 done'],
   [['outstanding', 'lapsed', 'missed', 'done'], '2 owed · 1 done · 1 missed'],
-		[['lapsed'], '1 owed'],
-		[['missed'], '1 missed'],
+  [['lapsed'], '1 owed'],
+  [['missed'], '1 missed'],
   [['outstanding', 'acknowledged', 'done'], '2 owed · 1 done']
  ] as [OccurrenceState[], string][])('words %j as "%s"', (states, text) => {
   expect(daySummary(states.map(state => row({ state })))).toBe(text);
