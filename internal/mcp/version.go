@@ -2351,7 +2351,11 @@ const CmdhelpVersion = "0.1"
 // writes nothing. Additive: no existing tool, action or parameter changes
 // shape. Tool and parameter prose trimmed into docs/mcp.md for the prompt
 // budget, every rule kept. ChatGPT: all three excluded.
-const ToolSurfaceVersion = "0.121"
+// v0.122 — TASK-4489: pad_item agenda gains recipient (me by default, all for
+// the workspace scope, or a user ID). The default answer changes: the groups
+// list the caller's own work and no_date is listed instead of the
+// personal_only marker. stale refuses a recipient.
+const ToolSurfaceVersion = "0.122"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

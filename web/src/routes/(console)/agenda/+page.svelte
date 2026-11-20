@@ -11,7 +11,7 @@
 	import { agendaUndoContext, resolutionLabel, type AgendaUndo } from '$lib/calendar/undo';
 	import { toastStore, type ToastAction } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { completedPreferencePrefix, agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { completedPreferencePrefix, agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayCounts, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -256,7 +256,7 @@
 	const monthRows = $derived(new Map([...monthDays].map(([date, rows]) => [date, attentionFirst(agendaRows(rows).map(row => ({ ...row, attention: monthAttention.has(row.key) })), row => row.attention)])));
 	function monthCount(date: string) {
 		const rows = monthDays.get(date) ?? [];
-		const owed = rows.filter(entry => entry.type === 'schedule' && isOpenState(entry.state)).length;
+		const { owed } = dayCounts(rows);
 		return rows.length ? `${rows.length}${owed ? ` · ${owed} owed` : ''}` : '';
 	}
 	function dayIncomplete(date: string) {
@@ -359,7 +359,8 @@
 			const refreshed = await load(day, zone, true);
 			if (!sameIdentity()) return;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
-			succeed(operation === 'snooze' || operation === 'move' ? 'Undone. The occurrence is back where it was.' : 'Undone. The occurrence is open again.');
+			succeed(operation === 'snooze' || operation === 'move' ? 'Undone. The occurrence is back where it was.'
+				: operation === 'history_done' ? 'Undone. The occurrence is lapsed again.' : 'Undone. The occurrence is open again.');
 		} catch (error) {
 			if (!sameIdentity()) return;
 			const message = (error as { message?: unknown })?.message;
@@ -693,8 +694,8 @@
 				if (!sameIdentity()) return false;
 			}
 			const [undo, refreshed] = await Promise.all([
-				!history && state !== 'ack' && !itemClosed
-					? readUndo({ ...entry, occurrence_key: occurrenceKey }, sameIdentity, state) : undefined,
+				state !== 'ack' && !itemClosed
+					? readUndo({ ...entry, occurrence_key: occurrenceKey }, sameIdentity, history ? 'history_done' : state) : undefined,
 				load(day, zone, true)
 			]);
 			if (!sameIdentity()) return false;

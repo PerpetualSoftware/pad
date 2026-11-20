@@ -321,3 +321,135 @@ func TestNeedsSnooze_PerUser(t *testing.T) {
 		t.Fatalf("second unsnooze: %v, %v; want false, nil", ok, err)
 	}
 }
+
+// Stored comment stamps in a format other than now()'s UTC Z-second
+// (TASK-3960): the marker is computed on the instant, never the text.
+
+// rawComment adds a native (imported = 0) comment by u whose created_at is
+// the text raw, verbatim.
+func (f needsFixture) rawComment(t *testing.T, u *models.User, raw string) *models.Comment {
+	t.Helper()
+	c := f.comment(t, u, "user", needsT0)
+	if _, err := f.s.db.Exec(f.s.q(`UPDATE comments SET created_at = ? WHERE id = ?`), raw, c.ID); err != nil {
+		t.Fatal(err)
+	}
+	return c
+}
+
+// batchHolds is holds through the batch path.
+func (f needsFixture) batchHolds(t *testing.T, u *models.User, at time.Time) bool {
+	t.Helper()
+	got, err := f.s.NeedsSnoozesForItems(u.ID, f.ws.ID, []string{f.item.ID}, at)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sn := got[f.item.ID]
+	if sn == nil {
+		t.Fatal("no snooze row in the batch")
+	}
+	return sn.Holds
+}
+
+const needsMarkerZ = "2026-11-19T13:00:00Z"
+
+func TestNeedsSnooze_OffsetStampNewerResurfaces(t *testing.T) {
+	t.Parallel()
+	f := newNeedsFixture(t)
+	f.rawComment(t, f.other, needsMarkerZ)
+	f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
+	if !f.holds(t, f.me, time.Now()) || !f.batchHolds(t, f.me, time.Now()) {
+		t.Fatal("a fresh dismissal does not hold")
+	}
+	// 15:30Z as an instant, but it sorts below the marker as text.
+	f.rawComment(t, f.other, "2026-11-19T10:30:00-05:00")
+	if f.holds(t, f.me, time.Now()) {
+		t.Fatal("single: a newer offset-stamped comment did not re-surface the item")
+	}
+	if f.batchHolds(t, f.me, time.Now()) {
+		t.Fatal("batch: a newer offset-stamped comment did not re-surface the item")
+	}
+}
+
+func TestNeedsSnooze_OffsetStampSameSecondResurfaces(t *testing.T) {
+	t.Parallel()
+	f := newNeedsFixture(t)
+	seen := f.rawComment(t, f.other, needsMarkerZ)
+	first := f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
+	// The marker's instant, written with an offset, under a new id.
+	same := f.rawComment(t, f.other, "2026-11-19T08:00:00-05:00")
+	if f.holds(t, f.me, time.Now()) {
+		t.Fatal("single: an offset-stamped comment at the marker's second did not re-surface the item")
+	}
+	if f.batchHolds(t, f.me, time.Now()) {
+		t.Fatal("batch: an offset-stamped comment at the marker's second did not re-surface the item")
+	}
+	// A client marker that names both ids at that second keeps both after
+	// the clamp, so it holds.
+	sn := f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, &models.NeedsSnoozeMarker{
+		SeenCommentAt: needsMarkerZ, SeenCommentIDs: []string{seen.ID, same.ID}, SeenTransitionSeq: first.Marker.SeenTransitionSeq,
+	})
+	if len(sn.Marker.SeenCommentIDs) != 2 || !sn.Holds || !f.batchHolds(t, f.me, time.Now()) {
+		t.Fatalf("clamped marker %+v holds=%v, want both ids and holding", sn.Marker, sn.Holds)
+	}
+}
+
+func TestNeedsMarkersForItems_OffsetStampNormalised(t *testing.T) {
+	t.Parallel()
+	f := newNeedsFixture(t)
+	f.rawComment(t, f.other, needsMarkerZ)
+	newest := f.rawComment(t, f.other, "2026-11-19T10:30:00-05:00")
+	got, err := f.s.NeedsMarkersForItems(f.me.ID, []string{f.item.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := got[f.item.ID]
+	if m.SeenCommentAt != "2026-11-19T15:30:00Z" || len(m.SeenCommentIDs) != 1 || m.SeenCommentIDs[0] != newest.ID {
+		t.Fatalf("batch marker %+v, want 2026-11-19T15:30:00Z with %s", m, newest.ID)
+	}
+	single, err := f.s.needsItemState(f.s.db, f.me.ID, f.item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if single.SeenCommentAt != m.SeenCommentAt || len(single.SeenCommentIDs) != 1 || single.SeenCommentIDs[0] != newest.ID {
+		t.Fatalf("single marker %+v, want %+v", single, m)
+	}
+}
+
+func TestNeedsSnooze_AllZControl(t *testing.T) {
+	t.Parallel()
+	f := newNeedsFixture(t)
+	f.rawComment(t, f.other, needsMarkerZ)
+	sn := f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
+	if sn.Marker.SeenCommentAt != needsMarkerZ || !f.holds(t, f.me, time.Now()) || !f.batchHolds(t, f.me, time.Now()) {
+		t.Fatalf("all-Z dismissal %+v does not hold", sn.Marker)
+	}
+	f.rawComment(t, f.other, "2026-11-19T13:00:01Z")
+	if f.holds(t, f.me, time.Now()) || f.batchHolds(t, f.me, time.Now()) {
+		t.Fatal("a newer Z comment did not re-surface the item")
+	}
+}
+
+func TestNeedsSnooze_FractionalStampIsMarkerSecond(t *testing.T) {
+	t.Parallel()
+	f := newNeedsFixture(t)
+	seen := f.rawComment(t, f.other, needsMarkerZ)
+	f.snooze(t, f.me, models.NeedsSnoozeDismiss, time.Time{}, nil)
+	frac := f.rawComment(t, f.other, "2026-11-19T13:00:00.900Z")
+	if f.holds(t, f.me, time.Now()) || f.batchHolds(t, f.me, time.Now()) {
+		t.Fatal("a fractional-second comment at the marker's second did not re-surface the item")
+	}
+	// It breaks the hold as another comment at the marker's second: the
+	// newest second is still the marker's, now with both ids.
+	got, err := f.s.NeedsMarkersForItems(f.me.ID, []string{f.item.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := got[f.item.ID]
+	want := []string{seen.ID, frac.ID}
+	if want[0] > want[1] {
+		want[0], want[1] = want[1], want[0]
+	}
+	if m.SeenCommentAt != needsMarkerZ || len(m.SeenCommentIDs) != 2 || m.SeenCommentIDs[0] != want[0] || m.SeenCommentIDs[1] != want[1] {
+		t.Fatalf("marker %+v, want %s with %v", m, needsMarkerZ, want)
+	}
+}

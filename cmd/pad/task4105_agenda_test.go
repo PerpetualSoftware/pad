@@ -138,7 +138,10 @@ func TestAgendaWindowFlags(t *testing.T) {
 }
 
 func TestAgendaTruncationHints(t *testing.T) {
-	entry := `"entries":[{"type":"schedule","at":"2026-11-02T14:00:00Z","day":"2026-11-02","state":"scheduled","item_ref":"TASK-3","item_title":"T","roles":{}}]`
+	entry := `"entries":[{"type":"schedule","at":"2026-11-02T14:00:00Z","day":"2026-11-02","state":"scheduled","item_ref":"TASK-3","item_title":"T","roles":{}}],` +
+		// The server always sends the groups; complete and empty here, so the
+		// only "incomplete" a case prints is the window's.
+		`"priority_list":[],"priority_list_complete":true,"waiting_on":[],"waiting_on_complete":true,"no_date":[],"no_date_complete":true`
 	unexpanded := `"unexpanded":[{"schedule_id":"s1","item_ref":"TASK-8","item_title":"Busy","collection":"tasks","roles":{},"audience":"agent","reason":"cap_instances"}]`
 	unavailable := `"unavailable":[{"item_ref":"TASK-9","code":"cap_time"}]`
 	for _, tc := range []struct {

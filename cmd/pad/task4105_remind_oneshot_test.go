@@ -20,7 +20,7 @@ func recordingStub(reply func(c recordedCall) (int, string)) (http.HandlerFunc, 
 		b, _ := io.ReadAll(r.Body)
 		c := recordedCall{r.Method, strings.TrimPrefix(r.URL.Path, "/api/v1"), r.URL.RawQuery, strings.TrimSpace(string(b))}
 		if c.path == "/auth/me" {
-			fmt.Fprint(w, `{"name":"Viewer","timezone":"America/New_York"}`)
+			fmt.Fprint(w, `{"id":"user-viewer","name":"Viewer","timezone":"America/New_York"}`)
 			return
 		}
 		mu.Lock()

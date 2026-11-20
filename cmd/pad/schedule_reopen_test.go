@@ -66,6 +66,16 @@ func TestRemindReopen(t *testing.T) {
 	}
 }
 
+func TestRemindReopenHistoryDone(t *testing.T) {
+	out, _, err, _ := runSched(t, okReply(`{"commitment":{},"reopen":{"previous_state":"history_done","comment_id":"kept"}}`), "", "remind", "reopen", "TASK-5", "--resolution", "11111111-1111-4111-8111-111111111111")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Restored TASK-5’s lapsed occurrence; undid the late done. The resolution comment was kept.\n"; out != want {
+		t.Fatalf("text=%q want %q", out, want)
+	}
+}
+
 func TestRemindReopenDeletedComment(t *testing.T) {
 	out, _, err, _ := runSched(t, okReply(`{"commitment":{},"reopen":{"previous_state":"done"}}`), "", "remind", "reopen", "TASK-5", "--resolution", "11111111-1111-4111-8111-111111111111")
 	if err != nil {

@@ -29,9 +29,10 @@ var migrationsFS embed.FS
 var pgMigrationsFS embed.FS
 
 // BinaryVersion labels the pre-migration snapshot file
-// (<db>.pre-<VERSION>). The `pad` binary sets it to its build version at
-// startup; it defaults to "dev" so tests and direct library callers still
-// produce a sensibly-named snapshot. See snapshotBeforeMigrate.
+// (<db>.pre-<VERSION>-m<NNN>, where NNN names the migration the run migrates
+// to). The `pad` binary sets it to its build version at startup; it defaults
+// to "dev" so tests and direct library callers still produce a
+// sensibly-named snapshot. See snapshotBeforeMigrate.
 var BinaryVersion = "dev"
 
 // AllowSchemaAhead downgrades the schema-ahead migration guard (see
@@ -730,8 +731,11 @@ func (s *Store) migrate() error {
 	// Only when this is an UPGRADE of an existing DB (pending migrations
 	// AND at least one already applied) — a fresh install has nothing
 	// worth snapshotting. Best-effort; a failed snapshot warns, not fatal.
-	if len(applied) > 0 && hasPending(applied, migrations) {
-		s.snapshotBeforeMigrate()
+	// The snapshot is keyed on the migration this run migrates TO, the
+	// highest embedded one (readMigrationNames sorts ascending).
+	snapshotDue := len(applied) > 0 && len(migrations) > 0 && hasPending(applied, migrations)
+	if snapshotDue {
+		s.snapshotBeforeMigrate(migrations[len(migrations)-1])
 	}
 
 	// AFTER the snapshot and BEFORE the migrations, both deliberately
@@ -819,6 +823,14 @@ func (s *Store) migrate() error {
 	// from a silent loss into a no-op.
 	if err := s.ensureNULTriggers(); err != nil {
 		return err
+	}
+
+	// Only now, with every step above succeeded: keep this run's snapshot and
+	// the newest earlier one, and remove older snapshots this builder wrote.
+	// A run that returned an error above never reaches here, so a failed
+	// upgrade leaves every earlier snapshot in place. Best-effort.
+	if snapshotDue {
+		s.pruneSnapshotsAfterMigrate(migrations[len(migrations)-1])
 	}
 
 	return nil

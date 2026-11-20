@@ -76,6 +76,10 @@ func (s *Server) writeCommitmentGraphError(w http.ResponseWriter, r *http.Reques
 		code, message = "deadline_approval_required", store.ErrDeadlineApprovalRequired.Error()
 	case errors.Is(err, store.ErrLinkViolationAck):
 		code, message = "link_violation_ack", store.ErrLinkViolationAck.Error()
+	case errors.Is(err, store.ErrCommitmentRevisionStale):
+		writeError2(w, http.StatusConflict, "commitment_changed", "The commitment changed since it was read; read it again and retry",
+			map[string]interface{}{"field": "expected_revision", "code": "stale"})
+		return true
 	case errors.Is(err, store.ErrCommitmentChanged):
 		writeCommitmentChanged(w)
 		return true

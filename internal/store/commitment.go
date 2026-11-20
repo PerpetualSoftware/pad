@@ -23,6 +23,11 @@ const (
 	rolesWriteReason = "Commitment roles updated"
 )
 
+// commitmentJournalAckLimit is how many ack rows a commitment view carries:
+// a recurring schedule journals one per acknowledged occurrence, so the view
+// keeps the newest ones and counts the rest in JournalAcksOmitted.
+const commitmentJournalAckLimit = 50
+
 // roleResolution is one role's value for the outstanding occurrence.
 type roleResolution struct {
 	value    string    // a date for an all-day role, else an RFC3339 UTC instant
@@ -284,10 +289,37 @@ func (s *Store) GetCommitmentForReaders(workspaceID, itemID string, canRead, mil
 			BeforeJSON: c.BeforeJSON, AfterJSON: c.AfterJSON, Actor: c.Actor, Reason: c.Reason, ReasonSource: c.ReasonSource, RootChangeID: c.RootChangeID,
 			ParentChangeID: c.ParentChangeID, RecordedAt: c.RecordedAt})
 	}
+	out.Journal, out.JournalAcksOmitted = capJournalAcks(out.Journal, commitmentJournalAckLimit)
 	if err := s.milestoneForRead(s.db, out, sc, milestoneRead); err != nil {
 		return nil, err
 	}
 	return out, nil
+}
+
+// capJournalAcks keeps the newest limit ack rows of an ascending journal and
+// reports how many older ones it dropped. Every other row type stays, and the
+// order is unchanged.
+func capJournalAcks(journal []models.CommitmentChange, limit int) ([]models.CommitmentChange, int) {
+	acks := 0
+	for _, c := range journal {
+		if c.ChangeType == "ack" {
+			acks++
+		}
+	}
+	drop := acks - limit
+	if drop <= 0 {
+		return journal, 0
+	}
+	kept := make([]models.CommitmentChange, 0, len(journal)-drop)
+	skipped := 0
+	for _, c := range journal {
+		if c.ChangeType == "ack" && skipped < drop {
+			skipped++
+			continue
+		}
+		kept = append(kept, c)
+	}
+	return kept, drop
 }
 
 func rolesFromInput(in models.CommitmentRolesInput) (scheduleRoles, error) {
@@ -537,12 +569,19 @@ func mergeRolesPatch(stored scheduleRoles, p models.CommitmentRolesPatch) (sched
 // UpdateCommitment judges the stored timing and the partial roles request under
 // one pin, then writes both or neither. Authority is HTTP's job.
 func (s *Store) UpdateCommitment(workspaceID, itemID string, upd models.ScheduleUpdate, roles *models.CommitmentRolesPatch) (*models.ItemSchedule, error) {
+	return s.UpdateCommitmentExpecting(workspaceID, itemID, upd, roles, "")
+}
+
+// UpdateCommitmentExpecting is UpdateCommitment with an optimistic precondition:
+// a non-empty expected must equal the commitment_revision under the pin, else
+// ErrCommitmentRevisionStale and nothing is written. "" is UpdateCommitment.
+func (s *Store) UpdateCommitmentExpecting(workspaceID, itemID string, upd models.ScheduleUpdate, roles *models.CommitmentRolesPatch, expected string) (*models.ItemSchedule, error) {
 	if roles != nil {
 		if err := validateRolesPatch(*roles); err != nil {
 			return nil, err
 		}
 	}
-	return s.updateCommitmentAt(workspaceID, itemID, upd, roles, time.Now())
+	return s.updateCommitmentAt(workspaceID, itemID, upd, roles, time.Now(), expected)
 }
 
 // RenegotiateDeadline moves the outstanding occurrence's deadline to until: a

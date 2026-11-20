@@ -164,35 +164,49 @@ func (s *Store) captureResolutionUndoTx(tx *sql.Tx, sc *models.ItemSchedule, ope
 		u.Key = OccurrenceKey(sc, NormalizeInstant(x), *sc.NextWall)
 		u.Identities = append(u.Identities, reopenOccurrenceIdentity{NormalizeInstant(x), *sc.NextWall})
 	}
+	return u, s.fillResolutionUndoTx(tx, sc, u, now)
+}
+
+// captureHistoryUndoTx keys a late Done on a lapsed history row by that row's
+// stored identity, never by the current occurrence or the caller's view.
+func (s *Store) captureHistoryUndoTx(tx *sql.Tx, sc *models.ItemSchedule, at, wall, actor, actorUserID string, now time.Time) (*resolutionUndo, error) {
+	u := &resolutionUndo{ID: newID(), ScheduleID: sc.ID, Operation: "history_done", Actor: actor, ActorUserID: actorUserID}
+	u.Key = OccurrenceKey(sc, at, wall)
+	u.Identities = []reopenOccurrenceIdentity{{at, wall}}
+	return u, s.fillResolutionUndoTx(tx, sc, u, now)
+}
+
+func (s *Store) fillResolutionUndoTx(tx *sql.Tx, sc *models.ItemSchedule, u *resolutionUndo, now time.Time) error {
+	operation := u.Operation
 	dependency, err := s.reopenDependencyQ(tx, sc)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if dependency {
 		u.BlockedCode = "reopen_dependency"
 	}
-	if !dependency && operation != "done" && operation != "skip" && operation != "snooze" && operation != "move" {
+	if !dependency && operation != "done" && operation != "skip" && operation != "snooze" && operation != "move" && operation != "history_done" {
 		u.BlockedCode = "reopen_not_supported"
 	}
 	if u.BlockedCode == "" {
 		loc, err := s.scheduleViewZone(tx, sc)
 		if err != nil {
-			return nil, err
+			return err
 		}
 		if operation == "done" || operation == "skip" || operation == "move" {
 			missed, _, err := missedOccurrences(sc, loc, now)
 			if err != nil {
-				return nil, err
+				return err
 			}
 			for _, m := range missed {
 				u.Identities = append(u.Identities, reopenOccurrenceIdentity{NormalizeInstant(m.At), m.Wall.String()})
 			}
 		}
 		if u.Before, err = s.reopenImageQ(tx, sc, u, false); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return u, nil
+	return nil
 }
 
 func readReopenRows(q Queryer, query string, args ...any) ([]reopenRow, error) {
@@ -369,6 +383,11 @@ func (s *Store) validateResolutionUndoQ(q Queryer, sc *models.ItemSchedule, u *r
 	}
 	if !reflect.DeepEqual(current, u.After) {
 		return &ReopenError{"reopen_conflict"}
+	}
+	// A late Done never touched the current occurrence, so its inverse is not
+	// judged by the current deadline or schedule error.
+	if u.Operation == "history_done" {
+		return nil
 	}
 	return s.validateReopenDeadlineQ(q, sc, u, now)
 }
@@ -569,12 +588,15 @@ func (s *Store) reopenOccurrenceAt(workspaceID, itemID string, in ReopenInput, n
 			}
 		}
 	}
-	var snap scheduleDateSnapshot
-	if err = json.Unmarshal([]byte(u.Before.Schedule), &snap); err != nil {
-		return nil, err
-	}
-	if _, err = tx.Exec(s.q(`UPDATE item_schedules SET next_at=?,next_wall=?,next_override_at=?,anchor_wall=?,ended_at=?,ended_dismissed_at=?,error_code=?,updated_at=? WHERE id=?`), snap.NextAt, snap.NextWall, snap.NextOverrideAt, snap.AnchorWall, snap.EndedAt, snap.EndedDismissedAt, snap.ErrorCode, now.UTC().Format(time.RFC3339Nano), sc.ID); err != nil {
-		return nil, err
+	// A late Done left the schedule row alone; the after-image proves it unchanged.
+	if u.Operation != "history_done" {
+		var snap scheduleDateSnapshot
+		if err = json.Unmarshal([]byte(u.Before.Schedule), &snap); err != nil {
+			return nil, err
+		}
+		if _, err = tx.Exec(s.q(`UPDATE item_schedules SET next_at=?,next_wall=?,next_override_at=?,anchor_wall=?,ended_at=?,ended_dismissed_at=?,error_code=?,updated_at=? WHERE id=?`), snap.NextAt, snap.NextWall, snap.NextOverrideAt, snap.AnchorWall, snap.EndedAt, snap.EndedDismissedAt, snap.ErrorCode, now.UTC().Format(time.RFC3339Nano), sc.ID); err != nil {
+			return nil, err
+		}
 	}
 	actor := in.Actor
 	if actor != "agent" {

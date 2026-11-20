@@ -59,3 +59,21 @@ it('keeps rows and reuses names when the same item refreshes', async () => {
  await waitFor(() => expect(screen.getAllByRole('link', { name: 'TASK-2 · Prepare release' })).toHaveLength(3));
  expect(h.get).toHaveBeenCalledTimes(1);
 });
+const dependent = (extra: Parameters<typeof gate>[0] = {}) => gate({ id: 'dependent', blocked_item_id: otherId, blocker_item_id: item.id, ...extra });
+it('names a pending dependent with one fetch', async () => {
+ render(ItemCommitmentLinks, props(view({ links: [link()], gates: { state: 'released', gates: [], dependents: [dependent()] } })));
+ const names = await screen.findAllByRole('link', { name: 'TASK-2 · Prepare release' });
+ expect(names).toHaveLength(2); expect(h.get).toHaveBeenCalledTimes(1);
+ expect(screen.getByText(/^Releases/).textContent).toBe('Releases TASK-2 · Prepare release when done');
+ expect(screen.queryByText('Released')).toBeNull();
+});
+it('reads a succeeded dependent as released', async () => {
+ render(ItemCommitmentLinks, props(view({ gates: { state: 'released', gates: [], dependents: [dependent({ outcome: 'succeeded' })] } })));
+ await screen.findByRole('link', { name: 'TASK-2 · Prepare release' });
+ expect(screen.getByText(/^Released/).textContent).toBe('Released TASK-2 · Prepare release');
+});
+it('shows the dependents a no-schedule snapshot carries', async () => {
+ const p = props(null); render(ItemCommitmentLinks, { ...p, snapshot: { ...p.snapshot, gates: { state: 'released', gates: [], dependents: [dependent()] } } });
+ await screen.findByRole('link', { name: 'TASK-2 · Prepare release' });
+ expect(h.gates).not.toHaveBeenCalled(); expect(h.get).toHaveBeenCalledTimes(1);
+});

@@ -87,6 +87,16 @@ func TestGateWriteAnswersOneNotFoundForAnyEndTheCallerCannotUse(t *testing.T) {
 	if err := f.s.DeleteItem(deleted.ID); err != nil {
 		t.Fatal(err)
 	}
+	// TASK-4440: its schedule row outlives the soft delete, so the hint seeds it,
+	// the pin refuses it, and the unseeded retry must still answer not found.
+	deletedScheduled := f.another(t, "deleted scheduled build")
+	f.native(t, deletedScheduled, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	if err := f.s.DeleteItem(deletedScheduled.ID); err != nil {
+		t.Fatal(err)
+	}
+	if has, err := f.s.itemHasSchedule(f.s.db, f.ws.ID, deletedScheduled.ID); err != nil || !has {
+		t.Fatalf("the soft-deleted blocker lost its schedule row (has=%v err=%v): the case no longer tests the seeded path", has, err)
+	}
 	other := createTestWorkspace(t, f.s, "Elsewhere")
 	col := createTestCollection(t, f.s, other.ID, "Tasks")
 	foreign := createTestItem(t, f.s, other.ID, col.ID, "foreign", "")
@@ -99,12 +109,13 @@ func TestGateWriteAnswersOneNotFoundForAnyEndTheCallerCannotUse(t *testing.T) {
 		blocked, blocker string
 		acc              models.CommitmentAccess
 	}{
-		"unreadable blocker":        {f.items[0].ID, plain.ID, unreadable},
-		"nonexistent blocker":       {f.items[0].ID, "no-such-item", missing},
-		"soft-deleted blocker":      {f.items[0].ID, deleted.ID, f.gateAccess(deleted)},
-		"blocker of another space":  {f.items[0].ID, foreign.ID, f.gateAccess(foreign)},
-		"soft-deleted blocked item": {deleted.ID, plain.ID, f.gateAccess(deleted, plain)},
-		"unreadable blocked item":   {f.items[1].ID, plain.ID, func() models.CommitmentAccess { a := f.gateAccess(plain); delete(a.Readable, f.items[1].ID); return a }()},
+		"unreadable blocker":             {f.items[0].ID, plain.ID, unreadable},
+		"nonexistent blocker":            {f.items[0].ID, "no-such-item", missing},
+		"soft-deleted blocker":           {f.items[0].ID, deleted.ID, f.gateAccess(deleted)},
+		"soft-deleted scheduled blocker": {f.items[0].ID, deletedScheduled.ID, f.gateAccess(deletedScheduled)},
+		"blocker of another space":       {f.items[0].ID, foreign.ID, f.gateAccess(foreign)},
+		"soft-deleted blocked item":      {deleted.ID, plain.ID, f.gateAccess(deleted, plain)},
+		"unreadable blocked item":        {f.items[1].ID, plain.ID, func() models.CommitmentAccess { a := f.gateAccess(plain); delete(a.Readable, f.items[1].ID); return a }()},
 		"nonexistent blocked item": {"no-such-item", plain.ID, func() models.CommitmentAccess {
 			a := f.gateAccess(plain)
 			a.Readable["no-such-item"], a.Editable["no-such-item"] = true, true
@@ -329,4 +340,131 @@ func TestGateWritesWorkWithOneConnection(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = fmt.Sprint
+}
+
+// TASK-4440. The blocker's schedule is read through the pool before the
+// transaction, so one created between that read and the pin is missed there. The
+// read inside the transaction is authoritative: the gate is fixed on the new
+// schedule's outstanding occurrence, not left judged by the item status. Not
+// parallel: it sets a package-level hook.
+func TestCreateScheduleGateSeesABlockerScheduleCreatedAfterThePoolRead(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.another(t, "build")
+	var created *models.ItemSchedule
+	createScheduleGateAfterBlockerReadHook = func() {
+		createScheduleGateAfterBlockerReadHook = nil
+		created = f.native(t, blocker, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	}
+	t.Cleanup(func() { createScheduleGateAfterBlockerReadHook = nil })
+	g := f.gate(t, f.items[0].ID, blocker.ID, f.gateAccess(blocker))
+	if created == nil {
+		t.Fatal("the hook did not run")
+	}
+	var sched sql.NullString
+	var key string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT blocker_schedule_id, blocker_occurrence_key FROM schedule_gates WHERE id=?`), g.ID).Scan(&sched, &key); err != nil {
+		t.Fatal(err)
+	}
+	sc := f.reload(t, blocker.ID)
+	if sc.NextAt == nil || sc.NextWall == nil {
+		t.Fatalf("the blocker's new schedule has no outstanding occurrence: %+v", sc)
+	}
+	if want := *sc.NextAt + "|" + *sc.NextWall; !sched.Valid || sched.String != created.ID || key != want {
+		t.Fatalf("schedule=%v key=%q, want %s %q", sched, key, created.ID, want)
+	}
+}
+
+// TASK-4440, the reverse race. The pool read sees the blocker's schedule, which
+// is deleted before the pin. The blocker is a live item with no schedule, so the
+// gate is written judged by its status, not refused as not found. Not parallel:
+// it sets a package-level hook.
+func TestCreateScheduleGateWritesWhenTheBlockerScheduleIsDeletedAfterThePoolRead(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.another(t, "build")
+	f.native(t, blocker, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	ran := false
+	createScheduleGateAfterBlockerReadHook = func() {
+		createScheduleGateAfterBlockerReadHook = nil
+		ran = true
+		if ok, err := f.s.DeleteSchedule(f.ws.ID, blocker.ID); err != nil || !ok {
+			t.Fatalf("delete blocker schedule: ok=%v err=%v", ok, err)
+		}
+	}
+	t.Cleanup(func() { createScheduleGateAfterBlockerReadHook = nil })
+	g := f.gate(t, f.items[0].ID, blocker.ID, f.gateAccess(blocker))
+	if !ran {
+		t.Fatal("the hook did not run")
+	}
+	var sched sql.NullString
+	var key string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT blocker_schedule_id, blocker_occurrence_key FROM schedule_gates WHERE id=?`), g.ID).Scan(&sched, &key); err != nil {
+		t.Fatal(err)
+	}
+	if sched.Valid || key != "" {
+		t.Fatalf("schedule=%v key=%q, want none", sched, key)
+	}
+}
+
+// TASK-4702. DeleteScheduleGate reads the gate through the pool before its
+// transaction; the blocker's schedule id there says whether the blocker joins the
+// pin as a seed. A schedule deleted in between is gone by the pin, and the gate
+// still exists: the delete removes it, not answer not found. Not parallel: it sets
+// a package-level hook.
+func TestDeleteScheduleGateDeletesWhenTheBlockerScheduleIsDeletedAfterTheGateRead(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.another(t, "build")
+	f.native(t, blocker, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	acc := f.gateAccess(blocker)
+	g := f.gate(t, f.items[0].ID, blocker.ID, acc)
+	var sched sql.NullString
+	if err := f.s.db.QueryRow(f.s.q(`SELECT blocker_schedule_id FROM schedule_gates WHERE id=?`), g.ID).Scan(&sched); err != nil {
+		t.Fatal(err)
+	}
+	if !sched.Valid {
+		t.Fatal("the gate was not fixed on the blocker's schedule")
+	}
+	ran := false
+	deleteScheduleGateAfterGateReadHook = func() {
+		deleteScheduleGateAfterGateReadHook = nil
+		ran = true
+		if ok, err := f.s.DeleteSchedule(f.ws.ID, blocker.ID); err != nil || !ok {
+			t.Fatalf("delete blocker schedule: ok=%v err=%v", ok, err)
+		}
+	}
+	t.Cleanup(func() { deleteScheduleGateAfterGateReadHook = nil })
+	if err := f.s.DeleteScheduleGate(f.ws.ID, g.ID, acc); err != nil {
+		t.Fatalf("DeleteScheduleGate: %v", err)
+	}
+	if !ran {
+		t.Fatal("the hook did not run")
+	}
+	if n := f.gateRows(t); n != 0 {
+		t.Fatalf("%d gate rows left, want 0", n)
+	}
+}
+
+// TASK-4702, the reverse race. The gate was written while the blocker had no
+// schedule, so the pool read does not seed the blocker; a schedule created on it
+// before the pin is seen under the workspace lock and the delete goes round again
+// with it as a seed. Not parallel: it sets a package-level hook.
+func TestDeleteScheduleGateWithAScheduleCreatedOnTheBlockerAfterTheGateRead(t *testing.T) {
+	f := newLinkFix(t, 1)
+	blocker := f.another(t, "build")
+	acc := f.gateAccess(blocker)
+	g := f.gate(t, f.items[0].ID, blocker.ID, acc)
+	var created *models.ItemSchedule
+	deleteScheduleGateAfterGateReadHook = func() {
+		deleteScheduleGateAfterGateReadHook = nil
+		created = f.native(t, blocker, "2030-03-09T09:00", models.CommitmentRolesInput{})
+	}
+	t.Cleanup(func() { deleteScheduleGateAfterGateReadHook = nil })
+	if err := f.s.DeleteScheduleGate(f.ws.ID, g.ID, acc); err != nil {
+		t.Fatalf("DeleteScheduleGate: %v", err)
+	}
+	if created == nil {
+		t.Fatal("the hook did not run")
+	}
+	if n := f.gateRows(t); n != 0 {
+		t.Fatalf("%d gate rows left, want 0", n)
+	}
 }

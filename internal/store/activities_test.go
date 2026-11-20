@@ -599,6 +599,30 @@ func TestMergeActivityMeta_CollapsesSameFieldRun(t *testing.T) {
 	}
 }
 
+// TASK-4684: a debounced run keeps the newest assignee id, including an
+// unassign, and a later write in the run that did not touch the assignee
+// keeps the id the run last assigned.
+func TestMergeActivityMeta_AssignedUserIDNewestWins(t *testing.T) {
+	t.Parallel()
+	key := ActivityMetaAssignedUserID
+	for _, tc := range []struct {
+		name, existing, incoming, want string
+	}{
+		{"A then B", `{"changes":"assigned: (none) → A","assigned_user_id":"u-a"}`, `{"changes":"assigned: A → B","assigned_user_id":"u-b"}`, "u-b"},
+		{"A then unassign", `{"changes":"assigned: (none) → A","assigned_user_id":"u-a"}`, `{"changes":"assigned: A → (none)","assigned_user_id":""}`, ""},
+		{"A then a title edit", `{"changes":"assigned: (none) → A","assigned_user_id":"u-a"}`, `{"changes":"title: x → y"}`, "u-a"},
+	} {
+		var m map[string]any
+		if err := json.Unmarshal([]byte(mergeActivityMeta(tc.existing, tc.incoming)), &m); err != nil {
+			t.Fatal(err)
+		}
+		got, ok := m[key].(string)
+		if !ok || got != tc.want {
+			t.Errorf("%s: %s = %#v, want %q", tc.name, key, m[key], tc.want)
+		}
+	}
+}
+
 func TestMergeActivityMeta(t *testing.T) {
 	t.Parallel()
 	tests := []struct {

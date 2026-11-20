@@ -555,11 +555,10 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 	if err != nil {
 		return nil, err
 	}
-	undo, err := s.captureResolutionUndoTx(tx, sc, "history_done", in.Actor, in.ActorUserID, want, nowT)
+	undo, err := s.captureHistoryUndoTx(tx, sc, at, wall, in.Actor, in.ActorUserID, nowT)
 	if err != nil {
 		return nil, err
 	}
-	undo.Key = OccurrenceKey(sc, at, wall)
 	res := &ResolveResult{}
 	commentID := ""
 	if in.Comment != nil {
@@ -576,6 +575,7 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 			return nil, err
 		}
 	}
+	undo.CommentID = commentID
 	if _, err := tx.Exec(s.q(`UPDATE schedule_occurrences SET state='done',comment_id=?,actor=?,resolved_at=?,actual_done_at=?,actual_source=? WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`), nilIfEmpty(commentID), in.Actor, nowT.Format(time.RFC3339), NormalizeInstant(actual), actualSource, sc.ID, at); err != nil {
 		return nil, err
 	}

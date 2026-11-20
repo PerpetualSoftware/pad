@@ -75,6 +75,7 @@ func task3867EnableTOTP(t *testing.T, e *tokenAuthEnv) string {
 
 func TestTask3867WideningWithoutStepUpRefused(t *testing.T) {
 	e := setupTokenAuthEnv(t)
+	task4693StaleSignIns(t, e)
 	task3867Scopes(t, e, `["read"]`)
 	task3867Want(t, task3867Patch(e, map[string]any{"scopes": `["*"]`}), 403, "step_up_required")
 	var scopes string
@@ -241,6 +242,7 @@ func TestTask3867GrantPerSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	task4693StaleSignIns(t, e)
 	task3867Want(t, task3867Verify(e, map[string]string{"password": "correct-horse-battery-staple"}), 200, "")
 	task3867Scopes(t, e, `["read"]`)
 	rr := doRequestWithBearer(e.srv, "PATCH", "/api/v1/auth/tokens/"+e.patID, other, map[string]any{"scopes": `["*"]`})
@@ -268,6 +270,7 @@ func TestTask3867GrantExpires(t *testing.T) {
 	if _, err := e.srv.store.DB().Exec(`UPDATE sessions SET step_up_until=? WHERE id=?`, time.Now().Add(-time.Second).UTC().Format(time.RFC3339), info.ID); err != nil {
 		t.Fatal(err)
 	}
+	task4693StaleSignIns(t, e)
 	task3867Scopes(t, e, `["read"]`)
 	task3867Want(t, task3867Patch(e, map[string]any{"scopes": `["*"]`}), 403, "step_up_required")
 }
@@ -575,6 +578,7 @@ func TestTask3867StolenSessionEnrolStillUsesEarlierFactor(t *testing.T) {
 				task3867Want(t, task3867Verify(e, map[string]string{"code": code}), 400, "validation_error")
 				task3867Want(t, task3867Send(e), 409, "step_up_factor_mismatch")
 			}
+			task4693StaleSignIns(t, e)
 			task3867Scopes(t, e, `["read"]`)
 			task3867Want(t, task3867Patch(e, map[string]any{"scopes": `["*"]`}), 403, "step_up_required")
 			if factor == "email" {

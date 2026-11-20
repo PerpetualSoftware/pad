@@ -746,7 +746,7 @@ describe('week strip, attention band and states', () => {
   expect(within(band).getByText('3')).toBeTruthy(); expect(band.querySelector('[draggable="true"]')).toBeNull();
   expect(band.querySelector('li[data-ref="EX-40"] .time')?.textContent).toMatch(/Tue 3.*09:00/);
   expect([...daySection('2026-11-05').querySelectorAll('li[data-ref]')].map(li => li.getAttribute('data-ref'))).toEqual(['EX-30']);
-  expect(within(daySection('2026-11-05')).getByText('2 owed · 1 missed')).toBeTruthy();
+  expect(within(daySection('2026-11-05')).getByText('3 owed')).toBeTruthy();
   expect(stripDay('2026-11-05').querySelectorAll('.pip')).toHaveLength(3);
   h.view.mockResolvedValue({ next_occurrence: { at: '2026-11-03T14:00:00Z', wall: '2026-11-03T09:00:00' } });
   await fireEvent.click(within(band).getByRole('button', { name: 'Done EX-40' }));
@@ -757,7 +757,7 @@ describe('week strip, attention band and states', () => {
   h.agenda.mockResolvedValue(response([row(), lapsed])); await mount();
   const day = daySection('2026-11-06');
   expect(within(screen.getByRole('region', { name: 'Needs attention' })).getByText('Lapsed item')).toBeTruthy();
-  expect(within(day).getByText('1 missed')).toBeTruthy(); expect(day.querySelector('li[data-ref]')).toBeNull();
+  expect(within(day).getByText('1 owed')).toBeTruthy(); expect(day.querySelector('li[data-ref]')).toBeNull();
   expect(within(day).getByText('Listed under Needs attention.')).toBeTruthy(); expect(within(day).queryByText('Nothing scheduled.')).toBeNull();
   expect(within(daySection('2026-11-07')).getByText('Nothing scheduled.')).toBeTruthy();
  });
@@ -769,7 +769,10 @@ describe('week strip, attention band and states', () => {
   h.agenda.mockResolvedValue(response([row(), lapsed])); await mount();
   await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-42' }));
   await waitFor(() => expect(h.resolve).toHaveBeenCalledWith('work', 'EX-42', { occurrence_at: '2026-11-05T10:00:00Z', state: 'done' }));
-  expect(h.view).not.toHaveBeenCalled(); await said('Occurrence marked done.', 'success'); expect(h.agenda).toHaveBeenCalledTimes(2);
+  // The only commitment read is the Undo eligibility read, after the write: never a preflight for the next occurrence.
+  await said('Occurrence marked done.', 'success'); expect(h.agenda).toHaveBeenCalledTimes(2);
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-42');
+  expect(h.view.mock.invocationCallOrder[0]).toBeGreaterThan(h.resolve.mock.invocationCallOrder[0]);
   h.resolve.mockRejectedValueOnce({ code: 'stale' }); await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-42' }));
   await said(staleCopy); await waitFor(() => expect(h.agenda).toHaveBeenCalledTimes(3));
  });
@@ -1226,7 +1229,7 @@ describe('agenda Month page', () => {
   expect(lines.map(line => line.classList.contains('attention'))).toEqual([true, true, false]);
   expect(lines[1]).toHaveAttribute('title', 'Lapsed one · 10:00 · Lapsed · First workspace');
   expect(within(cell).getByRole('button', { name: '+2 more' })).toBeTruthy();
-  expect(cell.querySelector('.count')).toHaveTextContent('5 · 4 owed');
+  expect(cell.querySelector('.count')).toHaveTextContent('5 · 5 owed');
   expect(within(cell).queryByText('Today')).toBeNull(); expect(dateButton('2026-11-05').getAttribute('aria-label')).toMatch(/, Today, 5 entries, 2 need attention$/);
   expect(within(cell).getByText('2 need attention')).toBeTruthy();
   expect(cellOf('2026-11-06').querySelector('.count')).toBeNull();
@@ -1234,7 +1237,7 @@ describe('agenda Month page', () => {
  it('lists attention entries first in day detail, under a title and summary for the day', async () => {
   h.agenda.mockResolvedValue(crowded()); render(Agenda); await screen.findByRole('grid'); await fireEvent.click(dateButton('2026-11-05'));
   const detail = screen.getByRole('dialog', { name: 'Thursday, 5 November 2026, Today' });
-  expect(detail.querySelector('.subject')).toHaveTextContent('5 entries · 4 owed · 1 missed');
+  expect(detail.querySelector('.subject')).toHaveTextContent('5 entries · 5 owed');
   expect([...detail.querySelectorAll('[data-ref]')].map(el => el.getAttribute('data-ref'))).toEqual(['EX-40', 'EX-41', 'EX-30', 'EX-31', 'EX-32']);
   expect(detail.textContent).not.toContain('Time zone');
  });
@@ -1841,12 +1844,32 @@ describe('Undo the last schedule resolution (TASK-4539)', () => {
   expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
   expect(successAction()).toBeUndefined();
  });
- it.each(['ack', 'history'] as const)('does no eligibility read and offers no Undo for %s', async kind => {
-  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: kind === 'history' ? 'lapsed' : 'outstanding', fired: true })]));
+ it('does no eligibility read and offers no Undo for ack', async () => {
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: 'outstanding', fired: true })]));
   h.resolve.mockImplementation(() => { h.view.mockClear(); return Promise.resolve({}); });
-  await mount(); await fireEvent.click(screen.getByRole('button', { name: `${kind === 'history' ? 'Mark done' : 'Acknowledge'} EX-30` }));
-  await said(kind === 'history' ? 'Occurrence marked done.' : 'Acknowledged. The work stays outstanding.', 'success');
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Acknowledge EX-30' }));
+  await said('Acknowledged. The work stays outstanding.', 'success');
   expect(h.view).not.toHaveBeenCalled(); expect(successAction()).toBeUndefined();
+ });
+ it('reads eligibility once after a late done on a lapsed row, with no preflight, and its Undo makes the row lapsed again (TASK-4579)', async () => {
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: 'lapsed' })]));
+  let preflight = -1;
+  h.resolve.mockImplementation(() => { preflight = h.view.mock.calls.length; h.view.mockClear(); h.view.mockResolvedValue({ last_resolution: eligible({ state: 'history_done' }) }); return Promise.resolve({}); });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-30' }));
+  await said('Occurrence marked done.', 'success');
+  expect(preflight).toBe(0);
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  expect(successAction()).toEqual({ label: 'Undo', onAction: expect.any(Function) });
+  await successAction().onAction();
+  expect(h.reopen).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { resolution_id: 'resolution-1' });
+  await said('Undone. The occurrence is lapsed again.', 'success');
+ });
+ it('offers no Undo after a late done when the checkpoint is a plain done', async () => {
+  h.agenda.mockResolvedValue(response([row({ occurrence_key: key, state: 'lapsed' })]));
+  h.resolve.mockImplementation(() => { h.view.mockClear(); h.view.mockResolvedValue({ last_resolution: eligible() }); return Promise.resolve({}); });
+  await mount(); await fireEvent.click(screen.getByRole('button', { name: 'Mark done EX-30' }));
+  await said('Occurrence marked done.', 'success');
+  expect(h.view).toHaveBeenCalledTimes(1); expect(successAction()).toBeUndefined();
  });
  it.each([false, true])('close-item-too failure=%s controls Undo eligibility', async fails => {
   h.resolve.mockRejectedValueOnce({ code: 'item_still_open', details: { state: 'done', done_field: 'status', close_options: ['done'] } })

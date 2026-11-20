@@ -8,7 +8,11 @@ import (
 )
 
 // AgendaDayCount is one local day of the agenda's counts series (TASK-4244).
-// Completed is the items that reached a positive terminal value that day.
+// Completed is the distinct items that, that day, reached a positive terminal
+// value or had a schedule occurrence that is now done; an occurrence counts on
+// its reported completion (actual_done_at) when it has one, else on the
+// instant it was resolved. An item counts once per day however many of these
+// it had. Occurrences never change Open or Burndown.
 // Open is the items still open at the day's end. Burndown is how many of the
 // items open at the window's start are still open at the day's end; items
 // created later never add to it.
@@ -49,7 +53,11 @@ func AgendaCountDays(from, to time.Time, loc *time.Location) (days []string, end
 
 // terminalStateExpr is the SQL test that a status_transitions row (alias st)
 // moved its item to a terminal value of the collection it was written under.
-func terminalStateExpr(colls []reportCollection) (string, []any) {
+// spellings maps collection_id + "\x00" + field_key to the to_status values
+// rows actually hold. A row is terminal when its value equals a terminal value
+// under strings.EqualFold, the replay rule, so the IN list names every held
+// spelling that folds to a terminal value as well as the values themselves.
+func terminalStateExpr(colls []reportCollection, spellings map[string][]string) (string, []any) {
 	var clauses []string
 	var args []any
 	for _, c := range colls {
@@ -57,18 +65,25 @@ func terminalStateExpr(colls []reportCollection) (string, []any) {
 			continue
 		}
 		// No SQL LOWER: SQLite lowercases ASCII only, Postgres all of Unicode.
-		// The stored value and its Go-lowercased form are listed instead, so
-		// both backends read the same set.
-		vals := make([]string, 0, 2*len(c.allTerminals))
+		// The fold is done in Go over the held spellings instead, so both
+		// backends read the same set.
 		seen := map[string]bool{}
+		var vals []string
+		add := func(x string) {
+			if !seen[x] {
+				seen[x] = true
+				vals = append(vals, x)
+			}
+		}
 		for _, v := range c.allTerminals {
-			for _, x := range []string{v, strings.ToLower(v)} {
-				if !seen[x] {
-					seen[x] = true
-					vals = append(vals, x)
+			add(v)
+			for _, x := range spellings[c.id+"\x00"+c.doneKey] {
+				if strings.EqualFold(x, v) {
+					add(x)
 				}
 			}
 		}
+		sort.Strings(vals)
 		args = append(args, c.id, c.doneKey)
 		for _, v := range vals {
 			args = append(args, v)
@@ -96,6 +111,9 @@ type countEvent struct {
 	collID      string
 	from, to    string
 	itemCreated time.Time
+	// occDone marks a done schedule occurrence: a completion that leaves the
+	// item open or closed as it was.
+	occDone bool
 }
 
 // AgendaCounts reads the counts series for one workspace over [from, to) in
@@ -134,10 +152,10 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		if !ok {
 			return countOpen
 		}
-		// The same rule as terminalStateExpr: the stored spelling or its
-		// lowercase form, so the start-of-window count and this replay never
-		// disagree about an item.
-		same := func(p string) bool { return status == p || status == strings.ToLower(p) }
+		// The same rule as terminalStateExpr: a status equal to a terminal
+		// value under strings.EqualFold, so the start-of-window count and this
+		// replay never disagree about an item.
+		same := func(p string) bool { return strings.EqualFold(status, p) }
 		for _, p := range rc.positiveTerminals {
 			if same(p) {
 				return countDone
@@ -157,7 +175,25 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 
 	// Items open when the window starts: created before it, and not at a
 	// terminal value by their last transition before it.
-	terminal, termArgs := terminalStateExpr(colls)
+	spellings := map[string][]string{}
+	held, err := s.db.Query(s.q(`SELECT DISTINCT collection_id, field_key, to_status FROM status_transitions WHERE workspace_id = ? AND created_at < ?`), workspaceID, fromB)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("agenda counts spellings: %w", err)
+	}
+	for held.Next() {
+		var collID, key, status string
+		if err := held.Scan(&collID, &key, &status); err != nil {
+			held.Close()
+			return nil, 0, false, err
+		}
+		spellings[collID+"\x00"+key] = append(spellings[collID+"\x00"+key], status)
+	}
+	if err := held.Err(); err != nil {
+		held.Close()
+		return nil, 0, false, err
+	}
+	held.Close()
+	terminal, termArgs := terminalStateExpr(colls, spellings)
 	startQ := `SELECT COUNT(*) FROM items i JOIN collections c ON c.id = i.collection_id
   WHERE i.workspace_id = ? AND i.created_at < ?` + live + scopeSQL
 	startArgs := append([]any{workspaceID, fromB}, scopeArgs...)
@@ -232,7 +268,42 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		return nil, len(events), true, nil
 	}
 
-	// Creations first at an instant, then transitions in write order.
+	// Schedule occurrences now done complete their item on the day of their
+	// reported completion, else the day they were resolved. Both columns hold
+	// whole-second UTC RFC 3339 text, the form of the bounds, so the text
+	// comparison orders them as instants.
+	occs, err := s.db.Query(s.q(`SELECT o.id, i.id, COALESCE(o.actual_done_at, o.resolved_at) AS done_at
+  FROM schedule_occurrences o JOIN item_schedules sc ON sc.id = o.schedule_id
+  JOIN items i ON i.id = sc.item_id JOIN collections c ON c.id = i.collection_id
+  WHERE sc.workspace_id = ? AND i.workspace_id = ? AND o.state = 'done'
+   AND COALESCE(o.actual_done_at, o.resolved_at) >= ? AND COALESCE(o.actual_done_at, o.resolved_at) < ?`+live+scopeSQL+`
+  ORDER BY done_at, o.id LIMIT ?`),
+		append(append([]any{workspaceID, workspaceID, fromB, toB}, scopeArgs...), maxRows+1-len(events))...)
+	if err != nil {
+		return nil, 0, false, fmt.Errorf("agenda counts occurrences: %w", err)
+	}
+	for occs.Next() {
+		var e countEvent
+		var at string
+		if err := occs.Scan(&e.id, &e.itemID, &at); err != nil {
+			occs.Close()
+			return nil, 0, false, err
+		}
+		e.occDone, e.at = true, parseTime(at)
+		events = append(events, e)
+	}
+	if err := occs.Err(); err != nil {
+		occs.Close()
+		return nil, 0, false, err
+	}
+	occs.Close()
+	if len(events) > maxRows {
+		return nil, len(events), true, nil
+	}
+
+	// Creations first at an instant, then transitions in write order. A done
+	// occurrence only marks a completion, so where it falls among them at one
+	// instant changes nothing.
 	sort.SliceStable(events, func(i, j int) bool {
 		a, b := events[i], events[j]
 		switch {
@@ -263,6 +334,13 @@ func (s *Store) AgendaCounts(workspaceID string, scope PendingReminderScope, fro
 		}
 		if day >= len(out) {
 			break
+		}
+		if e.occDone {
+			if !completedOn[e.itemID+"|"+out[day].Day] {
+				completedOn[e.itemID+"|"+out[day].Day] = true
+				out[day].Completed++
+			}
+			continue
 		}
 		if e.create {
 			state[e.itemID] = &itemState{known: true, kind: countOpen}

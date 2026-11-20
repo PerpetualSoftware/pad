@@ -123,7 +123,7 @@ it('maps agenda rows on authoritative days, all-day first in stable server order
 
 
 import type { AgendaWorkEntry } from '$lib/types';
-import { OCCURRENCE_STATES, acknowledgedText, attentionEntries, canAcknowledge, canResolve, isOpenState, roleMarkers, workOccurrence, daySummary, shortDay, shortRoleDate, deadlineTone, deadlinePill, forecastLate, forecastPill, type OccurrenceState } from './presentation';
+import { OCCURRENCE_STATES, acknowledgedText, attentionEntries, canAcknowledge, canResolve, isOpenState, roleMarkers, workOccurrence, daySummary, dayCounts, shortDay, shortRoleDate, deadlineTone, deadlinePill, forecastLate, forecastPill, type OccurrenceState } from './presentation';
 
 describe('the one occurrence state table', () => {
  const ALL = ['outstanding', 'acknowledged', 'scheduled', 'done', 'skipped', 'moved', 'missed', 'lapsed', 'unrecorded'] as const satisfies readonly OccurrenceState[];
@@ -219,7 +219,9 @@ describe('daySummary', () => {
   [['outstanding'], '1 owed'],
   [['outstanding', 'outstanding', 'done'], '2 owed · 1 done'],
   [['done', 'done', 'skipped'], '2 done'],
-  [['outstanding', 'lapsed', 'missed', 'done'], '1 owed · 1 done · 2 missed'],
+  [['outstanding', 'lapsed', 'missed', 'done'], '2 owed · 1 done · 1 missed'],
+  [['lapsed'], '1 owed'],
+  [['missed'], '1 missed'],
   [['outstanding', 'acknowledged', 'done'], '2 owed · 1 done']
  ] as [OccurrenceState[], string][])('words %j as "%s"', (states, text) => {
   expect(daySummary(states.map(state => row({ state })))).toBe(text);
@@ -227,6 +229,22 @@ describe('daySummary', () => {
  it('counts schedule occurrences only', () => {
   expect(daySummary([row({ type: 'completed', state: undefined }), row({ type: 'date', overdue: true, state: undefined }), row()])).toBe('1 owed');
  });
+});
+
+describe('dayCounts', () => {
+	const counts = (states: OccurrenceState[]) => dayCounts(states.map(state => row({ state })));
+	it('counts a lapsed occurrence as owed, since a late done is still accepted', () => {
+		expect(counts(['lapsed'])).toEqual({ owed: 1, done: 0, missed: 0 });
+	});
+	it('counts a missed occurrence as missed only', () => {
+		expect(counts(['missed'])).toEqual({ owed: 0, done: 0, missed: 1 });
+	});
+	it('counts outstanding and acknowledged as owed, done as done, and the rest not at all', () => {
+		expect(counts(['outstanding', 'acknowledged', 'done', 'scheduled', 'skipped', 'moved', 'unrecorded'])).toEqual({ owed: 2, done: 1, missed: 0 });
+	});
+	it('ignores entries that are not schedule occurrences', () => {
+		expect(dayCounts([row({ type: 'completed', state: undefined }), row({ type: 'date', overdue: true, state: undefined }), row({ type: 'created', state: 'missed' })])).toEqual({ owed: 0, done: 0, missed: 0 });
+	});
 });
 
 describe('short dates', () => {

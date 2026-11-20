@@ -85,6 +85,10 @@ func (s *Server) handleCreateToken(w http.ResponseWriter, r *http.Request) {
 	if !requireMinRole(w, r, "owner") {
 		return
 	}
+	// An open instance (no users yet) has no account to sign in again.
+	if userID := currentUserID(r); userID != "" && !s.requireKeyMintStepUp(w, r, userID) {
+		return
+	}
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
@@ -226,6 +230,9 @@ func (s *Server) handleCreateUserToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
 		return
 	}
+	if !s.requireKeyMintStepUp(w, r, userID) {
+		return
+	}
 
 	var req apiTokenCreateRequest
 	if err := decodeJSON(r, &req); err != nil {
@@ -328,6 +335,10 @@ func (s *Server) handleRotateUserToken(w http.ResponseWriter, r *http.Request) {
 	userID := currentUserID(r)
 	if userID == "" {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Not logged in")
+		return
+	}
+
+	if !s.requireKeyMintStepUp(w, r, userID) {
 		return
 	}
 
@@ -518,11 +529,8 @@ func (s *Server) handleUpdateUserToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	widens := scopes != nil && tokenAccessWidens(tokenAccess{Scopes: old.Scopes}, tokenAccess{Scopes: *scopes})
-	if widens {
-		if !s.sessionHasStepUp(r, userID) {
-			writeError(w, http.StatusForbidden, "step_up_required", "Verify your identity before increasing this key's access")
-			return
-		}
+	if widens && !s.requireKeyMintStepUp(w, r, userID) {
+		return
 	}
 	updated, err := s.store.UpdateUserAPIToken(tokenID, userID, name, scopes, old.Scopes)
 	if err != nil {

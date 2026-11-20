@@ -54,3 +54,21 @@ func TestCommitmentRefusalHintIsNotBilling(t *testing.T) {
 		})
 	}
 }
+
+// Not red-first: the mapping exists. A stale expected_revision keeps its code
+// and its details on both transports, so a caller can tell it from a stale
+// renegotiate revision.
+func TestCommitmentExpectedRevisionDetailsParity(t *testing.T) {
+	body := `{"error":{"code":"commitment_changed","message":"The commitment changed since it was read; read it again and retry","details":{"field":"expected_revision","code":"stale"}}}`
+	remote := classifyHTTPStatus(context.Background(), "item remind edit", 409, []byte(body), nil)
+	stdio := classifyExecError(context.Background(), []string{"item", "remind", "edit"}, errors.New("exit status 1"), structuredErrorMarker+" "+body+"\n", nil)
+	for _, result := range []*CallToolResult{remote, stdio} {
+		env, ok := result.StructuredContent.(ErrorEnvelope)
+		if !ok || env.Error.Code != ErrCommitmentChanged {
+			t.Fatalf("got %+v want commitment_changed", result)
+		}
+		if !strings.Contains(string(env.Error.Details), `"expected_revision"`) {
+			t.Fatalf("details %s lost expected_revision", env.Error.Details)
+		}
+	}
+}

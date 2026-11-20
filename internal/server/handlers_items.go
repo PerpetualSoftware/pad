@@ -2843,9 +2843,15 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			roleChange := fmt.Sprintf("role: %s → %s", valueOrEmpty(before.AgentRoleName), valueOrEmpty(updated.AgentRoleName))
 			meta = appendChange(meta, roleChange)
 		}
-		if updated.AssignedUserName != before.AssignedUserName {
+		// Keyed on the assignee id, not the joined display name: a
+		// reassignment between two people sharing a name is still a
+		// reassignment, and the id stamp is what the needs-you assignment
+		// time matches on, since the names in the text go stale on a rename
+		// (TASK-4684). The stamp is "" on an unassign.
+		if beforeID, afterID := derefOrEmpty(before.AssignedUserID), derefOrEmpty(updated.AssignedUserID); beforeID != afterID {
 			assignChange := fmt.Sprintf("assigned: %s → %s", valueOrEmpty(before.AssignedUserName), valueOrEmpty(updated.AssignedUserName))
 			meta = appendChange(meta, assignChange)
+			meta = withActivityMetaKey(meta, store.ActivityMetaAssignedUserID, afterID)
 		}
 	}
 	// PLAN-2348 U2: the body changed and the per-actor throttle wrote no

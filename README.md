@@ -291,7 +291,7 @@ that includes those migrations, or re-run with `pad start --force`.
 
 To recover, reinstall the newer binary (`brew upgrade pad`, pull the newer Docker tag, etc.). If you have *intentionally* downgraded and accept the risk, start with `pad start --force` (or set `PAD_ALLOW_SCHEMA_AHEAD=1`) to override the guard.
 
-**Automatic pre-migration snapshot (SQLite).** Whenever a SQLite-backed instance has pending migrations to apply, Pad first copies the database file to `pad.db.pre-<version>` next to it. If an upgrade ever goes wrong, stop the server and copy that snapshot back over `pad.db`. This is a convenience net, not a backup strategy — keep your own backups (see [docs/backup.md](docs/backup.md)). PostgreSQL instances are skipped here; use `pg_dump` or a provider snapshot before upgrading.
+**Automatic pre-migration snapshot (SQLite).** Whenever a SQLite-backed instance has pending migrations to apply, Pad first copies the database file to `pad.db.pre-<version>-m<migration>` next to it, where `<migration>` is the number of the newest migration the binary ships, so each upgrade that adds migrations gets its own snapshot. If an upgrade ever goes wrong, stop the server and copy that snapshot back over `pad.db`. After a successful upgrade, Pad keeps that upgrade's snapshot and the newest earlier one, and removes older `pad.db.pre-<version>-m<migration>` files it created. It never removes a file with any other name (a copy you made by hand, an older `pad.db.pre-<version>` snapshot); those are left for you to delete. This is a convenience net, not a backup strategy — keep your own backups (see [docs/backup.md](docs/backup.md)). PostgreSQL instances are skipped here; use `pg_dump` or a provider snapshot before upgrading.
 
 Recommended upgrade flow:
 
@@ -402,7 +402,7 @@ directory for `claude-code`, and an `[mcp_servers.pad]` table in
 project-scoped, it's install-on-request only — `--all` and `pad mcp status` cover
 the per-user clients (including Codex) and skip it.
 
-**Tool catalog (v0.121)** — twelve resource × action tools plus `pad_set_workspace`, and `pad_board` on remote HTTP with Apps enabled. Undeclared input keys are rejected with a structured error rather than silently dropped, and field values are typed against the collection schema on the server:
+**Tool catalog (v0.122)** — twelve resource × action tools plus `pad_set_workspace`, and `pad_board` on remote HTTP with Apps enabled. Undeclared input keys are rejected with a structured error rather than silently dropped, and field values are typed against the collection schema on the server:
 
 | Tool | Actions |
 |---|---|
@@ -429,7 +429,7 @@ Plus resources at `pad://workspaces`, `pad://workspace/{ws}/dashboard`,
 and `pad://_meta/version`.
 
 **Stability contract.** The catalog is versioned
-(`tool_surface_version: "0.121"`) and advertised in the initialize handshake and at
+(`tool_surface_version: "0.122"`) and advertised in the initialize handshake and at
 `pad://_meta/version`, so external agents can pin against it; the per-version
 changelog lives in [`internal/mcp/version.go`](internal/mcp/version.go). Errors
 come back as structured envelopes (`{error: {code, message, hint, ...}}`) from a
@@ -590,13 +590,16 @@ PAD_TOKEN=pad_xxxxxxxx pad item list
 pad token create --name ci-agent              # Mint a token (secret shown once)
 pad token create --name cursor --expires-in 30
 pad token list                                # Metadata only — never secrets
+pad token edit <token-id> --scopes read       # Rename or change scopes; widening asks you to verify
 pad token rotate <token-id>                   # New secret; the old one dies with the same write
 pad token revoke <token-id>                   # Immediate; the id must be exact
 ```
 
 Tokens are user-scoped and act as the user who minted them. `create` prints the secret exactly once — the server stores only a hash and cannot show it again — so pair each mint with wherever the token will live (CI secret store, an agent's `PAD_TOKEN`). `revoke` takes the exact id from `pad token list`; revocation is immediate, and anything still authenticating with that token fails on its next call. `rotate` keeps a token's metadata (name, scopes) and replaces its secret in place: the old secret stops working immediately — there is no grace window — so update whatever holds it before its next call, and use `--expires-in <days>` to set a new expiry (otherwise the original is preserved).
 
-**`create` and `rotate` need a login session; `list` and `revoke` do not.** A request authenticated by an API token (including a `pad_` token in `PAD_TOKEN`) is refused with `403 session_required`, because tokens a token mints would outlive its revocation. A browser session, a saved CLI login, or a `padsess_` token in `PAD_TOKEN` mints normally; on a headless machine, `pad auth login -i` prompts for email and password. `list` and `revoke` stay reachable by a token, since revoking is the response to a leaked one.
+`edit` changes only the name and/or scopes you pass (same `--scopes` values as `create`); the secret is untouched. Widening a key's access (for example `read` to `*`) first asks for a code from your authenticator app or a recovery code, a code sent by email, or your password, whichever the account uses; an account with none must turn on 2FA first.
+
+**`create`, `rotate` and `edit` need a login session; `list` and `revoke` do not.** A request authenticated by an API token (including a `pad_` token in `PAD_TOKEN`) is refused with `403 session_required`, because tokens a token mints would outlive its revocation. A browser session, a saved CLI login, or a `padsess_` token in `PAD_TOKEN` mints normally; on a headless machine, `pad auth login -i` prompts for email and password. `list` and `revoke` stay reachable by a token, since revoking is the response to a leaked one.
 
 ```bash
 pad workspace members               # List workspace members

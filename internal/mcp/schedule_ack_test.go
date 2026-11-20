@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
 func TestScheduleResolveAckTransportParity(t *testing.T) {
@@ -50,5 +52,16 @@ func TestScheduleResolveAckErrorParity(t *testing.T) {
 				t.Fatalf("%s became %+v", c.code, r)
 			}
 		}
+	}
+}
+
+// TestScheduleResolveAckNotFiredStderrFallback pins the no-marker stdio
+// fallback to the store sentence itself, so rewording it keeps not_fired.
+func TestScheduleResolveAckNotFiredStderrFallback(t *testing.T) {
+	stderr := "Error: " + store.ErrOccurrenceNotFired.Error() + "\n"
+	r := classifyExecError(context.Background(), []string{"item", "remind", "ack"}, errors.New("exit status 1"), stderr, nil)
+	env, ok := r.StructuredContent.(ErrorEnvelope)
+	if !ok || string(env.Error.Code) != "not_fired" {
+		t.Fatalf("stderr %q became %+v", stderr, r)
 	}
 }

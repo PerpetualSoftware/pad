@@ -32,6 +32,11 @@ type SessionInfo struct {
 	// SignedInAt is the original sign-in time for step-up factor selection.
 	// CLI approval and rotation carry it over independently of CreatedAt.
 	SignedInAt time.Time
+	// SignInStamp is signed_in_at exactly as stored: nil for a row from
+	// before the column existed, with no created_at fallback. A gate that
+	// asks whether the sign-in was recent reads this, so an unknown sign-in
+	// time is never fresh (TASK-4693).
+	SignInStamp *time.Time
 	// RenewTTL is the session's sliding window (renew_ttl_seconds); zero for a
 	// legacy row that never slides. A rotation keeps it (BUG-3978).
 	RenewTTL time.Duration
@@ -307,6 +312,7 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 		UAHash:      uaHash,
 		CreatedAt:   parseTime(createdAt),
 		SignedInAt:  signInTime,
+		SignInStamp: parseTimePtr(signedInAt),
 		Kind:        kind,
 		RenewTTL:    time.Duration(renewSeconds) * time.Second,
 		StepUpUntil: parseTimePtr(stepUpUntil),

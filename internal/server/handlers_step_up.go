@@ -19,8 +19,38 @@ func (s *Server) sessionHasStepUp(r *http.Request, userID string) bool {
 	return session != nil && session.User != nil && session.User.ID == userID && session.StepUpUntil != nil && session.StepUpUntil.After(time.Now())
 }
 
+// keyMintStepUpWindow is how recently the session must have been signed in
+// to create, rotate or widen an API key without a step-up grant. It is the
+// account-delete window, so one "sign in again within 10 minutes" rule holds.
+const keyMintStepUpWindow = accountDeleteReauthWindow
+
+// requireKeyMintStepUp gates every door that hands out or widens a key
+// secret (TASK-4693): the session has a live step-up grant, or its own
+// stored sign-in time is within keyMintStepUpWindow. A session with no
+// stored sign-in time (a row from before the column) is never fresh. The
+// rule holds for accounts without a verification factor too: they sign in
+// again. Callers run requireInteractiveSession first.
+func (s *Server) requireKeyMintStepUp(w http.ResponseWriter, r *http.Request, userID string) bool {
+	if s.sessionHasStepUp(r, userID) {
+		return true
+	}
+	session := s.requestSessionInfo(r)
+	if session != nil && session.User != nil && session.User.ID == userID && session.SignInStamp != nil {
+		age := time.Since(*session.SignInStamp)
+		if age >= 0 && age <= keyMintStepUpWindow {
+			return true
+		}
+	}
+	writeError(w, http.StatusForbidden, "step_up_required",
+		"Sign in again, or verify your identity, then retry within 10 minutes")
+	return false
+}
+
 // requireTOTPEnrolStepUp gates both creating and confirming a pending secret.
-// Accounts without a verification factor must have signed in recently instead.
+// Accounts without a verification factor must instead have a stored sign-in
+// time within accountDeleteReauthWindow. A session with no stored sign-in
+// time (a row from before the column) is never fresh: its created_at does
+// not stand in for a sign-in.
 func (s *Server) requireTOTPEnrolStepUp(w http.ResponseWriter, r *http.Request, user *models.User) bool {
 	if s.sessionHasStepUp(r, user.ID) {
 		return true
@@ -29,9 +59,11 @@ func (s *Server) requireTOTPEnrolStepUp(w http.ResponseWriter, r *http.Request, 
 	if session != nil && session.User != nil && session.User.ID == user.ID {
 		factor, _ := s.stepUpFactor(user, session)
 		if factor == "unavailable" {
-			age := time.Since(session.SignedInAt)
-			if age >= 0 && age <= accountDeleteReauthWindow {
-				return true
+			if session.SignInStamp != nil {
+				age := time.Since(*session.SignInStamp)
+				if age >= 0 && age <= accountDeleteReauthWindow {
+					return true
+				}
 			}
 			writeError(w, http.StatusForbidden, "reauth_required", "Sign in again, then turn on two-factor authentication within 10 minutes")
 			return false

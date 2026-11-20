@@ -357,3 +357,19 @@ func TestStepUpSessionSignedInAt(t *testing.T) {
 		}
 	})
 }
+
+// SignInStamp is the stored value with no created_at fallback (TASK-4693):
+// a NULL row has no known sign-in time.
+func TestStepUpSessionSignInStampStrict(t *testing.T) {
+	stepUpBackends(t, func(t *testing.T, s *store.Store) {
+		_, session, tok := stepUpUser(t, s, "stamp@example.com")
+		if session.SignInStamp == nil || !session.SignInStamp.Equal(session.SignedInAt) {
+			t.Fatalf("new session stamp: %+v", session)
+		}
+		stepUpExec(t, s, `UPDATE sessions SET signed_in_at=NULL WHERE id=?`, session.ID)
+		legacy, err := s.ValidateSession(tok)
+		if err != nil || legacy == nil || legacy.SignInStamp != nil || !legacy.SignedInAt.Equal(legacy.CreatedAt) {
+			t.Fatalf("legacy stamp: %+v %v", legacy, err)
+		}
+	})
+}

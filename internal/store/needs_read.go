@@ -117,13 +117,23 @@ func (s *Store) WorkspaceOwnerIDs(workspaceID string) ([]string, error) {
 // on item alias i: the comment is live, its author is not the mentioned user,
 // and the mentioned user has written no live human comment on the item since
 // (a reply at the same second counts as an answer: >=). It binds nothing.
-const openMentionSQL = `
+//
+// "Since" compares instants, not stamp text (TASK-4689): both stamps are read
+// as their UTC whole second (Dialect.EpochSeconds), so a stamp with a numeric
+// offset or fractional seconds, as the backfill or an edit can store, compares
+// correctly. A stamp on either side that does not parse yields NULL, so that
+// reply answers nothing and the mention stays OPEN: unparseable is seen
+// nothing, as for the dismissal marker (TASK-3960).
+func (s *Store) openMentionSQL() string {
+	return `
 		JOIN comments cm ON cm.id = m.comment_id AND cm.deleted_at IS NULL
 		WHERE NOT (COALESCE(cm.user_id, '') = m.user_id AND cm.created_by = 'user')
 		  AND NOT EXISTS (
 			SELECT 1 FROM comments r
 			WHERE r.item_id = m.item_id AND r.deleted_at IS NULL AND r.created_by = 'user'
-			  AND r.user_id = m.user_id AND r.created_at >= m.created_at)`
+			  AND r.user_id = m.user_id
+			  AND ` + s.dialect.EpochSeconds("r.created_at") + ` >= ` + s.dialect.EpochSeconds("m.created_at") + `)`
+}
 
 // NeedsAwaitsStatus is one collection's waiting statuses (TASK-4643): its
 // items whose done field Key holds one of Values, compared trimmed and
@@ -196,7 +206,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 			args = append(args, id)
 		}
 	}
-	src = append(src, `EXISTS (SELECT 1 FROM comment_mentions m `+openMentionSQL+` AND m.item_id = i.id)`)
+	src = append(src, `EXISTS (SELECT 1 FROM comment_mentions m `+s.openMentionSQL()+` AND m.item_id = i.id)`)
 
 	q := `
 		SELECT i.id, i.collection_id, i.title, i.slug, i.fields, i.assigned_user_id, COALESCE(au.name, ''), i.agent_role_id,
@@ -208,7 +218,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 		  AND (` + strings.Join(src, " OR ") + `)`
 	if p.ForUserID != "" {
 		q += `
-		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + openMentionSQL + ` AND m.item_id = i.id AND m.user_id = ?)`
+		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + s.openMentionSQL() + ` AND m.item_id = i.id AND m.user_id = ?)`
 		args = append(args, p.ForUserID, p.ForUserID)
 		for _, chunk := range chunkStrings(p.DueItemIDs, needsChunk) {
 			q += " OR i.id IN (" + placeholders(len(chunk)) + ")"
@@ -254,7 +264,7 @@ type NeedsMention struct {
 }
 
 // OpenMentionsForItems returns the open mentions on the given items (see
-// openMentionSQL), per item ordered by mention time then user id.
+// Store.openMentionSQL), per item ordered by mention time then user id.
 func (s *Store) OpenMentionsForItems(itemIDs []string) (map[string][]NeedsMention, error) {
 	out := map[string][]NeedsMention{}
 	for _, chunk := range chunkStrings(itemIDs, needsChunk) {
@@ -264,7 +274,7 @@ func (s *Store) OpenMentionsForItems(itemIDs []string) (map[string][]NeedsMentio
 		}
 		rows, err := s.db.Query(s.q(`
 			SELECT m.item_id, m.user_id, m.comment_id, cm.author, m.created_at, cm.created_at
-			FROM comment_mentions m `+openMentionSQL+`
+			FROM comment_mentions m `+s.openMentionSQL()+`
 			  AND m.item_id IN (`+placeholders(len(chunk))+`)
 			ORDER BY m.item_id, m.created_at, m.user_id`), args...)
 		if err != nil {
@@ -356,41 +366,34 @@ func (s *Store) NeedsSnoozesForItems(userID, workspaceID string, itemIDs []strin
 }
 
 // needsItemStates is needsItemState for many items: the newest other comment's
-// second, the other comments at the second the snooze's marker names (the only
-// second whose ids matter; every item's newest second when snoozes is nil), and
-// the latest transition seq.
+// normalised second (needsCommentSecond), the other comments at the second the
+// snooze's marker names (the only second whose ids matter; every item's newest
+// second when snoozes is nil), and the latest transition seq.
 func (s *Store) needsItemStates(userID string, itemIDs []string, snoozes map[string]*models.NeedsSnooze) (map[string]models.NeedsSnoozeMarker, error) {
 	cur := make(map[string]models.NeedsSnoozeMarker, len(itemIDs))
 	for _, id := range itemIDs {
 		cur[id] = models.NeedsSnoozeMarker{}
 	}
+	stamps, err := s.needsOtherCommentStamps(s.db, userID, itemIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range itemIDs {
+		m := cur[id]
+		m.SeenCommentAt = newestNeedsSecond(stamps[id])
+		// The ids at a second matter only where the item's newest second is
+		// the marker's second.
+		if m.SeenCommentAt != "" && (snoozes == nil || m.SeenCommentAt == snoozes[id].Marker.SeenCommentAt) {
+			m.SeenCommentIDs = needsIDsAt(stamps[id], m.SeenCommentAt)
+		}
+		cur[id] = m
+	}
 	for _, chunk := range chunkStrings(itemIDs, needsChunk) {
-		args := []any{userID}
-		for _, id := range chunk {
-			args = append(args, id)
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
 		}
-		rows, err := s.db.Query(s.q(`SELECT item_id, MAX(created_at) FROM comments WHERE `+needsOthersComment+
-			` AND item_id IN (`+placeholders(len(chunk))+`) GROUP BY item_id`), args...)
-		if err != nil {
-			return nil, fmt.Errorf("read latest comments: %w", err)
-		}
-		for rows.Next() {
-			var id, at string
-			if err := rows.Scan(&id, &at); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			m := cur[id]
-			m.SeenCommentAt = at
-			cur[id] = m
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-		args = args[1:]
-		rows, err = s.db.Query(s.q(`SELECT item_id, COALESCE(MAX(seq), 0) FROM status_transitions WHERE item_id IN (`+
+		rows, err := s.db.Query(s.q(`SELECT item_id, COALESCE(MAX(seq), 0) FROM status_transitions WHERE item_id IN (`+
 			placeholders(len(chunk))+`) GROUP BY item_id`), args...)
 		if err != nil {
 			return nil, fmt.Errorf("read latest transitions: %w", err)
@@ -405,42 +408,6 @@ func (s *Store) needsItemStates(userID string, itemIDs []string, snoozes map[str
 			m := cur[id]
 			m.SeenTransitionSeq = seq
 			cur[id] = m
-		}
-		err = rows.Err()
-		rows.Close()
-		if err != nil {
-			return nil, err
-		}
-	}
-	// The ids at a second matter only where the item's newest second is the
-	// marker's second; fetch them for those (item, second) pairs together.
-	var pairs []string
-	for _, id := range itemIDs {
-		if at := cur[id].SeenCommentAt; at != "" && (snoozes == nil || at == snoozes[id].Marker.SeenCommentAt) {
-			pairs = append(pairs, id)
-		}
-	}
-	for _, chunk := range chunkStrings(pairs, needsChunk/2) {
-		args := []any{userID}
-		conds := make([]string, len(chunk))
-		for i, id := range chunk {
-			conds[i] = "(item_id = ? AND created_at = ?)"
-			args = append(args, id, cur[id].SeenCommentAt)
-		}
-		rows, err := s.db.Query(s.q(`SELECT item_id, id FROM comments WHERE `+needsOthersComment+
-			` AND (`+strings.Join(conds, " OR ")+`) ORDER BY item_id, id`), args...)
-		if err != nil {
-			return nil, fmt.Errorf("read comments at the marker second: %w", err)
-		}
-		for rows.Next() {
-			var itemID, id string
-			if err := rows.Scan(&itemID, &id); err != nil {
-				rows.Close()
-				return nil, err
-			}
-			m := cur[itemID]
-			m.SeenCommentIDs = append(m.SeenCommentIDs, id)
-			cur[itemID] = m
 		}
 		err = rows.Err()
 		rows.Close()
@@ -468,14 +435,30 @@ func (s *Store) NeedsMarkersForItems(userID string, itemIDs []string) (map[strin
 	return cur, nil
 }
 
-// LatestAssignmentTimes returns, per item, when it was last assigned to the
-// named person: the newest "updated" activity whose change list holds
-// "assigned: <before> → <name>". assigned maps item id to the assignee's
-// display name. An item with no such row is absent (the caller falls back to
-// the item's created_at: an item created already assigned has no row).
-// The activity trail records the name, not the id, so two people sharing a
-// display name can be confused; the worst effect is an age.
-func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]string) (map[string]time.Time, error) {
+// AssigneeRef names an item's current assignee for LatestAssignmentTimes.
+type AssigneeRef struct {
+	UserID string
+	Name   string // current display name, for rows written before the id was recorded
+}
+
+// LatestAssignmentTimes returns, per item, when it was last assigned to its
+// current assignee: the newest "updated" activity recording an assignment to
+// them. assigned maps item id to that assignee. An item with no such row is
+// absent (the caller falls back to the item's created_at: an item created
+// already assigned has no row).
+//
+// A row stamped with ActivityMetaAssignedUserID matches when the stamp equals
+// the assignee's id, so a rename after the assignment or a namesake does not
+// confuse it, and an unassign ("") never matches. A row written before the
+// stamp existed holds only "assigned: <before> → <after>" with display names,
+// and matches on the assignee's CURRENT name; for those rows a rename since
+// the assignment still loses the match and two people sharing a name can
+// still be confused, and the worst effect is an age.
+//
+// The prefilter admits a stamp without the text: a debounced run that
+// reassigns away and back (A → B → A) collapses its change text to a no-op
+// and drops it, but keeps the newest stamp, and that run did re-assign.
+func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]AssigneeRef) (map[string]time.Time, error) {
 	ids := make([]string, 0, len(assigned))
 	for id := range assigned {
 		ids = append(ids, id)
@@ -491,7 +474,7 @@ func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]st
 			SELECT a.document_id, `+s.activityMetaText("a")+`, a.created_at
 			FROM activities a
 			WHERE a.workspace_id = ? AND a.action = 'updated'
-			  AND `+s.activityMetaText("a")+` LIKE '%assigned: %'
+			  AND (`+s.activityMetaText("a")+` LIKE '%assigned: %' OR `+s.activityMetaText("a")+` LIKE '%"assigned_user_id"%')
 			  AND a.document_id IN (`+placeholders(len(chunk))+`)
 			ORDER BY a.created_at, a.id`), args...)
 		if err != nil {
@@ -507,11 +490,9 @@ func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]st
 			if json.Unmarshal([]byte(meta), &m) != nil {
 				continue
 			}
-			changes, _ := m["changes"].(string)
-			for _, part := range strings.Split(changes, "; ") {
-				if strings.HasPrefix(part, "assigned: ") && strings.HasSuffix(part, " → "+assigned[id]) {
-					out[id] = parseTime(at) // rows ascend, so the last match is the newest
-				}
+			// Rows ascend, so the last match is the newest.
+			if assignmentRowMatches(m, assigned[id]) {
+				out[id] = parseTime(at)
 			}
 		}
 		err = rows.Err()
@@ -521,4 +502,24 @@ func (s *Store) LatestAssignmentTimes(workspaceID string, assigned map[string]st
 		}
 	}
 	return out, nil
+}
+
+// assignmentRowMatches reports whether one "updated" activity's metadata
+// records an assignment to ref. A stamped row is decided by its id alone; an
+// unstamped (legacy) row by the suffix of its "assigned: " change text.
+func assignmentRowMatches(meta map[string]any, ref AssigneeRef) bool {
+	if v, stamped := meta[ActivityMetaAssignedUserID]; stamped {
+		id, _ := v.(string)
+		return id != "" && id == ref.UserID
+	}
+	if ref.Name == "" {
+		return false
+	}
+	changes, _ := meta["changes"].(string)
+	for _, part := range strings.Split(changes, "; ") {
+		if strings.HasPrefix(part, "assigned: ") && strings.HasSuffix(part, " → "+ref.Name) {
+			return true
+		}
+	}
+	return false
 }
