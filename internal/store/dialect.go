@@ -166,13 +166,17 @@ type Dialect interface {
 	DateBucket(column, granularity string) string
 
 	// EpochSeconds returns a SQL expression that is the UTC whole-second Unix
-	// epoch of an RFC3339 TEXT column, or NULL when the text does not parse
-	// (TASK-4689). A numeric offset ("+02:00") and fractional seconds are
-	// honoured, so two stamps naming the same second compare equal whatever
-	// their spelling; fractions are dropped, not rounded.
-	// SQLite:     CAST(strftime('%s', col) AS INTEGER)  (strftime is NULL on garbage)
-	// PostgreSQL: the timestamptz cast, guarded by an RFC3339 regex so a
-	//             malformed row yields NULL instead of aborting the query.
+	// epoch of an RFC3339 TEXT column (TASK-4689). A numeric offset ("+02:00")
+	// and fractional seconds are honoured, so two stamps naming the same second
+	// compare equal whatever their spelling; fractions are dropped, not rounded.
+	// SQLite:     CAST(strftime('%s', col) AS INTEGER). NULL on text strftime
+	//             cannot read; it also reads forms beyond RFC3339 (a space for
+	//             the T, no zone), as UTC.
+	// PostgreSQL: the timestamptz cast, guarded by an RFC3339 shape regex, so
+	//             text of any other shape is NULL. The regex checks shape, not
+	//             range: a well-shaped impossible instant (month 13, Feb 30)
+	//             still reaches the cast and fails the query. Only server-minted
+	//             stamps reach these columns, so none exists.
 	EpochSeconds(column string) string
 }
 
