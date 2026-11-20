@@ -117,13 +117,23 @@ func (s *Store) WorkspaceOwnerIDs(workspaceID string) ([]string, error) {
 // on item alias i: the comment is live, its author is not the mentioned user,
 // and the mentioned user has written no live human comment on the item since
 // (a reply at the same second counts as an answer: >=). It binds nothing.
-const openMentionSQL = `
+//
+// "Since" compares instants, not stamp text (TASK-4689): both stamps are read
+// as their UTC whole second (Dialect.EpochSeconds), so a stamp with a numeric
+// offset or fractional seconds, as the backfill or an edit can store, compares
+// correctly. A stamp on either side that does not parse yields NULL, so that
+// reply answers nothing and the mention stays OPEN: unparseable is seen
+// nothing, as for the dismissal marker (TASK-3960).
+func (s *Store) openMentionSQL() string {
+	return `
 		JOIN comments cm ON cm.id = m.comment_id AND cm.deleted_at IS NULL
 		WHERE NOT (COALESCE(cm.user_id, '') = m.user_id AND cm.created_by = 'user')
 		  AND NOT EXISTS (
 			SELECT 1 FROM comments r
 			WHERE r.item_id = m.item_id AND r.deleted_at IS NULL AND r.created_by = 'user'
-			  AND r.user_id = m.user_id AND r.created_at >= m.created_at)`
+			  AND r.user_id = m.user_id
+			  AND ` + s.dialect.EpochSeconds("r.created_at") + ` >= ` + s.dialect.EpochSeconds("m.created_at") + `)`
+}
 
 // NeedsAwaitsStatus is one collection's waiting statuses (TASK-4643): its
 // items whose done field Key holds one of Values, compared trimmed and
@@ -196,7 +206,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 			args = append(args, id)
 		}
 	}
-	src = append(src, `EXISTS (SELECT 1 FROM comment_mentions m `+openMentionSQL+` AND m.item_id = i.id)`)
+	src = append(src, `EXISTS (SELECT 1 FROM comment_mentions m `+s.openMentionSQL()+` AND m.item_id = i.id)`)
 
 	q := `
 		SELECT i.id, i.collection_id, i.title, i.slug, i.fields, i.assigned_user_id, COALESCE(au.name, ''), i.agent_role_id,
@@ -208,7 +218,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 		  AND (` + strings.Join(src, " OR ") + `)`
 	if p.ForUserID != "" {
 		q += `
-		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + openMentionSQL + ` AND m.item_id = i.id AND m.user_id = ?)`
+		  AND (i.assigned_user_id = ? OR EXISTS (SELECT 1 FROM comment_mentions m ` + s.openMentionSQL() + ` AND m.item_id = i.id AND m.user_id = ?)`
 		args = append(args, p.ForUserID, p.ForUserID)
 		for _, chunk := range chunkStrings(p.DueItemIDs, needsChunk) {
 			q += " OR i.id IN (" + placeholders(len(chunk)) + ")"
@@ -254,7 +264,7 @@ type NeedsMention struct {
 }
 
 // OpenMentionsForItems returns the open mentions on the given items (see
-// openMentionSQL), per item ordered by mention time then user id.
+// Store.openMentionSQL), per item ordered by mention time then user id.
 func (s *Store) OpenMentionsForItems(itemIDs []string) (map[string][]NeedsMention, error) {
 	out := map[string][]NeedsMention{}
 	for _, chunk := range chunkStrings(itemIDs, needsChunk) {
@@ -264,7 +274,7 @@ func (s *Store) OpenMentionsForItems(itemIDs []string) (map[string][]NeedsMentio
 		}
 		rows, err := s.db.Query(s.q(`
 			SELECT m.item_id, m.user_id, m.comment_id, cm.author, m.created_at, cm.created_at
-			FROM comment_mentions m `+openMentionSQL+`
+			FROM comment_mentions m `+s.openMentionSQL()+`
 			  AND m.item_id IN (`+placeholders(len(chunk))+`)
 			ORDER BY m.item_id, m.created_at, m.user_id`), args...)
 		if err != nil {
