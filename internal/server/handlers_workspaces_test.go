@@ -234,6 +234,52 @@ func TestRestoreWorkspace_OwnerFlow(t *testing.T) {
 	}
 }
 
+// TestRestoreWorkspace_ByRenamedSlug: after a rename, the old slug is
+// still claimed by the workspace, so restoring by the old slug works and
+// the response carries the canonical (new) slug.
+func TestRestoreWorkspace_ByRenamedSlug(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	adminToken := bootstrapFirstUser(t, srv, "admin@test.com", "Admin")
+
+	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", map[string]string{
+		"name": "Rename Then Restore",
+	}, adminToken)
+	if rr.Code != http.StatusCreated {
+		t.Fatalf("create workspace: expected 201, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var ws models.Workspace
+	parseJSON(t, rr, &ws)
+	oldSlug := ws.Slug
+
+	renamed, changed, err := srv.store.RenameWorkspace(ws.ID, oldSlug, "rename-then-restore-new", nil)
+	if err != nil || !changed {
+		t.Fatalf("rename: %+v %v %v", renamed, changed, err)
+	}
+	newSlug := renamed.Slug
+
+	rr = doRequestWithCookie(srv, "DELETE", "/api/v1/workspaces/"+newSlug, nil, adminToken)
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("delete workspace: expected 204, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doRequestWithCookie(srv, "POST", "/api/v1/workspaces/"+oldSlug+"/restore", nil, adminToken)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("restore by old slug: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var restored models.Workspace
+	parseJSON(t, rr, &restored)
+	if restored.ID != ws.ID {
+		t.Errorf("restored workspace ID mismatch: got %s want %s", restored.ID, ws.ID)
+	}
+	if restored.Slug != newSlug {
+		t.Errorf("restored workspace slug: got %q want canonical %q", restored.Slug, newSlug)
+	}
+	if restored.DeletedAt != nil {
+		t.Errorf("restored workspace should have nil deleted_at, got %v", restored.DeletedAt)
+	}
+}
+
 // TestRestoreWorkspace_NonOwnerForbidden: a non-owner who can see the
 // endpoint gets 403, not a restore — owner-only authz.
 func TestRestoreWorkspace_NonOwnerForbidden(t *testing.T) {

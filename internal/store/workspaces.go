@@ -473,11 +473,15 @@ func (s *Store) DeleteWorkspace(slug string) error {
 // row matched the slug — i.e. the workspace is already live, or it was
 // hard-purged by the retention sweeper (workspace_purge.go) and is gone
 // for good.
+//
+// The slug may be any slug the workspace still claims (its canonical slug
+// or a pre-rename one), resolved through workspace_slug_claims like the
+// live resolvers.
 func (s *Store) RestoreWorkspace(slug string) error {
 	ts := now()
 	result, err := s.db.Exec(s.q(`
 		UPDATE workspaces SET deleted_at = NULL, updated_at = ?
-		WHERE slug = ? AND deleted_at IS NOT NULL
+		WHERE id = (SELECT workspace_id FROM workspace_slug_claims WHERE slug = ?) AND deleted_at IS NOT NULL
 	`), ts, slug)
 	if err != nil {
 		return err
@@ -489,9 +493,11 @@ func (s *Store) RestoreWorkspace(slug string) error {
 	return nil
 }
 
-// GetDeletedWorkspaceBySlug returns a SOFT-DELETED workspace by slug
-// (deleted_at IS NOT NULL), including its owner_id, or nil when no such
-// row exists (live workspace, unknown slug, or already hard-purged).
+// GetDeletedWorkspaceBySlug returns a SOFT-DELETED workspace by any slug
+// it claims (deleted_at IS NOT NULL), including its owner_id, or nil when
+// no such row exists (live workspace, unknown slug, or already
+// hard-purged). The slug resolves through workspace_slug_claims, so a
+// pre-rename slug finds the workspace; the returned Slug is canonical.
 //
 // The normal resolvers (GetWorkspaceBySlug / resolveWorkspace) filter
 // `deleted_at IS NULL`, so a soft-deleted workspace is invisible to
@@ -507,7 +513,7 @@ func (s *Store) GetDeletedWorkspaceBySlug(slug string) (*models.Workspace, error
 		SELECT w.id, w.name, w.slug, w.owner_id, COALESCE(ou.username, ''), w.description, w.settings, w.source, w.created_at, w.updated_at, w.deleted_at
 		FROM workspaces w
 		LEFT JOIN users ou ON ou.id = w.owner_id
-		WHERE w.slug = ? AND w.deleted_at IS NOT NULL
+		WHERE w.id = (SELECT workspace_id FROM workspace_slug_claims WHERE slug = ?) AND w.deleted_at IS NOT NULL
 	`), slug).Scan(&w.ID, &w.Name, &w.Slug, &w.OwnerID, &w.OwnerUsername, &w.Description, &w.Settings, &w.Source, &createdAt, &updatedAt, &deletedAt)
 	if err == sql.ErrNoRows {
 		return nil, nil

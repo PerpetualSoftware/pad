@@ -191,3 +191,65 @@ func TestListDeletedWorkspaces_WindowAndOwnerScope(t *testing.T) {
 		t.Errorf("other user should see exactly their own deleted workspace, got %+v", gotOther)
 	}
 }
+
+// TestRestoreWorkspace_ByRenamedSlug pins that the soft-deleted lookup and
+// restore resolve a workspace by any slug it still claims, not only its
+// canonical slug: a rename keeps the old slug claimed, and a soft delete
+// keeps every claim, so the old slug must find and restore the workspace.
+func TestRestoreWorkspace_ByRenamedSlug(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u, err := s.CreateUser(models.UserCreate{Email: "owner@test.com", Name: "Owner", Password: "correct-horse-battery-staple"})
+	if err != nil {
+		t.Fatalf("create user: %v", err)
+	}
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Renamed Restore", OwnerID: u.ID})
+	if err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	oldSlug := ws.Slug
+	renamed, changed, err := s.RenameWorkspace(ws.ID, oldSlug, "renamed-restore-new", nil)
+	if err != nil || !changed || renamed.Slug != "renamed-restore-new" {
+		t.Fatalf("rename: %+v %v %v", renamed, changed, err)
+	}
+	newSlug := renamed.Slug
+
+	// While live, the old slug finds no soft-deleted row.
+	if got, err := s.GetDeletedWorkspaceBySlug(oldSlug); err != nil || got != nil {
+		t.Fatalf("GetDeletedWorkspaceBySlug(live old slug): expected nil, got %+v %v", got, err)
+	}
+	if err := s.RestoreWorkspace(oldSlug); err != sql.ErrNoRows {
+		t.Fatalf("RestoreWorkspace(live old slug): expected sql.ErrNoRows, got %v", err)
+	}
+
+	if err := s.DeleteWorkspace(newSlug); err != nil {
+		t.Fatalf("DeleteWorkspace: %v", err)
+	}
+
+	got, err := s.GetDeletedWorkspaceBySlug(oldSlug)
+	if err != nil {
+		t.Fatalf("GetDeletedWorkspaceBySlug(old slug): %v", err)
+	}
+	if got == nil {
+		t.Fatal("GetDeletedWorkspaceBySlug(old slug): expected the soft-deleted workspace, got nil")
+	}
+	if got.ID != ws.ID || got.Slug != newSlug {
+		t.Fatalf("GetDeletedWorkspaceBySlug(old slug): got id=%s slug=%s, want id=%s slug=%s", got.ID, got.Slug, ws.ID, newSlug)
+	}
+
+	// An unknown slug still resolves to nothing.
+	if got, err := s.GetDeletedWorkspaceBySlug("does-not-exist"); err != nil || got != nil {
+		t.Fatalf("GetDeletedWorkspaceBySlug(unknown): expected nil, got %+v %v", got, err)
+	}
+	if err := s.RestoreWorkspace("does-not-exist"); err != sql.ErrNoRows {
+		t.Fatalf("RestoreWorkspace(unknown): expected sql.ErrNoRows, got %v", err)
+	}
+
+	if err := s.RestoreWorkspace(oldSlug); err != nil {
+		t.Fatalf("RestoreWorkspace(old slug): %v", err)
+	}
+	live, err := s.GetWorkspaceBySlug(newSlug)
+	if err != nil || live == nil || live.ID != ws.ID || live.DeletedAt != nil {
+		t.Fatalf("GetWorkspaceBySlug(new slug) after restore: %+v %v", live, err)
+	}
+}
