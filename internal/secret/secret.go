@@ -52,7 +52,8 @@ func (s Secret) Reveal() string {
 // IsZero reports whether the secret is empty.
 func (s Secret) IsZero() bool { return s.p == nil || *s.p == "" }
 
-// Equal compares the secret with given in constant time.
+// Equal compares the secret with given in time that depends only on their
+// lengths (subtle.ConstantTimeCompare): the length is not treated as secret.
 func (s Secret) Equal(given string) bool {
 	return subtle.ConstantTimeCompare([]byte(s.Reveal()), []byte(given)) == 1
 }
