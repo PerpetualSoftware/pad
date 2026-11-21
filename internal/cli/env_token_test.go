@@ -67,8 +67,8 @@ func TestNewClientFromURL_EnvTokenOverridesStore(t *testing.T) {
 	t.Setenv("PAD_TOKEN", "pad_envtoken")
 
 	c := NewClientFromURL("http://127.0.0.1:7777")
-	if c.authToken != "pad_envtoken" {
-		t.Errorf("authToken = %q, want env token to win over store", c.authToken)
+	if c.authToken.Reveal() != "pad_envtoken" {
+		t.Errorf("authToken = %q, want env token to win over store", c.authToken.Reveal())
 	}
 }
 
@@ -77,8 +77,8 @@ func TestNewClientFromURL_NoEnvFallsBackToStore(t *testing.T) {
 	t.Setenv("PAD_TOKEN", "")
 
 	c := NewClientFromURL("http://127.0.0.1:7777")
-	if c.authToken != "padsess_fromstore" {
-		t.Errorf("authToken = %q, want stored token when PAD_TOKEN unset", c.authToken)
+	if c.authToken.Reveal() != "padsess_fromstore" {
+		t.Errorf("authToken = %q, want stored token when PAD_TOKEN unset", c.authToken.Reveal())
 	}
 }
 

@@ -14,6 +14,8 @@ import (
 	"time"
 
 	"github.com/BurntSushi/toml"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 const (
@@ -55,9 +57,9 @@ type Config struct {
 	cloudServerOptIn bool `toml:"-"`
 
 	// Email (Maileroo)
-	MailerooAPIKey string `toml:"maileroo_api_key"`
-	EmailFrom      string `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
-	EmailFromName  string `toml:"email_from_name"` // Sender display name (e.g. Pad)
+	MailerooAPIKey secret.Secret `toml:"maileroo_api_key"`
+	EmailFrom      string        `toml:"email_from"`      // Sender address (e.g. noreply@getpad.dev)
+	EmailFromName  string        `toml:"email_from_name"` // Sender display name (e.g. Pad)
 
 	// Decision provider (PLAN-3114 / TASK-3116). Empty or "none" disables
 	// decisions entirely, which is the default and is not a degraded mode.
@@ -73,14 +75,14 @@ type Config struct {
 	// here as well would make this file a second reader and would hide
 	// which source actually won. The fields below are the config-FILE
 	// source only.
-	DecisionProvider string `toml:"decision_provider"`
-	TypesafeAPIKey   string `toml:"typesafe_api_key"`
-	DecisionModel    string `toml:"decision_model"`
+	DecisionProvider string        `toml:"decision_provider"`
+	TypesafeAPIKey   secret.Secret `toml:"typesafe_api_key"`
+	DecisionModel    string        `toml:"decision_model"`
 
 	// Cloud mode
-	CloudSecret         string `toml:"cloud_secret"`          // Inbound shared secret(s) accepted from pad-cloud. Comma-separated list supports rotation.
-	CloudSidecarURL     string `toml:"cloud_sidecar_url"`     // Base URL pad uses to call the pad-cloud sidecar (reverse direction, e.g. Stripe cancel-customer on account delete)
-	CloudOutboundSecret string `toml:"cloud_outbound_secret"` // Optional: exact secret to send when calling pad-cloud. Falls back to the LAST entry of CloudSecret (the older rotation value, which is what pad-cloud is usually running). See DEPLOY.md "Cloud secret rotation".
+	CloudSecret         secret.Secret `toml:"cloud_secret"`          // Inbound shared secret(s) accepted from pad-cloud. Comma-separated list supports rotation.
+	CloudSidecarURL     string        `toml:"cloud_sidecar_url"`     // Base URL pad uses to call the pad-cloud sidecar (reverse direction, e.g. Stripe cancel-customer on account delete)
+	CloudOutboundSecret secret.Secret `toml:"cloud_outbound_secret"` // Optional: exact secret to send when calling pad-cloud. Falls back to the LAST entry of CloudSecret (the older rotation value, which is what pad-cloud is usually running). See DEPLOY.md "Cloud secret rotation".
 
 	// MCP remote-transport surface (PLAN-943 TASK-950). Optional even
 	// in cloud mode — leaving them empty in dev lets the discovery doc
@@ -96,7 +98,7 @@ type Config struct {
 	// PushGatewaySecret is the X-Cloud-Secret sent to the push gateway
 	// (PAD_PUSH_GATEWAY_SECRET, TASK-3939). Empty falls back to the cloud
 	// outbound secret: see resolvePushGatewaySecret in cmd/pad.
-	PushGatewaySecret string `toml:"push_gateway_secret"`
+	PushGatewaySecret secret.Secret `toml:"push_gateway_secret"`
 	// The push dispatch timing knobs (PAD_PUSH_DISPATCH_INTERVAL, _SETTLE,
 	// _LEASE, _LEASE_MARGIN; TASK-3939 part C, decision 77a8fae7), kept as the
 	// raw env strings. They are parsed by PushDispatchTimings at server
@@ -133,15 +135,15 @@ type Config struct {
 	MCPEnabledEnvRaw string `toml:"-"`
 
 	// Encryption
-	EncryptionKey       string `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
-	EncryptionKeySource string `toml:"-"`              // "env", "file", "generated", or "" (unset); populated by EnsureEncryptionKey
+	EncryptionKey       secret.Secret `toml:"encryption_key"` // 32-byte hex-encoded AES-256 key for encrypting sensitive fields
+	EncryptionKeySource string        `toml:"-"`              // "env", "file", "generated", or "" (unset); populated by EnsureEncryptionKey
 
 	// Security
-	CORSOrigins     string `toml:"cors_origins"`      // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
-	SecureCookies   bool   `toml:"secure_cookies"`    // Set Secure flag on cookies (requires TLS)
-	TrustedProxies  string `toml:"trusted_proxies"`   // Comma-separated CIDRs whose X-Forwarded-For is trusted. Empty = ignore proxy headers.
-	MetricsToken    string `toml:"metrics_token"`     // Shared Bearer token required to scrape /metrics. Empty = loopback-only.
-	IPChangeEnforce string `toml:"ip_change_enforce"` // "" (log only) or "strict" (revoke+reject session when client IP OR User-Agent hash differs from the one recorded at session creation).
+	CORSOrigins     string        `toml:"cors_origins"`      // Comma-separated allowed origins (e.g. "https://app.pad.dev,https://admin.pad.dev")
+	SecureCookies   bool          `toml:"secure_cookies"`    // Set Secure flag on cookies (requires TLS)
+	TrustedProxies  string        `toml:"trusted_proxies"`   // Comma-separated CIDRs whose X-Forwarded-For is trusted. Empty = ignore proxy headers.
+	MetricsToken    secret.Secret `toml:"metrics_token"`     // Shared Bearer token required to scrape /metrics. Empty = loopback-only.
+	IPChangeEnforce string        `toml:"ip_change_enforce"` // "" (log only) or "strict" (revoke+reject session when client IP OR User-Agent hash differs from the one recorded at session creation).
 
 	// SSE limits
 	SSEMaxConnections  int `toml:"sse_max_connections"`   // Global max streaming connections: both SSE endpoints and MCP's long-lived streams (0 = unlimited)
@@ -539,7 +541,7 @@ func Load() (*Config, error) {
 
 	// Email (Maileroo)
 	if v := os.Getenv("PAD_MAILEROO_API_KEY"); v != "" {
-		cfg.MailerooAPIKey = v
+		cfg.MailerooAPIKey = secret.New(v)
 	}
 	if v := os.Getenv("PAD_EMAIL_FROM"); v != "" {
 		cfg.EmailFrom = v
@@ -555,19 +557,19 @@ func Load() (*Config, error) {
 		cfg.cloudServerOptIn = true
 	}
 	if v := os.Getenv("PAD_CLOUD_SECRET"); v != "" {
-		cfg.CloudSecret = v
+		cfg.CloudSecret = secret.New(v)
 	}
 	if v := os.Getenv("PAD_CLOUD_SIDECAR_URL"); v != "" {
 		cfg.CloudSidecarURL = v
 	}
 	if v := os.Getenv("PAD_CLOUD_OUTBOUND_SECRET"); v != "" {
-		cfg.CloudOutboundSecret = v
+		cfg.CloudOutboundSecret = secret.New(v)
 	}
 	if v := os.Getenv("PAD_PUSH_GATEWAY_URL"); v != "" {
 		cfg.PushGatewayURL = v
 	}
 	if v := os.Getenv("PAD_PUSH_GATEWAY_SECRET"); v != "" {
-		cfg.PushGatewaySecret = v
+		cfg.PushGatewaySecret = secret.New(v)
 	}
 	cfg.DBStatementTimeoutRaw = os.Getenv("PAD_DB_STATEMENT_TIMEOUT")
 	cfg.DBLockTimeoutRaw = os.Getenv("PAD_DB_LOCK_TIMEOUT")
@@ -590,9 +592,9 @@ func Load() (*Config, error) {
 		cfg.MCPEnabledEnv = parseMCPEnabledEnv(v)
 	}
 	if v := os.Getenv("PAD_ENCRYPTION_KEY"); v != "" {
-		cfg.EncryptionKey = v
+		cfg.EncryptionKey = secret.New(v)
 		cfg.EncryptionKeySource = "env"
-	} else if cfg.EncryptionKey != "" {
+	} else if !cfg.EncryptionKey.IsZero() {
 		// Set from config.toml by toml.DecodeFile above.
 		cfg.EncryptionKeySource = "config"
 	}
@@ -606,7 +608,7 @@ func Load() (*Config, error) {
 		cfg.TrustedProxies = v
 	}
 	if v := os.Getenv("PAD_METRICS_TOKEN"); v != "" {
-		cfg.MetricsToken = v
+		cfg.MetricsToken = secret.New(v)
 	}
 	if v := os.Getenv("PAD_IP_CHANGE_ENFORCE"); v != "" {
 		cfg.IPChangeEnforce = v
@@ -691,6 +693,90 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// configFile is the shape Save encodes: every persisted Config field, with
+// the same toml tag, in the same order, and every credential as a plain
+// string. Config cannot be encoded itself because a secret.Secret marshals as
+// REDACTED, which would replace the operator's credentials in config.toml.
+// TestConfigFileMirrorsConfig keeps the two in step.
+type configFile struct {
+	Mode                string      `toml:"mode"`
+	Host                string      `toml:"host"`
+	Port                int         `toml:"port"`
+	URL                 string      `toml:"url"`
+	Editor              string      `toml:"editor"`
+	LogLevel            string      `toml:"log_level"`
+	MailerooAPIKey      string      `toml:"maileroo_api_key"`
+	EmailFrom           string      `toml:"email_from"`
+	EmailFromName       string      `toml:"email_from_name"`
+	DecisionProvider    string      `toml:"decision_provider"`
+	TypesafeAPIKey      string      `toml:"typesafe_api_key"`
+	DecisionModel       string      `toml:"decision_model"`
+	CloudSecret         string      `toml:"cloud_secret"`
+	CloudSidecarURL     string      `toml:"cloud_sidecar_url"`
+	CloudOutboundSecret string      `toml:"cloud_outbound_secret"`
+	PushGatewayURL      string      `toml:"push_gateway_url"`
+	PushGatewaySecret   string      `toml:"push_gateway_secret"`
+	MCPPublicURL        string      `toml:"mcp_public_url"`
+	AuthServerURL       string      `toml:"auth_server_url"`
+	OpenAIAppsChallenge string      `toml:"openai_apps_challenge"`
+	EncryptionKey       string      `toml:"encryption_key"`
+	CORSOrigins         string      `toml:"cors_origins"`
+	SecureCookies       bool        `toml:"secure_cookies"`
+	TrustedProxies      string      `toml:"trusted_proxies"`
+	MetricsToken        string      `toml:"metrics_token"`
+	IPChangeEnforce     string      `toml:"ip_change_enforce"`
+	SSEMaxConnections   int         `toml:"sse_max_connections"`
+	SSEMaxPerWorkspace  int         `toml:"sse_max_per_workspace"`
+	SSEMaxPerUser       int         `toml:"sse_max_per_user"`
+	CollabMaxPerUser    int         `toml:"collab_max_per_user"`
+	RedisNamespace      string      `toml:"redis_namespace"`
+	EventsPublishEpoch  bool        `toml:"events_publish_epoch"`
+	EventsHeartbeat     bool        `toml:"events_heartbeat"`
+	WatchHeartbeat      bool        `toml:"watch_heartbeat"`
+	Push                *PushConfig `toml:"push,omitempty"`
+}
+
+// fileView is the configFile Save writes, credentials revealed.
+func (c *Config) fileView() configFile {
+	return configFile{
+		Mode:                c.Mode,
+		Host:                c.Host,
+		Port:                c.Port,
+		URL:                 c.URL,
+		Editor:              c.Editor,
+		LogLevel:            c.LogLevel,
+		MailerooAPIKey:      c.MailerooAPIKey.Reveal(),
+		EmailFrom:           c.EmailFrom,
+		EmailFromName:       c.EmailFromName,
+		DecisionProvider:    c.DecisionProvider,
+		TypesafeAPIKey:      c.TypesafeAPIKey.Reveal(),
+		DecisionModel:       c.DecisionModel,
+		CloudSecret:         c.CloudSecret.Reveal(),
+		CloudSidecarURL:     c.CloudSidecarURL,
+		CloudOutboundSecret: c.CloudOutboundSecret.Reveal(),
+		PushGatewayURL:      c.PushGatewayURL,
+		PushGatewaySecret:   c.PushGatewaySecret.Reveal(),
+		MCPPublicURL:        c.MCPPublicURL,
+		AuthServerURL:       c.AuthServerURL,
+		OpenAIAppsChallenge: c.OpenAIAppsChallenge,
+		EncryptionKey:       c.EncryptionKey.Reveal(),
+		CORSOrigins:         c.CORSOrigins,
+		SecureCookies:       c.SecureCookies,
+		TrustedProxies:      c.TrustedProxies,
+		MetricsToken:        c.MetricsToken.Reveal(),
+		IPChangeEnforce:     c.IPChangeEnforce,
+		SSEMaxConnections:   c.SSEMaxConnections,
+		SSEMaxPerWorkspace:  c.SSEMaxPerWorkspace,
+		SSEMaxPerUser:       c.SSEMaxPerUser,
+		CollabMaxPerUser:    c.CollabMaxPerUser,
+		RedisNamespace:      c.RedisNamespace,
+		EventsPublishEpoch:  c.EventsPublishEpoch,
+		EventsHeartbeat:     c.EventsHeartbeat,
+		WatchHeartbeat:      c.WatchHeartbeat,
+		Push:                c.Push,
+	}
+}
+
 // Save writes the persisted Pad config to disk.
 func (c *Config) Save() error {
 	if err := os.MkdirAll(c.DataDir, 0755); err != nil {
@@ -717,7 +803,7 @@ func (c *Config) Save() error {
 		tmp.Close()
 		return err
 	}
-	if err := toml.NewEncoder(tmp).Encode(c); err != nil {
+	if err := toml.NewEncoder(tmp).Encode(c.fileView()); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -907,7 +993,7 @@ func (c *Config) EncryptionKeyFile() string {
 // Returns an error if key-file creation fails — we never silently fall
 // back to plaintext storage of sensitive fields like TOTP seeds.
 func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
-	if c.EncryptionKey != "" {
+	if !c.EncryptionKey.IsZero() {
 		// EncryptionKeySource was set by Load(); keep whatever was stored.
 		if c.EncryptionKeySource == "" {
 			c.EncryptionKeySource = "config"
@@ -930,7 +1016,7 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 		if rerr != nil {
 			return fmt.Errorf("read encryption key: %w", rerr)
 		}
-		c.EncryptionKey = strings.TrimSpace(string(data))
+		c.EncryptionKey = secret.New(strings.TrimSpace(string(data)))
 		c.EncryptionKeySource = "file"
 		return nil
 	} else if !os.IsNotExist(err) {
@@ -988,14 +1074,14 @@ func (c *Config) EnsureEncryptionKey(allowGenerate bool) error {
 			if rerr != nil {
 				return fmt.Errorf("reload encryption key after race: %w", rerr)
 			}
-			c.EncryptionKey = strings.TrimSpace(string(data))
+			c.EncryptionKey = secret.New(strings.TrimSpace(string(data)))
 			c.EncryptionKeySource = "file"
 			return nil
 		}
 		return fmt.Errorf("link encryption key to %s: %w", keyPath, err)
 	}
 
-	c.EncryptionKey = encoded
+	c.EncryptionKey = secret.New(encoded)
 	c.EncryptionKeySource = "generated"
 	return nil
 }

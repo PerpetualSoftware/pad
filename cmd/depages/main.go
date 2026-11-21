@@ -40,6 +40,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // Dep is one dependency version a change can introduce.
@@ -60,11 +62,11 @@ type Result struct {
 
 // Sources are the lookup endpoints; tests point them at fakes.
 type Sources struct {
-	GoProxy   string // e.g. https://proxy.golang.org
-	NPM       string // e.g. https://registry.npmjs.org
-	GitHubAPI string // e.g. https://api.github.com
-	Token     string // optional GitHub token
-	TokenHost string // the only host the token is sent to (api.github.com)
+	GoProxy   string        // e.g. https://proxy.golang.org
+	NPM       string        // e.g. https://registry.npmjs.org
+	GitHubAPI string        // e.g. https://api.github.com
+	Token     secret.Secret // optional GitHub token
+	TokenHost string        // the only host the token is sent to (api.github.com)
 	Client    *http.Client
 }
 
@@ -123,7 +125,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		GoProxy:   envOr("DEPAGES_GOPROXY", "https://proxy.golang.org"),
 		NPM:       envOr("DEPAGES_NPM", "https://registry.npmjs.org"),
 		GitHubAPI: envOr("DEPAGES_GITHUB_API", "https://api.github.com"),
-		Token:     os.Getenv("GH_TOKEN"),
+		Token:     secret.New(os.Getenv("GH_TOKEN")),
 		TokenHost: "api.github.com",
 		Client:    &http.Client{Timeout: 30 * time.Second},
 	}
@@ -396,8 +398,8 @@ func getJSON(src Sources, u string, github bool, v any) error {
 	}
 	// The token goes to GitHub's API host and nowhere else, whatever
 	// DEPAGES_GITHUB_API says.
-	if github && src.Token != "" && req.URL.Host == src.TokenHost {
-		req.Header.Set("Authorization", "Bearer "+src.Token)
+	if github && !src.Token.IsZero() && req.URL.Host == src.TokenHost {
+		req.Header.Set("Authorization", "Bearer "+src.Token.Reveal())
 	}
 	resp, err := src.Client.Do(req)
 	if err != nil {

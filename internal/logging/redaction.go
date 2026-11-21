@@ -7,9 +7,12 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
-const redacted = "REDACTED"
+// redacted is the one marker: a secret.Secret renders as the same text.
+const redacted = secret.Redacted
 
 var keySeparators = strings.NewReplacer("_", "", "-", "", " ", "", ".", "")
 

@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // Provider names.
@@ -39,8 +41,8 @@ type Config struct {
 	Provider string
 
 	// APIKey authenticates to the backend. Never logged, never printed, and
-	// never included in an error message.
-	APIKey string
+	// never included in an error message: it renders as REDACTED.
+	APIKey secret.Secret
 
 	// Model pins the backend model. Empty falls back to [DefaultModel].
 	Model string
@@ -60,7 +62,7 @@ func (c Config) Enabled() bool {
 func EnvConfig() Config {
 	return Config{
 		Provider: strings.TrimSpace(os.Getenv("PAD_DECISION_PROVIDER")),
-		APIKey:   strings.TrimSpace(os.Getenv("PAD_TYPESAFE_API_KEY")),
+		APIKey:   secret.New(strings.TrimSpace(os.Getenv("PAD_TYPESAFE_API_KEY"))),
 		Model:    strings.TrimSpace(os.Getenv("PAD_DECISION_MODEL")),
 	}
 }
@@ -116,8 +118,8 @@ func ResolveNamed(sources ...NamedConfig) (Config, Origins) {
 		if v := strings.TrimSpace(s.Provider); v != "" {
 			out.Provider, o.Provider = v, s.Name
 		}
-		if v := strings.TrimSpace(s.APIKey); v != "" {
-			out.APIKey, o.APIKey = v, s.Name
+		if v := strings.TrimSpace(s.APIKey.Reveal()); v != "" {
+			out.APIKey, o.APIKey = secret.New(v), s.Name
 		}
 		if v := strings.TrimSpace(s.Model); v != "" {
 			out.Model, o.Model = v, s.Name
@@ -143,14 +145,14 @@ func New(cfg Config) (Provider, error) {
 	name := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	switch name {
 	case ProviderTypesafe:
-		if cfg.APIKey == "" {
+		if cfg.APIKey.IsZero() {
 			return nil, fmt.Errorf("decision: provider %q is configured but PAD_TYPESAFE_API_KEY is empty", name)
 		}
 		model := cfg.Model
 		if model == "" {
 			model = DefaultModel
 		}
-		return newTypesafe(cfg.APIKey, model), nil
+		return newTypesafe(cfg.APIKey.Reveal(), model), nil
 	default:
 		return nil, fmt.Errorf("decision: unknown provider %q (known: %s, %s)", cfg.Provider, ProviderTypesafe, ProviderNone)
 	}

@@ -22,6 +22,7 @@ import (
 	"unicode"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/serveridentity"
 )
 
@@ -35,8 +36,8 @@ type Client struct {
 	// bundles). Sharing the default 10s timeout would kill those
 	// transfers mid-flight on anything but a local network.
 	streamClient *http.Client
-	authToken    string // session or API token, sent as Authorization: Bearer
-	agentName    string // optional agent name, sent as X-Pad-Agent header
+	authToken    secret.Secret // session or API token, sent as Authorization: Bearer
+	agentName    string        // optional agent name, sent as X-Pad-Agent header
 	// workerOnce/workerID: the lease worker id sent as X-Pad-Worker
 	// (TASK-3613), resolved on the first request rather than at
 	// construction, since resolving it may mint one into the registry.
@@ -118,10 +119,10 @@ func newClientFromURL(baseURL string) *Client {
 	// commands key on. Credentials for other servers are left untouched
 	// in the store — see TASK-1228 / IDEA-1226 for the per-server design.
 	if tok := EnvTokenFor(baseURL); tok != "" {
-		c.authToken = tok
+		c.authToken = secret.New(tok)
 	} else if store, err := LoadStore(); err == nil {
 		if creds := store.Get(baseURL); creds != nil {
-			c.authToken = creds.Token
+			c.authToken = secret.New(creds.Token)
 		}
 	}
 
@@ -136,7 +137,7 @@ func (c *Client) SetAgentName(name string) {
 
 // SetAuthToken sets the authorization token for API requests.
 func (c *Client) SetAuthToken(token string) {
-	c.authToken = token
+	c.authToken = secret.New(token)
 }
 
 // SetHTTPClient sets the HTTP client used for API requests. Configure it before use.
@@ -3159,8 +3160,8 @@ func (c *Client) newRequest(method, path string, body io.Reader) (*http.Request,
 	if err != nil {
 		return nil, err
 	}
-	if c.authToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.authToken)
+	if !c.authToken.IsZero() {
+		req.Header.Set("Authorization", "Bearer "+c.authToken.Reveal())
 	}
 	if c.agentName != "" {
 		req.Header.Set("X-Pad-Agent", c.agentName)

@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 func newTestConfig(t *testing.T) *Config {
@@ -27,7 +29,7 @@ func TestEnsureEncryptionKey_GeneratesWhenMissing(t *testing.T) {
 	}
 
 	// Key must be a 64-char hex string decoding to 32 bytes.
-	raw, err := hex.DecodeString(c.EncryptionKey)
+	raw, err := hex.DecodeString(c.EncryptionKey.Reveal())
 	if err != nil {
 		t.Fatalf("key is not hex: %v", err)
 	}
@@ -56,8 +58,8 @@ func TestEnsureEncryptionKey_LoadsFromFile(t *testing.T) {
 	if err := c.EnsureEncryptionKey(true); err != nil {
 		t.Fatalf("EnsureEncryptionKey: %v", err)
 	}
-	if c.EncryptionKey != known {
-		t.Errorf("key = %q, want %q", c.EncryptionKey, known)
+	if c.EncryptionKey.Reveal() != known {
+		t.Errorf("key = %q, want %q", c.EncryptionKey.Reveal(), known)
 	}
 	if c.EncryptionKeySource != "file" {
 		t.Errorf("source = %q, want %q", c.EncryptionKeySource, "file")
@@ -67,15 +69,15 @@ func TestEnsureEncryptionKey_LoadsFromFile(t *testing.T) {
 func TestEnsureEncryptionKey_RespectsConfigured(t *testing.T) {
 	c := newTestConfig(t)
 	const configured = "cafebabe" // not valid hex length but that's checked by caller
-	c.EncryptionKey = configured
+	c.EncryptionKey = secret.New(configured)
 	c.EncryptionKeySource = "env"
 
 	if err := c.EnsureEncryptionKey(true); err != nil {
 		t.Fatalf("EnsureEncryptionKey: %v", err)
 	}
 
-	if c.EncryptionKey != configured {
-		t.Errorf("configured key was overwritten: got %q, want %q", c.EncryptionKey, configured)
+	if c.EncryptionKey.Reveal() != configured {
+		t.Errorf("configured key was overwritten: got %q, want %q", c.EncryptionKey.Reveal(), configured)
 	}
 	if c.EncryptionKeySource != "env" {
 		t.Errorf("source = %q, want %q (should not be clobbered)", c.EncryptionKeySource, "env")
@@ -114,8 +116,8 @@ func TestEnsureEncryptionKey_ClusteredWithPreSeededFileStillLoads(t *testing.T) 
 	if err := c.EnsureEncryptionKey(false); err != nil {
 		t.Fatalf("pre-seeded file in clustered mode should load: %v", err)
 	}
-	if c.EncryptionKey != known {
-		t.Errorf("loaded key = %q, want %q", c.EncryptionKey, known)
+	if c.EncryptionKey.Reveal() != known {
+		t.Errorf("loaded key = %q, want %q", c.EncryptionKey.Reveal(), known)
 	}
 }
 
@@ -159,7 +161,7 @@ func TestEnsureEncryptionKey_ConcurrentStartIsRaceSafe(t *testing.T) {
 	var keys []string
 	for i := 0; i < N; i++ {
 		c := <-results
-		keys = append(keys, c.EncryptionKey)
+		keys = append(keys, c.EncryptionKey.Reveal())
 	}
 	first := keys[0]
 	if first == "" {
@@ -178,7 +180,7 @@ func TestEnsureEncryptionKey_IsIdempotentAcrossRestarts(t *testing.T) {
 	if err := c1.EnsureEncryptionKey(true); err != nil {
 		t.Fatalf("first EnsureEncryptionKey: %v", err)
 	}
-	first := c1.EncryptionKey
+	first := c1.EncryptionKey.Reveal()
 
 	// Second "run" — new Config, same DataDir, clustered mode. The file
 	// exists now so the load path succeeds even with allowGenerate=false.
@@ -186,8 +188,8 @@ func TestEnsureEncryptionKey_IsIdempotentAcrossRestarts(t *testing.T) {
 	if err := c2.EnsureEncryptionKey(false); err != nil {
 		t.Fatalf("second EnsureEncryptionKey: %v", err)
 	}
-	if c2.EncryptionKey != first {
-		t.Fatalf("key rotated across restarts: %q != %q", c2.EncryptionKey, first)
+	if c2.EncryptionKey.Reveal() != first {
+		t.Fatalf("key rotated across restarts: %q != %q", c2.EncryptionKey.Reveal(), first)
 	}
 	if c2.EncryptionKeySource != "file" {
 		t.Errorf("second source = %q, want %q", c2.EncryptionKeySource, "file")

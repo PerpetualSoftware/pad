@@ -13,6 +13,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/config"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/notify"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
@@ -34,7 +35,7 @@ func TestConfigurePush_StartsTheDispatcherOnlyWithAGateway(t *testing.T) {
 
 	t.Run("url and secret", func(t *testing.T) {
 		srv := newSrv(t)
-		cfg := &config.Config{PushGatewayURL: "https://push.example.test", PushGatewaySecret: "s3cret-for-the-gateway"}
+		cfg := &config.Config{PushGatewayURL: "https://push.example.test", PushGatewaySecret: secret.New("s3cret-for-the-gateway")}
 		if err := configurePush(srv, cfg); err != nil {
 			t.Fatalf("configurePush = %v, want nil", err)
 		}
@@ -45,7 +46,7 @@ func TestConfigurePush_StartsTheDispatcherOnlyWithAGateway(t *testing.T) {
 
 	t.Run("no url", func(t *testing.T) {
 		srv := newSrv(t)
-		if err := configurePush(srv, &config.Config{PushGatewaySecret: "s3cret-for-the-gateway"}); err != nil {
+		if err := configurePush(srv, &config.Config{PushGatewaySecret: secret.New("s3cret-for-the-gateway")}); err != nil {
 			t.Fatalf("configurePush = %v, want nil", err)
 		}
 		if srv.PushDispatchRunning() {
@@ -92,7 +93,7 @@ func TestConfigurePush_AppliesEveryTimingKnobBeforeStart(t *testing.T) {
 	srv := server.New(storetest.NewSQLite(t))
 	t.Cleanup(srv.Stop)
 	cfg := &config.Config{
-		PushGatewayURL: "https://push.example.test", PushGatewaySecret: "s3cret-for-the-gateway",
+		PushGatewayURL: "https://push.example.test", PushGatewaySecret: secret.New("s3cret-for-the-gateway"),
 		PushDispatchIntervalRaw: "2s", PushDispatchSettleRaw: "3s",
 		PushDispatchLeaseRaw: "90s", PushDispatchLeaseMarginRaw: "20s",
 	}
@@ -113,7 +114,7 @@ func TestConfigurePush_AppliesEveryTimingKnobBeforeStart(t *testing.T) {
 func TestConfigurePush_UnsetKnobsKeepTheDefaults(t *testing.T) {
 	srv := server.New(storetest.NewSQLite(t))
 	t.Cleanup(srv.Stop)
-	if err := configurePush(srv, &config.Config{PushGatewayURL: "https://push.example.test", PushGatewaySecret: "s3cret-for-the-gateway"}); err != nil {
+	if err := configurePush(srv, &config.Config{PushGatewayURL: "https://push.example.test", PushGatewaySecret: secret.New("s3cret-for-the-gateway")}); err != nil {
 		t.Fatal(err)
 	}
 	want := server.PushDispatchApplied{Interval: 5 * time.Second, Settle: 10 * time.Second, Lease: 60 * time.Second, LeaseMargin: 15 * time.Second, StartedInterval: 5 * time.Second}
@@ -159,7 +160,7 @@ func TestConfigurePush_BadKnobRefusesStartup(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				srv := server.New(storetest.NewSQLite(t))
 				t.Cleanup(srv.Stop)
-				cfg := &config.Config{PushGatewaySecret: "s3cret-for-the-gateway"}
+				cfg := &config.Config{PushGatewaySecret: secret.New("s3cret-for-the-gateway")}
 				if withURL {
 					cfg.PushGatewayURL = "https://push.example.test"
 				}
@@ -185,7 +186,7 @@ func TestConfigurePush_BadKnobRefusesStartup(t *testing.T) {
 // by startup through the real HTTP handler. Kills: M1a.
 func TestConfigurePush_EnablesDeviceRegistration(t *testing.T) {
 	_, srv, _, tok := task4051PushServer(t)
-	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: "test-secret"}); err != nil {
+	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: secret.New("test-secret")}); err != nil {
 		t.Fatal(err)
 	}
 	req := httptest.NewRequest(http.MethodPut, "/api/v1/me/push-devices/conn-4051", strings.NewReader(`{"platform":"android","token":"test-device","app_version":"1"}`))
@@ -275,7 +276,7 @@ func TestConfigurePush_SendsToConfiguredGateway(t *testing.T) {
 	}
 	exec(`DELETE FROM user_notifications`)
 	exec(`INSERT INTO user_notifications (id, user_id, workspace_id, item_id, kind, dedupe_key, created_at) VALUES (?, ?, ?, ?, 'assigned', ?, ?)`, "n-4051", u.ID, ws.ID, item.ID, "k-4051", time.Now().Add(-time.Minute).UTC().Format(time.RFC3339))
-	cfg := &config.Config{PushGatewayURL: gateway.URL + "/internal/push/send", PushGatewaySecret: "test-secret", PushDispatchIntervalRaw: "10ms", PushDispatchSettleRaw: "1ms"}
+	cfg := &config.Config{PushGatewayURL: gateway.URL + "/internal/push/send", PushGatewaySecret: secret.New("test-secret"), PushDispatchIntervalRaw: "10ms", PushDispatchSettleRaw: "1ms"}
 	if err := configurePush(srv, cfg); err != nil {
 		t.Fatal(err)
 	}
@@ -299,7 +300,7 @@ func TestConfigurePush_ServerStopStopsDispatcher(t *testing.T) {
 	// No Stop cleanup: if shutdown hangs, the deadline must fail cleanly.
 	// A leaked goroutine is acceptable only in that failing run.
 	srv := server.New(storetest.NewSQLite(t))
-	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: "test-secret"}); err != nil {
+	if err := configurePush(srv, &config.Config{PushGatewayURL: "http://gateway.test/send", PushGatewaySecret: secret.New("test-secret")}); err != nil {
 		t.Fatal(err)
 	}
 	if !srv.PushDispatchRunning() {

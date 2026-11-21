@@ -13,6 +13,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -261,7 +262,7 @@ func TestDecisionSettings_Precedence(t *testing.T) {
 	clearDecisionEnv(t)
 	srv, token := decisionSettingsServer(t)
 	reg, _ := decision.ProductionRegistry()
-	srv.SetDecisionBase(decision.Config{Provider: decision.ProviderTypesafe, APIKey: "file-key", Model: "jev-file"}, reg)
+	srv.SetDecisionBase(decision.Config{Provider: decision.ProviderTypesafe, APIKey: secret.New("file-key"), Model: "jev-file"}, reg)
 	if err := srv.ConfigureDecisions(); err != nil {
 		t.Fatal(err)
 	}

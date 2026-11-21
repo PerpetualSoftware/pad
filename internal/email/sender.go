@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // Sender sends transactional emails via the Maileroo API.
@@ -20,7 +22,7 @@ import (
 // override them for contextual sender names (e.g. "Dave via Pad").
 type Sender struct {
 	mu        sync.RWMutex
-	apiKey    string
+	apiKey    secret.Secret
 	fromAddr  string
 	fromName  string
 	baseURL   string // Pad's public base URL for generating links
@@ -35,7 +37,7 @@ const defaultEndpoint = "https://smtp.maileroo.com/api/v2/emails"
 // NewSender creates a new email sender.
 func NewSender(apiKey, fromAddr, fromName, baseURL string) *Sender {
 	return &Sender{
-		apiKey:   apiKey,
+		apiKey:   secret.New(apiKey),
 		fromAddr: fromAddr,
 		fromName: fromName,
 		baseURL:  baseURL,
@@ -50,7 +52,7 @@ func (s *Sender) Configure(apiKey, fromAddr, fromName, baseURL string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if apiKey != "" {
-		s.apiKey = apiKey
+		s.apiKey = secret.New(apiKey)
 	}
 	if fromAddr != "" {
 		s.fromAddr = fromAddr
@@ -174,7 +176,7 @@ func (s *Sender) sendWith(ctx context.Context, endpoint, fromAddr, fromName, to,
 		return fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Authorization", "Bearer "+apiKey.Reveal())
 
 	resp, err := client.Do(req)
 	if err != nil {

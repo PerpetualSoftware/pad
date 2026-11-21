@@ -8,6 +8,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/config"
 	"github.com/PerpetualSoftware/pad/internal/decision"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // These exercise the BINDING, not the component: internal/decision has its own
@@ -36,7 +37,7 @@ func TestDescribeDecisionProviderReadsTheConfigFile(t *testing.T) {
 
 	got := describeDecisionProvider(&config.Config{
 		DecisionProvider: decision.ProviderTypesafe,
-		TypesafeAPIKey:   "file-key",
+		TypesafeAPIKey:   secret.New("file-key"),
 		DecisionModel:    "jev-1.0.0",
 	})
 	if got.Name != decision.ProviderTypesafe {
@@ -58,7 +59,7 @@ func TestDescribeDecisionProviderEnvOverridesTheFile(t *testing.T) {
 
 	got := describeDecisionProvider(&config.Config{
 		DecisionProvider: decision.ProviderTypesafe,
-		TypesafeAPIKey:   "file-key",
+		TypesafeAPIKey:   secret.New("file-key"),
 		DecisionModel:    "jev-1.0.0",
 	})
 	if got.Model != "jev-9.9.9" {
@@ -73,7 +74,7 @@ func TestDescribeDecisionProviderEnvCanDisableTheFile(t *testing.T) {
 
 	got := describeDecisionProvider(&config.Config{
 		DecisionProvider: decision.ProviderTypesafe,
-		TypesafeAPIKey:   "file-key",
+		TypesafeAPIKey:   secret.New("file-key"),
 	})
 	if got.Name != decision.ProviderNone {
 		t.Errorf("Name = %q, want %q: an explicit env 'none' must be able to disable what the file enabled", got.Name, decision.ProviderNone)

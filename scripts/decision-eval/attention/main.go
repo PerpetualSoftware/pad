@@ -40,6 +40,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // The original eval asked two questions in one call. The `blocked` one was
@@ -113,7 +114,7 @@ func main() {
 	if key == "" {
 		key = os.Getenv("TYPESAFE_API_KEY")
 	}
-	p, err := decision.New(decision.Config{Provider: decision.ProviderTypesafe, APIKey: key, Model: "jev-1.13.0"})
+	p, err := decision.New(decision.Config{Provider: decision.ProviderTypesafe, APIKey: secret.New(key), Model: "jev-1.13.0"})
 	if err != nil || p == nil {
 		fmt.Fprintln(os.Stderr, "provider:", err)
 		os.Exit(2)

@@ -41,6 +41,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 const threshold = 0.9
@@ -306,7 +307,7 @@ func mustProvider() decision.Provider {
 		fmt.Fprintln(os.Stderr, "TYPESAFE_API_KEY is not set")
 		os.Exit(2)
 	}
-	p, err := decision.New(decision.Config{Provider: decision.ProviderTypesafe, APIKey: key, Model: decision.DefaultModel})
+	p, err := decision.New(decision.Config{Provider: decision.ProviderTypesafe, APIKey: secret.New(key), Model: decision.DefaultModel})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)

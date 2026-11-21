@@ -36,8 +36,8 @@ var (
 	reBasic      = regexp.MustCompile(`(?i)\b(basic)\s+([A-Za-z0-9+/]{8,}={0,2})`)
 	// Credentials with a recognisable shape, whatever surrounds them: a Pad
 	// personal access token, a Pad session token, a JWT, a Stripe key, a
-	// GitHub token.
-	reShapes = regexp.MustCompile(`\bpad_[0-9a-f]{64,}|\bpad(?:sess|res|ver|wh|app|ic|ics|ctx)_[A-Za-z0-9_\-]{8,}|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*|\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{16,}|\bgh[pousr]_[A-Za-z0-9]{36,}`)
+	// GitHub token, then the vendor keys in vendorShapes.
+	reShapes = regexp.MustCompile(`\bpad_[0-9a-f]{64,}|\bpad(?:sess|res|ver|wh|app|ic|ics|ctx)_[A-Za-z0-9_\-]{8,}|\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]*|\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{16,}|\bgh[pousr]_[A-Za-z0-9]{36,}|` + vendorShapes)
 	// A credential path that STARTS a path: after whitespace, a quote, or a
 	// scheme://host. A directory called s inside a filesystem path
 	// (/var/lib/pad/s/pad.db) is not one.
@@ -52,10 +52,27 @@ var (
 	reParsing = regexp.MustCompile(`(strconv\.[A-Za-z]+: parsing|parsing time|cannot parse|Parse[A-Za-z]*\() ?"(?:[^"\\]|\\.)*"`)
 )
 
+// vendorShapes are third-party credentials with a documented prefix and body
+// length. A body whose charset holds - has no trailing \b (it would fail after
+// a final -); each run is open-ended so a longer key is masked whole, except
+// a fixed-length alphanumeric body, which ends on \b.
+const vendorShapes = `\bsk-ant-(?:api|admin|oat|ort)[0-9]{2}-[A-Za-z0-9_\-]{80,}` + // Anthropic
+	`|\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{40,}` + // OpenAI project, service account, admin
+	`|\bsk-[A-Za-z0-9]{48}\b` + // OpenAI legacy user key
+	`|\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}` + // GitHub fine-grained
+	`|\bxox[bp]-[0-9]{6,}-[0-9]{6,}-[A-Za-z0-9\-]{20,}` + // Slack bot and user
+	`|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b` + // AWS access key and STS session key ids
+	`|\bAIza[0-9A-Za-z_\-]{35,}` + // Google API key
+	`|\bglpat-[0-9A-Za-z_\-]{20,}(?:\.[0-9A-Za-z_\-]{2,})*` + // GitLab PAT, with its routable suffix
+	// The OAuth access, refresh and authorization-code tokens the OAuth
+	// library mints (key.signature, each base64url of 32 bytes or more).
+	// They live inside the library as strings and cannot be wrapped.
+	`|\bory_(?:at|rt|ac)_[A-Za-z0-9_\-]{43,}\.[A-Za-z0-9_\-]{43,}`
+
 // RedactText masks credentials in free text: an error message, a response body,
 // a log message. It recognises the shapes a credential takes in text (an
 // Authorization or Cookie header, a bearer or basic credential, userinfo in a
-// URL, a Pad, JWT, Stripe or GitHub token, a credential path, a URL query
+// URL, a Pad, JWT, Stripe, GitHub or other vendor token, a credential path, a URL query
 // (handed to RedactQuery, so the two share one parser), a key=value or
 // "key":"value" pair whose key names a credential, and the input a parse error
 // repeats). A secret with none of those shapes and no credential name next to
