@@ -105,7 +105,7 @@ func TestOccurrenceRoleOffsetsMigration(t *testing.T) {
 			}
 
 			// Row for row: the stamp is the schedule's offsets, a moved row has none.
-			rows, err := s.db.Query(s.q(`SELECT o.id, o.state, `+prefixed("o.", occurrenceRoleColumns)+`, `+prefixed("sc.", []string{"target_days", "target_secs", "earliest_days", "earliest_secs", "deadline_days", "deadline_secs", "deadline_behavior", "occupied_days", "occupied_secs"})+`
+			rows, err := s.db.Query(s.q(`SELECT o.id, o.state, ` + prefixed("o.", occurrenceRoleColumns) + `, ` + prefixed("sc.", []string{"target_days", "target_secs", "earliest_days", "earliest_secs", "deadline_days", "deadline_secs", "deadline_behavior", "occupied_days", "occupied_secs"}) + `
 				FROM schedule_occurrences o JOIN item_schedules sc ON sc.id = o.schedule_id ORDER BY o.id`))
 			if err != nil {
 				t.Fatal(err)

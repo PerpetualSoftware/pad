@@ -17,7 +17,7 @@ import (
 
 // occStamp is one occurrence row's stored offset snapshot; nil is SQL NULL.
 type occStamp struct {
-	TargetDays, TargetSecs, EarliestDays, EarliestSecs *int
+	TargetDays, TargetSecs, EarliestDays, EarliestSecs     *int
 	DeadlineDays, DeadlineSecs, OccupiedDays, OccupiedSecs *int
 	Behavior                                               *string
 }

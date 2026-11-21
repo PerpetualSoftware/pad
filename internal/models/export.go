@@ -241,6 +241,24 @@ type ScheduleOccurrenceExport struct {
 	CommentID      string `json:"comment_id,omitempty"`
 	Actor          string `json:"actor,omitempty"`
 	ResolvedAt     string `json:"resolved_at"`
+	// Roles is the offset snapshot the occurrence was resolved under (TASK-4714),
+	// absent on a moved row and in bundles that predate it.
+	Roles *ScheduleOccurrenceRolesExport `json:"roles,omitempty"`
+}
+
+// ScheduleOccurrenceRolesExport is a resolved occurrence's role offsets, with
+// the JSON names of ScheduleRolesExport. Outcome and origin stay the
+// schedule's.
+type ScheduleOccurrenceRolesExport struct {
+	TargetDays       int     `json:"target_days"`
+	TargetSecs       int     `json:"target_secs"`
+	EarliestDays     *int    `json:"earliest_days,omitempty"`
+	EarliestSecs     *int    `json:"earliest_secs,omitempty"`
+	DeadlineDays     *int    `json:"deadline_days,omitempty"`
+	DeadlineSecs     *int    `json:"deadline_secs,omitempty"`
+	OccupiedDays     *int    `json:"occupied_days,omitempty"`
+	OccupiedSecs     *int    `json:"occupied_secs,omitempty"`
+	DeadlineBehavior *string `json:"deadline_behavior,omitempty"`
 }
 
 // ImportScheduleDrop is one bundled schedule an import did not store: its rule

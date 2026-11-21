@@ -579,6 +579,11 @@ func (s *Store) completeLapsedOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, 
 	if _, err := tx.Exec(s.q(`UPDATE schedule_occurrences SET state='done',comment_id=?,actor=?,resolved_at=?,actual_done_at=?,actual_source=? WHERE schedule_id=? AND occurrence_at=? AND state='lapsed'`), nilIfEmpty(commentID), in.Actor, nowT.Format(time.RFC3339), NormalizeInstant(actual), actualSource, sc.ID, at); err != nil {
 		return nil, err
 	}
+	// The row keeps the offsets the lapse stamped; only a row that somehow
+	// lacks a stamp takes the current ones.
+	if err := s.stampOccurrenceRolesTx(tx, sc.ID, "occurrence_at", at); err != nil {
+		return nil, err
+	}
 	if err := s.openGatesForBlockerTx(tx, sc.WorkspaceID, sc.ItemID); err != nil {
 		return nil, err
 	}
@@ -1138,9 +1143,12 @@ func (s *Store) upsertOccurrenceTx(tx *sql.Tx, scheduleID, at, wall, state, comm
 	if len(wall) == 10 {
 		keys = []struct{ col, val string }{{"occurrence_wall", wall}, {"occurrence_at", at}}
 	}
+	// A rewritten row drops any earlier snapshot; a non-moved state takes the
+	// offsets in force now.
 	for _, k := range keys {
 		res, err := tx.Exec(s.q(`
-			UPDATE schedule_occurrences SET occurrence_wall = ?, state = ?, comment_id = ?, actor = ?, resolved_at = ?, actual_done_at = NULL, actual_source = NULL
+			UPDATE schedule_occurrences SET occurrence_wall = ?, state = ?, comment_id = ?, actor = ?, resolved_at = ?, actual_done_at = NULL, actual_source = NULL,
+				`+occurrenceRolesNull+`
 			WHERE schedule_id = ? AND `+k.col+` = ?`), wall, state, nilIfEmpty(commentID), actor, ts, scheduleID, k.val)
 		if err != nil {
 			return fmt.Errorf("update occurrence: %w", err)
@@ -1148,7 +1156,7 @@ func (s *Store) upsertOccurrenceTx(tx *sql.Tx, scheduleID, at, wall, state, comm
 		if n, err := res.RowsAffected(); err != nil {
 			return err
 		} else if n > 0 {
-			return nil
+			return s.stampOccurrenceRolesTx(tx, scheduleID, k.col, k.val)
 		}
 	}
 	if _, err := tx.Exec(s.q(`
@@ -1156,6 +1164,39 @@ func (s *Store) upsertOccurrenceTx(tx *sql.Tx, scheduleID, at, wall, state, comm
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`),
 		newID(), scheduleID, at, wall, state, nilIfEmpty(commentID), actor, ts); err != nil {
 		return fmt.Errorf("insert occurrence: %w", err)
+	}
+	return s.stampOccurrenceRolesTx(tx, scheduleID, "occurrence_at", at)
+}
+
+const occurrenceRolesNull = `roles_target_days = NULL, roles_target_secs = NULL, roles_earliest_days = NULL, roles_earliest_secs = NULL,
+	roles_deadline_days = NULL, roles_deadline_secs = NULL, roles_deadline_behavior = NULL, roles_occupied_days = NULL, roles_occupied_secs = NULL`
+
+// stampOccurrenceRolesTx records on a resolved row the role offsets its
+// schedule has now, so a later series change does not move it (TASK-4714). A
+// moved row is still owed and stays unstamped; a row already stamped keeps its
+// stamp. col names the identity column matched against val; "" stamps every
+// unstamped resolved row of the schedule (a bundle carrying none). The caller
+// holds the schedule pin, so the offsets read are the ones in force.
+func (s *Store) stampOccurrenceRolesTx(tx *sql.Tx, scheduleID, col, val string) error {
+	where, args := "", []any{scheduleID}
+	switch col {
+	case "":
+	case "occurrence_at", "occurrence_wall":
+		where, args = " AND "+col+" = ?", append(args, val)
+	default:
+		return fmt.Errorf("stamp occurrence roles: unknown identity column %q", col)
+	}
+	if _, err := tx.Exec(s.q(`
+		UPDATE schedule_occurrences SET
+			(roles_target_days, roles_target_secs, roles_earliest_days, roles_earliest_secs,
+			 roles_deadline_days, roles_deadline_secs, roles_deadline_behavior,
+			 roles_occupied_days, roles_occupied_secs) =
+			(SELECT sc.target_days, sc.target_secs, sc.earliest_days, sc.earliest_secs,
+			        sc.deadline_days, sc.deadline_secs, sc.deadline_behavior,
+			        sc.occupied_days, sc.occupied_secs
+			 FROM item_schedules sc WHERE sc.id = schedule_occurrences.schedule_id)
+		WHERE schedule_id = ?`+where+` AND state <> 'moved' AND roles_target_days IS NULL`), args...); err != nil {
+		return fmt.Errorf("stamp occurrence roles: %w", err)
 	}
 	return nil
 }
@@ -1177,6 +1218,9 @@ func (s *Store) insertMissedTx(tx *sql.Tx, scheduleID string, o schedule.Occurre
 		return 0, err
 	}
 	if n > 0 {
+		if err := s.stampOccurrenceRolesTx(tx, scheduleID, "occurrence_at", o.At.UTC().Format(time.RFC3339)); err != nil {
+			return 0, err
+		}
 		var floating bool
 		if err := tx.QueryRow(s.q(`SELECT floating FROM item_schedules WHERE id=?`), scheduleID).Scan(&floating); err != nil {
 			return 0, err
