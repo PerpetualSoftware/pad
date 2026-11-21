@@ -218,8 +218,14 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 		vi.stubGlobal('fetch', vi.fn());
 		const delays: number[] = [];
 		const realSetTimeout = globalThis.setTimeout;
+		const realRandom = Math.random;
+		// Each client gets its own fixed draw. Two real draws can coincide, so
+		// asserting on them makes the test flaky; distinct draws must give
+		// distinct delays (attempt 1: 5000 + r * 2500).
+		const draws = [0.2, 0.8];
 		for (let client = 0; client < 2; client++) {
 			sources = [];
+			const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(draws[client]);
 			const spy = vi.spyOn(globalThis, 'setTimeout');
 			const sse = await connected();
 			sources[0].fireDropped();
@@ -228,10 +234,12 @@ describe('owned reconnect in the SSE service (BUG-2733)', () => {
 			expect(reconnectCall, 'no reconnect was scheduled').toBeDefined();
 			delays.push(reconnectCall![1] as number);
 			spy.mockRestore();
+			randomSpy.mockRestore();
 			sse.disconnect();
 		}
 		expect(globalThis.setTimeout).toBe(realSetTimeout);
-		expect(delays[0]).not.toBe(delays[1]);
+		expect(Math.random).toBe(realRandom);
+		expect(delays).toEqual([5500, 7000]);
 	});
 
 	it('the replacement arms a connect-sync, because a new source sends no Last-Event-ID', async () => {
