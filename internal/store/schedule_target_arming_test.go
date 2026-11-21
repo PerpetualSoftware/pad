@@ -234,6 +234,12 @@ func TestFloatingOffsetBoundEarlyAndExactAtFire(t *testing.T) {
 		t.Fatalf("the bound fired %+v, want a deferral", got)
 	}
 	wantRemindAt(t, f, sc, exact, "deferred to the recipient-zone target")
+	// A restart leaves the deferred exact instant alone: it is not the old
+	// start-minus-lead bound the repair exists for.
+	if n, err := f.s.RetimeTargetOffsetReminders(); err != nil || n != 0 {
+		t.Fatalf("repair after deferral: n=%d err=%v, want 0", n, err)
+	}
+	wantRemindAt(t, f, sc, exact, "deferred instant after the repair")
 	if got := f.fire(t, "2026-10-30T14:29:59Z"); len(got) != 0 {
 		t.Fatalf("fired early %+v", got)
 	}
@@ -313,7 +319,14 @@ func TestRetimeTargetOffsetRemindersRepairs(t *testing.T) {
 	f.mustResolve(t, insideItem, moveInput(inside, "2026-10-30T07:00:00Z"), "2026-10-30T10:00:00Z")
 	wantRemindAt(t, f, inside, "2026-10-31T11:00:00Z", "inside-lead fallback before the repair")
 
-	n, err := f.s.retimeTargetOffsetRemindersAt(rt("2026-10-30T10:00:00Z"))
+	// Already right and due: armed by the current code at target minus the
+	// lead (10:30), unfired, its instant past the wall clock. A restart inside
+	// the lead window must not delay it to the target.
+	dueItem := f.another(t, "Due")
+	due := f.targetCommit(t, dueItem, daily, 0, 7200)
+	wantRemindAt(t, f, due, "2026-10-30T10:30:00Z", "correct row before the repair")
+
+	n, err := f.s.RetimeTargetOffsetReminders()
 	if err != nil || n != 1 {
 		t.Fatalf("first run: n=%d err=%v, want 1", n, err)
 	}
@@ -321,13 +334,14 @@ func TestRetimeTargetOffsetRemindersRepairs(t *testing.T) {
 	wantRemindAt(t, f, moved, "2026-10-31T13:00:00Z", "overridden row")
 	wantRemindAt(t, f, zero, "2026-10-30T07:00:00Z", "zero-offset row")
 	wantRemindAt(t, f, inside, "2026-10-31T11:00:00Z", "inside-lead fallback after the repair")
+	wantRemindAt(t, f, due, "2026-10-30T10:30:00Z", "correct due row after the repair")
 	if after := f.managed(t, f.reload(t, firedItem.ID)); after.RemindAt != firedBefore.RemindAt || after.FiredAt == nil {
 		t.Fatalf("fired row moved: %+v -> %+v", firedBefore, after)
 	}
 	if got := f.count(t, `SELECT COUNT(*) FROM item_reminders WHERE schedule_id=?`, ended.ID); got != 0 {
 		t.Fatalf("ended schedule has %d reminder rows", got)
 	}
-	if n, err := f.s.retimeTargetOffsetRemindersAt(rt("2026-10-30T10:00:00Z")); err != nil || n != 0 {
+	if n, err := f.s.RetimeTargetOffsetReminders(); err != nil || n != 0 {
 		t.Fatalf("second run: n=%d err=%v, want 0", n, err)
 	}
 }
@@ -345,7 +359,7 @@ func TestRetimeTargetOffsetRemindersSkipsUncomputableRow(t *testing.T) {
 	good := f.targetCommit(t, f.item, daily, 0, 7200)
 	f.exec(t, `UPDATE item_reminders SET remind_at='2026-10-30T08:30:00Z' WHERE schedule_id=?`, good.ID)
 
-	n, err := f.s.retimeTargetOffsetRemindersAt(rt("2026-10-30T09:00:00Z"))
+	n, err := f.s.RetimeTargetOffsetReminders()
 	if err == nil || !strings.Contains(err.Error(), bad.ID) {
 		t.Fatalf("want an error naming the skipped schedule %s, got %v", bad.ID, err)
 	}

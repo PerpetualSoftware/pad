@@ -6,24 +6,18 @@ import (
 	"time"
 )
 
-// RetimeTargetOffsetReminders re-arms every armed managed reminder of a live,
-// unoverridden schedule with a native target offset at its target minus the
-// lead (TASK-4713). Rows armed before the reminder followed the target were
-// armed at the start minus the lead. It is idempotent: a row already at its
-// instant is not written, so a second run returns 0. It returns how many rows
-// moved.
+// RetimeTargetOffsetReminders repairs the managed reminders armed before the
+// reminder followed the target (TASK-4713): on a live, unoverridden schedule
+// with a native target offset, a row still armed at exactly the old instant,
+// its outstanding occurrence's start minus the lead, moves to its target minus
+// the lead. Only that exact old value moves, so a row armed by the current
+// code (target minus the lead, a move's inside-the-lead target, a floating
+// row deferred to its exact instant) is never touched, and a second run
+// returns 0. A schedule whose instant cannot be computed (an unloadable zone,
+// an unparsable stored wall) is skipped and reported, and the others are
+// still repaired: one bad row must not block the repair on every boot. It
+// returns how many rows moved.
 func (s *Store) RetimeTargetOffsetReminders() (int, error) {
-	return s.retimeTargetOffsetRemindersAt(time.Now().UTC())
-}
-
-// retimeTargetOffsetRemindersAt is RetimeTargetOffsetReminders at a given
-// clock. When target minus the lead is not after nowT the row is armed at the
-// target itself, the fallback a move inside the lead uses (armAfterPastMoveTx),
-// so a restart never pulls a row that fallback armed back into the past. A
-// schedule whose instant cannot be computed (an unloadable zone, an unparsable
-// stored wall) is skipped and reported, and the others are still repaired: one
-// bad row must not block the repair on every boot.
-func (s *Store) retimeTargetOffsetRemindersAt(nowT time.Time) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -74,20 +68,30 @@ func (s *Store) retimeTargetOffsetRemindersAt(nowT time.Time) (int, error) {
 		}
 		// storedFireInstant is pure arithmetic over the row: its errors leave
 		// the transaction usable, so the row is skipped and the rest go on.
-		off := roles.target()
-		fire, err := storedFireInstant(sc, sc.LeadMinutes, off)
-		if err == nil && !fire.After(nowT) {
-			fire, err = storedFireInstant(sc, 0, off)
+		stale, err := storedFireInstant(sc, sc.LeadMinutes, targetOffset{})
+		var fire time.Time
+		if err == nil {
+			fire, err = storedFireInstant(sc, sc.LeadMinutes, roles.target())
 		}
 		if err != nil {
 			skipped = append(skipped, fmt.Errorf("schedule %s: %w", id, err))
 			continue
 		}
-		ok, err := s.retimeArmedRowTx(tx, sc.ID, fire)
+		res, err := tx.Exec(s.q(`
+			UPDATE item_reminders SET remind_at = ?, updated_at = ?
+			WHERE schedule_id = ? AND fired_at IS NULL AND remind_at = ? AND remind_at <> ?`),
+			NormalizeInstant(fire), now(), sc.ID, NormalizeInstant(stale), NormalizeInstant(fire))
 		if err != nil {
 			return 0, fmt.Errorf("retime schedule %s: %w", id, err)
 		}
-		if ok {
+		n, err := res.RowsAffected()
+		if err != nil {
+			return 0, err
+		}
+		if n > 0 {
+			if err := s.invalidateScheduleReopenTx(tx, sc.ID); err != nil {
+				return 0, err
+			}
 			moved++
 		}
 	}
