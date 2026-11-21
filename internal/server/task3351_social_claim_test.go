@@ -5,6 +5,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // TASK-3351 PR 2: the sidecar OAuth routes answer only in cloud mode.
@@ -20,7 +22,7 @@ func TestTASK3351_SidecarOAuthRoutesAreCloudOnly(t *testing.T) {
 			// Signed in, so link and unlink reach their route rather than
 			// stopping at authentication.
 			sess := bootstrapFirstUser(t, srv, "admin@example.com", "Admin")
-			srv.cloudSecrets = []string{oauthProviderTestSecret} // a secret, but not cloud mode
+			srv.cloudSecrets = []secret.Secret{secret.New(oauthProviderTestSecret)} // a secret, but not cloud mode
 			body := map[string]interface{}{
 				"cloud_secret": oauthProviderTestSecret,
 				"provider":     "google",
@@ -225,7 +227,7 @@ type socialClaimResp struct {
 func newSocialSquat(t *testing.T) squatFixture {
 	t.Helper()
 	f := newSquatFixture(t)
-	f.srv.cloudSecrets = []string{oauthProviderTestSecret}
+	f.srv.cloudSecrets = []secret.Secret{secret.New(oauthProviderTestSecret)}
 	return f
 }
 

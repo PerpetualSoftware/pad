@@ -25,7 +25,6 @@ package server
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -34,6 +33,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // bootstrapTokenFilename is the on-disk filename within DataDir.
@@ -145,7 +146,7 @@ func CleanupStaleBootstrapToken(dataDir string) error {
 func (s *Server) SetBootstrapToken(token, path string) {
 	s.bootstrapMu.Lock()
 	defer s.bootstrapMu.Unlock()
-	s.bootstrapToken = token
+	s.bootstrapToken = secret.New(token)
 	s.bootstrapTokenPath = path
 }
 
@@ -156,7 +157,7 @@ func (s *Server) SetBootstrapToken(token, path string) {
 func (s *Server) hasBootstrapToken() bool {
 	s.bootstrapMu.Lock()
 	defer s.bootstrapMu.Unlock()
-	return s.bootstrapToken != ""
+	return !s.bootstrapToken.IsZero()
 }
 
 // checkBootstrapToken validates the X-Bootstrap-Token header on r against
@@ -167,16 +168,17 @@ func (s *Server) hasBootstrapToken() bool {
 // the entire validate-token → check-UserCount → CreateUser → consume
 // sequence (F5).
 func (s *Server) checkBootstrapToken(r *http.Request) bool {
-	if s.bootstrapToken == "" {
+	if s.bootstrapToken.IsZero() {
 		return false
 	}
 	provided := r.Header.Get(BootstrapTokenHeader)
 	if provided == "" {
 		return false
 	}
-	// Use constant-time comparison so the response time can't leak
-	// per-character feedback to an attacker grinding through guesses.
-	return subtle.ConstantTimeCompare([]byte(provided), []byte(s.bootstrapToken)) == 1
+	// Constant-time comparison so the response time can't leak
+	// per-character feedback to an attacker grinding through guesses. Both
+	// sides are non-empty here: an empty Secret equals an empty string.
+	return s.bootstrapToken.Equal(provided)
 }
 
 // SetBypassSetupToken wires the operator's PAD_BYPASS_SETUP_TOKEN choice
@@ -212,7 +214,7 @@ func (s *Server) openBootstrapEnabled() bool {
 // is harmless; the next startup's CleanupStaleBootstrapToken call mops it
 // up).
 func (s *Server) consumeBootstrapToken() error {
-	s.bootstrapToken = ""
+	s.bootstrapToken = secret.Secret{}
 	if s.bootstrapTokenPath == "" {
 		return nil
 	}

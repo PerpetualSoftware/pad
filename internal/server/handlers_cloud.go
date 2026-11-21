@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -87,13 +87,15 @@ func (s *Server) refuseOAuthSubject(w http.ResponseWriter, r *http.Request, user
 // This is the authentication mechanism between the pad-cloud sidecar and
 // the pad binary. All cloud-gated endpoints (oauth-login, admin/plan) must
 // call this before processing the request.
-func (s *Server) validateCloudSecret(secret string, w http.ResponseWriter) bool {
+func (s *Server) validateCloudSecret(given secret.Secret, w http.ResponseWriter) bool {
 	if len(s.cloudSecrets) == 0 {
 		writeError(w, http.StatusForbidden, "forbidden", "Cloud mode not configured")
 		return false
 	}
 	for i, key := range s.cloudSecrets {
-		if subtle.ConstantTimeCompare([]byte(secret), []byte(key)) == 1 {
+		// key is never empty (SetCloudMode skips blanks), so an empty given
+		// cannot match.
+		if key.Equal(given.Reveal()) {
 			if i > 0 {
 				slog.Info("cloud secret validated with rotated key", "key_index", i)
 			}
@@ -189,12 +191,12 @@ func bodyHasCloudSecret(r *http.Request) bool {
 	// whose request doesn't match the expected schema.
 	r.Body = io.NopCloser(bytes.NewReader(buf))
 	var body struct {
-		CloudSecret string `json:"cloud_secret"`
+		CloudSecret secret.Secret `json:"cloud_secret"`
 	}
 	if err := json.Unmarshal(buf, &body); err != nil {
 		return false
 	}
-	return body.CloudSecret != ""
+	return !body.CloudSecret.IsZero()
 }
 
 // --- OAuth Login (TASK-430) ---
@@ -204,12 +206,12 @@ func bodyHasCloudSecret(r *http.Request) bool {
 // Creates or finds a user by email and creates a session.
 func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Provider      string `json:"provider"`
-		Email         string `json:"email"`
-		Name          string `json:"name"`
-		AvatarURL     string `json:"avatar_url"`
-		EmailVerified bool   `json:"email_verified"`
-		CloudSecret   string `json:"cloud_secret"`
+		Provider      string        `json:"provider"`
+		Email         string        `json:"email"`
+		Name          string        `json:"name"`
+		AvatarURL     string        `json:"avatar_url"`
+		EmailVerified bool          `json:"email_verified"`
+		CloudSecret   secret.Secret `json:"cloud_secret"`
 		// Subject is the provider's stable account id (TASK-3351).
 		// Required (BUG-3797): without it the sign-in would rest on the
 		// email address alone, whatever the account's binding state.
@@ -582,11 +584,11 @@ func (s *Server) countPlanWrite(source, outcome string) {
 // status as a failure and the Stripe webhook would then retry forever.
 func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		UserID      string `json:"user_id"`
-		Plan        string `json:"plan"`
-		ExpiresAt   string `json:"expires_at"`
-		Source      string `json:"source"`
-		CloudSecret string `json:"cloud_secret"`
+		UserID      string        `json:"user_id"`
+		Plan        string        `json:"plan"`
+		ExpiresAt   string        `json:"expires_at"`
+		Source      string        `json:"source"`
+		CloudSecret secret.Secret `json:"cloud_secret"`
 		// BUG-3356: the sidecar's fetch time (unix ms) of the Stripe state
 		// this plan was derived from, and the subscription it came from.
 		// Optional: absent from a sidecar that predates it.
@@ -729,10 +731,10 @@ func (s *Server) handleSetPlan(w http.ResponseWriter, r *http.Request) {
 // Requires an active session (the user must be logged in) and links the provider.
 func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Provider      string `json:"provider"`
-		Email         string `json:"email"`
-		EmailVerified bool   `json:"email_verified"`
-		CloudSecret   string `json:"cloud_secret"`
+		Provider      string        `json:"provider"`
+		Email         string        `json:"email"`
+		EmailVerified bool          `json:"email_verified"`
+		CloudSecret   secret.Secret `json:"cloud_secret"`
 		// Subject: the provider's stable account id, bound on link
 		// (TASK-3351). Optional here; oauth-login requires one (BUG-3797).
 		Subject string `json:"subject"`
@@ -917,9 +919,9 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 // to associate a Stripe customer ID with a Pad user.
 func (s *Server) handleSetStripeCustomerID(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		UserID      string `json:"user_id"`
-		CustomerID  string `json:"customer_id"`
-		CloudSecret string `json:"cloud_secret"`
+		UserID      string        `json:"user_id"`
+		CustomerID  string        `json:"customer_id"`
+		CloudSecret secret.Secret `json:"cloud_secret"`
 		// Replace lets an ADMIN USER overwrite a different stored id (a
 		// support fix). The sidecar never sends it, and the cloud secret
 		// alone cannot use it (TASK-3549).
@@ -1024,8 +1026,7 @@ func (s *Server) handleGetUserByCustomerID(w http.ResponseWriter, r *http.Reques
 	user := currentUser(r)
 	isAdmin := user != nil && user.Role == "admin"
 	if !isAdmin {
-		secret := r.Header.Get("X-Cloud-Secret")
-		if !s.validateCloudSecret(secret, w) {
+		if !s.validateCloudSecret(secret.New(r.Header.Get("X-Cloud-Secret")), w) {
 			return
 		}
 	}
@@ -1071,7 +1072,7 @@ func (s *Server) handleGetUserByID(w http.ResponseWriter, r *http.Request) {
 	user := currentUser(r)
 	isAdmin := user != nil && user.Role == "admin"
 	if !isAdmin {
-		if !s.validateCloudSecret(r.Header.Get("X-Cloud-Secret"), w) {
+		if !s.validateCloudSecret(secret.New(r.Header.Get("X-Cloud-Secret")), w) {
 			return
 		}
 	}
@@ -1111,7 +1112,7 @@ func (s *Server) handleListBillingUsers(w http.ResponseWriter, r *http.Request) 
 	user := currentUser(r)
 	isAdmin := user != nil && user.Role == "admin"
 	if !isAdmin {
-		if !s.validateCloudSecret(r.Header.Get("X-Cloud-Secret"), w) {
+		if !s.validateCloudSecret(secret.New(r.Header.Get("X-Cloud-Secret")), w) {
 			return
 		}
 	}
@@ -1167,8 +1168,8 @@ func (s *Server) handleListBillingUsers(w http.ResponseWriter, r *http.Request) 
 // events for up to 72h, so 7 days gives a safe margin.
 func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		EventID     string `json:"event_id"`
-		CloudSecret string `json:"cloud_secret"`
+		EventID     string        `json:"event_id"`
+		CloudSecret secret.Secret `json:"cloud_secret"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -1244,9 +1245,9 @@ func (s *Server) handleStripeEventProcessed(w http.ResponseWriter, r *http.Reque
 // current Stripe state.
 func (s *Server) handleStripeEventComplete(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		EventID     string `json:"event_id"`
-		ProcessedAt string `json:"processed_at"`
-		CloudSecret string `json:"cloud_secret"`
+		EventID     string        `json:"event_id"`
+		ProcessedAt string        `json:"processed_at"`
+		CloudSecret secret.Secret `json:"cloud_secret"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -1309,9 +1310,9 @@ func (s *Server) handleStripeEventComplete(w http.ResponseWriter, r *http.Reques
 // other cloud admin endpoints.
 func (s *Server) handleStripeEventUnmark(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		EventID     string `json:"event_id"`
-		ProcessedAt string `json:"processed_at"`
-		CloudSecret string `json:"cloud_secret"`
+		EventID     string        `json:"event_id"`
+		ProcessedAt string        `json:"processed_at"`
+		CloudSecret secret.Secret `json:"cloud_secret"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -1411,10 +1412,10 @@ func (s *Server) handleStripeEventUnmark(w http.ResponseWriter, r *http.Request)
 // their card or cancel the subscription.
 func (s *Server) handlePaymentFailed(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		StripeCustomerID string `json:"stripe_customer_id"`
-		AmountDisplay    string `json:"amount_display"`
-		NextRetryDisplay string `json:"next_retry_display"`
-		CloudSecret      string `json:"cloud_secret"`
+		StripeCustomerID string        `json:"stripe_customer_id"`
+		AmountDisplay    string        `json:"amount_display"`
+		NextRetryDisplay string        `json:"next_retry_display"`
+		CloudSecret      secret.Secret `json:"cloud_secret"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")

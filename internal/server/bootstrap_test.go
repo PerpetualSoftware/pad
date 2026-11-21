@@ -248,7 +248,7 @@ func TestServer_BootstrapTokenLifecycle(t *testing.T) {
 	if err := srv.consumeBootstrapToken(); err != nil {
 		t.Fatalf("consumeBootstrapToken: %v", err)
 	}
-	if srv.bootstrapToken != "" {
+	if !srv.bootstrapToken.IsZero() {
 		t.Fatal("bootstrapToken not cleared after consume")
 	}
 	if _, err := os.Stat(tokenPath); !os.IsNotExist(err) {

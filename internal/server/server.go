@@ -3,7 +3,6 @@ package server
 import (
 	"bytes"
 	"context"
-	"crypto/subtle"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
@@ -41,6 +40,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/needs"
 	"github.com/PerpetualSoftware/pad/internal/notify"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/textguard"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
@@ -223,14 +223,14 @@ type Server struct {
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
 	webhooks              *webhooks.Dispatcher // webhook dispatcher (optional)
 	email                 *email.Sender        // transactional email sender (optional)
-	emailAPIKey           string               // Maileroo API key (used for unsubscribe HMAC)
+	emailAPIKey           secret.Secret        // Maileroo API key (used for unsubscribe HMAC)
 	emailEnvConfigured    bool                 // email was wired from env vars (SetEmailSender); reconfigureEmail must not tear this down when platform settings clear the key
 	rateLimiters          *RateLimiters        // per-endpoint rate limiters
 	baseURL               string               // public base URL for generating links (e.g. invite URLs)
 	corsOrigins           string               // comma-separated CORS origins (empty = localhost defaults)
 	secureCookies         bool                 // set Secure flag on cookies (for TLS deployments)
 	metrics               *metrics.Metrics     // Prometheus metrics (optional)
-	metricsToken          string               // shared bearer token for /metrics scrapes ("" = loopback-only)
+	metricsToken          secret.Secret        // shared bearer token for /metrics scrapes ("" = loopback-only)
 	trustedProxyCIDRs     []*net.IPNet         // CIDRs allowed to set X-Forwarded-For (nil = proxy headers untrusted)
 	ipChangeEnforceStrict bool                 // when true, revoke+reject sessions whose client IP OR User-Agent hash differs from the one recorded at session creation
 	sseMaxConnections     int                  // global SSE connection limit (0 = unlimited)
@@ -245,7 +245,7 @@ type Server struct {
 	collabAdmit                  *streamAdmission // per-user open collab WebSocket bound (BUG-1308)
 	collabMaxPerUser             int              // per-user open collab WebSocket limit (0 or less = unlimited, BUG-1308)
 	cloudMode                    bool             // true when running as Pad Cloud (PAD_CLOUD=true or PAD_MODE=cloud)
-	cloudSecrets                 []string         // shared secrets for sidecar ↔ pad communication (supports rotation)
+	cloudSecrets                 []secret.Secret  // shared secrets for sidecar ↔ pad communication (supports rotation)
 	cloudSidecar                 CloudSidecar     // reverse pad → pad-cloud client (e.g. Stripe cancel on account delete); nil = not configured
 	billingMode                  string           // PAD_BILLING: billing.ModeAuto or billing.ModeOff; "" reads as off (TASK-3577)
 	billingOffer                 BillingOffer     // the sidecar's billing config, cached; nil = never offered (TASK-3577)
@@ -588,7 +588,7 @@ type Server struct {
 	// otherwise create two admins from one token (F5). Bootstrap happens
 	// once per install, so the contention window is irrelevant.
 	bootstrapMu        sync.Mutex
-	bootstrapToken     string
+	bootstrapToken     secret.Secret
 	bootstrapTokenPath string
 
 	// bypassSetupToken, when true, allows the first-admin bootstrap POST to
@@ -965,12 +965,12 @@ func (s *Server) Init2FASecret() error {
 // The OUTBOUND direction (pad → pad-cloud, see SetCloudSidecar) is
 // configured separately via PAD_CLOUD_OUTBOUND_SECRET or derived from the
 // last entry of this list — see cmd/pad/main.go for the resolution order.
-func (s *Server) SetCloudMode(secret string) {
+func (s *Server) SetCloudMode(secrets string) {
 	s.cloudMode = true
-	for _, k := range strings.Split(secret, ",") {
+	for _, k := range strings.Split(secrets, ",") {
 		k = strings.TrimSpace(k)
 		if k != "" {
-			s.cloudSecrets = append(s.cloudSecrets, k)
+			s.cloudSecrets = append(s.cloudSecrets, secret.New(k))
 		}
 	}
 	// Propagate to the email sender so transactional emails carry the
@@ -1311,7 +1311,7 @@ func (s *Server) SetEmailSender(e *email.Sender, apiKey ...string) {
 	// no key — env is the deployment baseline, not something the admin UI disables.
 	s.emailEnvConfigured = e != nil
 	if len(apiKey) > 0 {
-		s.emailAPIKey = apiKey[0]
+		s.emailAPIKey = secret.New(apiKey[0])
 	}
 	if s.cloudMode && s.email != nil {
 		s.email.SetCloudMode(true)
@@ -1482,7 +1482,7 @@ func (s *Server) wireOAuthMetricsObserver() {
 // without config — but LAN/internet scrapes are refused. A non-empty
 // token requires "Authorization: Bearer <token>" regardless of source.
 func (s *Server) SetMetricsToken(token string) {
-	s.metricsToken = strings.TrimSpace(token)
+	s.metricsToken = secret.New(strings.TrimSpace(token))
 }
 
 // metricsAuth gates the /metrics endpoint. See SetMetricsToken for the
@@ -1490,7 +1490,7 @@ func (s *Server) SetMetricsToken(token string) {
 // token via response timing.
 func (s *Server) metricsAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if s.metricsToken == "" {
+		if s.metricsToken.IsZero() {
 			// No token configured → loopback-only access.
 			if !requestIsLoopback(r) {
 				writeError(w, http.StatusForbidden, "forbidden",
@@ -1501,16 +1501,16 @@ func (s *Server) metricsAuth(next http.Handler) http.Handler {
 			return
 		}
 
-		const prefix = "Bearer "
-		authHeader := r.Header.Get("Authorization")
-		if !strings.HasPrefix(authHeader, prefix) {
+		given, ok := bearerToken(r)
+		if !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized",
 				"Missing Bearer token for /metrics")
 			return
 		}
-		given := strings.TrimSpace(strings.TrimPrefix(authHeader, prefix))
-		if subtle.ConstantTimeCompare([]byte(given), []byte(s.metricsToken)) != 1 {
+		// The token is non-empty here (IsZero above), so an empty given
+		// cannot match it.
+		if !s.metricsToken.Equal(given.Reveal()) {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="metrics"`)
 			writeError(w, http.StatusUnauthorized, "unauthorized",
 				"Invalid Bearer token for /metrics")
@@ -1654,12 +1654,12 @@ func (s *Server) reconfigureEmail() {
 		// sending mail until restart (BUG-1890).
 		if !s.emailEnvConfigured {
 			s.email = nil
-			s.emailAPIKey = ""
+			s.emailAPIKey = secret.Secret{}
 		}
 		return
 	}
 
-	s.emailAPIKey = apiKey
+	s.emailAPIKey = secret.New(apiKey)
 	if s.email == nil {
 		// Create a new sender from platform settings
 		s.email = email.NewSender(apiKey, fromAddr, fromName, s.baseURL)

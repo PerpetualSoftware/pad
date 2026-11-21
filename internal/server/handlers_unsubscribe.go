@@ -19,7 +19,7 @@ func (s *Server) unsubscribeSecret() string {
 	if s.email == nil {
 		return ""
 	}
-	h := sha256.Sum256([]byte("pad-unsubscribe:" + s.emailAPIKey))
+	h := sha256.Sum256([]byte("pad-unsubscribe:" + s.emailAPIKey.Reveal()))
 	return hex.EncodeToString(h[:])
 }
 
