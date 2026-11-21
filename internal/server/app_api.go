@@ -519,7 +519,9 @@ func appRequestContext(parent context.Context, ac *appContext) context.Context {
 	ctx = context.WithValue(ctx, ctxResolvedWorkspaceID, ac.WorkspaceID)
 	ctx = context.WithValue(ctx, ctxWorkspaceRole, ac.Role)
 	ctx = WithAPITokenAuth(ctx)
-	ctx = WithTokenScopes(ctx, ac.Access)
+	// The scopes are a JSON list, as on a personal token, so a shared helper
+	// that checks them (tokenScopeAllows) answers as the access does.
+	ctx = WithTokenScopes(ctx, `["`+ac.Access+`"]`)
 	return WithTokenAllowedWorkspaces(ctx, []string{ac.WorkspaceSlug})
 }
 
@@ -542,6 +544,8 @@ func appContextSelfCheck(r *http.Request) error {
 		return errors.New("bearer status not set")
 	case TokenScopesFromContext(r.Context()) == "":
 		return errors.New("scopes not set")
+	case !tokenScopeAllows(TokenScopesFromContext(r.Context()), http.MethodGet, ""):
+		return errors.New("scopes do not parse as a token scope list")
 	}
 	allowed := TokenAllowedWorkspacesFromContext(r.Context())
 	if len(allowed) != 1 || allowed[0] != ac.WorkspaceSlug {
