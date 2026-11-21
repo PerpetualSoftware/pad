@@ -201,8 +201,9 @@ func TestNeedsDueOccurrencesViewerZone(t *testing.T) {
 }
 
 // Latest is the newest outstanding claim, Earliest the oldest (TASK-4643).
-// An item has one schedule and the agenda reports its oldest unresolved
-// occurrence, so a daily check missed for three days reports that one in both.
+// The agenda reports an item's oldest unresolved occurrence; a daily check
+// missed for three days claims from that one and its newest came due today
+// (TASK-4683).
 func TestNeedsDueOccurrencesLatest(t *testing.T) {
 	f := newBootFixture(t)
 	it, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-07T09:00", Tz: "UTC", Audience: "human", Rrule: "FREQ=DAILY"}, "2031-03-06T00:00:00Z")
@@ -210,8 +211,8 @@ func TestNeedsDueOccurrencesLatest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := rt("2031-03-07T09:00:00Z")
-	if d, ok := got[it.ID]; !ok || !d.Earliest.Equal(want) || !d.Latest.Equal(want) {
-		t.Fatalf("due = %+v, want earliest and latest %s", got, want)
+	earliest, latest := rt("2031-03-07T09:00:00Z"), rt("2031-03-10T09:00:00Z")
+	if d, ok := got[it.ID]; !ok || !d.Earliest.Equal(earliest) || !d.Latest.Equal(latest) {
+		t.Fatalf("due = %+v, want earliest %s latest %s", got, earliest, latest)
 	}
 }

@@ -116,10 +116,11 @@ func (s *Store) AgendaOutstanding(sc *models.ItemSchedule, view *time.Location, 
 	if err != nil {
 		return nil, err
 	}
-	e.SnoozedUntil, err = s.ReadScheduleSnoozedUntil(sc, now)
+	e.RefireAt, err = s.readScheduleRefireAt(sc)
 	if err != nil {
 		return nil, err
 	}
+	e.SnoozedUntil = snoozeActive(e.RefireAt, now)
 	e.Overdue = !e.At.After(now)
 	if e.Roles.Deadline != nil {
 		at, err := agendaRoleInstant(*e.Roles.Deadline, loc)

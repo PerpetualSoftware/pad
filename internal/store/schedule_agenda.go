@@ -239,7 +239,11 @@ func (s *Store) fillAgendaItemFacts(out []AgendaSchedule, doneSQL string, doneAr
 // AgendaEntry contains one occurrence and all its effective roles. At is its
 // effective target; Wall and OccurrenceKey retain the immutable seed identity.
 type AgendaEntry struct {
-	SnoozedUntil   *time.Time
+	SnoozedUntil *time.Time
+	// RefireAt is the outstanding occurrence's snooze re-fire instant, kept
+	// once it has passed (SnoozedUntil then reads nil): the re-fired reminder
+	// is a fresh claim (TASK-4711).
+	RefireAt       *time.Time
 	Roles          models.CommitmentRoles
 	OccurrenceKey  string
 	DeadlinePassed bool
@@ -465,7 +469,8 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 		if have && r.state == "moved" && sc.NextOverrideAt != nil {
 			target, targetErr = s.movedTargetQ(s.db, sc.ID, OccurrenceKey(sc, r.at, r.wall))
 		}
-		e.SnoozedUntil = ScheduleSnoozedUntil(sc, r.state, target, now)
+		e.RefireAt = scheduleRefireAt(sc, r.state, target)
+		e.SnoozedUntil = snoozeActive(e.RefireAt, now)
 		due := e.At
 		if have && r.state == "moved" && sc.NextOverrideAt != nil {
 			if target == nil {
