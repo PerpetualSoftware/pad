@@ -8,6 +8,8 @@
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { pendingInvitations } from '$lib/stores/pendingInvitations.svelte';
 	import PendingInvitations from '$lib/components/layout/PendingInvitations.svelte';
+	import TutorialSuggestion from '$lib/components/tutorials/TutorialSuggestion.svelte';
+	import { showHomeTutorial } from './homeTutorial';
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -98,9 +100,13 @@
 	});
 	const date = $derived(new Intl.DateTimeFormat('en-US', { weekday: 'long', month: 'long', day: 'numeric', timeZone: zone }).format(new Date()));
 	const needKey = (row: NeedsRow) => `${row.workspace.slug}:${row.item.ref}`;
+	// Set only by loadWorkspaces, never by an effect: true once the list has loaded (TASK-4571).
+	let workspacesLoaded = $state(false);
+	const showTutorial = $derived(showHomeTutorial(workspacesLoaded, workspaceStore.workspaces, authStore.userId));
 	async function loadWorkspaces() {
 		workspaceError = false;
-		try { await workspaceStore.ensureAll(); } catch { workspaceError = true; }
+		workspacesLoaded = false;
+		try { await workspaceStore.ensureAll(); workspacesLoaded = true; } catch { workspaceError = true; }
 	}
 	// BottomNav owns overview refreshes on phone arrivals, including /.
 	// Keep the desktop loading policy unchanged (TASK-4559 is separate).
@@ -191,6 +197,8 @@
 				{#if ws.is_guest}<span>Shared with you · guest</span>{:else if homeOverview.needs}<span>{homeOverview.needs.workspaces.find(w => w.slug === ws.slug)?.count ?? 0} need you</span>{/if}
 			</a>
 		{/each}</div>
+		<!-- TASK-3452 / TASK-4571: a first-time user's tutorial, once per user, for a user who owns no workspace. -->
+		{#if showTutorial}<TutorialSuggestion dismissKey="tutorials.console" slug="new-project" fallbackTitle="Start a new project with Pad" />{/if}
 	</section>
 </div>
 <style>
