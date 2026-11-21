@@ -197,7 +197,7 @@ PAD_DB_DRIVER=postgres PAD_DATABASE_URL="postgres://pad:secret@localhost:5432/pa
   only in the collaborative op-log, and that log does not travel — so the
   migration refuses to run while any item is in that state (see below).
 
-When the source contains workspace slug history, use a fresh PostgreSQL database. The migration copies live aliases and retains reservations for old slugs whose workspaces are gone.
+When the source contains workspace slug history, use a fresh PostgreSQL database. The migration copies workspace aliases. Hard purge releases all slug claims, allowing those slugs to be reused.
 
 ### Stop the server first — the migration enforces it
 

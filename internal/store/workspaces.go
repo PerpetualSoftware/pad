@@ -639,7 +639,7 @@ func (s *Store) RenameWorkspace(id, expectedSlug, slug string, name *string) (*m
 	return w, n != 0, nil
 }
 
-// WorkspaceSlugClaims returns all claims, including those of purged workspaces.
+// WorkspaceSlugClaims returns all current and historical slug claims.
 func (s *Store) WorkspaceSlugClaims() (map[string]string, error) {
 	return s.WorkspaceSlugClaimsQ(s.db)
 }

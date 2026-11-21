@@ -11,7 +11,7 @@
 -- the next table rebuild. The predicate, the marker and the SQLite-only scope
 -- are those of 084; its header carries the measurements.
 
-CREATE TRIGGER IF NOT EXISTS pad_nul187_workspace_slug_claims_slug_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul188_workspace_slug_claims_slug_ins
 BEFORE INSERT ON workspace_slug_claims
 FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
 			instr(NEW.slug, char(0)) > 0
@@ -20,7 +20,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: workspace_slug_claims.slug must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul187_workspace_slug_claims_slug_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul188_workspace_slug_claims_slug_upd
 BEFORE UPDATE OF slug ON workspace_slug_claims
 FOR EACH ROW WHEN NEW.slug IS NOT NULL AND (
 			instr(NEW.slug, char(0)) > 0
@@ -29,7 +29,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: workspace_slug_claims.slug must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul187_workspace_slug_claims_workspace_id_ins
+CREATE TRIGGER IF NOT EXISTS pad_nul188_workspace_slug_claims_workspace_id_ins
 BEFORE INSERT ON workspace_slug_claims
 FOR EACH ROW WHEN NEW.workspace_id IS NOT NULL AND (
 			instr(NEW.workspace_id, char(0)) > 0
@@ -38,7 +38,7 @@ BEGIN
 	SELECT RAISE(ABORT, 'pad_nul_invariant: workspace_slug_claims.workspace_id must not contain a NUL');
 END;
 
-CREATE TRIGGER IF NOT EXISTS pad_nul187_workspace_slug_claims_workspace_id_upd
+CREATE TRIGGER IF NOT EXISTS pad_nul188_workspace_slug_claims_workspace_id_upd
 BEFORE UPDATE OF workspace_id ON workspace_slug_claims
 FOR EACH ROW WHEN NEW.workspace_id IS NOT NULL AND (
 			instr(NEW.workspace_id, char(0)) > 0

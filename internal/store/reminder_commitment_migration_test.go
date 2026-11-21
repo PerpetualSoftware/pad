@@ -27,11 +27,11 @@ func reminderMigrationStore(t *testing.T, pg bool) (*Store, string, string) {
 	} else {
 		db, _ := preMigrationDB(t, "183")
 		// Bundle cases use current workspace APIs while testing the old reminder schema.
-		claims, err := migrationsFS.ReadFile("migrations/186_workspace_slug_claims.sql")
+		claims, err := migrationsFS.ReadFile("migrations/187_workspace_slug_claims.sql")
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := applySQLiteMigration(db, "186_workspace_slug_claims.sql", string(claims)); err != nil {
+		if err := applySQLiteMigration(db, "187_workspace_slug_claims.sql", string(claims)); err != nil {
 			t.Fatal(err)
 		}
 		s = &Store{db: db, dialect: &sqliteDialect{}}

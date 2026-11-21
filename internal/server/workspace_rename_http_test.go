@@ -3,11 +3,13 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/go-chi/chi/v5"
 )
 
 func TestWorkspaceRenameHTTP(t *testing.T) {
@@ -105,8 +107,43 @@ func TestWorkspaceRenameOAuthScope(t *testing.T) {
 			}
 		}
 		allowed := allowListAt(t, srv, token)
-		if len(allowed) != 1 || allowed[0] != renamed.Slug {
-			t.Fatalf("%s allowlist = %v, want only %s (not %s)", mode, allowed, renamed.Slug, other.Slug)
+		want := renamed.Slug
+		if mode == "legacy session" {
+			want = ws.Slug
+		}
+		if len(allowed) != 1 || allowed[0] != want {
+			t.Fatalf("%s allowlist = %v, want only %s (not %s)", mode, allowed, want, other.Slug)
+		}
+	}
+	if err := srv.store.DeleteWorkspace(renamed.Slug); err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.store.PurgeWorkspaceData(ws.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := srv.store.RenameWorkspace(other.ID, other.Slug, ws.Slug, nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := srv.store.RenameWorkspace(other.ID, ws.Slug, "reused-oauth-slug", nil); err != nil {
+		t.Fatal(err)
+	}
+	for _, slug := range allowListAt(t, srv, token) {
+		if slug == "reused-oauth-slug" {
+			t.Fatal("legacy consent followed a reused alias into another workspace")
+		}
+	}
+	router := chi.NewRouter()
+	router.Use(srv.MCPBearerAuth)
+	router.With(srv.RequireWorkspaceAccess).Get("/workspaces/{slug}", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("legacy consent reached another workspace through a reused alias")
+	})
+	for _, slug := range []string{ws.Slug, "reused-oauth-slug"} {
+		req := httptest.NewRequest(http.MethodGet, "/workspaces/"+slug, nil)
+		req.Header.Set("Authorization", "Bearer "+token)
+		rr := httptest.NewRecorder()
+		router.ServeHTTP(rr, req)
+		if rr.Code != http.StatusForbidden {
+			t.Fatalf("reused slug %q: %d %s", slug, rr.Code, rr.Body.String())
 		}
 	}
 }

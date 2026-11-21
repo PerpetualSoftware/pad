@@ -595,8 +595,13 @@ Steps:
 			for _, id := range claims {
 				claimCounts[id]++
 			}
+			liveIDs := make(map[string]bool, len(workspaces))
+			for _, ws := range workspaces {
+				liveIDs[ws.ID] = true
+			}
 			for slug, id := range claims {
-				if claimCounts[id] == 1 {
+				// Only migrated workspaces can own claims at the destination.
+				if !liveIDs[id] || claimCounts[id] == 1 {
 					delete(claims, slug)
 				}
 			}

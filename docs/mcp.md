@@ -83,7 +83,7 @@ In `relation_targets`, a `multi_relation` key carries a JSON **ARRAY** of the sa
 
 ### Rename a workspace
 
-Call `pad_workspace` with `{"action":"rename","workspace":"current-slug","new_slug":"next-slug"}`. An optional `name` updates the display name. The caller needs owner access and a write-capable connection. Previous links still resolve to the same workspace. Use the returned slug for new links and workspace bindings.
+Call `pad_workspace` with `{"action":"rename","workspace":"current-slug","new_slug":"next-slug"}`. An optional `name` updates the display name. The caller needs owner access and a write-capable connection. Previous links still resolve to the same workspace. Use the returned slug for new links and workspace bindings. Connections with stored workspace grants follow the workspace ID. A legacy connection without a backfilled grant must be reauthorized after a rename; its old slug consent is not followed through aliases.
 
 ## Remote caller identity
 

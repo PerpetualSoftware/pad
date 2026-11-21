@@ -20,8 +20,7 @@ CREATE TRIGGER workspace_slug_claim_insert BEFORE INSERT ON workspaces FOR EACH 
 CREATE TRIGGER workspace_slug_claim_update BEFORE UPDATE OF slug ON workspaces FOR EACH ROW WHEN (NEW.slug <> OLD.slug) EXECUTE FUNCTION workspace_slug_claim();
 CREATE FUNCTION workspace_slug_claim_purge() RETURNS trigger AS $$
 BEGIN
-    DELETE FROM workspace_slug_claims WHERE workspace_id = OLD.id
-        AND (SELECT COUNT(*) FROM workspace_slug_claims WHERE workspace_id = OLD.id) = 1;
+    DELETE FROM workspace_slug_claims WHERE workspace_id = OLD.id;
     RETURN OLD;
 END;
 $$ LANGUAGE plpgsql;

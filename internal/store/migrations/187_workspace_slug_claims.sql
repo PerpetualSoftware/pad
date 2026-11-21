@@ -20,6 +20,5 @@ CREATE TRIGGER workspace_slug_claim_update BEFORE UPDATE OF slug ON workspaces W
         VALUES (NEW.slug, NEW.id) ON CONFLICT (slug) DO NOTHING;
 END;
 CREATE TRIGGER workspace_slug_claim_delete AFTER DELETE ON workspaces BEGIN
-    DELETE FROM workspace_slug_claims WHERE workspace_id = OLD.id
-        AND (SELECT COUNT(*) FROM workspace_slug_claims WHERE workspace_id = OLD.id) = 1;
+    DELETE FROM workspace_slug_claims WHERE workspace_id = OLD.id;
 END;

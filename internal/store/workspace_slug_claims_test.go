@@ -60,7 +60,7 @@ func TestWorkspaceSlugClaims(t *testing.T) {
 		t.Fatalf("purged lookup: %v %v", ok, err)
 	}
 	after, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Claims Original"})
-	if err != nil || after.Slug != "claims-original-3" {
+	if err != nil || after.Slug != "claims-original" {
 		t.Fatalf("purged claim: %+v %v", after, err)
 	}
 	if _, err := s.db.Exec(s.q(`DELETE FROM workspaces WHERE id = ?`), other.ID); err != nil {
@@ -69,6 +69,75 @@ func TestWorkspaceSlugClaims(t *testing.T) {
 	reused, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Claims Original"})
 	if err != nil || reused.Slug != "claims-original-2" {
 		t.Fatalf("never renamed reuse: %+v %v", reused, err)
+	}
+}
+
+func TestWorkspaceSlugClaimsPurge(t *testing.T) {
+	for _, renames := range []int{0, 3} {
+		t.Run(fmt.Sprint(renames), func(t *testing.T) {
+			s := testStore(t)
+			w := createTestWorkspace(t, s, "Purge Claims")
+			other := createTestWorkspace(t, s, "Other Claims")
+			slugs := []string{w.Slug}
+			for i := 0; i < renames; i++ {
+				renamed, _, err := s.RenameWorkspace(w.ID, slugs[len(slugs)-1], fmt.Sprintf("purge-claims-%d", i), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				slugs = append(slugs, renamed.Slug)
+			}
+			canonical := slugs[len(slugs)-1]
+			if err := s.DeleteWorkspace(canonical); err != nil {
+				t.Fatal(err)
+			}
+			claims, err := s.WorkspaceSlugClaims()
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, slug := range slugs {
+				if claims[slug] != w.ID {
+					t.Fatalf("soft delete released %q", slug)
+				}
+			}
+			if err := s.RestoreWorkspace(canonical); err != nil {
+				t.Fatal(err)
+			}
+			for _, slug := range slugs {
+				found, err := s.GetWorkspaceBySlug(slug)
+				if err != nil || found == nil || found.ID != w.ID {
+					t.Fatalf("restored alias %q: %+v %v", slug, found, err)
+				}
+			}
+			if err := s.DeleteWorkspace(canonical); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.PurgeWorkspaceData(w.ID); err != nil {
+				t.Fatal(err)
+			}
+			claims, err = s.WorkspaceSlugClaims()
+			if err != nil || claims[other.Slug] != other.ID {
+				t.Fatalf("unrelated claim changed: %v %v", claims, err)
+			}
+			for _, slug := range slugs {
+				if _, ok := claims[slug]; ok {
+					t.Fatalf("purge retained %q", slug)
+				}
+				reused, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Reused", Slug: slug})
+				if err != nil || reused.Slug != slug {
+					t.Fatalf("reuse %q: %+v %v", slug, reused, err)
+				}
+			}
+		})
+	}
+}
+
+func TestWorkspaceSlugClaimTriggersSurviveMigrations(t *testing.T) {
+	s := testStoreSQLite(t)
+	for _, name := range []string{"workspace_slug_claim_insert", "workspace_slug_claim_update", "workspace_slug_claim_delete"} {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND tbl_name = 'workspaces' AND name = ?`, name).Scan(&n); err != nil || n != 1 {
+			t.Errorf("trigger %s after full migration chain: count=%d err=%v", name, n, err)
+		}
 	}
 }
 
@@ -168,7 +237,7 @@ func TestWorkspaceSlugClaimsMigrationGuards(t *testing.T) {
 func TestWorkspaceSlugClaimsRepairLegacyCanonical(t *testing.T) {
 	for _, bad := range []string{"legacy\x00slug", "legacy" + invalidByte} {
 		t.Run(fmt.Sprintf("%x", bad), func(t *testing.T) {
-			db, _ := preMigrationDB(t, "186")
+			db, _ := preMigrationDB(t, "187")
 			s := &Store{db: db, dialect: &sqliteDialect{}}
 			if _, err := db.Exec(`DROP TRIGGER pad_nul_workspaces_slug_ins`); err != nil {
 				t.Fatal(err)
@@ -177,7 +246,7 @@ func TestWorkspaceSlugClaimsRepairLegacyCanonical(t *testing.T) {
 			if _, err := db.Exec(`INSERT INTO workspaces (id, name, slug, settings, created_at, updated_at) VALUES (?, 'Legacy', CAST(? AS TEXT), '{}', ?, ?)`, id, []byte(bad), ts, ts); err != nil {
 				t.Fatal(err)
 			}
-			for _, name := range []string{"186_workspace_slug_claims.sql", "187_nul_invariant_triggers_post186.sql"} {
+			for _, name := range []string{"187_workspace_slug_claims.sql", "188_nul_invariant_triggers_post187.sql"} {
 				body, err := migrationsFS.ReadFile("migrations/" + name)
 				if err != nil {
 					t.Fatal(err)
