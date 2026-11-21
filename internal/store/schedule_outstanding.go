@@ -138,6 +138,10 @@ func missedWalk(sc *models.ItemSchedule, view *time.Location, nowT time.Time) (c
 // and a sparse one is still found.
 var newestTailWindows = []time.Duration{time.Hour, 24 * time.Hour, 7 * 24 * time.Hour, 31 * 24 * time.Hour, maxMissedWindow}
 
+// newestTailReads bounds the capped reads newestMissedOccurrence makes in one
+// window.
+const newestTailReads = 32
+
 // newestMissedOccurrence is the newest occurrence missedOccurrences would end
 // on with no cap: the walk read back from its end rather than forward from the
 // outstanding occurrence, for when the forward walk is truncated. ok is false
@@ -147,20 +151,33 @@ func newestMissedOccurrence(sc *models.ItemSchedule, view *time.Location, nowT t
 	if err != nil || !ok {
 		return at, false, err
 	}
+	found := false
 	for _, w := range newestTailWindows {
 		lo := to.Add(-w)
 		if lo.Before(from) {
 			lo = from
 		}
-		occs, err := c.Between(lo, to, view, schedule.DefaultLimits)
-		var capErr *schedule.CapError
-		if err != nil && !(errors.As(err, &capErr) && capErr.Kind == schedule.CapInstances) {
-			return at, false, err
+		// A read capped at its instance limit keeps its earliest instances, so
+		// read on from past its last one until a read ends uncapped. The write
+		// floor (ScheduleFloor) bounds a 92-day window to under 9000 instances,
+		// so newestTailReads is never reached by a schedule a write accepts.
+		for i := 0; i < newestTailReads; i++ {
+			occs, err := c.Between(lo, to, view, schedule.DefaultLimits)
+			var capErr *schedule.CapError
+			capped := errors.As(err, &capErr) && capErr.Kind == schedule.CapInstances
+			if err != nil && !capped {
+				return time.Time{}, false, err
+			}
+			if n := len(occs); n > 0 {
+				at, found = occs[n-1].At, true
+				lo = at.Add(time.Nanosecond)
+			}
+			if !capped || len(occs) == 0 {
+				break
+			}
 		}
-		if n := len(occs); n > 0 {
-			// A capped read keeps its earliest instances; a smaller window
-			// found none, so its last is still the newest known.
-			return occs[n-1].At, true, nil
+		if found {
+			return at, true, nil
 		}
 		if !lo.After(from) {
 			break

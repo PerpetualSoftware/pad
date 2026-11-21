@@ -80,6 +80,7 @@ func needsRowLatest(row BootstrapAgendaRow, loc *time.Location, now time.Time) t
 	// The walk counts occurrences at or before its clock less a second.
 	occs, truncated, err := missedOccurrences(row.Schedule, loc, now.Add(time.Second))
 	if err != nil {
+		slog.Warn("needs: due occurrence walk failed", "schedule_id", row.Schedule.ID, "error", err)
 		return latest
 	}
 	var newest time.Time
@@ -88,7 +89,10 @@ func needsRowLatest(row BootstrapAgendaRow, loc *time.Location, now time.Time) t
 	}
 	// A capped walk ends before now: read back from now instead.
 	if truncated {
-		if at, ok, err := newestMissedOccurrence(row.Schedule, loc, now.Add(time.Second)); err == nil && ok && at.After(newest) {
+		at, ok, err := newestMissedOccurrence(row.Schedule, loc, now.Add(time.Second))
+		if err != nil {
+			slog.Warn("needs: newest due occurrence read failed", "schedule_id", row.Schedule.ID, "error", err)
+		} else if ok && at.After(newest) {
 			newest = at
 		}
 	}
