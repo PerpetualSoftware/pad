@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // TASK-1391: depages dates what a change adds and fails on anything younger
@@ -63,7 +65,7 @@ func TestTokenGoesOnlyToTheTokenHost(t *testing.T) {
 		w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
-	src := Sources{GitHubAPI: srv.URL, Token: "tok", TokenHost: "api.github.com", Client: srv.Client()}
+	src := Sources{GitHubAPI: srv.URL, Token: secret.New("tok"), TokenHost: "api.github.com", Client: srv.Client()}
 	var v map[string]any
 	_ = getJSON(src, srv.URL+"/x", true, &v)
 	if got != "" {
@@ -152,7 +154,7 @@ func fakeSources(t *testing.T, times map[string]time.Time, sawToken *string) Sou
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
 	host := strings.TrimPrefix(srv.URL, "http://")
-	return Sources{GoProxy: srv.URL + "/proxy", NPM: srv.URL + "/npm", GitHubAPI: srv.URL + "/gh", Token: "tok", TokenHost: host, Client: srv.Client()}
+	return Sources{GoProxy: srv.URL + "/proxy", NPM: srv.URL + "/npm", GitHubAPI: srv.URL + "/gh", Token: secret.New("tok"), TokenHost: host, Client: srv.Client()}
 }
 
 func TestLookupsAndReport(t *testing.T) {

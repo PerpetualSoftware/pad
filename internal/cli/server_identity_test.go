@@ -9,6 +9,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 func TestServerIdentityProbeOmitsCredentials(t *testing.T) {
@@ -31,7 +33,7 @@ func TestServerIdentityProbeOmitsCredentials(t *testing.T) {
 	defer srv.Close()
 	c := NewClientFromURLWithAgentName(srv.URL, "test-agent")
 	c.httpClient = srv.Client()
-	c.authToken = "test-token"
+	c.authToken = secret.New("test-token")
 	jar, err := cookiejar.New(nil)
 	if err != nil {
 		t.Fatal(err)

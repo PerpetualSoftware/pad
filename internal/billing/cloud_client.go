@@ -15,6 +15,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // defaultTimeout bounds each request. 15s is deliberately longer than the
@@ -64,7 +66,7 @@ func ResolveOutboundSecret(explicit, inboundList string) string {
 // share across goroutines; the underlying http.Client has its own pool.
 type CloudClient struct {
 	baseURL     string
-	cloudSecret string
+	cloudSecret secret.Secret
 	http        *http.Client
 }
 
@@ -76,7 +78,7 @@ type CloudClient struct {
 func NewCloudClient(baseURL, cloudSecret string) *CloudClient {
 	return &CloudClient{
 		baseURL:     strings.TrimRight(baseURL, "/"),
-		cloudSecret: cloudSecret,
+		cloudSecret: secret.New(cloudSecret),
 		http: &http.Client{
 			Timeout: defaultTimeout,
 		},
@@ -145,7 +147,7 @@ func (c *CloudClient) GetBillingMetrics() (*BillingMetricsResponse, error) {
 	if c == nil {
 		return nil, errors.New("billing: GetBillingMetrics called on nil CloudClient")
 	}
-	if c.baseURL == "" || c.cloudSecret == "" {
+	if c.baseURL == "" || c.cloudSecret.IsZero() {
 		return nil, errors.New("billing: CloudClient is not configured (missing baseURL or cloudSecret)")
 	}
 
@@ -153,7 +155,7 @@ func (c *CloudClient) GetBillingMetrics() (*BillingMetricsResponse, error) {
 	if err != nil {
 		return nil, fmt.Errorf("billing: build billing-metrics request: %w", err)
 	}
-	req.Header.Set("X-Cloud-Secret", c.cloudSecret)
+	req.Header.Set("X-Cloud-Secret", c.cloudSecret.Reveal())
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
@@ -205,13 +207,13 @@ func (c *CloudClient) CancelCustomer(customerID, userID string) error {
 		// Nothing to name: the sidecar would refuse it with 400.
 		return errors.New("billing: customerID and userID are both empty")
 	}
-	if c.baseURL == "" || c.cloudSecret == "" {
+	if c.baseURL == "" || c.cloudSecret.IsZero() {
 		return errors.New("billing: CloudClient is not configured (missing baseURL or cloudSecret)")
 	}
 
 	body := map[string]string{
 		"customer_id":  customerID,
-		"cloud_secret": c.cloudSecret,
+		"cloud_secret": c.cloudSecret.Reveal(),
 	}
 	if userID != "" {
 		body["user_id"] = userID

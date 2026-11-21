@@ -12,6 +12,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // MaxBatch is the gateway's per-request message limit.
@@ -59,7 +61,7 @@ type Result struct {
 // Gateway sends batches to the push gateway.
 type Gateway struct {
 	URL    string
-	Secret string
+	Secret secret.Secret
 	HTTP   *http.Client
 }
 
@@ -71,9 +73,9 @@ const SendTimeout = 25 * time.Second
 // NewGateway returns a Gateway with a client that does not follow redirects:
 // the secret rides in a header, and a redirect would carry it to wherever the
 // answer points.
-func NewGateway(url, secret string) *Gateway {
+func NewGateway(url, sharedSecret string) *Gateway {
 	return &Gateway{
-		URL: url, Secret: secret,
+		URL: url, Secret: secret.New(sharedSecret),
 		HTTP: &http.Client{
 			Timeout: SendTimeout,
 			CheckRedirect: func(*http.Request, []*http.Request) error {
@@ -113,10 +115,10 @@ func (g *Gateway) Send(ctx context.Context, msgs []Message) ([]Result, error) {
 		return nil, fmt.Errorf("%w: build request", ErrUnavailable)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("X-Cloud-Secret", g.Secret)
+	req.Header.Set("X-Cloud-Secret", g.Secret.Reveal())
 	client := g.HTTP
 	if client == nil {
-		client = NewGateway(g.URL, g.Secret).HTTP
+		client = NewGateway(g.URL, g.Secret.Reveal()).HTTP
 	}
 	resp, err := client.Do(req)
 	if err != nil {

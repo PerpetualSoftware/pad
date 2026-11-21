@@ -87,7 +87,7 @@ func (c *CloudClient) GetBillingConfig(ctx context.Context) (*BillingConfig, err
 	if c == nil {
 		return nil, errors.New("billing: GetBillingConfig called on nil CloudClient")
 	}
-	if c.baseURL == "" || c.cloudSecret == "" {
+	if c.baseURL == "" || c.cloudSecret.IsZero() {
 		return nil, errors.New("billing: CloudClient is not configured (missing baseURL or cloudSecret)")
 	}
 	ctx, cancel := context.WithTimeout(ctx, configTimeout)
@@ -96,7 +96,7 @@ func (c *CloudClient) GetBillingConfig(ctx context.Context) (*BillingConfig, err
 	if err != nil {
 		return nil, fmt.Errorf("billing: build billing-config request: %w", err)
 	}
-	req.Header.Set("X-Cloud-Secret", c.cloudSecret)
+	req.Header.Set("X-Cloud-Secret", c.cloudSecret.Reveal())
 	req.Header.Set("Accept", "application/json")
 
 	resp, err := c.http.Do(req)
