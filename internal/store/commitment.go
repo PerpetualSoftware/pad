@@ -43,9 +43,7 @@ func resolveRoleValue(loc *time.Location, nextWall string, days, secs int, overr
 	if err != nil {
 		return roleResolution{}, err
 	}
-	civil := time.Date(wall.Year, wall.Month, wall.Day, wall.Hour, wall.Minute, wall.Second, 0, time.UTC).AddDate(0, 0, days).Add(time.Duration(secs) * time.Second)
-	w := wallOf(civil)
-	w.AllDay = wall.AllDay && secs == 0
+	w := roleWall(wall, days, secs)
 	dateOnly := w.AllDay
 	at := schedule.Resolve(loc, w).UTC()
 	if override != nil {

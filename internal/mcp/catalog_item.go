@@ -242,7 +242,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "confirm_past_deadline", Type: "bool", Description: "Confirm a move that puts the target after its hard deadline."},
 	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
 	{Name: "reason", Type: "string", Description: "Why dates change; required for renegotiation or graph hard-deadline changes."},
-	{Name: "scope", Type: "string", Description: "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. A series move re-arms only the outstanding occurrence's reminder; later occurrences still arm at their start minus the lead until reminder arming honours target offsets."},
+	{Name: "scope", Type: "string", Description: "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. Every occurrence's reminder follows its target (target minus the lead)."},
 	{Name: "deadline_days", Type: "number", Description: "schedule-renegotiate: series day offset."},
 	{Name: "deadline_secs", Type: "number", Description: "schedule-renegotiate: series second offset."},
 	{Name: "deadline_behavior", Type: "string", Description: "schedule-renegotiate: lapses | stays_owed."},

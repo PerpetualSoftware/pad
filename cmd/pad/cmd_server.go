@@ -299,6 +299,16 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
+			// Re-arm the managed reminders armed at the start minus the lead
+			// on a schedule with a target offset (TASK-4713): a reminder
+			// follows the target. Idempotent; non-fatal, as a row left where
+			// it was still fires, at the old instant.
+			if n, err := s.RetimeTargetOffsetReminders(); err != nil {
+				slog.Warn("target offset reminder re-arm failed; non-fatal", "error", err)
+			} else {
+				slog.Info("Target offset reminder re-arm complete", "retimed", n)
+			}
+
 			// Persist an id on every implementation note / decision entry
 			// stored without a usable, unique one (BUG-2788), so a timeline
 			// entry's identity no longer depends on its position in the array.

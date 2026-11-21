@@ -163,6 +163,8 @@ func (s *Store) retargetSimpleReminderTx(tx *sql.Tx, sc *models.ItemSchedule, at
 	if _, err := tx.Exec(s.q(`DELETE FROM schedule_occurrence_overrides WHERE schedule_id=?`), sc.ID); err != nil {
 		return nil, err
 	}
+	// Target-offset bypass: the simple shape requires a zero target offset
+	// (reminderCommitmentShapeQ), so the target is the start.
 	if sc.ReminderID == nil {
 		if err := s.insertManagedReminderTx(tx, sc.WorkspaceID, sc.ItemID, sc.ID, at); err != nil {
 			return nil, err

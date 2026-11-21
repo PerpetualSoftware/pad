@@ -100,7 +100,7 @@ describe('ResolveOccurrenceDialog move scope (TASK-4494)', () => {
 	const props = (extra: Record<string, unknown> = {}) => ({ open: true, mode: 'move' as const, entry, zone: 'America/New_York', mobile: false, onclose: vi.fn(), onsubmit: vi.fn(), ...extra });
 	const scopeGroup = () => screen.queryByRole('group', { name: 'Apply to' });
 	const fill = async (value = '2026-11-14T09:30') => { await fireEvent.input(screen.getByLabelText('New date and time'), { target: { value } }); };
-	const seriesNote = "Later occurrences move to the same time relative to their start; only this occurrence's reminder moves. There is no Undo: move the series back to undo it.";
+	const seriesNote = "Later occurrences move to the same time relative to their start; every occurrence's reminder follows its target. There is no Undo: move the series back to undo it.";
 	it.each([['move', false], ['snooze', true], ['snooze', false]] as const)('shows no choice in %s mode with recurring=%s', (mode, recurring) => {
 		render(ResolveOccurrenceDialog, props({ mode, recurring }));
 		expect(scopeGroup()).toBeNull(); expect(screen.queryByRole('radio')).toBeNull();

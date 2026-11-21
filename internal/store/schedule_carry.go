@@ -248,7 +248,12 @@ func prepareCarriedSchedule(in carriedSchedule) (preparedCarry, error) {
 			t, _ := time.Parse(time.RFC3339, override)
 			ov = &t
 		}
-		if arm, err = carriedArming(spec, w, hint, firedAt != "" || ov != nil, in.LeadMinutes, ov); err != nil {
+		// A bundle without roles is legacy: no target offset.
+		var off targetOffset
+		if in.Roles != nil {
+			off = scheduleRolesFromExport(in.Roles).target()
+		}
+		if arm, err = carriedArming(spec, w, hint, firedAt != "" || ov != nil, in.LeadMinutes, off, ov); err != nil {
 			return preparedCarry{}, err
 		}
 		if firedAt != "" && in.RemindAt != "" {
@@ -354,7 +359,7 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 // from its wall, by the arithmetic create and fire use. exact is true when the
 // row is fired or overridden: a floating schedule then holds its exact instant
 // (models.ItemSchedule.NextAt), taken from the hint when the bundle has one.
-func carriedArming(spec schedule.Spec, w schedule.Wall, hint string, exact bool, lead int, override *time.Time) (scheduleArming, error) {
+func carriedArming(spec schedule.Spec, w schedule.Wall, hint string, exact bool, lead int, off targetOffset, override *time.Time) (scheduleArming, error) {
 	var hintT time.Time
 	hasHint := false
 	if hint != "" {
@@ -366,7 +371,7 @@ func carriedArming(spec schedule.Spec, w schedule.Wall, hint string, exact bool,
 		if exact && hasHint {
 			at = hintT
 		}
-		return scheduleArming{NextAt: at, NextWall: w, RemindAt: fireInstant(at, w, boundZone, lead, override)}, nil
+		return scheduleArming{NextAt: at, NextWall: w, RemindAt: fireInstant(at, w, boundZone, lead, off, override)}, nil
 	}
 	loc, err := time.LoadLocation(spec.Zone)
 	if err != nil {
@@ -379,7 +384,7 @@ func carriedArming(spec schedule.Spec, w schedule.Wall, hint string, exact bool,
 	if hasHint && !w.AllDay && wallOf(hintT.In(loc)).String() == w.String() {
 		at = hintT
 	}
-	return scheduleArming{NextAt: at, NextWall: w, RemindAt: fireInstant(at, w, loc, lead, override)}, nil
+	return scheduleArming{NextAt: at, NextWall: w, RemindAt: fireInstant(at, w, loc, lead, off, override)}, nil
 }
 
 // prepareCarriedOccurrences checks a schedule's history before anything is

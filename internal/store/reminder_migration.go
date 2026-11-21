@@ -183,6 +183,7 @@ func (s *Store) convertLegacyRemindersTx(tx *sql.Tx) error {
 			return err
 		}
 		scheduled[r.ItemID] = sc.ID
+		// Target-offset bypass: the schedule above is inserted with a zero target offset.
 		result, err := tx.Exec(s.q(`UPDATE item_reminders SET schedule_id=?,remind_at=? WHERE id=? AND workspace_id=? AND item_id=? AND schedule_id IS NULL`), sc.ID, at, r.ID, r.WorkspaceID, r.ItemID)
 		if err != nil {
 			return err

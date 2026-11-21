@@ -798,6 +798,7 @@ func (s *Store) writeLinkedDateTx(tx *sql.Tx, n *linkNode, ch schedule.Change, n
 		// occurrence stays quiet, owed and still resolvable.
 		return s.cancelArmedReminderTx(tx, sc.ID)
 	}
+	// Target-offset bypass via reminderFireAt: the moved target is an override.
 	fire, err := reminderFireAt(sc, n.rec, n.x, *sc.NextWall, to, true, to, nowT)
 	if err != nil {
 		return err

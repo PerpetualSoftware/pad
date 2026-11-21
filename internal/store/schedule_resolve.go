@@ -725,7 +725,11 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 	var nextAt, nextWall, endedAt any
 	var remindAt string
 	if found {
-		arm, err := armSchedule(c, occ, sc.LeadMinutes, nil)
+		roles, err := s.scheduleRolesOf(tx, sc)
+		if err != nil {
+			return nil, err
+		}
+		arm, err := armSchedule(c, occ, sc.LeadMinutes, roles.target(), nil)
 		if err != nil {
 			return nil, err
 		}
@@ -870,7 +874,12 @@ func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *tim
 	if !found {
 		return recorded, s.deleteManagedReminderTx(tx, sc.ID)
 	}
-	arm, err := armSchedule(c, occ, sc.LeadMinutes, nil)
+	roles, err := s.scheduleRolesOf(tx, sc)
+	if err != nil {
+		return 0, err
+	}
+	off := roles.target()
+	arm, err := armSchedule(c, occ, sc.LeadMinutes, off, nil)
 	if err != nil {
 		return 0, err
 	}
@@ -880,9 +889,10 @@ func (s *Store) armAfterPastMoveTx(tx *sql.Tx, sc *models.ItemSchedule, rec *tim
 			return 0, err
 		}
 	}
-	fire := fireInstant(occ.At, occ.Wall, loc, sc.LeadMinutes, nil)
+	fire := fireInstant(occ.At, occ.Wall, loc, sc.LeadMinutes, off, nil)
 	if !fire.After(nowT) {
-		fire = occ.At
+		// Inside the lead: the target itself.
+		fire = targetBase(occ.At, occ.Wall, loc, off)
 	}
 	if _, err := tx.Exec(s.q(`UPDATE item_schedules SET next_at=?,next_wall=?,next_override_at=NULL,anchor_wall=? WHERE id=?`), NormalizeInstant(arm.NextAt), arm.NextWall.String(), nullStr(anchor), sc.ID); err != nil {
 		return 0, fmt.Errorf("advance past moved target: %w", err)
@@ -910,7 +920,8 @@ func reminderFireAt(sc *models.ItemSchedule, rec *time.Location, x time.Time, xW
 	if err != nil {
 		return time.Time{}, fmt.Errorf("parse next_wall: %w", err)
 	}
-	fire := fireInstant(x, wall, fireLoc, sc.LeadMinutes, &override)
+	// Bypass of the target offset: an override always replaces the base.
+	fire := fireInstant(x, wall, fireLoc, sc.LeadMinutes, targetOffset{}, &override)
 	if move && !fire.After(nowT) {
 		fire = until
 	}

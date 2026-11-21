@@ -2355,7 +2355,7 @@ describe('move scope: this and future occurrences (TASK-4494)', () => {
   await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
   expect(h.preview).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', scope: 'series' });
   expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'series-revision', scope: 'series' });
-  await said("This and future occurrences moved to November 6, 2026, 09:30. Only this occurrence's reminder moved.", 'success');
+  await said("This and future occurrences moved to November 6, 2026, 09:30. Their reminders follow the target.", 'success');
   expect(successCall()?.[4]).toBeUndefined(); expect(h.view).toHaveBeenCalledTimes(1);
  });
  it('sends no scope member for This occurrence on a recurring schedule', async () => {

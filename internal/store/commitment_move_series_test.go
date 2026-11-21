@@ -453,3 +453,49 @@ func TestMoveSeriesEnded(t *testing.T) {
 	_, _, err := f.seriesMove(0, "2030-03-04T14:00:00Z", nil)
 	wantFieldErr(t, err, "schedule", "ended")
 }
+
+// TASK-4713: every later occurrence's reminder follows the new offset.
+func TestMoveSeriesLaterOccurrenceReminderFollowsOffset(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 1)
+	f.seriesSchedule(t, 0, models.ScheduleCreate{Dtstart: "2030-03-04T09:00", Tz: "UTC", LeadMinutes: 30})
+	if _, _, err := f.seriesMove(0, "2030-03-04T14:00:00Z", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.remindAt(t, 0); got != "2030-03-04T13:30:00Z" {
+		t.Fatalf("outstanding remind_at=%s", got)
+	}
+	f.resolve(t, 0, "done")
+	if got := f.remindAt(t, 0); got != "2030-03-05T13:30:00Z" {
+		t.Fatalf("next remind_at=%s, want start+offset-lead", got)
+	}
+}
+
+// A series move that changes only the offset leaves an overridden outstanding
+// row where its move armed it (here the target itself, inside the lead), and
+// the next occurrence still arms at the new offset.
+func TestMoveSeriesOffsetOnlyRetimesUnoverriddenRow(t *testing.T) {
+	t.Parallel()
+	f := newLinkFix(t, 1)
+	f.seriesSchedule(t, 0, models.ScheduleCreate{Dtstart: "2030-03-04T09:00", Tz: "UTC", LeadMinutes: 30})
+	f.atClock(t, "2030-03-04T13:45:00Z")
+	if _, err := f.move(0, "target", "2030-03-04T14:00:00Z", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.remindAt(t, 0); got != "2030-03-04T14:00:00Z" {
+		t.Fatalf("inside-lead move armed at %s", got)
+	}
+	if _, _, err := f.seriesMove(0, "2030-03-04T14:00:00Z", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.targetOffset(t, 0); got != (models.TargetOffset{TargetSecs: 5 * 3600}) {
+		t.Fatalf("offset=%+v", got)
+	}
+	if got := f.remindAt(t, 0); got != "2030-03-04T14:00:00Z" {
+		t.Fatalf("overridden row retimed to %s", got)
+	}
+	f.resolve(t, 0, "done")
+	if got := f.remindAt(t, 0); got != "2030-03-05T13:30:00Z" {
+		t.Fatalf("next remind_at=%s", got)
+	}
+}

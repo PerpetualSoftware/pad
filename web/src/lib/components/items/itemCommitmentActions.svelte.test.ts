@@ -138,7 +138,7 @@ it('moves this and future occurrences with scope series on preview and move, and
  c.action(entryOf(), 'move'); c.submitDialog('2031-03-12T00:00:00.000Z', 'later', 'series'); await flush();
  expect(h.preview).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-12T00:00:00.000Z', reason: 'later', scope: 'series' });
  expect(h.move).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-12T00:00:00.000Z', revision: 'series-r1', reason: 'later', scope: 'series' });
- expect(c.announcement).toMatch(/^This and future occurrences moved to .*\. Only this occurrence's reminder moved\.$/);
+ expect(c.announcement).toMatch(/^This and future occurrences moved to .*\. Their reminders follow the target\.$/);
 });
 it('commits a reviewed series move with the same scope', async () => {
  const c = make();

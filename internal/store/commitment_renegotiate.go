@@ -245,6 +245,8 @@ func (s *Store) renegotiateCommitmentAt(workspaceID, itemID, actor string, in mo
 			return nil, err
 		}
 	} else {
+		// Target-offset bypass: a renegotiation moves only the deadline, so the
+		// target and the armed reminder are unchanged.
 		if err := s.writeNativeRolesTx(tx, sc, plan.roles, false); err != nil {
 			return nil, err
 		}
