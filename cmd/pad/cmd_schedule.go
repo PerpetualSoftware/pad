@@ -294,7 +294,7 @@ var resolveVerbs = []resolveVerb{
 const commentHelp = "comment recorded on the item; optional"
 
 func remindResolveCmd(v resolveVerb) *cobra.Command {
-	var comment, occurrence, until, at, role, to, closeItem string
+	var comment, occurrence, until, at, role, to, closeItem, scope string
 	var endSchedule, pastDeadline bool
 	var linked linkedWriteFlags
 	needsUntil := v.state == "snooze" || v.state == "move"
@@ -323,6 +323,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	}
 	if v.state == "move" {
 		long += "\n\nUse --role target|earliest|deadline|occupied_until with --to WHEN to preview a linked cascade. Repeat with --apply --revision TOKEN to commit; --reason records why, and --ack-violations accepts previewed bound crossings. This form refuses --until and --occurrence."
+		long += "\n\n--scope series (with --role target) also moves the target of every later occurrence: it sets the target to the same day and time relative to each occurrence's start, from the outstanding occurrence on. It always needs the preview revision, cannot put the target after the hard deadline, and has no undo; move the series back instead. Only the outstanding occurrence's reminder moves; later occurrences still remind at their start minus the lead."
 	}
 	example := "  pad remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state]
 	if v.state != "ack" {
@@ -337,9 +338,9 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if v.state == "move" {
 				if cmd.Flags().Changed("role") {
-					return runLinkedMove(cmd, args[0], role, to, linked, pastDeadline)
+					return runLinkedMove(cmd, args[0], role, to, scope, linked, pastDeadline)
 				}
-				for _, flag := range []string{"to", "apply", "revision", "ack-violations", "reason"} {
+				for _, flag := range []string{"to", "apply", "revision", "ack-violations", "reason", "scope"} {
 					if cmd.Flags().Changed(flag) {
 						return fmt.Errorf("--%s requires --role", flag)
 					}
@@ -474,6 +475,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	if v.state == "move" {
 		c.Flags().StringVar(&role, "role", "", "preview or move a linked date: target | earliest | deadline | occupied_until")
 		c.Flags().StringVar(&to, "to", "", "linked move destination: RFC3339 or a wall time in your zone")
+		c.Flags().StringVar(&scope, "scope", "", "linked move scope: occurrence (default) | series (role target: this and future occurrences)")
 		linked.addFlags(c)
 		c.Flags().BoolVar(&pastDeadline, "past-deadline", false, "confirm a move that puts the target after its hard deadline")
 	}

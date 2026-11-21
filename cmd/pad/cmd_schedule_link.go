@@ -390,6 +390,10 @@ func renderLinkedMove(m models.LinkedMoveResult, apply bool, hint string) {
 	if m.RenegotiatesDeadline {
 		fmt.Println("Renegotiates a hard deadline (renegotiates_deadline=true).")
 	}
+	if s := m.Series; s != nil {
+		fmt.Printf("This and future occurrences, from %s: target offset %s -> %s\n", s.AppliesFrom, fmtTargetOffset(s.CurrentOffset), fmtTargetOffset(s.NewOffset))
+		fmt.Println("Only this occurrence's reminder moves; later occurrences still remind at their start minus the lead.")
+	}
 	if !apply && m.PastDeadline != "" {
 		fmt.Printf("Crosses its hard deadline (%s): --apply needs --past-deadline.\n", fmtInstant(m.PastDeadline, nil))
 	}
@@ -399,7 +403,7 @@ func renderLinkedMove(m models.LinkedMoveResult, apply bool, hint string) {
 	}
 }
 
-func runLinkedMove(c *cobra.Command, ref, role, to string, f linkedWriteFlags, pastDeadline bool) error {
+func runLinkedMove(c *cobra.Command, ref, role, to, scope string, f linkedWriteFlags, pastDeadline bool) error {
 	if pastDeadline && role != "target" {
 		return fmt.Errorf("--past-deadline requires --role target")
 	}
@@ -420,6 +424,12 @@ func runLinkedMove(c *cobra.Command, ref, role, to string, f linkedWriteFlags, p
 		return err
 	}
 	body := map[string]any{"role": role, "to": t.UTC().Format(time.RFC3339)}
+	hint := "pad remind move " + ref + " --role " + role + " --to " + to
+	if c.Flags().Changed("scope") {
+		// The server judges the value, as it does for --role.
+		body["scope"] = scope
+		hint += " --scope " + scope
+	}
 	if f.apply {
 		f.body(body)
 		if pastDeadline {
@@ -440,7 +450,7 @@ func runLinkedMove(c *cobra.Command, ref, role, to string, f linkedWriteFlags, p
 	if err = json.Unmarshal(raw, &m); err != nil {
 		return err
 	}
-	renderLinkedMove(m, f.apply, "pad remind move "+ref+" --role "+role+" --to "+to)
+	renderLinkedMove(m, f.apply, hint)
 	return nil
 }
 
@@ -467,4 +477,14 @@ func pastDeadlineHint(err error) error {
 		}
 	}
 	return err
+}
+
+// fmtTargetOffset reads a target offset as days and a signed clock shift from
+// each occurrence's start.
+func fmtTargetOffset(o models.TargetOffset) string {
+	secs, sign := o.TargetSecs, "+"
+	if secs < 0 {
+		secs, sign = -secs, "-"
+	}
+	return fmt.Sprintf("%+dd %s%02d:%02d:%02d", o.TargetDays, sign, secs/3600, secs/60%60, secs%60)
 }
