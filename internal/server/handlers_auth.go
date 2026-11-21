@@ -551,9 +551,9 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Email    string `json:"email"`
-		Name     string `json:"name"`
-		Password string `json:"password"`
+		Email    string        `json:"email"`
+		Name     string        `json:"name"`
+		Password secret.Secret `json:"password"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -572,7 +572,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
 	}
-	if err := validatePasswordStrength(input.Password, input.Email, input.Name); err != nil {
+	if err := validatePasswordStrength(input.Password.Reveal(), input.Email, input.Name); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
@@ -608,7 +608,7 @@ func (s *Server) handleBootstrap(w http.ResponseWriter, r *http.Request) {
 		Email:    input.Email,
 		Username: username,
 		Name:     input.Name,
-		Password: input.Password,
+		Password: input.Password.Reveal(),
 		Role:     "admin",
 	})
 	if err != nil {
@@ -687,14 +687,14 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Email          string `json:"email"`
-		Username       string `json:"username"`
-		Name           string `json:"name"`
-		Password       string `json:"password"`
-		InvitationCode string `json:"invitation_code"`
+		Email          string        `json:"email"`
+		Username       string        `json:"username"`
+		Name           string        `json:"name"`
+		Password       secret.Secret `json:"password"`
+		InvitationCode secret.Secret `json:"invitation_code"`
 		// InvitationProof is the mailbox-only secret from the invitation
 		// EMAIL's link (TASK-3352). It, never the code, verifies the address.
-		InvitationProof string `json:"invitation_proof"`
+		InvitationProof secret.Secret `json:"invitation_proof"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -705,7 +705,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	input.Email = strings.TrimSpace(input.Email)
 	input.Username = strings.TrimSpace(strings.ToLower(input.Username))
 	input.Name = strings.TrimSpace(input.Name)
-	input.InvitationCode = strings.TrimSpace(input.InvitationCode)
+	input.InvitationCode = secret.New(strings.TrimSpace(input.InvitationCode.Reveal()))
 
 	// The bot principals' reserved domain is no person's address (TASK-3392).
 	if input.Email == "" || !emailRegexp.MatchString(input.Email) || models.IsReservedAppEmail(input.Email) {
@@ -716,7 +716,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Name is required")
 		return
 	}
-	if err := validatePasswordStrength(input.Password, input.Email, input.Name, input.Username); err != nil {
+	if err := validatePasswordStrength(input.Password.Reveal(), input.Email, input.Name, input.Username); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
@@ -730,8 +730,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// Validate invitation code if provided (look it up before the auth gate
 	// so we can give a clear error for invalid codes).
 	var invitation *models.WorkspaceInvitation
-	if input.InvitationCode != "" {
-		inv, err := s.store.GetInvitationByCode(input.InvitationCode)
+	if !input.InvitationCode.IsZero() {
+		inv, err := s.store.GetInvitationByCode(input.InvitationCode.Reveal())
 		if err != nil {
 			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate invitation")
 			return
@@ -870,7 +870,7 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 		Email:      input.Email,
 		Username:   input.Username,
 		Name:       input.Name,
-		Password:   input.Password,
+		Password:   input.Password.Reveal(),
 		Role:       "member",
 		Unverified: needsVerification,
 	})
@@ -884,8 +884,8 @@ func (s *Server) handleRegister(w http.ResponseWriter, r *http.Request) {
 	// cannot. Spending it verifies the new account, so no separate
 	// verification email is needed. A wrong or spent proof changes nothing:
 	// the signup proceeds exactly as it would without one.
-	if needsVerification && invitation != nil && input.InvitationProof != "" {
-		ok, perr := s.store.ConsumeInvitationProof(invitation.ID, user.ID, strings.TrimSpace(input.InvitationProof))
+	if needsVerification && invitation != nil && !input.InvitationProof.IsZero() {
+		ok, perr := s.store.ConsumeInvitationProof(invitation.ID, user.ID, strings.TrimSpace(input.InvitationProof.Reveal()))
 		if perr != nil {
 			// NOT counted as spent, even though a lost commit acknowledgement
 			// could have spent it. Restoring a proof the caller merely SENT
@@ -1297,8 +1297,8 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Email    string `json:"email"`
-		Password string `json:"password"`
+		Email    string        `json:"email"`
+		Password secret.Secret `json:"password"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -1336,7 +1336,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	user, err := s.store.ValidatePassword(input.Email, input.Password)
+	user, err := s.store.ValidatePassword(input.Email, input.Password.Reveal())
 	if err != nil {
 		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Authentication failed")
 		return
@@ -1548,10 +1548,10 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	}
 
 	var input struct {
-		Name            *string `json:"name,omitempty"`
-		Username        *string `json:"username,omitempty"`
-		CurrentPassword string  `json:"current_password,omitempty"`
-		NewPassword     string  `json:"new_password,omitempty"`
+		Name            *string       `json:"name,omitempty"`
+		Username        *string       `json:"username,omitempty"`
+		CurrentPassword secret.Secret `json:"current_password,omitempty"`
+		NewPassword     secret.Secret `json:"new_password,omitempty"`
 		// Timezone is an IANA name (null/absent = leave it). It cannot be
 		// cleared: "" is invalid_tz. IfUnset makes the write conditional on
 		// the zone being NULL, for a client's first-sign-in default.
@@ -1578,7 +1578,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 	// A password change rotates every session and mints a new one, so it is
 	// an interactive-session action (BUG-3336, BUG-3349): an API token may
 	// still edit the profile.
-	if input.NewPassword != "" && isAPITokenAuth(r) {
+	if !input.NewPassword.IsZero() && isAPITokenAuth(r) {
 		writeError(w, http.StatusForbidden, "session_required",
 			"Changing your password requires an interactive session, not an API token")
 		return
@@ -1619,8 +1619,8 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 
 	// Validate password change
 	var passwordEpoch int64
-	if input.NewPassword != "" {
-		if input.CurrentPassword == "" {
+	if !input.NewPassword.IsZero() {
+		if input.CurrentPassword.IsZero() {
 			writeError(w, http.StatusBadRequest, "validation_error", "Current password is required to set a new password")
 			return
 		}
@@ -1638,13 +1638,13 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		if input.Username != nil {
 			usernameCtx = *input.Username
 		}
-		if err := validatePasswordStrength(input.NewPassword, user.Email, nameCtx, usernameCtx); err != nil {
+		if err := validatePasswordStrength(input.NewPassword.Reveal(), user.Email, nameCtx, usernameCtx); err != nil {
 			writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 			return
 		}
 
 		// Verify current password
-		valid, err := s.store.ValidatePassword(user.Email, input.CurrentPassword)
+		valid, err := s.store.ValidatePassword(user.Email, input.CurrentPassword.Reveal())
 		if err != nil {
 			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate password")
 			return
@@ -1666,8 +1666,9 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		update.Timezone = input.Timezone
 	}
 	update.ChatEnabled = input.ChatEnabled
-	if input.NewPassword != "" {
-		update.Password = &input.NewPassword
+	if !input.NewPassword.IsZero() {
+		newPassword := input.NewPassword.Reveal()
+		update.Password = &newPassword
 		// Fenced on the epoch the current password was checked under, so a
 		// claim or reset that lands in between is not overwritten (BUG-3382).
 		update.ExpectedEpoch = &passwordEpoch
@@ -1706,7 +1707,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		"created_at":   updated.CreatedAt,
 		"updated_at":   updated.UpdatedAt,
 	}
-	if input.NewPassword != "" {
+	if !input.NewPassword.IsZero() {
 		s.logAuditEvent(models.ActionPasswordChanged, r, "")
 		// Sign out every OTHER session — an attacker who sniffed a cookie
 		// before the password change shouldn't stay logged in afterwards.
@@ -1908,15 +1909,15 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Token    string `json:"token"`
-		Password string `json:"password"`
+		Token    secret.Secret `json:"token"`
+		Password secret.Secret `json:"password"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
 	}
 
-	if input.Token == "" {
+	if input.Token.IsZero() {
 		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is required")
 		return
 	}
@@ -1926,7 +1927,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// atomically only if validation passes. Failing pre-consume means a
 	// user who typed a weak password can just try again with the same
 	// reset link instead of having to request a fresh email.
-	preUser, err := s.store.LookupPasswordReset(input.Token)
+	preUser, err := s.store.LookupPasswordReset(input.Token.Reveal())
 	if err != nil {
 		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
 		return
@@ -1935,13 +1936,13 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "Reset token is invalid or expired")
 		return
 	}
-	if err := validatePasswordStrength(input.Password, preUser.Email, preUser.Name, preUser.Username); err != nil {
+	if err := validatePasswordStrength(input.Password.Reveal(), preUser.Email, preUser.Name, preUser.Username); err != nil {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
 
 	// Atomically validate and consume the reset token (prevents race conditions)
-	user, err := s.store.ConsumePasswordReset(input.Token)
+	user, err := s.store.ConsumePasswordReset(input.Token.Reveal())
 	if err != nil {
 		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to validate reset token")
 		return
@@ -1961,7 +1962,7 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 	// Fenced on the epoch read as the token was spent (BUG-3382): a claim or
 	// another password change that landed since wins, and this reset writes
 	// nothing.
-	password := input.Password
+	password := input.Password.Reveal()
 	update := models.UserUpdate{Password: &password, ExpectedEpoch: &user.CredentialEpoch}
 	updated, err := s.store.UpdateUser(user.ID, update)
 	if errors.Is(err, store.ErrCredentialsChanged) {
@@ -2050,19 +2051,19 @@ func (s *Server) handleResetPassword(w http.ResponseWriter, r *http.Request) {
 // store updates without a second round-trip.
 func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Token string `json:"token"`
+		Token secret.Secret `json:"token"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
 	}
-	input.Token = strings.TrimSpace(input.Token)
-	if input.Token == "" {
+	input.Token = secret.New(strings.TrimSpace(input.Token.Reveal()))
+	if input.Token.IsZero() {
 		writeError(w, http.StatusBadRequest, "validation_error", "Verification token is required")
 		return
 	}
 
-	pending, err := s.store.LookupEmailVerification(input.Token)
+	pending, err := s.store.LookupEmailVerification(input.Token.Reveal())
 	if err != nil {
 		writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to verify email")
 		return
@@ -2088,7 +2089,7 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	user, err := s.store.ConsumeEmailVerification(input.Token)
+	user, err := s.store.ConsumeEmailVerification(input.Token.Reveal())
 	if errors.Is(err, store.ErrUserDisabled) {
 		writeError(w, http.StatusForbidden, "account_disabled", "Your account has been disabled. Contact an administrator.")
 		return
@@ -2132,18 +2133,18 @@ func (s *Server) handleVerifyEmail(w http.ResponseWriter, r *http.Request) {
 // The previous holder's live connections are kicked now.
 func (s *Server) handleClaimByVerification(w http.ResponseWriter, r *http.Request) {
 	var input struct {
-		Token string `json:"token"`
+		Token secret.Secret `json:"token"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
 	}
-	input.Token = strings.TrimSpace(input.Token)
-	if input.Token == "" {
+	input.Token = secret.New(strings.TrimSpace(input.Token.Reveal()))
+	if input.Token.IsZero() {
 		writeError(w, http.StatusBadRequest, "validation_error", "Verification token is required")
 		return
 	}
-	claim, err := s.store.ClaimAccountByVerification(input.Token)
+	claim, err := s.store.ClaimAccountByVerification(input.Token.Reveal())
 	if errors.Is(err, store.ErrClaimNotEligible) {
 		writeError(w, http.StatusBadRequest, "invalid_token",
 			"This link is invalid or has expired, or the address is already verified. Request a new link, or sign in.")

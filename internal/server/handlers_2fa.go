@@ -17,6 +17,7 @@ import (
 	"github.com/pquerna/otp/totp"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -128,28 +129,28 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Code   string `json:"code"`
-		Secret string `json:"secret"`
+		Code   secret.Secret `json:"code"`
+		Secret secret.Secret `json:"secret"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
 	}
 
-	input.Code = strings.TrimSpace(input.Code)
-	input.Secret = strings.TrimSpace(input.Secret)
+	input.Code = secret.New(strings.TrimSpace(input.Code.Reveal()))
+	input.Secret = secret.New(strings.TrimSpace(input.Secret.Reveal()))
 
-	if input.Code == "" {
+	if input.Code.IsZero() {
 		writeError(w, http.StatusBadRequest, "validation_error", "TOTP code is required")
 		return
 	}
-	if input.Secret == "" {
+	if input.Secret.IsZero() {
 		writeError(w, http.StatusBadRequest, "validation_error", "Secret is required (from /auth/2fa/setup)")
 		return
 	}
 
 	// Validate the code against the secret the client has
-	if !totp.Validate(input.Code, input.Secret) {
+	if !totp.Validate(input.Code.Reveal(), input.Secret.Reveal()) {
 		writeError(w, http.StatusUnauthorized, "invalid_code", "Invalid TOTP code. Please try again.")
 		return
 	}
@@ -163,7 +164,7 @@ func (s *Server) handleTOTPVerify(w http.ResponseWriter, r *http.Request) {
 	hashedCodes := hashRecoveryCodes(codes)
 
 	// Atomically enable 2FA only if the DB secret still matches (prevents TOCTOU race)
-	if err := s.store.EnableTOTP(user.ID, input.Secret, strings.Join(hashedCodes, "\n")); err != nil {
+	if err := s.store.EnableTOTP(user.ID, input.Secret.Reveal(), strings.Join(hashedCodes, "\n")); err != nil {
 		writeError(w, http.StatusConflict, "conflict", "TOTP secret changed during verification. Please run setup again.")
 		return
 	}
@@ -196,9 +197,9 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Password     string `json:"password"`
-		Code         string `json:"code"`
-		RecoveryCode string `json:"recovery_code"`
+		Password     secret.Secret `json:"password"`
+		Code         secret.Secret `json:"code"`
+		RecoveryCode secret.Secret `json:"recovery_code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -206,13 +207,13 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if user.HasPassword() {
-		if input.Password == "" {
+		if input.Password.IsZero() {
 			writeError(w, http.StatusBadRequest, "validation_error", "Password is required to disable 2FA")
 			return
 		}
 
 		// Verify password
-		valid, err := s.store.ValidatePassword(user.Email, input.Password)
+		valid, err := s.store.ValidatePassword(user.Email, input.Password.Reveal())
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -229,12 +230,12 @@ func (s *Server) handleTOTPDisable(w http.ResponseWriter, r *http.Request) {
 		// current code or a recovery code, through login's own check: the
 		// same limiter (six an hour, counted per user) and the same
 		// single-use claim, so a stolen session cannot grind the code.
-		if input.Code == "" && input.RecoveryCode == "" {
+		if input.Code.IsZero() && input.RecoveryCode.IsZero() {
 			writeError(w, http.StatusBadRequest, "validation_error",
 				"This account has no password: enter a code from your authenticator app, or a recovery code, to disable 2FA")
 			return
 		}
-		verified, answered := s.checkSecondFactor(w, user, "user:"+user.ID, input.Code, input.RecoveryCode)
+		verified, answered := s.checkSecondFactor(w, user, "user:"+user.ID, input.Code.Reveal(), input.RecoveryCode.Reveal())
 		if answered {
 			return
 		}
@@ -277,12 +278,12 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		ChallengeToken string `json:"challenge_token"`
-		Code           string `json:"code"`
-		RecoveryCode   string `json:"recovery_code"`
+		ChallengeToken secret.Secret `json:"challenge_token"`
+		Code           secret.Secret `json:"code"`
+		RecoveryCode   secret.Secret `json:"recovery_code"`
 		// CodeVerifier completes a challenge bound to a PKCE S256 challenge
 		// (oauth-login's two_factor_pkce_challenge, TASK-4137).
-		CodeVerifier *string `json:"code_verifier"`
+		CodeVerifier *secret.Secret `json:"code_verifier"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -291,29 +292,29 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 
 	verifier := ""
 	if input.CodeVerifier != nil {
-		if !isPKCEVerifier(*input.CodeVerifier) {
+		if !isPKCEVerifier(input.CodeVerifier.Reveal()) {
 			writeError(w, http.StatusBadRequest, "validation_error", "code_verifier must be 43-128 characters of A-Z a-z 0-9 - . _ ~")
 			return
 		}
-		verifier = *input.CodeVerifier
+		verifier = input.CodeVerifier.Reveal()
 	}
 
-	if input.ChallengeToken == "" {
+	if input.ChallengeToken.IsZero() {
 		writeError(w, http.StatusBadRequest, "validation_error", "challenge_token is required")
 		return
 	}
 
-	input.Code = strings.TrimSpace(input.Code)
-	input.RecoveryCode = strings.TrimSpace(input.RecoveryCode)
+	input.Code = secret.New(strings.TrimSpace(input.Code.Reveal()))
+	input.RecoveryCode = secret.New(strings.TrimSpace(input.RecoveryCode.Reveal()))
 
-	if input.Code == "" && input.RecoveryCode == "" {
+	if input.Code.IsZero() && input.RecoveryCode.IsZero() {
 		writeError(w, http.StatusBadRequest, "validation_error", "A TOTP code or recovery code is required")
 		return
 	}
 
 	// Validate the challenge token (proves the first factor passed; checks its
 	// IP or PKCE binding and expiry)
-	userID, challengeEpoch, err := validateTwoFAChallengeBound(input.ChallengeToken, clientIP(r), verifier, s.twoFAChallengeSecret)
+	userID, challengeEpoch, err := validateTwoFAChallengeBound(input.ChallengeToken.Reveal(), clientIP(r), verifier, s.twoFAChallengeSecret)
 	if err != nil {
 		time.Sleep(500 * time.Millisecond)
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Invalid or expired 2FA challenge")
@@ -340,8 +341,8 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 
 	// Keyed on the challenge (hashed, so the limiter map never holds the raw
 	// HMAC token): a captured challenge is not a license to grind codes.
-	ch := sha256.Sum256([]byte(input.ChallengeToken))
-	verified, answered := s.checkSecondFactor(w, user, hex.EncodeToString(ch[:]), input.Code, input.RecoveryCode)
+	ch := sha256.Sum256([]byte(input.ChallengeToken.Reveal()))
+	verified, answered := s.checkSecondFactor(w, user, hex.EncodeToString(ch[:]), input.Code.Reveal(), input.RecoveryCode.Reveal())
 	if answered {
 		return
 	}

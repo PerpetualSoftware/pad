@@ -117,9 +117,9 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Password string `json:"password"`
-		Confirm  bool   `json:"confirm"`
-		TOTPCode string `json:"totp_code"`
+		Password secret.Secret `json:"password"`
+		Confirm  bool          `json:"confirm"`
+		TOTPCode secret.Secret `json:"totp_code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -133,9 +133,9 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Password != "" {
+	if !input.Password.IsZero() {
 		// Password confirmation (normal flow)
-		if err := bcrypt.CompareHashAndPassword([]byte(fullUser.PasswordHash), []byte(input.Password)); err != nil {
+		if err := bcrypt.CompareHashAndPassword([]byte(fullUser.PasswordHash), []byte(input.Password.Reveal())); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
 			return
 		}
@@ -177,7 +177,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// door uses, so the two share one budget. Only a TOTP code is accepted
 	// here, as before.
 	if fullUser.TOTPEnabled {
-		code := strings.TrimSpace(input.TOTPCode)
+		code := strings.TrimSpace(input.TOTPCode.Reveal())
 		if code == "" {
 			writeError(w, http.StatusBadRequest, "totp_required", "A 2FA code is required to delete your account")
 			return

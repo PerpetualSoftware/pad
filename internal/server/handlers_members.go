@@ -12,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
@@ -459,7 +460,7 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	// An optional body: {"proof": "..."}, the mailbox-only secret from the
 	// invitation email's link (TASK-3352). Older clients send no body.
 	var body struct {
-		Proof string `json:"proof"`
+		Proof secret.Secret `json:"proof"`
 	}
 	if r.ContentLength != 0 {
 		if err := decodeJSON(r, &body); err != nil {
@@ -505,8 +506,8 @@ func (s *Server) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 	// TASK-3352: the email link's proof verifies the address; the code just
 	// spent never does (BUG-3348). The email match above ties the mailbox to
 	// this account. A wrong or spent proof changes nothing.
-	if body.Proof != "" && !user.IsEmailVerified() {
-		if _, perr := s.store.ConsumeInvitationProof(inv.ID, user.ID, strings.TrimSpace(body.Proof)); perr != nil {
+	if !body.Proof.IsZero() && !user.IsEmailVerified() {
+		if _, perr := s.store.ConsumeInvitationProof(inv.ID, user.ID, strings.TrimSpace(body.Proof.Reveal())); perr != nil {
 			slog.Error("invitation proof: consume failed; account stays unverified", "error", perr, "user_id", user.ID)
 		}
 	}

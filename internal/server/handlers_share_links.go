@@ -108,11 +108,11 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 	}
 
 	var input struct {
-		Password        string  `json:"password,omitempty"`
-		ExpiresAt       *string `json:"expires_at,omitempty"`
-		MaxViews        *int    `json:"max_views,omitempty"`
-		RequireAuth     bool    `json:"require_auth,omitempty"`
-		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
+		Password        secret.Secret `json:"password,omitempty"`
+		ExpiresAt       *string       `json:"expires_at,omitempty"`
+		MaxViews        *int          `json:"max_views,omitempty"`
+		RequireAuth     bool          `json:"require_auth,omitempty"`
+		RestrictToEmail string        `json:"restrict_to_email,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
@@ -132,7 +132,7 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 	}
 
 	opts := &store.ShareLinkOptions{
-		Password:        input.Password,
+		Password:        input.Password.Reveal(),
 		ExpiresAt:       input.ExpiresAt,
 		MaxViews:        input.MaxViews,
 		RequireAuth:     input.RequireAuth,
@@ -180,11 +180,11 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 	}
 
 	var collInput struct {
-		Password        string  `json:"password,omitempty"`
-		ExpiresAt       *string `json:"expires_at,omitempty"`
-		MaxViews        *int    `json:"max_views,omitempty"`
-		RequireAuth     bool    `json:"require_auth,omitempty"`
-		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
+		Password        secret.Secret `json:"password,omitempty"`
+		ExpiresAt       *string       `json:"expires_at,omitempty"`
+		MaxViews        *int          `json:"max_views,omitempty"`
+		RequireAuth     bool          `json:"require_auth,omitempty"`
+		RestrictToEmail string        `json:"restrict_to_email,omitempty"`
 	}
 	if err := decodeJSON(r, &collInput); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
@@ -203,7 +203,7 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 	}
 
 	collOpts := &store.ShareLinkOptions{
-		Password:        collInput.Password,
+		Password:        collInput.Password.Reveal(),
 		ExpiresAt:       collInput.ExpiresAt,
 		MaxViews:        collInput.MaxViews,
 		RequireAuth:     collInput.RequireAuth,
