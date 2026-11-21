@@ -54,9 +54,11 @@ var (
 
 // vendorShapes are third-party credentials with a documented prefix and body
 // length. A body whose charset holds - has no trailing \b (it would fail after
-// a final -); each run is open-ended so a longer key is masked whole.
+// a final -); each run is open-ended so a longer key is masked whole, except
+// a fixed-length alphanumeric body, which ends on \b.
 const vendorShapes = `\bsk-ant-(?:api|admin|oat|ort)[0-9]{2}-[A-Za-z0-9_\-]{80,}` + // Anthropic
 	`|\bsk-(?:proj|svcacct|admin)-[A-Za-z0-9_\-]{40,}` + // OpenAI project, service account, admin
+	`|\bsk-[A-Za-z0-9]{48}\b` + // OpenAI legacy user key
 	`|\bgithub_pat_[A-Za-z0-9]{22}_[A-Za-z0-9]{59,}` + // GitHub fine-grained
 	`|\bxox[bp]-[0-9]{6,}-[0-9]{6,}-[A-Za-z0-9\-]{20,}` + // Slack bot and user
 	`|\b(?:AKIA|ASIA)[0-9A-Z]{16}\b` + // AWS access key and STS session key ids
