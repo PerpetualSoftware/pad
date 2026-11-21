@@ -428,10 +428,17 @@ func (s *Store) retimeStoredArmingTx(tx *sql.Tx, sc *models.ItemSchedule) (bool,
 	if err != nil {
 		return false, err
 	}
+	return s.retimeArmedRowTx(tx, sc.ID, bound)
+}
+
+// retimeArmedRowTx moves the schedule's armed managed row to at, only while it
+// is armed and only if it actually moves, and retires the reopen checkpoint
+// when it does. It reports whether the row moved.
+func (s *Store) retimeArmedRowTx(tx *sql.Tx, scheduleID string, at time.Time) (bool, error) {
 	res, err := tx.Exec(s.q(`
 		UPDATE item_reminders SET remind_at = ?, updated_at = ?
 		WHERE schedule_id = ? AND fired_at IS NULL AND remind_at <> ?`),
-		NormalizeInstant(bound), now(), sc.ID, NormalizeInstant(bound))
+		NormalizeInstant(at), now(), scheduleID, NormalizeInstant(at))
 	if err != nil {
 		return false, err
 	}
@@ -442,5 +449,5 @@ func (s *Store) retimeStoredArmingTx(tx *sql.Tx, sc *models.ItemSchedule) (bool,
 	if n == 0 {
 		return false, nil
 	}
-	return true, s.invalidateScheduleReopenTx(tx, sc.ID)
+	return true, s.invalidateScheduleReopenTx(tx, scheduleID)
 }

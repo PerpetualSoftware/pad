@@ -304,7 +304,7 @@ func serveCmd() *cobra.Command {
 			// follows the target. Idempotent; non-fatal, as a row left where
 			// it was still fires, at the old instant.
 			if n, err := s.RetimeTargetOffsetReminders(); err != nil {
-				slog.Warn("target offset reminder re-arm failed; non-fatal", "error", err)
+				slog.Warn("target offset reminder re-arm incomplete; non-fatal", "retimed", n, "error", err)
 			} else {
 				slog.Info("Target offset reminder re-arm complete", "retimed", n)
 			}

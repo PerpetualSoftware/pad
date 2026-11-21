@@ -1,6 +1,10 @@
 package store
 
-import "fmt"
+import (
+	"errors"
+	"fmt"
+	"time"
+)
 
 // RetimeTargetOffsetReminders re-arms every armed managed reminder of a live,
 // unoverridden schedule with a native target offset at its target minus the
@@ -9,6 +13,17 @@ import "fmt"
 // instant is not written, so a second run returns 0. It returns how many rows
 // moved.
 func (s *Store) RetimeTargetOffsetReminders() (int, error) {
+	return s.retimeTargetOffsetRemindersAt(time.Now().UTC())
+}
+
+// retimeTargetOffsetRemindersAt is RetimeTargetOffsetReminders at a given
+// clock. When target minus the lead is not after nowT the row is armed at the
+// target itself, the fallback a move inside the lead uses (armAfterPastMoveTx),
+// so a restart never pulls a row that fallback armed back into the past. A
+// schedule whose instant cannot be computed (an unloadable zone, an unparsable
+// stored wall) is skipped and reported, and the others are still repaired: one
+// bad row must not block the repair on every boot.
+func (s *Store) retimeTargetOffsetRemindersAt(nowT time.Time) (int, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return 0, err
@@ -44,12 +59,31 @@ func (s *Store) RetimeTargetOffsetReminders() (int, error) {
 	rows.Close()
 
 	moved := 0
+	var skipped []error
 	for _, id := range ids {
 		sc, err := s.getScheduleByIDQ(tx, id)
 		if err != nil {
 			return 0, err
 		}
-		ok, err := s.retimeStoredArmingTx(tx, sc)
+		if sc == nil || sc.NextAt == nil || sc.NextWall == nil {
+			continue
+		}
+		roles, err := s.scheduleRolesOf(tx, sc)
+		if err != nil {
+			return 0, err
+		}
+		// storedFireInstant is pure arithmetic over the row: its errors leave
+		// the transaction usable, so the row is skipped and the rest go on.
+		off := roles.target()
+		fire, err := storedFireInstant(sc, sc.LeadMinutes, off)
+		if err == nil && !fire.After(nowT) {
+			fire, err = storedFireInstant(sc, 0, off)
+		}
+		if err != nil {
+			skipped = append(skipped, fmt.Errorf("schedule %s: %w", id, err))
+			continue
+		}
+		ok, err := s.retimeArmedRowTx(tx, sc.ID, fire)
 		if err != nil {
 			return 0, fmt.Errorf("retime schedule %s: %w", id, err)
 		}
@@ -59,6 +93,9 @@ func (s *Store) RetimeTargetOffsetReminders() (int, error) {
 	}
 	if err := tx.Commit(); err != nil {
 		return 0, err
+	}
+	if len(skipped) > 0 {
+		return moved, fmt.Errorf("skipped %d schedules: %w", len(skipped), errors.Join(skipped...))
 	}
 	return moved, nil
 }

@@ -122,22 +122,11 @@ func (s *Store) applySeriesTargetTx(tx *sql.Tx, p *linkedPlan, sp *seriesTargetP
 	if err := s.writeNativeRolesTx(tx, n.sc, sp.after, false); err != nil {
 		return err
 	}
-	// The outstanding occurrence's reminder follows the new offset. An
-	// overridden one stays where its move armed it (the override replaces the
-	// target, and inside the lead the move armed the target itself).
-	root, err := s.getScheduleByIDQ(tx, n.sc.ID)
-	if err != nil {
-		return err
-	}
-	if root != nil && root.EndedAt == nil && root.NextAt != nil && root.NextWall != nil && root.NextOverrideAt == nil {
-		fire, err := storedFireInstant(root, root.LeadMinutes, sp.after.target())
-		if err != nil {
-			return err
-		}
-		if err := s.retimeArmedReminderTx(tx, root.ID, NormalizeInstant(fire)); err != nil {
-			return err
-		}
-	}
+	// No reminder retime here: the outstanding occurrence always carries the
+	// override the move wrote (or one already at the target), which replaces
+	// the offset and was armed by the move, inside the lead at the target
+	// itself. Later occurrences arm from the new offset when they become
+	// outstanding.
 	snapshot := func(r scheduleRoles) string {
 		b, _ := json.Marshal(models.TargetOffset{TargetDays: r.TargetDays, TargetSecs: r.TargetSecs})
 		return string(b)

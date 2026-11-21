@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -305,20 +306,52 @@ func TestRetimeTargetOffsetRemindersRepairs(t *testing.T) {
 	broken := f.targetCommit(t, f.item, daily, 0, 7200)
 	seed(broken, "2026-10-30T08:30:00Z")
 
-	n, err := f.s.RetimeTargetOffsetReminders()
+	// Inside the lead after a past move: armed at the target itself (11:00,
+	// target minus 26h is already past). A restart must leave it there.
+	insideItem := f.another(t, "Inside")
+	inside := f.targetCommit(t, insideItem, models.ScheduleCreate{Dtstart: "2026-10-30T09:00", Tz: "UTC", Rrule: "FREQ=DAILY", LeadMinutes: 26 * 60}, 0, 7200)
+	f.mustResolve(t, insideItem, moveInput(inside, "2026-10-30T07:00:00Z"), "2026-10-30T10:00:00Z")
+	wantRemindAt(t, f, inside, "2026-10-31T11:00:00Z", "inside-lead fallback before the repair")
+
+	n, err := f.s.retimeTargetOffsetRemindersAt(rt("2026-10-30T10:00:00Z"))
 	if err != nil || n != 1 {
 		t.Fatalf("first run: n=%d err=%v, want 1", n, err)
 	}
 	wantRemindAt(t, f, broken, "2026-10-30T10:30:00Z", "repaired")
 	wantRemindAt(t, f, moved, "2026-10-31T13:00:00Z", "overridden row")
 	wantRemindAt(t, f, zero, "2026-10-30T07:00:00Z", "zero-offset row")
+	wantRemindAt(t, f, inside, "2026-10-31T11:00:00Z", "inside-lead fallback after the repair")
 	if after := f.managed(t, f.reload(t, firedItem.ID)); after.RemindAt != firedBefore.RemindAt || after.FiredAt == nil {
 		t.Fatalf("fired row moved: %+v -> %+v", firedBefore, after)
 	}
 	if got := f.count(t, `SELECT COUNT(*) FROM item_reminders WHERE schedule_id=?`, ended.ID); got != 0 {
 		t.Fatalf("ended schedule has %d reminder rows", got)
 	}
-	if n, err := f.s.RetimeTargetOffsetReminders(); err != nil || n != 0 {
+	if n, err := f.s.retimeTargetOffsetRemindersAt(rt("2026-10-30T10:00:00Z")); err != nil || n != 0 {
 		t.Fatalf("second run: n=%d err=%v, want 0", n, err)
 	}
+}
+
+// A schedule whose instant cannot be computed is skipped and reported; the
+// rest are still repaired, so one bad row cannot block the repair every boot.
+func TestRetimeTargetOffsetRemindersSkipsUncomputableRow(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	daily := models.ScheduleCreate{Dtstart: "2026-10-30T09:00", Tz: "UTC", Rrule: "FREQ=DAILY", LeadMinutes: 30}
+	badItem := f.another(t, "Bad zone")
+	bad := f.targetCommit(t, badItem, daily, 0, 7200)
+	f.exec(t, `UPDATE item_reminders SET remind_at='2026-10-30T08:30:00Z' WHERE schedule_id=?`, bad.ID)
+	f.exec(t, `UPDATE item_schedules SET tz='Nowhere/Unloadable' WHERE id=?`, bad.ID)
+	good := f.targetCommit(t, f.item, daily, 0, 7200)
+	f.exec(t, `UPDATE item_reminders SET remind_at='2026-10-30T08:30:00Z' WHERE schedule_id=?`, good.ID)
+
+	n, err := f.s.retimeTargetOffsetRemindersAt(rt("2026-10-30T09:00:00Z"))
+	if err == nil || !strings.Contains(err.Error(), bad.ID) {
+		t.Fatalf("want an error naming the skipped schedule %s, got %v", bad.ID, err)
+	}
+	if n != 1 {
+		t.Fatalf("retimed %d, want 1", n)
+	}
+	wantRemindAt(t, f, good, "2026-10-30T10:30:00Z", "good row repaired beside a bad one")
+	wantRemindAt(t, f, bad, "2026-10-30T08:30:00Z", "bad row left as it was")
 }
