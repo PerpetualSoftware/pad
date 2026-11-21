@@ -219,3 +219,15 @@ it('saves an edit, closes the dialog, re-reads once and announces it', async () 
  expect(h.get).toHaveBeenCalledTimes(3);
  expect(screen.queryByRole('dialog')).toBeNull();
 });
+it.each([
+ ['a recurring native schedule', {}, true],
+ ['a one-off schedule', { rrule: undefined }, false],
+ ['a legacy row', { roles: { ...view().roles, deadline: null, deadline_behavior: null, roles_origin: 'legacy_backfill' as const } }, false]
+])('offers the move scope choice for %s: %s', async (_, extra, shown) => {
+ h.get.mockResolvedValue(view({ editable: true, ...extra })); render(ItemCommitmentPanel, props());
+ await fireEvent.click(await screen.findByRole('button', { name: 'Actions TASK-1' }));
+ await fireEvent.click(screen.getByRole('menuitem', { name: 'Move target…' }));
+ const dialog = screen.getByRole('dialog', { name: 'Move target' });
+ expect(!!dialog.querySelector('fieldset')).toBe(shown);
+ expect(screen.queryAllByRole('radio')).toHaveLength(shown ? 2 : 0);
+});
