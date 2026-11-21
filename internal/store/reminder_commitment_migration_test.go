@@ -26,6 +26,14 @@ func reminderMigrationStore(t *testing.T, pg bool) (*Store, string, string) {
 		s.mustExec(t, `DELETE FROM schema_migrations WHERE version=?`, name)
 	} else {
 		db, _ := preMigrationDB(t, "183")
+		// Bundle cases use current workspace APIs while testing the old reminder schema.
+		claims, err := migrationsFS.ReadFile("migrations/187_workspace_slug_claims.sql")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := applySQLiteMigration(db, "187_workspace_slug_claims.sql", string(claims)); err != nil {
+			t.Fatal(err)
+		}
 		s = &Store{db: db, dialect: &sqliteDialect{}}
 	}
 	body, err := fs.ReadFile(dir + name)

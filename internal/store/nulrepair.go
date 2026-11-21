@@ -217,6 +217,12 @@ func (s *Store) repairOneNUL(v NULViolation) (bool, error) {
 		return false, fmt.Errorf("repairing %s.%s matched %d rows, want exactly 1 — the row address the "+
 			"scan produced does not select it", v.Table, v.Column, n)
 	}
+	if v.Table == "workspaces" && v.Column == "slug" {
+		// The old malformed canonical claim cannot be a usable alias or a repairable key.
+		if _, err := tx.Exec(`DELETE FROM workspace_slug_claims WHERE slug = CAST(? AS TEXT) AND workspace_id = ?`, []byte(value), v.Key["id"]); err != nil {
+			return false, fmt.Errorf("remove malformed workspace slug claim: %w", err)
+		}
+	}
 	if err := tx.Commit(); err != nil {
 		return false, fmt.Errorf("commit: %w", err)
 	}

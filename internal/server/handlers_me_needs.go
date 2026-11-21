@@ -114,13 +114,15 @@ func (s *Server) handleMeNeeds(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if wsSlug != "" {
-		kept := admitted[:0]
-		for _, ws := range admitted {
-			if ws.Slug == wsSlug {
-				kept = append(kept, ws)
-			}
+		ws, err := s.findVisibleWorkspace(admitted, wsSlug)
+		if err != nil {
+			writeInternalError(w, err)
+			return
 		}
-		admitted = kept
+		admitted = nil
+		if ws != nil {
+			admitted = []models.Workspace{*ws}
+		}
 	}
 
 	var all []*needs.Row

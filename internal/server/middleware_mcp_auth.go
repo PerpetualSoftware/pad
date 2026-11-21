@@ -447,6 +447,7 @@ func (s *Server) handleMCPOAuthAuth(w http.ResponseWriter, r *http.Request, toke
 		s.writeMCPUnauthorized(w, r, "invalid_token", "Token validation failed; please retry.")
 		return
 	}
+	// Legacy Extra has no stable workspace ID; resolving aliases could transfer consent after slug reuse.
 	if allowed := mergeAllowedWorkspaces(extraAllowed, access); allowed != nil {
 		ctx = WithTokenAllowedWorkspaces(ctx, allowed)
 	}

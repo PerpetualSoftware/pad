@@ -2359,7 +2359,9 @@ const CmdhelpVersion = "0.1"
 // default, or series with role target), forwarded on both transports; a
 // series move also writes the target offset from the outstanding occurrence
 // on and answers with a series member. Without scope nothing changes.
-const ToolSurfaceVersion = "0.123"
+// v0.124 adds the owner-only pad_workspace.rename action.
+// The current and new slugs are explicit, and the old slug stays an alias.
+const ToolSurfaceVersion = "0.124"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

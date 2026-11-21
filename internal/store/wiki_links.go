@@ -507,8 +507,8 @@ func resolveWorkspaceSlugTx(tx *sql.Tx, s *Store, slug string) sql.NullString {
 	}
 	var id string
 	err := tx.QueryRow(s.q(`
-		SELECT id FROM workspaces
-		WHERE slug = ? AND deleted_at IS NULL
+		SELECT w.id FROM workspaces w JOIN workspace_slug_claims c ON c.workspace_id = w.id
+		WHERE c.slug = ? AND w.deleted_at IS NULL
 	`), slug).Scan(&id)
 	if err != nil {
 		return sql.NullString{}

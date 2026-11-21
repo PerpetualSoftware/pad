@@ -382,6 +382,25 @@ func lastIndexOf(s string, c byte) int {
 
 func createTestWorkspace(t *testing.T, s *Store, name string) *models.Workspace {
 	t.Helper()
+	// Historical migration fixtures predate slug claims; seed their old schema
+	// directly without changing the migrations those tests exercise.
+	if s.dialect.Driver() == DriverSQLite {
+		var n int
+		if err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'workspace_slug_claims'`).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		if n == 0 {
+			id, slug, ts := newID(), slugify(name), now()
+			if _, err := s.db.Exec(s.q(`INSERT INTO workspaces (id, name, slug, settings, created_at, updated_at) VALUES (?, ?, ?, '{}', ?, ?)`), id, name, slug, ts, ts); err != nil {
+				t.Fatal(err)
+			}
+			ws, err := s.GetWorkspaceByID(id)
+			if err != nil || ws == nil {
+				t.Fatalf("read legacy workspace: %v", err)
+			}
+			return ws
+		}
+	}
 	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: name})
 	if err != nil {
 		t.Fatalf("failed to create workspace: %v", err)

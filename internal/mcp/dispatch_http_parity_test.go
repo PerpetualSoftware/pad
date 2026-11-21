@@ -45,6 +45,7 @@ func parityFixtureInput() map[string]any {
 		"target": "C12", "body": "hello", "seq": float64(4), "to": float64(4),
 		"email":             "test@example.com",
 		"name":              "test-name",
+		"new_slug":          "renamed-docapp",
 		"slug":              "test-slug",
 		"query":             "test-query",
 		"ref":               "TASK-1",

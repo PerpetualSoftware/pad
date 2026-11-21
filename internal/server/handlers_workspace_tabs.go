@@ -58,13 +58,25 @@ func (s *Server) tabsVisibleWorkspaces(r *http.Request, userID string) ([]models
 	return filterWorkspacesByTokenAllowlist(r.Context(), visible), nil
 }
 
-func findVisibleWorkspace(visible []models.Workspace, slug string) *models.Workspace {
+func (s *Server) findVisibleWorkspace(visible []models.Workspace, slug string) (*models.Workspace, error) {
 	for i := range visible {
 		if visible[i].Slug == slug {
-			return &visible[i]
+			return &visible[i], nil
 		}
 	}
-	return nil
+	if len(visible) == 0 {
+		return nil, nil
+	}
+	ws, err := s.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		return nil, err
+	}
+	for i := range visible {
+		if visible[i].ID == ws.ID {
+			return &visible[i], nil
+		}
+	}
+	return nil, nil
 }
 
 // writeWorkspaceTabs answers with list, the caller's open set as a write
@@ -144,7 +156,11 @@ func (s *Server) handleOpenWorkspaceTab(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusBadRequest, "validation_error", "slug is required")
 		return
 	}
-	ws := findVisibleWorkspace(visible, input.Slug)
+	ws, err := s.findVisibleWorkspace(visible, input.Slug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	if ws == nil {
 		writeWorkspaceNotFound(w, "Workspace not found")
 		return
@@ -179,7 +195,12 @@ func (s *Server) handleReorderWorkspaceTabs(w http.ResponseWriter, r *http.Reque
 	}
 	order := make([]string, 0, len(slugs))
 	for _, slug := range slugs {
-		if ws := findVisibleWorkspace(visible, slug); ws != nil {
+		ws, err := s.findVisibleWorkspace(visible, slug)
+		if err != nil {
+			writeInternalError(w, err)
+			return
+		}
+		if ws != nil {
 			order = append(order, ws.ID)
 		}
 	}
@@ -199,7 +220,11 @@ func (s *Server) handleCloseWorkspaceTab(w http.ResponseWriter, r *http.Request)
 	if !ok {
 		return
 	}
-	ws := findVisibleWorkspace(visible, chi.URLParam(r, "slug"))
+	ws, err := s.findVisibleWorkspace(visible, chi.URLParam(r, "slug"))
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	if ws == nil {
 		s.readWorkspaceTabs(w, r, userID)
 		return
@@ -236,7 +261,12 @@ func (s *Server) handleUpdateWorkspaceTab(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "validation_error", "pin can only be true: a kept tab is not made ephemeral again")
 		return
 	}
-	ws := findVisibleWorkspace(visible, chi.URLParam(r, "slug"))
+	slug := chi.URLParam(r, "slug")
+	ws, err := s.findVisibleWorkspace(visible, slug)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
 	if ws == nil {
 		writeWorkspaceNotFound(w, "Workspace not found")
 		return
@@ -245,7 +275,11 @@ func (s *Server) handleUpdateWorkspaceTab(w http.ResponseWriter, r *http.Request
 	if input.LastRoute.Set {
 		route := input.LastRoute.Value
 		if route != "" {
-			if msg := validateWorkspaceTabLastRoute(route, ws.OwnerUsername, ws.Slug); msg != "" {
+			msg := validateWorkspaceTabLastRoute(route, ws.OwnerUsername, ws.Slug)
+			if msg != "" && slug != ws.Slug {
+				msg = validateWorkspaceTabLastRoute(route, ws.OwnerUsername, slug)
+			}
+			if msg != "" {
 				writeError(w, http.StatusBadRequest, "validation_error", msg)
 				return
 			}

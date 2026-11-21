@@ -587,7 +587,35 @@ Steps:
 				return fmt.Errorf("list workspaces: %w", err)
 			}
 
-			if len(workspaces) == 0 {
+			claims, err := srcStore.WorkspaceSlugClaimsQ(snapshot)
+			if err != nil {
+				return fmt.Errorf("read workspace slug claims: %w", err)
+			}
+			claimCounts := make(map[string]int)
+			for _, id := range claims {
+				claimCounts[id]++
+			}
+			liveIDs := make(map[string]bool, len(workspaces))
+			for _, ws := range workspaces {
+				liveIDs[ws.ID] = true
+			}
+			for slug, id := range claims {
+				// Only migrated workspaces can own claims at the destination.
+				if !liveIDs[id] || claimCounts[id] == 1 {
+					delete(claims, slug)
+				}
+			}
+			if len(claims) != 0 {
+				existing, err := dstStore.WorkspaceSlugClaims()
+				if err != nil {
+					return fmt.Errorf("read destination workspace slug claims: %w", err)
+				}
+				if len(existing) != 0 {
+					return fmt.Errorf("migrating workspace aliases requires a fresh destination to preserve their ownership; nothing was migrated")
+				}
+			}
+
+			if len(workspaces) == 0 && len(claims) == 0 {
 				fmt.Fprintln(os.Stderr, "No workspaces found in SQLite database.")
 				return nil
 			}
@@ -650,6 +678,7 @@ Steps:
 
 			migrated := 0
 			var droppedAll []migrateDropped
+			destinationIDs := make(map[string]string)
 			for _, ws := range workspaces {
 				fmt.Fprintf(os.Stderr, "Migrating workspace: %s...\n", ws.Name)
 
@@ -707,17 +736,34 @@ Steps:
 				// What this unit does guarantee is the half it can: the
 				// SOURCE is unmarked, so the operator still has a working
 				// database to re-run from.
-				_, drops, err := migrateImportWorkspaceReporting(dstStore, data, os.Stderr)
+				moved, drops, err := migrateImportWorkspaceReporting(dstStore, data, os.Stderr)
 				if err != nil {
 					return fmt.Errorf("import %s: %w (nothing has been marked; the SQLite database is unchanged, "+
 						"but PostgreSQL is now PARTIALLY populated — drop and recreate it before re-running)", ws.Slug, err)
 				}
 
+				if claimCounts[ws.ID] > 1 {
+					if moved.Slug != ws.Slug {
+						return fmt.Errorf("canonical slug %q changed while migrating its aliases; SQLite is unchanged and PostgreSQL is partially populated", ws.Slug)
+					}
+					destinationIDs[ws.ID] = moved.ID
+				}
 				if len(drops) > 0 {
 					droppedAll = append(droppedAll, migrateDropped{Workspace: ws.Name, Drops: drops})
 				}
 				fmt.Fprintf(os.Stderr, "  OK: %s\n", stats)
 				migrated++
+			}
+
+			if len(claims) != 0 {
+				for slug, sourceID := range claims {
+					if id := destinationIDs[sourceID]; id != "" {
+						claims[slug] = id
+					}
+				}
+				if err := dstStore.ImportWorkspaceSlugClaims(claims); err != nil {
+					return fmt.Errorf("restore workspace slug claims: %w (SQLite is unchanged and PostgreSQL is partially populated)", err)
+				}
 			}
 
 			// Every workspace landed, so this is the one path that marks the

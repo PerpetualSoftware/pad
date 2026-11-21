@@ -346,6 +346,34 @@ func declineInvitationCmd() *cobra.Command {
 	}
 }
 
+func workspaceRenameCmd() *cobra.Command {
+	var name string
+	cmd := &cobra.Command{
+		Use:     "rename <workspace> <new_slug>",
+		Short:   "Rename a workspace and keep its previous links working",
+		Example: "  pad workspace rename mobile-app new-mobile-app --name 'Mobile App'",
+		Args:    cobra.ExactArgs(2),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			input := models.WorkspaceRename{ExpectedSlug: args[0], Slug: args[1]}
+			if cmd.Flags().Changed("name") {
+				input.Name = &name
+			}
+			ws, err := client.RenameWorkspace(input)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(ws)
+			}
+			fmt.Fprintf(cmd.OutOrStdout(), "Workspace %q now uses %s. Previous links still work.\n", ws.Name, ws.Slug)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&name, "name", "", "New workspace display name")
+	return cmd
+}
+
 // workspaceRestoreCmd un-soft-deletes a workspace by slug, provided it is
 // still inside the 30-day restore window (owner-only server-side).
 func workspaceRestoreCmd() *cobra.Command {

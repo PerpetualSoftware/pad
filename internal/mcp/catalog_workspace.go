@@ -61,12 +61,17 @@ var padWorkspaceTool = ToolDef{
 			{
 				Name:        "name",
 				Type:        "string",
-				Description: "Human-readable workspace name. Required for action=create.",
+				Description: "Human-readable workspace name. Required for action=create; optional for action=rename.",
 			},
 			{
 				Name:        "slug",
 				Type:        "string",
 				Description: "Workspace slug (kebab-case, globally unique). Optional for action=create (derived from name when omitted); required for action=restore (names the soft-deleted workspace to restore).",
+			},
+			{
+				Name:        "new_slug",
+				Type:        "string",
+				Description: "New canonical slug. Required for action=rename.",
 			},
 			{
 				Name:        "template",
@@ -94,7 +99,15 @@ var padWorkspaceTool = ToolDef{
 		// Both non-interactive; restore is mutating but non-destructive.
 		"deleted": passThrough([]string{"workspace", "deleted"}),
 		"restore": passThrough([]string{"workspace", "restore"}),
+		"rename":  actionWorkspaceRename,
 	},
+}
+
+func actionWorkspaceRename(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	if workspace, _ := input["workspace"].(string); workspace == "" {
+		return validationFailedFromBuildErr("workspace rename", errWorkspaceRequired), nil
+	}
+	return env.Dispatch(ctx, []string{"workspace", "rename"}, input)
 }
 
 // actionWorkspaceAuditLog reshapes the input for `pad workspace
@@ -167,4 +180,6 @@ Actions:
                permanently purged. No params. Read-only.
   restore    — Un-soft-delete a workspace by slug, provided it is still inside
                the restore window. Owner-only. Mutating but non-destructive.
-               Required: slug.`
+               Required: slug.
+  rename     — Change a workspace slug in place. Owner-only. Previous links keep working.
+               Required: workspace (current slug), new_slug. Optional: name.`

@@ -76,6 +76,7 @@ func workspaceCmd() *cobra.Command {
 		declineInvitationCmd(),
 		workspaceDeletedCmd(),
 		workspaceRestoreCmd(),
+		workspaceRenameCmd(),
 		storageCmd(),
 		exportCmd(),
 		importCmd(),

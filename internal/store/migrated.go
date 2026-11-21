@@ -144,6 +144,7 @@ var migratedRefusalTables = []string{
 	// Carried by models.WorkspaceExport: these rows now live in PostgreSQL, so
 	// a write here edits a copy that is gone.
 	"workspaces",
+	"workspace_slug_claims",
 	"collections",
 	"items",
 	"comments",

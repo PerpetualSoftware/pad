@@ -6,7 +6,7 @@ Pad is a project tracker for developers and AI agents — issues (TASK, BUG), pl
 
 If the user is asking general code questions with no project-management thread, you don't need this server.
 
-## Tool surface (v0.123)
+## Tool surface (v0.124)
 
 Twelve resource × action tools, plus `pad_set_workspace`. Thirteen tools total.
 
@@ -27,7 +27,7 @@ Reads: `relation_targets` beside `fields`, field key → `{id, ref, title}`. `fi
 
 **`multi_relation` fields (v0.33).** An ORDERED LIST of references, each resolved like a `relation` (UUID, ref, or exact title in the declared collection). Declare one as `owners:multi_relation:people`; the target collection is required. Rules: `[]` means absent; a blank element is refused by index; order is part of the value; duplicates are refused after resolution (`duplicate_referent`); any failing element refuses the whole write; `required` needs one resolved element; a cross-workspace copy drops the whole value (in `warnings.dropped_fields`). `relation_targets` holds an ARRAY of `{id, ref, title}` in stored order (`id`-only where unresolved); scalar keys stay single objects. Full rules: docs/mcp.md.
 
-- `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore.
+- `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore / rename.
 - `pad_collection` — Collections: list / create / update / delete / list-archived / restore. `delete` archives: the collection and its items leave every view, and `restore` brings them back. An `update` that removes a field or a select option still in use answers with `warnings.orphaned`: tell the user how many items keep the removed value.
 - `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity / catch-up. Use `ready` for the ranked top items to work on next (blocked work is left out) and `stale` for items needing attention; `activity` to catch up on what other agents/users changed since you last worked; `catch-up` for your own digest since you last marked caught up (read-only; marking is web-only).
 - `pad_role` — Agent roles: list / create / update / delete.

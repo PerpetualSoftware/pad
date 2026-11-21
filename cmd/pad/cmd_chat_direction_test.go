@@ -372,7 +372,7 @@ func TestChatArmHasNoMCPPath(t *testing.T) {
 
 func chatMCPDispatchFixture() map[string]any {
 	return map[string]any{
-		"workspace": "test", "target": "C12", "body": "hello", "seq": float64(4), "to": float64(4),
+		"workspace": "test", "new_slug": "renamed-test", "target": "C12", "body": "hello", "seq": float64(4), "to": float64(4),
 		"email": "test@example.com", "name": "test", "slug": "test", "query": "test",
 		"ref": "TASK-1", "refs": []string{"TASK-1", "TASK-2"}, "collection": "tasks",
 		"title": "test", "target_collection": "ideas", "message": "test", "summary": "test",

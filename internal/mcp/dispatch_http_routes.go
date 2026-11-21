@@ -593,6 +593,7 @@ func init() {
 		// /api/v1/oauth/claim with the same payload shape.
 		"workspace create": mapWorkspaceCreate,
 		"workspace claim":  mapWorkspaceClaim,
+		"workspace rename": mapWorkspaceRename,
 		// TASK-1973: workspace soft-delete recovery over MCP. `deleted`
 		// GETs the caller's soft-deleted workspaces still inside the
 		// restore window (no path params — the endpoint scopes to the
@@ -1409,6 +1410,26 @@ func mapWorkspaceCreate(input map[string]any) (string, string, []byte, error) {
 		return "", "", nil, fmt.Errorf("encode body: %w", err)
 	}
 	return http.MethodPost, "/api/v1/workspaces", body, nil
+}
+
+func mapWorkspaceRename(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, errWorkspaceRequired
+	}
+	slug, _ := input["new_slug"].(string)
+	if slug == "" {
+		return "", "", nil, fmt.Errorf("new_slug is required")
+	}
+	payload := map[string]string{"expected_slug": workspace, "slug": slug}
+	if name, ok := input["name"].(string); ok {
+		payload["name"] = name
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	return http.MethodPatch, "/api/v1/workspaces/" + url.PathEscape(workspace) + "/slug", body, nil
 }
 
 // mapWorkspaceClaim dispatches `pad workspace claim <code>
