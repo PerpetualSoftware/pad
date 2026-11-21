@@ -91,7 +91,7 @@
 	fieldset { min-width: 0; margin: 0; padding: 0; border: 0; }
 	legend { margin-bottom: 6px; padding: 0; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 	.choice { display: flex; align-items: center; gap: 8px; min-height: 32px; margin: 0; font-size: 14px; font-weight: 400; color: var(--text-primary); cursor: pointer; }
-	.choice input { flex: none; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; }
+	.choice input { flex: none; width: 16px; height: 16px; min-height: 0; margin: 0; padding: 0; accent-color: var(--accent-primary); }
 	fieldset:disabled .choice { color: var(--text-muted); cursor: default; }
 	.field-error { margin-top: 6px; font-size: 12px; color: var(--accent-red); }
 	@media (max-width: 768px) { input { min-height: 44px; } .choice { min-height: 44px; } }
