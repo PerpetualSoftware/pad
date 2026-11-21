@@ -11,7 +11,7 @@
 	import { agendaUndoContext, resolutionLabel, type AgendaUndo } from '$lib/calendar/undo';
 	import { toastStore, type ToastAction } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
-	import { completedPreferencePrefix, agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayCounts, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { completedPreferencePrefix, agendaRows, attentionEntries, endedKey, roleDay, roleMarkers, canAcknowledge, canMove, canResolve, isOpenState, outstandingMatches, workState, dateTime, dayLabel, daySummary, dayCounts, dayWindow, longDay, weekLabel, weekWindow, targetOnDay, isAllDay, sameTarget, seriesRangeCopy, entryKey, filterEntries, groupEntries, isCompleted, localTime, shiftDay, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import Button from '$lib/components/common/Button.svelte';
 	import SegmentedControl from '$lib/components/common/SegmentedControl.svelte';
 	import EmptyState from '$lib/components/common/EmptyState.svelte';
@@ -145,7 +145,11 @@
 	let dragging = $state<AgendaEntry | null>(null);
 	let dragImpact = $state<CommitmentMoveResult | null>(null);
 	let linkedTitles = $state<Record<string, string>>({});
-	let review = $state<{ entry: AgendaEntry; to: string; preview: CommitmentMoveResult; reason?: string; sameIdentity: () => boolean } | null>(null);
+	let review = $state<{ entry: AgendaEntry; to: string; preview: CommitmentMoveResult; reason?: string; sameIdentity: () => boolean; scope?: 'series' } | null>(null);
+	// Whether the move dialog's schedule recurs, read once per open (TASK-4494). Unknown means no scope choice.
+	let recurrence = $state<{ key: string; recurring: boolean } | null>(null);
+	let recurrenceSerial = 0;
+	const dialogRecurring = $derived(!!dialogEntry && dialogMode === 'move' && recurrence?.key === entryKey(dialogEntry) && recurrence.recurring);
 	let committing = $state(false);
 	let workspaceGroups = $state<WorkspaceGroup[] | null>(null);
 	let workspaces = $state<Workspace[] | null>(null);
@@ -640,8 +644,21 @@
 		if (state === 'today') { if (canMove(entry)) void moveTarget(entry, targetOnDay(entry, todayIn(zone), zone)); return; }
 		if (state === 'move' && !canMove(entry)) return;
 		if (state === 'ack' && !canAcknowledge(entry)) return;
-		if (state === 'move' || state === 'snooze') { dialogMode = state; dialogEntry = entry; }
+		if (state === 'move' || state === 'snooze') { dialogMode = state; dialogEntry = entry; if (state === 'move') void readRecurrence(entry); }
 		else void resolve(entry, state);
+	}
+	// The agenda entry carries no recurrence, so the move dialog reads the schedule. A legacy row never offers series.
+	async function readRecurrence(entry: AgendaEntry) {
+		const serial = ++recurrenceSerial;
+		recurrence = null;
+		if (entry.roles_origin !== 'native' || !entry.workspace) return;
+		const key = entryKey(entry);
+		const sameIdentity = authStore.identityFence();
+		try {
+			const view = await api.getCommitment(entry.workspace, entry.item_ref);
+			if (serial !== recurrenceSerial || !sameIdentity() || dialogMode !== 'move' || !dialogEntry || entryKey(dialogEntry) !== key) return;
+			recurrence = { key, recurring: !!view.rrule?.trim() && view.roles?.roles_origin === 'native' };
+		} catch { /* Unknown recurrence offers only this occurrence. */ }
 	}
 	// end: the caller confirmed ending the schedule of an open item. closeAs then closes the item with that value.
 	async function resolve(entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string, end?: { closeAs?: string }): Promise<boolean> {
@@ -821,8 +838,10 @@
 		if (!unchanged(entry, to)) void moveTarget(entry, to);
 		clearDrag();
 	}
-	async function moveError(error: unknown) {
+	async function moveError(error: unknown, series?: boolean) {
 		const code = (error as { code?: string })?.code;
+		const details = (error as { details?: { field?: unknown; code?: unknown } })?.details;
+		if (series && code === 'validation_error' && details?.field === 'to' && details?.code === 'range') { actionError = seriesRangeCopy(error); return; }
 		const stale = code === 'commitment_changed' || code === 'stale';
 		const forbidden = code === 'forbidden' || code === 'permission_denied' || code === 'link_edit_required';
 		const message = (error as { message?: unknown })?.message;
@@ -835,53 +854,58 @@
 		const button = [...document.querySelectorAll<HTMLButtonElement>('button[data-agenda-actions]')].find(button => button.dataset.agendaActions === entry.item_ref && button.dataset.workspace === entry.workspace && button.dataset.owner === entry.owner_username);
 		(button && !button.disabled ? button : periodHeading)?.focus();
 	}
-	async function commitTarget(entry: AgendaEntry, to: string, preview: CommitmentMoveResult, sameIdentity: () => boolean, reason?: string, acknowledge?: boolean, confirmPastDeadline?: boolean) {
+	async function commitTarget(entry: AgendaEntry, to: string, preview: CommitmentMoveResult, sameIdentity: () => boolean, reason?: string, acknowledge?: boolean, confirmPastDeadline?: boolean, scope?: 'series') {
 		if (!sameIdentity()) return;
 		const key = entryKey(entry);
+		const series = scope === 'series';
 		const reviewed = review && entryKey(review.entry) === key;
 		if (reviewed) committing = true;
 		try {
-			const moved = await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}), ...(preview.past_deadline && confirmPastDeadline ? { confirm_past_deadline: true } : {}) });
+			const moved = await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}), ...(preview.past_deadline && confirmPastDeadline ? { confirm_past_deadline: true } : {}), ...(series ? { scope: 'series' as const } : {}) });
 			if (!sameIdentity()) return;
 			saved = { ...saved, [key]: true };
 			if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null;
 			if (review && entryKey(review.entry) === key) review = null;
 			const [undo, refreshed] = await Promise.all([
-				moved.changes.some(change => change.root) ? readUndo(entry, sameIdentity, 'move') : undefined,
+				// A series move has no undo: it records no reopen checkpoint.
+				!series && moved.changes.some(change => change.root) ? readUndo(entry, sameIdentity, 'move') : undefined,
 				load(day, zone, true)
 			]);
 			if (!sameIdentity()) return;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
-			succeed(`Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`, undo ? { ...undo, label: 'Undo' } : undefined);
+			succeed(series ? `This and future occurrences moved to ${dateTime(to, zone, isAllDay(entry))}. Only this occurrence's reminder moved.` : `Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`, undo ? { ...undo, label: 'Undo' } : undefined);
 			pending = { ...pending, [key]: false };
 			await focusMoved(entry);
 		} catch (error) {
 			if (sameIdentity()) {
-				await moveError(error);
+				await moveError(error, series);
 				if ((error as { code?: string })?.code === 'target_after_deadline') {
 					try {
-						const fresh = await api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}) });
+						const fresh = await api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}), ...(series ? { scope: 'series' as const } : {}) });
 						if (!sameIdentity()) return;
 						dialogEntry = null;
-						review = { entry, to, preview: fresh, reason, sameIdentity };
+						review = { entry, to, preview: fresh, reason, sameIdentity, scope };
 						void loadTitles(entry, fresh);
-					} catch (previewError) { if (sameIdentity()) await moveError(previewError); }
+					} catch (previewError) { if (sameIdentity()) await moveError(previewError, series); }
 				}
 			}
 		} finally {
 			if (sameIdentity()) { if (reviewed) committing = false; pending = { ...pending, [key]: false }; }
 		}
 	}
-	async function moveTarget(entry: AgendaEntry, to: string, reason?: string) {
+	// scope 'series' moves this and future occurrences; only the move dialog passes it. Drag and Bring to today never do.
+	async function moveTarget(entry: AgendaEntry, to: string, reason?: string, scope?: 'series') {
 		const key = entryKey(entry);
 		if (!canMove(entry) || pending[key] || saved[key] || review) return;
 		if (unchanged(entry, to)) { if (dialogEntry && entryKey(dialogEntry) === key) dialogEntry = null; return; }
 		const sameIdentity = authStore.identityFence();
-		const cached = dragging && entryKey(dragging) === key ? dragCache.get(hoverDay) : undefined;
+		const series = scope === 'series';
+		// The drag cache holds occurrence previews, whose revision a series apply refuses.
+		const cached = !series && dragging && entryKey(dragging) === key ? dragCache.get(hoverDay) : undefined;
 		pending = { ...pending, [key]: true }; actionError = ''; announcement = '';
 		let reviewing = false;
 		try {
-			const preview = await (cached?.to === to ? cached.promise : api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}) }));
+			const preview = await (cached?.to === to ? cached.promise : api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}), ...(series ? { scope: 'series' as const } : {}) }));
 			if (!sameIdentity()) return;
 			const root = preview.changes.find(change => change.root);
 			if (!root?.from || !unchanged(entry, root.from)) {
@@ -890,11 +914,11 @@
 			if (preview.renegotiates_deadline || preview.violations?.length || preview.past_deadline) {
 				if (openedDay) { openedDay = null; await tick(); if (!sameIdentity()) return; }
 				dialogEntry = null;
-				review = { entry, to, preview, reason, sameIdentity }; reviewing = true;
+				review = { entry, to, preview, reason, sameIdentity, scope }; reviewing = true;
 				void loadTitles(entry, preview);
-			} else await commitTarget(entry, to, preview, sameIdentity, reason);
+			} else await commitTarget(entry, to, preview, sameIdentity, reason, undefined, undefined, scope);
 		} catch (error) {
-			if (sameIdentity()) await moveError(error);
+			if (sameIdentity()) await moveError(error, series);
 		} finally {
 			if (sameIdentity() && !reviewing) pending = { ...pending, [key]: false };
 		}
@@ -1080,10 +1104,10 @@
 <ForecastDialog open={!!forecastEntry} entry={forecastEntry} {zone} {mobile} {permissionCopy}
 	onclose={() => forecastEntry = null}
 	onsaved={() => { forecastEntry = null; void load(day, zone, true); }} />
-<ResolveOccurrenceDialog open={!!dialogEntry} mode={dialogMode} entry={dialogEntry} {zone} {mobile}
+<ResolveOccurrenceDialog open={!!dialogEntry} mode={dialogMode} entry={dialogEntry} {zone} {mobile} recurring={dialogRecurring}
 	pending={dialogEntry ? !!pending[entryKey(dialogEntry)] : false} error={actionError}
 	onclose={() => dialogEntry = null}
-	onsubmit={(until, comment) => { if (dialogEntry) { if (dialogMode === 'move') void moveTarget(dialogEntry, until, comment || undefined); else void resolve(dialogEntry, 'snooze', until, comment); } }} />
+	onsubmit={(until, comment, scope) => { if (dialogEntry) { if (dialogMode === 'move') void moveTarget(dialogEntry, until, comment || undefined, scope); else void resolve(dialogEntry, 'snooze', until, comment); } }} />
 <ScheduleEndDialog open={!!endChoice} entry={endChoice?.entry ?? null} details={endChoice?.details ?? null} {mobile}
 	pending={endChoice ? !!pending[entryKey(endChoice.entry)] : false} error={endError}
 	onclose={() => { endChoice = null; endError = ''; }}
@@ -1091,7 +1115,7 @@
 {#if review}
 	<MoveImpactDialog entry={review.entry} preview={review.preview} {zone} {mobile} titles={linkedTitles} initialReason={review.reason}
 		pending={committing} error={actionError} onclose={cancelReview}
-		onsubmit={(reason, acknowledge, confirmPastDeadline) => { if (review && !committing) void commitTarget(review.entry, review.to, review.preview, review.sameIdentity, reason, acknowledge, confirmPastDeadline); }} />
+		onsubmit={(reason, acknowledge, confirmPastDeadline) => { if (review && !committing) void commitTarget(review.entry, review.to, review.preview, review.sameIdentity, reason, acknowledge, confirmPastDeadline, review.scope); }} />
 {/if}
 
 <style>

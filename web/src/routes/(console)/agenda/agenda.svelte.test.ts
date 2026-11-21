@@ -2332,3 +2332,84 @@ describe('agenda ?day= link (BUG-4569)', () => {
   expect(screen.getByRole('heading', { name: '20–26 November 2026' })).toBeTruthy();
  });
 });
+
+describe('move scope: this and future occurrences (TASK-4494)', () => {
+ const native = () => row({ roles_origin: 'native' });
+ const weekly = (extra = {}) => ({ item_ref: 'EX-30', rrule: 'FREQ=WEEKLY', roles: { ...row().roles!, roles_origin: 'native' }, floating: true, next_occurrence: { at: frozenAt, wall: row().wall }, ...extra });
+ const successCall = () => h.toast.mock.calls.find(call => call[1] === 'success');
+ beforeEach(() => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'day');
+  h.agenda.mockResolvedValue(response([native()]));
+  h.view.mockResolvedValue(weekly());
+ });
+ async function openMove() { await mount(); const d = await dialog('Move'); await within(d).findByRole('group', { name: 'Apply to' }); return d; }
+ async function submitSeries(d: HTMLElement) {
+  await fireEvent.click(within(d).getByRole('radio', { name: 'This and future occurrences' })); await fillTime(d);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+ }
+ it('reads the schedule once on open and sends scope series on preview and move with the series revision, with no Undo', async () => {
+  h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to, { revision: body.scope === 'series' ? 'series-revision' : 'revision-1' })));
+  const d = await openMove();
+  expect(h.view).toHaveBeenCalledExactlyOnceWith('work', 'EX-30');
+  await submitSeries(d);
+  await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
+  expect(h.preview).toHaveBeenCalledExactlyOnceWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', scope: 'series' });
+  expect(h.move).toHaveBeenCalledWith('work', 'EX-30', { role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'series-revision', scope: 'series' });
+  await said("This and future occurrences moved to November 6, 2026, 09:30. Only this occurrence's reminder moved.", 'success');
+  expect(successCall()?.[4]).toBeUndefined(); expect(h.view).toHaveBeenCalledTimes(1);
+ });
+ it('sends no scope member for This occurrence on a recurring schedule', async () => {
+  const d = await openMove(); await fillTime(d);
+  await fireEvent.click(within(d).getByRole('button', { name: 'Move target' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
+  expect(h.preview.mock.calls[0][2]).toEqual({ role: 'target', to: '2026-11-06T14:30:00.000Z' });
+  expect(h.move.mock.calls[0][2]).toEqual({ role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'revision-1' });
+  await said('Occurrence moved to November 6, 2026, 09:30. Its reminder follows the target.', 'success');
+ });
+ it('commits a reviewed series move with the same scope', async () => {
+  h.preview.mockImplementation((_ws, _ref, body) => Promise.resolve(preview(body.to, { revision: 'series-revision', renegotiates_deadline: true })));
+  const d = await openMove(); await submitSeries(d);
+  const review = await screen.findByRole('dialog', { name: 'Review move' });
+  await fireEvent.input(within(review).getByLabelText('Reason'), { target: { value: 'Agreed' } });
+  await fireEvent.click(within(review).getByRole('button', { name: 'Move and change deadline' }));
+  await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
+  expect(h.move.mock.calls[0][2]).toEqual({ role: 'target', to: '2026-11-06T14:30:00.000Z', revision: 'series-revision', reason: 'Agreed', scope: 'series' });
+ });
+ it('says the series cannot move past the hard deadline on a to/range refusal', async () => {
+  h.preview.mockRejectedValue({ code: 'validation_error', message: 'a series move cannot put the target after the hard deadline', details: { field: 'to', code: 'range' } });
+  const d = await openMove(); await submitSeries(d);
+  expect(await within(d).findByRole('alert')).toHaveTextContent('A series move cannot put the target after the hard deadline.');
+  expect(h.move).not.toHaveBeenCalled();
+ });
+ it('falls back to its own copy when the range refusal has no message', async () => {
+  h.preview.mockRejectedValue({ code: 'validation_error', details: { field: 'to', code: 'range' } });
+  const d = await openMove(); await submitSeries(d);
+  expect(await within(d).findByRole('alert')).toHaveTextContent('This and future occurrences cannot move past the hard deadline.');
+ });
+ it.each([
+  ['a one-off schedule', () => h.view.mockResolvedValue(weekly({ rrule: undefined }))],
+  ['an empty rrule', () => h.view.mockResolvedValue(weekly({ rrule: '' }))],
+  ['a failed read', () => h.view.mockRejectedValue(new Error('offline'))]
+ ])('offers no choice for %s', async (_, setup) => {
+  setup(); await mount(); const d = await dialog('Move'); await settle();
+  expect(within(d).queryByRole('radio')).toBeNull(); expect(within(d).getByText('The reminder follows the target.')).toBeInTheDocument();
+ });
+ it('offers no choice and reads nothing on open for a legacy row', async () => {
+  h.agenda.mockResolvedValue(response([row({ roles_origin: 'legacy_backfill' })]));
+  await mount(); const d = await dialog('Move'); await settle();
+  expect(within(d).queryByRole('radio')).toBeNull(); expect(h.view).not.toHaveBeenCalled();
+ });
+ it('ignores a recurrence read that lands after the dialog closed and reopened', async () => {
+  const first = deferred<unknown>(); h.view.mockReturnValueOnce(first.promise).mockResolvedValueOnce(weekly({ rrule: undefined }));
+  await mount(); let d = await dialog('Move');
+  await fireEvent.click(within(d).getByRole('button', { name: 'Cancel' })); await settle();
+  d = await dialog('Move'); await settle(); first.resolve(weekly()); await settle();
+  expect(within(d).queryByRole('radio')).toBeNull();
+ });
+ it('drag and drop always moves only the occurrence, with no scope member', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'week');
+  await mount(); await drop();
+  await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1));
+  expect(h.preview.mock.calls.every(call => !('scope' in call[2]))).toBe(true); expect('scope' in h.move.mock.calls[0][2]).toBe(false);
+ });
+});
