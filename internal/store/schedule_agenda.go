@@ -454,14 +454,28 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 		return at.Equal(o)
 	}
 	var effective *time.Time
+	var targetErr error
 	outstanding := func(e *AgendaEntry, r agendaRow, have bool) {
 		e.State, e.Fired = "outstanding", sc.ReminderFired
-		e.SnoozedUntil = ScheduleSnoozedUntil(sc, r.state, now)
+		// A moved occurrence is due at its moved target, the role=target
+		// override. next_override_at holds it too until a snooze after the move
+		// rewrites that to the re-fire instant (TASK-4590); it stands in only
+		// when no override row exists.
+		var target *time.Time
+		if have && r.state == "moved" && sc.NextOverrideAt != nil {
+			target, targetErr = s.movedTargetQ(s.db, sc.ID, OccurrenceKey(sc, r.at, r.wall))
+		}
+		e.SnoozedUntil = ScheduleSnoozedUntil(sc, r.state, target, now)
 		due := e.At
 		if have && r.state == "moved" && sc.NextOverrideAt != nil {
-			if t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt); err == nil {
-				e.EffectiveAt, due = &t, t
-				effective = &t
+			if target == nil {
+				if t, err := time.Parse(time.RFC3339, *sc.NextOverrideAt); err == nil {
+					target = &t
+				}
+			}
+			if target != nil {
+				e.EffectiveAt, due = target, *target
+				effective = target
 			}
 		}
 		e.Overdue = !due.After(now)
@@ -504,6 +518,9 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 		if outstanding(&e, r, have); effective != nil && !effective.Before(from) && effective.Before(to) {
 			out = append(out, e)
 		}
+	}
+	if targetErr != nil {
+		return nil, targetErr
 	}
 	for _, r := range rows {
 		w, err := schedule.ParseWall(r.wall)
