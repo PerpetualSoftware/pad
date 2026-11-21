@@ -250,6 +250,34 @@ describe('the phone Chat sheet', () => {
 		expect(go).toHaveBeenCalledWith(-1);
 	});
 
+	// TASK-4523: the header under the grip drags the sheet too; its controls stay taps.
+	it('the chat header carries data-sheet-drag, and a header swipe closes Chat', async () => {
+		const go = vi.spyOn(history, 'go').mockImplementation(() => {});
+		openAt('/messages');
+		const { container } = render(ChatHost);
+		await settle();
+		const header = container.querySelector<HTMLElement>('.ds-content header.chat-header')!;
+		expect(header).not.toBeNull();
+		expect(header.hasAttribute('data-sheet-drag')).toBe(true);
+		const t = (type: string, clientY: number) => {
+			const e = new Event(type, { bubbles: true, cancelable: true });
+			Object.defineProperty(e, 'touches', { value: [{ clientX: 0, clientY }] });
+			return e;
+		};
+		const closeBtn = header.querySelector<HTMLElement>('[aria-label="Close Chat"]')!;
+		closeBtn.dispatchEvent(t('touchstart', 100));
+		closeBtn.dispatchEvent(t('touchmove', 400));
+		closeBtn.dispatchEvent(t('touchend', 400));
+		expect(go).not.toHaveBeenCalled();
+		const title = header.querySelector<HTMLElement>('h1')!;
+		title.dispatchEvent(t('touchstart', 100));
+		title.dispatchEvent(t('touchmove', 300));
+		flushSync();
+		expect(sheet(container)!.style.transform).toBe('translateY(200px)');
+		title.dispatchEvent(t('touchend', 300));
+		expect(go).toHaveBeenCalledWith(-1);
+	});
+
 	it('a thread marks read under the sheet\'s own cover', async () => {
 		openAt('/messages/3');
 		render(ChatHost);

@@ -34,7 +34,10 @@
 		label?: string;
 		/** Take the full available height (to the top safe area) instead of ~2/3. */
 		fill?: boolean;
-		/** The body scrolls itself: no content-drag dismiss; only the grip drags. */
+		/**
+		 * The body scrolls itself: no content-drag dismiss. The grip drags, and so
+		 * does any body region marked `data-sheet-drag` (not its controls).
+		 */
 		ownScroller?: boolean;
 		/** True when a layer in front owns this Escape (the sheet then leaves it). */
 		escapeBlocked?: (e: KeyboardEvent) => boolean;
@@ -168,6 +171,29 @@
 	}
 
 	/*
+	 * TASK-4523: under ownScroller the body never drags (it scrolls itself), but a
+	 * region it marks `data-sheet-drag` (the phone Chat header, right under the
+	 * grip) is the grip's gesture: same handlers, same threshold, same gates. A
+	 * touch that starts on a control inside it stays a tap.
+	 */
+	const DRAG_CONTROL = 'button, a, input, textarea, select, [role="button"]';
+	function onRegionTouchStart(e: TouchEvent) {
+		const t = e.target;
+		if (!(t instanceof Element) || !t.closest('[data-sheet-drag]')) return;
+		if (t.closest(DRAG_CONTROL)) return;
+		onTouchStart(e);
+	}
+	function onRegionTouchMove(e: TouchEvent) {
+		if (dragging) onTouchMove(e);
+	}
+	function onRegionTouchEnd() {
+		if (dragging) onTouchEnd();
+	}
+	function onRegionTouchCancel() {
+		if (dragging) cancelDrag();
+	}
+
+	/*
 	 * TASK-2235: focus. The sheet is NOT modal and no longer says it is: it
 	 * leaves the bottom nav live on purpose (the slot stays lit and another
 	 * slot is one tap away), so `aria-modal` would hide that live nav from a
@@ -281,10 +307,10 @@
 			class="ds-content"
 			class:ds-own-scroller={ownScroller}
 			bind:this={contentEl}
-			ontouchstart={ownScroller ? undefined : onContentTouchStart}
-			ontouchmove={ownScroller ? undefined : onContentTouchMove}
-			ontouchend={ownScroller ? undefined : onContentTouchEnd}
-			ontouchcancel={ownScroller ? undefined : onContentTouchEnd}
+			ontouchstart={ownScroller ? onRegionTouchStart : onContentTouchStart}
+			ontouchmove={ownScroller ? onRegionTouchMove : onContentTouchMove}
+			ontouchend={ownScroller ? onRegionTouchEnd : onContentTouchEnd}
+			ontouchcancel={ownScroller ? onRegionTouchCancel : onContentTouchEnd}
 		>
 			{@render children()}
 		</div>
@@ -354,6 +380,10 @@
 		flex-direction: column;
 		overflow: hidden;
 		padding: 0;
+	}
+	/* A drag region is the grip's gesture, so the browser must not pan it. */
+	.ds-content.ds-own-scroller :global([data-sheet-drag]) {
+		touch-action: none;
 	}
 	/* And no page pull-to-refresh at all while a sheet is open (BUG-3386):
 	   a drag on the backdrop, on the grip, or on a list too short to scroll

@@ -492,6 +492,103 @@ describe('DockedSheet opt-in options (phone Chat sheet)', () => {
 		expect(onclose).toHaveBeenCalledTimes(1);
 	});
 
+	// TASK-4523: under ownScroller the body never drags, but a region the body marks
+	// `data-sheet-drag` (the phone Chat header) drags exactly like the grip.
+	const dragBody = createRawSnippet(() => ({
+		render: () =>
+			`<div><header data-sheet-drag><h1 class="t">Title</h1><button type="button" class="ctl"><span class="ctl-in">x</span></button></header><p class="plain">Body</p></div>`,
+	}));
+	const at = (sel: string) => document.querySelector(sel) as HTMLElement;
+	function swipe(el: HTMLElement, from: number, to: number) {
+		el.dispatchEvent(touch('touchstart', from));
+		el.dispatchEvent(touch('touchmove', to));
+		flushSync();
+	}
+
+	it('ownScroller: a swipe from a data-sheet-drag region past the threshold closes', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true, children: dragBody }) });
+		await tick();
+		flushSync();
+		swipe(at('.t'), 100, 300);
+		expect(panel().style.transform).toBe('translateY(200px)');
+		at('.t').dispatchEvent(touch('touchend', 300));
+		expect(onclose).toHaveBeenCalledTimes(1);
+	});
+
+	it('ownScroller: a short swipe from the drag region snaps back without closing', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true, children: dragBody }) });
+		await tick();
+		flushSync();
+		swipe(at('.t'), 100, 150);
+		expect(panel().style.transform).toBe('translateY(50px)');
+		at('.t').dispatchEvent(touch('touchend', 150));
+		flushSync();
+		expect(onclose).not.toHaveBeenCalled();
+		expect(panel().style.transform).toBe('');
+	});
+
+	it('ownScroller: a touchcancel mid-drag snaps back without closing', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true, children: dragBody }) });
+		await tick();
+		flushSync();
+		swipe(at('.t'), 100, 300);
+		at('.t').dispatchEvent(touch('touchcancel', 300));
+		flushSync();
+		expect(onclose).not.toHaveBeenCalled();
+		expect(panel().style.transform).toBe('');
+	});
+
+	it('ownScroller: a swipe from a control inside the drag region does not drag', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true, children: dragBody }) });
+		await tick();
+		flushSync();
+		for (const sel of ['.ctl', '.ctl-in']) {
+			swipe(at(sel), 100, 400);
+			expect(panel().style.transform).toBe('');
+			at(sel).dispatchEvent(touch('touchend', 400));
+		}
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('ownScroller: a swipe from plain body content outside the drag region does not drag', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true, children: dragBody }) });
+		await tick();
+		flushSync();
+		swipe(at('.plain'), 100, 400);
+		expect(panel().style.transform).toBe('');
+		at('.plain').dispatchEvent(touch('touchend', 400));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('ownScroller: a drag region does not drag while a viewer lease is frontmost', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, ownScroller: true, children: dragBody }) });
+		await tick();
+		flushSync();
+		acquire(mountViewer());
+		swipe(at('.t'), 100, 400);
+		expect(panel().style.transform).toBe('');
+		at('.t').dispatchEvent(touch('touchend', 400));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
+	it('without ownScroller, a data-sheet-drag region is plain content (scrolled list does not drag)', async () => {
+		const onclose = vi.fn();
+		render(DockedSheet, { props: baseProps({ onclose, children: dragBody }) });
+		await tick();
+		flushSync();
+		content().scrollTop = 40;
+		swipe(at('.t'), 100, 400);
+		expect(panel().style.transform).toBe('');
+		at('.t').dispatchEvent(touch('touchend', 400));
+		expect(onclose).not.toHaveBeenCalled();
+	});
+
 	it('fit: the panel and backdrop take the box, bottom released', async () => {
 		render(DockedSheet, { props: baseProps({ fit: { top: 12, height: 300 } }) });
 		await tick();

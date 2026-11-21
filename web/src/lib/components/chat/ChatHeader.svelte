@@ -27,7 +27,8 @@
 	} = $props();
 </script>
 
-<header class="chat-header">
+<!-- data-sheet-drag: in the phone sheet a swipe on this row drags the sheet (TASK-4523). -->
+<header class="chat-header" data-sheet-drag>
 	{#if lead}
 		<div class="lead">{@render lead()}</div>
 	{:else if back}
