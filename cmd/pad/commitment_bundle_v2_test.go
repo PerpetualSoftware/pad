@@ -41,7 +41,10 @@ func migrationCommitment(t *testing.T) (*store.Store, *models.WorkspaceExport) {
 	exec(`UPDATE item_reminders SET remind_at='2030-01-02T09:00:00Z' WHERE schedule_id=?`, sc.ID)
 	key := *sc.NextAt + "|" + *sc.NextWall
 	exec(`INSERT INTO schedule_occurrence_overrides (id,schedule_id,occurrence_key,role,value_at,value_wall,created_at,updated_at) VALUES ('override',?,?,'target','2030-01-01T12:00:00Z','2030-01-01T12:00:00','2026-11-01T12:00:00Z','2026-11-01T12:00:00Z')`, sc.ID, key)
-	exec(`INSERT INTO schedule_occurrences (id,schedule_id,occurrence_at,occurrence_wall,state,actor,resolved_at,actual_done_at,actual_source) VALUES ('actual',?,'2029-12-31T09:00:00Z','2029-12-31T09:00:00','done','user','2029-12-31T11:00:00Z','2029-12-31T10:00:00Z','reported')`, sc.ID)
+	// A resolved row carries the offsets it was resolved under (TASK-4714), as
+	// every resolution writes it: here a half-hour target, unlike the schedule's
+	// current offsets, so the carry must keep the snapshot rather than re-stamp.
+	exec(`INSERT INTO schedule_occurrences (id,schedule_id,occurrence_at,occurrence_wall,state,actor,resolved_at,actual_done_at,actual_source,roles_target_days,roles_target_secs) VALUES ('actual',?,'2029-12-31T09:00:00Z','2029-12-31T09:00:00','done','user','2029-12-31T11:00:00Z','2029-12-31T10:00:00Z','reported',0,1800)`, sc.ID)
 	data, err := src.ExportWorkspace(ws.Slug)
 	if err != nil {
 		t.Fatal(err)
