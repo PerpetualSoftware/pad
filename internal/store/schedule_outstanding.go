@@ -80,36 +80,10 @@ func ScheduleMissed(sc *models.ItemSchedule, view *time.Location, nowT time.Time
 // missedOccurrences is the walk ScheduleMissed counts and a resolve records, so
 // the count a reader saw and the rows a done/skip writes cannot disagree.
 func missedOccurrences(sc *models.ItemSchedule, view *time.Location, nowT time.Time) (occs []schedule.Occurrence, truncated bool, err error) {
-	if sc.EndedAt != nil || sc.ErrorCode != nil {
-		return nil, false, nil
-	}
-	o, ok, err := walkOrigin(sc, view)
+	c, from, to, ok, err := missedWalk(sc, view, nowT)
 	if err != nil || !ok {
 		return nil, false, err
 	}
-	cut := nowT.UTC().Add(-time.Second)
-	if !cut.After(o) {
-		return nil, false, nil
-	}
-	start := sc.Dtstart
-	if sc.AnchorWall != nil {
-		start = *sc.AnchorWall
-	}
-	c, err := compileScheduleSpec(storedSpecInput(sc, start))
-	if err != nil {
-		return nil, false, err
-	}
-	loc := view
-	if !sc.Floating {
-		if loc, err = time.LoadLocation(c.Spec().Zone); err != nil {
-			return nil, false, fmt.Errorf("load schedule zone: %w", err)
-		}
-	}
-	from := o.Add(time.Nanosecond)
-	if floor := schedule.Resolve(loc, c.Spec().Start); floor.After(from) {
-		from = floor
-	}
-	to := cut.Add(time.Nanosecond)
 	if limit := from.Add(maxMissedWindow); to.After(limit) {
 		to, truncated = limit, true
 	}
@@ -122,6 +96,77 @@ func missedOccurrences(sc *models.ItemSchedule, view *time.Location, nowT time.T
 		return nil, false, err
 	}
 	return occs, truncated, nil
+}
+
+// missedWalk compiles the walk missedOccurrences runs and its uncapped window
+// [from, to): from just after the outstanding occurrence (or the anchor floor),
+// to just after nowT less a second. ok is false when there is nothing to walk.
+func missedWalk(sc *models.ItemSchedule, view *time.Location, nowT time.Time) (c *schedule.Compiled, from, to time.Time, ok bool, err error) {
+	if sc.EndedAt != nil || sc.ErrorCode != nil {
+		return nil, from, to, false, nil
+	}
+	o, ok, err := walkOrigin(sc, view)
+	if err != nil || !ok {
+		return nil, from, to, false, err
+	}
+	cut := nowT.UTC().Add(-time.Second)
+	if !cut.After(o) {
+		return nil, from, to, false, nil
+	}
+	start := sc.Dtstart
+	if sc.AnchorWall != nil {
+		start = *sc.AnchorWall
+	}
+	if c, err = compileScheduleSpec(storedSpecInput(sc, start)); err != nil {
+		return nil, from, to, false, err
+	}
+	loc := view
+	if !sc.Floating {
+		if loc, err = time.LoadLocation(c.Spec().Zone); err != nil {
+			return nil, from, to, false, fmt.Errorf("load schedule zone: %w", err)
+		}
+	}
+	from = o.Add(time.Nanosecond)
+	if floor := schedule.Resolve(loc, c.Spec().Start); floor.After(from) {
+		from = floor
+	}
+	return c, from, cut.Add(time.Nanosecond), true, nil
+}
+
+// newestTailWindows are the windows newestMissedOccurrence reads back from the
+// end of the walk, smallest first, so a dense rule stays under the instance cap
+// and a sparse one is still found.
+var newestTailWindows = []time.Duration{time.Hour, 24 * time.Hour, 7 * 24 * time.Hour, 31 * 24 * time.Hour, maxMissedWindow}
+
+// newestMissedOccurrence is the newest occurrence missedOccurrences would end
+// on with no cap: the walk read back from its end rather than forward from the
+// outstanding occurrence, for when the forward walk is truncated. ok is false
+// when no occurrence lies within the largest window.
+func newestMissedOccurrence(sc *models.ItemSchedule, view *time.Location, nowT time.Time) (at time.Time, ok bool, err error) {
+	c, from, to, ok, err := missedWalk(sc, view, nowT)
+	if err != nil || !ok {
+		return at, false, err
+	}
+	for _, w := range newestTailWindows {
+		lo := to.Add(-w)
+		if lo.Before(from) {
+			lo = from
+		}
+		occs, err := c.Between(lo, to, view, schedule.DefaultLimits)
+		var capErr *schedule.CapError
+		if err != nil && !(errors.As(err, &capErr) && capErr.Kind == schedule.CapInstances) {
+			return at, false, err
+		}
+		if n := len(occs); n > 0 {
+			// A capped read keeps its earliest instances; a smaller window
+			// found none, so its last is still the newest known.
+			return occs[n-1].At, true, nil
+		}
+		if !lo.After(from) {
+			break
+		}
+	}
+	return at, false, nil
 }
 
 // walkOrigin is the outstanding occurrence's instant as the walk reads it: a

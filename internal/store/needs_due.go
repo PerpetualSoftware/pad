@@ -78,12 +78,22 @@ func needsRowLatest(row BootstrapAgendaRow, loc *time.Location, now time.Time) t
 		latest = *row.RefireAt
 	}
 	// The walk counts occurrences at or before its clock less a second.
-	occs, _, err := missedOccurrences(row.Schedule, loc, now.Add(time.Second))
+	occs, truncated, err := missedOccurrences(row.Schedule, loc, now.Add(time.Second))
 	if err != nil {
 		return latest
 	}
-	if n := len(occs); n > 0 && occs[n-1].At.After(latest) && !occs[n-1].At.After(now) {
-		latest = occs[n-1].At
+	var newest time.Time
+	if n := len(occs); n > 0 {
+		newest = occs[n-1].At
+	}
+	// A capped walk ends before now: read back from now instead.
+	if truncated {
+		if at, ok, err := newestMissedOccurrence(row.Schedule, loc, now.Add(time.Second)); err == nil && ok && at.After(newest) {
+			newest = at
+		}
+	}
+	if newest.After(latest) && !newest.After(now) {
+		latest = newest
 	}
 	return latest
 }

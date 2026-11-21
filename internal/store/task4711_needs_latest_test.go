@@ -69,3 +69,24 @@ func TestTASK4683NeedsLatestRepeating(t *testing.T) {
 		}
 	}
 }
+
+// A walk capped at 500 instances (a 15-minute rule overdue ten days) or at its
+// 92-day window (a weekly rule overdue 200 days) still finds the newest
+// occurrence due by now.
+func TestTASK4683NeedsLatestCappedWalk(t *testing.T) {
+	for _, tc := range []struct {
+		name, rule, now, latest string
+	}{
+		{"instances", "FREQ=MINUTELY;INTERVAL=15", "2031-03-17T10:20:00Z", "2031-03-17T10:15:00Z"},
+		{"window", "FREQ=WEEKLY", "2031-09-23T12:00:00Z", "2031-09-19T09:00:00Z"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newBootFixture(t)
+			it, _ := f.mkFor(t, f.me.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-07T09:00", Tz: "UTC", Audience: "human", Rrule: tc.rule}, "2031-03-06T00:00:00Z")
+			d, ok := needsDueOf(t, f, it.ID, rt(tc.now))
+			if !ok || !d.Earliest.Equal(rt("2031-03-07T09:00:00Z")) || !d.Latest.Equal(rt(tc.latest)) {
+				t.Fatalf("due = %+v %v, want latest %s", d, ok, tc.latest)
+			}
+		})
+	}
+}
