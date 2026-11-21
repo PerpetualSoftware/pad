@@ -224,6 +224,11 @@ whether the schedule is active, ended or in error.`,
 			fmt.Fprintf(w, "Next:\t%s\n", v.next())
 			if v.SnoozedUntil != "" {
 				fmt.Fprintf(w, "Snoozed until:\t%s\n", fmtInstant(v.SnoozedUntil, nil))
+				// A snooze moves only the re-fire; the target stands, a move's
+				// target included (TASK-4590).
+				if v.Roles.Target != nil {
+					fmt.Fprintf(w, "Target:\t%s\n", fmtInstant(*v.Roles.Target, nil))
+				}
 			} else if v.NextOverrideAt != nil {
 				fmt.Fprintf(w, "Deferred to:\t%s\n", fmtInstant(*v.NextOverrideAt, nil))
 			}
