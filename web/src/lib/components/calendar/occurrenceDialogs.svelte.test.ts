@@ -96,6 +96,55 @@ describe('ResolveOccurrenceDialog', () => {
 	});
 });
 
+describe('ResolveOccurrenceDialog move scope (TASK-4494)', () => {
+	const props = (extra: Record<string, unknown> = {}) => ({ open: true, mode: 'move' as const, entry, zone: 'America/New_York', mobile: false, onclose: vi.fn(), onsubmit: vi.fn(), ...extra });
+	const scopeGroup = () => screen.queryByRole('group', { name: 'Apply to' });
+	const fill = async (value = '2026-11-14T09:30') => { await fireEvent.input(screen.getByLabelText('New date and time'), { target: { value } }); };
+	const seriesNote = "Later occurrences move to the same time relative to their start; only this occurrence's reminder moves. There is no Undo: move the series back to undo it.";
+	it.each([['move', false], ['snooze', true], ['snooze', false]] as const)('shows no choice in %s mode with recurring=%s', (mode, recurring) => {
+		render(ResolveOccurrenceDialog, props({ mode, recurring }));
+		expect(scopeGroup()).toBeNull(); expect(screen.queryByRole('radio')).toBeNull();
+	});
+	it('offers both scopes in move mode on a recurring schedule, This occurrence first and selected', () => {
+		render(ResolveOccurrenceDialog, props({ recurring: true }));
+		const group = scopeGroup()!;
+		expect(within(group).getAllByRole('radio').map(radio => radio.closest('label')?.textContent?.trim())).toEqual(['This occurrence', 'This and future occurrences']);
+		expect(within(group).getByRole('radio', { name: 'This occurrence' })).toBeChecked();
+		expect(screen.getByText('The reminder follows the target.')).toBeInTheDocument();
+		expect(primaries()).toEqual(['Move target']);
+	});
+	it('submits the series scope as the third argument and swaps the note', async () => {
+		const p = props({ recurring: true });
+		render(ResolveOccurrenceDialog, p);
+		await fireEvent.click(screen.getByRole('radio', { name: 'This and future occurrences' }));
+		expect(screen.queryByText('The reminder follows the target.')).toBeNull();
+		expect(screen.getByText(seriesNote)).toBeInTheDocument();
+		await fill(); await fireEvent.input(screen.getByLabelText('Reason (optional)'), { target: { value: ' Later ' } });
+		await fireEvent.click(screen.getByRole('button', { name: 'Move target' }));
+		expect(p.onsubmit).toHaveBeenCalledExactlyOnceWith('2026-11-14T14:30:00.000Z', 'Later', 'series');
+	});
+	it('passes no reason and the series scope when the reason is empty', async () => {
+		const p = props({ recurring: true });
+		render(ResolveOccurrenceDialog, p);
+		await fireEvent.click(screen.getByRole('radio', { name: 'This and future occurrences' }));
+		await fill(); await fireEvent.click(screen.getByRole('button', { name: 'Move target' }));
+		expect(p.onsubmit.mock.calls[0]).toEqual(['2026-11-14T14:30:00.000Z', undefined, 'series']);
+	});
+	it('passes no scope for This occurrence', async () => {
+		const p = props({ recurring: true });
+		render(ResolveOccurrenceDialog, p);
+		await fill(); await fireEvent.click(screen.getByRole('button', { name: 'Move target' }));
+		expect(p.onsubmit).toHaveBeenCalledTimes(1); expect(p.onsubmit.mock.calls[0][2]).toBeUndefined();
+	});
+	it('resets the choice to This occurrence on every open', async () => {
+		const view = render(ResolveOccurrenceDialog, props({ recurring: true }));
+		await fireEvent.click(screen.getByRole('radio', { name: 'This and future occurrences' }));
+		await view.rerender({ open: false }); await view.rerender({ open: true });
+		expect(screen.getByRole('radio', { name: 'This occurrence' })).toBeChecked();
+		expect(screen.getByText('The reminder follows the target.')).toBeInTheDocument();
+	});
+});
+
 describe('AgendaDayDialog', () => {
 	const mount = (extra: Record<string, unknown> = {}) => render(AgendaDayDialog, { props: { day: '2026-11-12', today: '2026-11-12', entries: [entry, { ...entry, item_ref: 'TASK-10', schedule_id: 's2', state: 'done' }], zone: 'America/New_York', mobile: false, incomplete: false, pending: {}, saved: {}, onclose: vi.fn(), onaction: vi.fn(), ...extra } });
 	it('is titled with the day, says Today, and summarises the day under it', () => {
