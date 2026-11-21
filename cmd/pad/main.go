@@ -102,7 +102,7 @@ func writeRootStructuredError(w io.Writer, err error) {
 			}
 			if json.Unmarshal(commitmentErr.Details, &detail) == nil && detail.Code != "" {
 				switch detail.Field {
-				case "resolution_id", "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule":
+				case "resolution_id", "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule", "scope":
 					structured = true
 				}
 			}

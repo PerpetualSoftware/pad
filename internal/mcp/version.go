@@ -2355,9 +2355,13 @@ const CmdhelpVersion = "0.1"
 // the workspace scope, or a user ID). The default answer changes: the groups
 // list the caller's own work and no_date is listed instead of the
 // personal_only marker. stale refuses a recipient.
-// v0.123 adds the owner-only pad_workspace.rename action.
+// v0.123: additive. pad_item schedule-move takes scope (occurrence by
+// default, or series with role target), forwarded on both transports; a
+// series move also writes the target offset from the outstanding occurrence
+// on and answers with a series member. Without scope nothing changes.
+// v0.124 adds the owner-only pad_workspace.rename action.
 // The current and new slugs are explicit, and the old slug stays an alias.
-const ToolSurfaceVersion = "0.123"
+const ToolSurfaceVersion = "0.124"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

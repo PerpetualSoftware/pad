@@ -276,6 +276,25 @@ func TestNotMine_ReleasesOnDueReminder(t *testing.T) {
 	f.released("a reminder that came due after the mark", viewer, "Due item")
 }
 
+// A Not mine marked while the reminder was snoozed releases when the snooze
+// ends and the reminder re-fires (TASK-4711).
+func TestNotMine_ReleasesOnSnoozeRefire(t *testing.T) {
+	t.Parallel()
+	w := newBootAgendaWorld(t, "2031-03-10T12:00:00Z")
+	f := newNfx(t, w.srv)
+	viewer := f.user("recipient")
+	f.member(w.ws, viewer, "editor")
+	it := w.sched(t, viewer, "Snoozed item", "2031-03-10T09:00", "human")
+	refire := "2031-03-11T09:00:00Z"
+	f.exec(fmt.Sprintf("UPDATE item_schedules SET next_override_at = '%s' WHERE item_id = '%s'", refire, it.ID))
+	wantTitles(t, "snoozed", f.need(viewer, "").Rows)
+	f.notMine(viewer, w.ws, it, nil)
+	f.exec(fmt.Sprintf("UPDATE item_needs_not_mine SET seen_at = '%s' WHERE user_id = '%s' AND item_id = '%s'", "2031-03-10T12:00:00Z", viewer.ID, it.ID))
+	clock := time.Date(2031, 3, 11, 10, 0, 0, 0, time.UTC)
+	w.srv.agendaClock = func() time.Time { return clock }
+	f.released("the snoozed reminder re-fired after the mark", viewer, "Snoozed item")
+}
+
 func TestNotMine_PerUser(t *testing.T) {
 	t.Parallel()
 	needsBackends(t, func(t *testing.T, srv *Server) {

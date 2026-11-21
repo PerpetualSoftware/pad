@@ -14,7 +14,7 @@
 import { tick } from 'svelte';
 import { api } from '$lib/api/client';
 import { authStore } from '$lib/stores/auth.svelte';
-import { canAcknowledge, canMove, canResolve, dateTime, entryKey, isAllDay, outstandingMatches, sameTarget, targetOnDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+import { canAcknowledge, canMove, canResolve, dateTime, entryKey, isAllDay, outstandingMatches, sameTarget, seriesRangeCopy, targetOnDay, todayIn, type AgendaAction } from '$lib/calendar/presentation';
 import type { ScheduleEndChoice } from '$lib/components/calendar/ScheduleEndDialog.svelte';
 import type { AgendaEntry, CommitmentMoveResult, ItemStillOpenDetails, ScheduleResolveState } from '$lib/types';
 
@@ -32,7 +32,7 @@ export interface ItemCommitmentActionDeps {
 	root?: () => HTMLElement | undefined;
 }
 
-type Review = { entry: AgendaEntry; to: string; preview: CommitmentMoveResult; reason?: string; sameIdentity: () => boolean };
+type Review = { entry: AgendaEntry; to: string; preview: CommitmentMoveResult; reason?: string; sameIdentity: () => boolean; scope?: 'series' };
 
 export class ItemCommitmentActions {
 	pending = $state<Record<string, boolean>>({});
@@ -87,10 +87,10 @@ export class ItemCommitmentActions {
 		if (state === 'move' || state === 'snooze') { this.dialogMode = state; this.dialogEntry = entry; }
 		else void this.resolve(entry, state);
 	};
-	submitDialog = (until: string, comment?: string) => {
+	submitDialog = (until: string, comment?: string, scope?: 'series') => {
 		const entry = this.dialogEntry;
 		if (!entry) return;
-		if (this.dialogMode === 'move') void this.moveTarget(entry, until, comment || undefined);
+		if (this.dialogMode === 'move') void this.moveTarget(entry, until, comment || undefined, scope);
 		else void this.resolve(entry, 'snooze', until, comment);
 	};
 	closeDialog = () => { this.dialogEntry = null; };
@@ -209,8 +209,10 @@ export class ItemCommitmentActions {
 		}));
 		if (sameIdentity()) this.linkedTitles = { ...this.linkedTitles, ...Object.fromEntries(titles) };
 	};
-	#moveError = async (error: unknown) => {
+	#moveError = async (error: unknown, series?: boolean) => {
 		const code = (error as { code?: string })?.code;
+		const details = (error as { details?: { field?: unknown; code?: unknown } })?.details;
+		if (series && code === 'validation_error' && details?.field === 'to' && details?.code === 'range') { this.actionError = seriesRangeCopy(error); return; }
 		const stale = code === 'commitment_changed' || code === 'stale';
 		const forbidden = code === 'forbidden' || code === 'permission_denied' || code === 'link_edit_required';
 		const message = (error as { message?: unknown })?.message;
@@ -224,13 +226,14 @@ export class ItemCommitmentActions {
 		const button = root?.querySelector<HTMLButtonElement>('button[data-agenda-actions]');
 		(button && !button.disabled ? button : root)?.focus();
 	};
-	commitTarget = async (entry: AgendaEntry, to: string, preview: CommitmentMoveResult, sameIdentity: () => boolean, reason?: string, acknowledge?: boolean, confirmPastDeadline?: boolean) => {
+	commitTarget = async (entry: AgendaEntry, to: string, preview: CommitmentMoveResult, sameIdentity: () => boolean, reason?: string, acknowledge?: boolean, confirmPastDeadline?: boolean, scope?: 'series') => {
 		if (!sameIdentity()) return;
 		const key = entryKey(entry);
+		const series = scope === 'series';
 		const reviewed = this.review && entryKey(this.review.entry) === key;
 		if (reviewed) this.committing = true;
 		try {
-			await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}), ...(preview.past_deadline && confirmPastDeadline ? { confirm_past_deadline: true } : {}) });
+			await api.moveCommitment(entry.workspace!, entry.item_ref, { role: 'target', to, revision: preview.revision, ...(reason ? { reason } : {}), ...(acknowledge ? { acknowledge_violations: true } : {}), ...(preview.past_deadline && confirmPastDeadline ? { confirm_past_deadline: true } : {}), ...(series ? { scope: 'series' as const } : {}) });
 			if (!sameIdentity()) return;
 			this.saved = { ...this.saved, [key]: true };
 			if (this.dialogEntry && entryKey(this.dialogEntry) === key) this.dialogEntry = null;
@@ -238,27 +241,29 @@ export class ItemCommitmentActions {
 			const refreshed = await this.#deps.refresh();
 			if (!sameIdentity()) return;
 			if (refreshed === false) this.refreshFailed = true;
-			this.#succeed(`Occurrence moved to ${dateTime(to, this.#deps.zone(), isAllDay(entry))}. Its reminder follows the target.`);
+			const when = dateTime(to, this.#deps.zone(), isAllDay(entry));
+			this.#succeed(series ? `This and future occurrences moved to ${when}. Only this occurrence's reminder moved.` : `Occurrence moved to ${when}. Its reminder follows the target.`);
 			this.pending = { ...this.pending, [key]: false };
 			await this.#focusMoved();
 		} catch (error) {
 			if (sameIdentity()) {
-				await this.#moveError(error);
+				await this.#moveError(error, series);
 				if ((error as { code?: string })?.code === 'target_after_deadline') {
 					try {
-						const fresh = await api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}) });
+						const fresh = await api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}), ...(series ? { scope: 'series' as const } : {}) });
 						if (!sameIdentity()) return;
 						this.dialogEntry = null;
-						this.review = { entry, to, preview: fresh, reason, sameIdentity };
+						this.review = { entry, to, preview: fresh, reason, sameIdentity, scope };
 						void this.loadTitles(entry, fresh);
-					} catch (previewError) { if (sameIdentity()) await this.#moveError(previewError); }
+					} catch (previewError) { if (sameIdentity()) await this.#moveError(previewError, series); }
 				}
 			}
 		} finally {
 			if (sameIdentity()) { if (reviewed) this.committing = false; this.pending = { ...this.pending, [key]: false }; }
 		}
 	};
-	moveTarget = async (entry: AgendaEntry, to: string, reason?: string) => {
+	// scope 'series' moves this and future occurrences; only the move dialog passes it, never Bring to today.
+	moveTarget = async (entry: AgendaEntry, to: string, reason?: string, scope?: 'series') => {
 		const key = entryKey(entry);
 		if (!canMove(entry) || this.pending[key] || this.saved[key] || this.review) return;
 		if (this.#unchanged(entry, to)) { if (this.dialogEntry && entryKey(this.dialogEntry) === key) this.dialogEntry = null; return; }
@@ -266,7 +271,7 @@ export class ItemCommitmentActions {
 		this.pending = { ...this.pending, [key]: true }; this.actionError = ''; this.announcement = '';
 		let reviewing = false;
 		try {
-			const preview = await api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}) });
+			const preview = await api.previewCommitmentMove(entry.workspace!, entry.item_ref, { role: 'target', to, ...(reason ? { reason } : {}), ...(scope === 'series' ? { scope: 'series' as const } : {}) });
 			if (!sameIdentity()) return;
 			const root = preview.changes.find(change => change.root);
 			if (!root?.from || !this.#unchanged(entry, root.from)) {
@@ -274,11 +279,11 @@ export class ItemCommitmentActions {
 			}
 			if (preview.renegotiates_deadline || preview.violations?.length || preview.past_deadline) {
 				this.dialogEntry = null;
-				this.review = { entry, to, preview, reason, sameIdentity }; reviewing = true;
+				this.review = { entry, to, preview, reason, sameIdentity, scope }; reviewing = true;
 				void this.loadTitles(entry, preview);
-			} else await this.commitTarget(entry, to, preview, sameIdentity, reason);
+			} else await this.commitTarget(entry, to, preview, sameIdentity, reason, undefined, undefined, scope);
 		} catch (error) {
-			if (sameIdentity()) await this.#moveError(error);
+			if (sameIdentity()) await this.#moveError(error, scope === 'series');
 		} finally {
 			if (sameIdentity() && !reviewing) this.pending = { ...this.pending, [key]: false };
 		}
@@ -286,7 +291,7 @@ export class ItemCommitmentActions {
 	commitReview = async (reason?: string, acknowledge?: boolean, confirmPastDeadline?: boolean) => {
 		const review = this.review;
 		if (!review || this.committing) return;
-		await this.commitTarget(review.entry, review.to, review.preview, review.sameIdentity, reason, acknowledge, confirmPastDeadline);
+		await this.commitTarget(review.entry, review.to, review.preview, review.sameIdentity, reason, acknowledge, confirmPastDeadline, review.scope);
 	};
 	cancelReview = () => {
 		if (!this.review || this.committing) return;

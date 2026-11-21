@@ -21,6 +21,11 @@ type NeedsDue struct {
 // A capped read returns its partial set and logs the cap. A moved occurrence
 // claims from its moved instant, and a snoozed one waits until the snooze
 // ends (TASK-4591): the person asked to hear about it later.
+//
+// Latest is the newest of: the outstanding occurrence's due instant, its
+// snooze re-fire instant once that has passed (TASK-4711), and the newest
+// later occurrence of the rule due at or before now (TASK-4683), walked in the
+// viewer's zone with the same bounded walk ScheduleMissed counts.
 func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, userID string, now time.Time) (map[string]NeedsDue, error) {
 	out := map[string]NeedsDue{}
 	if scope.seesNothing() {
@@ -33,9 +38,10 @@ func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, user
 	if user == nil {
 		return out, nil
 	}
+	loc := usertz.Resolve(user.Timezone).Loc
 	set, err := s.BootstrapAgenda(BootstrapAgendaParams{
 		ExcludeAcknowledged: true,
-		WorkspaceID:         workspaceID, UserID: userID, Now: now, Loc: usertz.Resolve(user.Timezone).Loc,
+		WorkspaceID:         workspaceID, UserID: userID, Now: now, Loc: loc,
 		Scope: PendingReminderScope{CollectionIDs: scope.CollectionIDs, ItemIDs: scope.ItemIDs},
 	})
 	if err != nil {
@@ -54,11 +60,44 @@ func (s *Store) NeedsDueOccurrences(workspaceID string, scope CatchUpScope, user
 			if !ok || row.Due.Before(d.Earliest) {
 				d.Earliest = row.Due
 			}
-			if !ok || row.Due.After(d.Latest) {
-				d.Latest = row.Due
+			if latest := needsRowLatest(row, loc, now); !ok || latest.After(d.Latest) {
+				d.Latest = latest
 			}
 			out[id] = d
 		}
 	}
 	return out, nil
+}
+
+// needsRowLatest is when the newest claim of an outstanding row came due: its
+// due instant, a passed snooze re-fire, or the newest occurrence of the rule
+// after the outstanding one that is due at or before now.
+func needsRowLatest(row BootstrapAgendaRow, loc *time.Location, now time.Time) time.Time {
+	latest := row.Due
+	if row.RefireAt != nil && !row.RefireAt.After(now) && row.RefireAt.After(latest) {
+		latest = *row.RefireAt
+	}
+	// The walk counts occurrences at or before its clock less a second.
+	occs, truncated, err := missedOccurrences(row.Schedule, loc, now.Add(time.Second))
+	if err != nil {
+		slog.Warn("needs: due occurrence walk failed", "schedule_id", row.Schedule.ID, "error", err)
+		return latest
+	}
+	var newest time.Time
+	if n := len(occs); n > 0 {
+		newest = occs[n-1].At
+	}
+	// A capped walk ends before now: read back from now instead.
+	if truncated {
+		at, ok, err := newestMissedOccurrence(row.Schedule, loc, now.Add(time.Second))
+		if err != nil {
+			slog.Warn("needs: newest due occurrence read failed", "schedule_id", row.Schedule.ID, "error", err)
+		} else if ok && at.After(newest) {
+			newest = at
+		}
+	}
+	if newest.After(latest) && !newest.After(now) {
+		latest = newest
+	}
+	return latest
 }

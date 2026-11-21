@@ -490,7 +490,7 @@ func actionItemScheduleGraph(action string) ActionFn {
 		case "schedule-unlink":
 			keys = append(keys, "link_id")
 		case "schedule-move":
-			keys = append(keys, "ref", "role", "to", "reason", "revision", "apply", "preview", "acknowledge_violations", "confirm_past_deadline")
+			keys = append(keys, "ref", "role", "to", "reason", "revision", "apply", "preview", "acknowledge_violations", "confirm_past_deadline", "scope")
 		case "schedule-gate":
 			keys = append(keys, "ref", "blocker", "gate_id")
 		}
@@ -501,7 +501,7 @@ func actionItemScheduleGraph(action string) ActionFn {
 			}
 		}
 		fail := func(err error) (*CallToolResult, error) { return errStructured(name, err), nil }
-		for _, k := range []string{"ref", "child", "parent_role", "child_role", "link_id", "gate_id", "blocker", "cancel_policy", "reason", "revision"} {
+		for _, k := range []string{"ref", "child", "parent_role", "child_role", "link_id", "gate_id", "blocker", "cancel_policy", "reason", "revision", "scope"} {
 			v, ok := out[k]
 			delete(out, k)
 			if !ok || v == nil {

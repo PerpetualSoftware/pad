@@ -18,6 +18,13 @@ import (
 // a plain move. A snooze whose re-fire instant is at or before now has ended, so
 // it reads nil.
 func ScheduleSnoozedUntil(sc *models.ItemSchedule, occurrenceState string, movedTarget *time.Time, now time.Time) *time.Time {
+	return snoozeActive(scheduleRefireAt(sc, occurrenceState, movedTarget), now)
+}
+
+// scheduleRefireAt is the re-fire instant of a snooze on the outstanding
+// occurrence, whether or not it has passed: next_override_at less the lead.
+// nil when the occurrence is not snoozed (see ScheduleSnoozedUntil).
+func scheduleRefireAt(sc *models.ItemSchedule, occurrenceState string, movedTarget *time.Time) *time.Time {
 	if sc.EndedAt != nil || sc.NextWall == nil || sc.NextOverrideAt == nil {
 		return nil
 	}
@@ -35,10 +42,16 @@ func ScheduleSnoozedUntil(sc *models.ItemSchedule, occurrenceState string, moved
 		return nil
 	}
 	until := at.Add(-time.Duration(sc.LeadMinutes) * time.Minute).UTC()
-	if !until.After(now) {
+	return &until
+}
+
+// snoozeActive is refire while it is still ahead of now: a snooze whose
+// re-fire instant is at or before now has ended.
+func snoozeActive(refire *time.Time, now time.Time) *time.Time {
+	if refire == nil || !refire.After(now) {
 		return nil
 	}
-	return &until
+	return refire
 }
 
 // ReadScheduleSnoozedUntil is for reads without occurrence history already in
@@ -46,6 +59,19 @@ func ScheduleSnoozedUntil(sc *models.ItemSchedule, occurrenceState string, moved
 func (s *Store) ReadScheduleSnoozedUntil(sc *models.ItemSchedule, now time.Time) (*time.Time, error) {
 	// No override, or one already past: nothing to look up.
 	if sc.NextAt == nil || ScheduleSnoozedUntil(sc, "", nil, now) == nil {
+		return nil, nil
+	}
+	refire, err := s.readScheduleRefireAt(sc)
+	if err != nil {
+		return nil, err
+	}
+	return snoozeActive(refire, now), nil
+}
+
+// readScheduleRefireAt reads the outstanding occurrence's history to derive
+// its snooze re-fire instant, past or not (scheduleRefireAt).
+func (s *Store) readScheduleRefireAt(sc *models.ItemSchedule) (*time.Time, error) {
+	if sc.NextAt == nil || scheduleRefireAt(sc, "", nil) == nil {
 		return nil, nil
 	}
 	column, identity := "occurrence_at", *sc.NextAt
@@ -63,7 +89,7 @@ func (s *Store) ReadScheduleSnoozedUntil(sc *models.ItemSchedule, now time.Time)
 			return nil, err
 		}
 	}
-	return ScheduleSnoozedUntil(sc, state, target, now), nil
+	return scheduleRefireAt(sc, state, target), nil
 }
 
 // movedTargetQ reads a moved occurrence's target, the role=target override the

@@ -176,7 +176,7 @@ type CommitmentRoleOffsets struct {
 type CommitmentChange struct {
 	ReversedBy     string  `json:"reversed_by,omitempty"`
 	ID             string  `json:"id"`
-	ChangeType     string  `json:"change_type"` // missed_recorded | done | move | update (deadline or assignee) | ack
+	ChangeType     string  `json:"change_type"` // missed_recorded | done | move | update (deadline, assignee or a series target offset) | ack
 	OccurrenceKey  *string `json:"occurrence_key,omitempty"`
 	Role           *string `json:"role,omitempty"`
 	BeforeJSON     *string `json:"before_json,omitempty"`

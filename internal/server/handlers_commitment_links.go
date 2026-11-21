@@ -71,6 +71,7 @@ type commitmentMovePreviewBody struct {
 	Role   *string `json:"role"`
 	To     *string `json:"to"`
 	Reason string  `json:"reason"`
+	Scope  *string `json:"scope"`
 }
 type commitmentMoveBody struct {
 	ConfirmPastDeadline   bool    `json:"confirm_past_deadline"`
@@ -79,6 +80,7 @@ type commitmentMoveBody struct {
 	Reason                string  `json:"reason"`
 	Revision              string  `json:"revision"`
 	AcknowledgeViolations bool    `json:"acknowledge_violations"`
+	Scope                 *string `json:"scope"`
 }
 type commitmentLinkWriteView struct {
 	Link  *models.ScheduleLink    `json:"link"`
@@ -414,7 +416,7 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 	if preview {
 		var p commitmentMovePreviewBody
 		p, err = strictScheduleBody[commitmentMovePreviewBody](r)
-		b.Role, b.To, b.Reason = p.Role, p.To, p.Reason
+		b.Role, b.To, b.Reason, b.Scope = p.Role, p.To, p.Reason, p.Scope
 	} else {
 		b, err = strictScheduleBody[commitmentMoveBody](r)
 	}
@@ -429,6 +431,18 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 		s.writeGraphError(w, r, graphField("to", "format"))
 		return
 	}
+	scope := "occurrence"
+	if b.Scope != nil {
+		scope = *b.Scope
+		if scope != "occurrence" && scope != "series" {
+			s.writeGraphError(w, r, graphField("scope", "enum"))
+			return
+		}
+	}
+	if scope == "series" && *b.Role != "target" {
+		s.writeGraphError(w, r, graphField("scope", "combination"))
+		return
+	}
 	loader := s.graphAccessLoader(r, ws, commitmentAccessLive, item.ID)
 	access, err := loader(s.store.Q())
 	if s.writeGraphError(w, r, err) || s.writeGraphError(w, r, graphEndsEditable(access, item.ID, item.ID)) {
@@ -438,7 +452,7 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 	actor, _ := actorFromRequest(r)
-	in := models.LinkedMoveInput{ConfirmPastDeadline: b.ConfirmPastDeadline, ItemID: item.ID, Role: *b.Role, To: *b.To, Actor: actor, ActorUserID: currentUserID(r), Reason: b.Reason, Preview: preview, Revision: b.Revision, AcknowledgeViolations: b.AcknowledgeViolations, Access: access, CommitmentAccessLoader: loader}
+	in := models.LinkedMoveInput{ConfirmPastDeadline: b.ConfirmPastDeadline, ItemID: item.ID, Role: *b.Role, To: *b.To, Actor: actor, ActorUserID: currentUserID(r), Reason: b.Reason, Preview: preview, Revision: b.Revision, AcknowledgeViolations: b.AcknowledgeViolations, Access: access, CommitmentAccessLoader: loader, Scope: scope}
 	if in.Role == "deadline" {
 		allowed, err := s.canRenegotiateCommitment(r, ws, item)
 		if s.writeGraphError(w, r, err) {

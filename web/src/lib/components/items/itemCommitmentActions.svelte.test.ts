@@ -125,3 +125,39 @@ it('brings the target to today through the move flow', async () => {
  expect(h.preview).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-10T00:00:00.000Z' });
  expect(h.move).toHaveBeenCalledWith('work', 'TASK-1', expect.objectContaining({ to: '2031-03-10T00:00:00.000Z', revision: 'r1' }));
 });
+it('sends no scope member for an occurrence move from the dialog', async () => {
+ const c = make();
+ h.preview.mockResolvedValueOnce({ revision: 'r1', changes: [root()] }); h.move.mockResolvedValueOnce({ revision: 'r2', changes: [root()] });
+ c.action(entryOf(), 'move'); c.submitDialog('2031-03-12T00:00:00.000Z', undefined, undefined); await flush();
+ expect(h.preview.mock.calls[0][2]).toEqual({ role: 'target', to: '2031-03-12T00:00:00.000Z' });
+ expect(h.move.mock.calls[0][2]).toEqual({ role: 'target', to: '2031-03-12T00:00:00.000Z', revision: 'r1' });
+});
+it('moves this and future occurrences with scope series on preview and move, and says so', async () => {
+ const c = make();
+ h.preview.mockResolvedValueOnce({ revision: 'series-r1', changes: [root()] }); h.move.mockResolvedValueOnce({ revision: 'r2', changes: [root()], series: { applies_from: 'k', current_offset: { target_days: 0, target_secs: 0 }, new_offset: { target_days: 2, target_secs: 0 } } });
+ c.action(entryOf(), 'move'); c.submitDialog('2031-03-12T00:00:00.000Z', 'later', 'series'); await flush();
+ expect(h.preview).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-12T00:00:00.000Z', reason: 'later', scope: 'series' });
+ expect(h.move).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-12T00:00:00.000Z', revision: 'series-r1', reason: 'later', scope: 'series' });
+ expect(c.announcement).toMatch(/^This and future occurrences moved to .*\. Only this occurrence's reminder moved\.$/);
+});
+it('commits a reviewed series move with the same scope', async () => {
+ const c = make();
+ h.preview.mockResolvedValueOnce({ revision: 'series-r1', renegotiates_deadline: true, changes: [root()] });
+ c.action(entryOf(), 'move'); c.submitDialog('2031-03-12T00:00:00.000Z', undefined, 'series'); await flush();
+ expect(c.review?.preview.revision).toBe('series-r1');
+ h.move.mockResolvedValueOnce({ revision: 'r2', changes: [root()] });
+ await c.commitReview('because');
+ expect(h.move).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-12T00:00:00.000Z', revision: 'series-r1', reason: 'because', scope: 'series' });
+});
+it('explains a series target after the hard deadline', async () => {
+ const c = make();
+ h.preview.mockRejectedValueOnce({ code: 'validation_error', message: 'a series move cannot put the target after the hard deadline', details: { field: 'to', code: 'range' } });
+ c.action(entryOf(), 'move'); c.submitDialog('2031-03-12T00:00:00.000Z', undefined, 'series'); await flush();
+ expect(h.move).not.toHaveBeenCalled(); expect(c.actionError).toBe('A series move cannot put the target after the hard deadline.');
+});
+it('Bring to today never sends a scope', async () => {
+ const c = make();
+ h.preview.mockResolvedValueOnce({ revision: 'r1', changes: [root('2031-03-08T00:00:00Z', '2031-03-10T00:00:00.000Z')] });
+ c.action(entryOf(view({ roles: { ...view().roles, target: '2031-03-08' } })), 'today'); await flush();
+ expect('scope' in h.preview.mock.calls[0][2]).toBe(false); expect('scope' in h.move.mock.calls[0][2]).toBe(false);
+});

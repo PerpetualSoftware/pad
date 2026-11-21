@@ -206,6 +206,9 @@ type linkedPlan struct {
 	// not in impact.
 	leftInPlace []schedule.Change
 	revision    string
+	// rootChange is the journal row the applied changes hang from, set by
+	// applyLinkedPlanTx when it wrote any; "" before, or with no change.
+	rootChange string
 }
 
 // linkedOptions is the caller's side of a linked change, a move or a link write.
@@ -243,6 +246,10 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	to, err := time.Parse(time.RFC3339, in.To)
 	if err != nil {
 		return nil, fieldErr("to", "format", "to must be an RFC3339 instant")
+	}
+	series, err := moveScopeIsSeries(in.Scope, role)
+	if err != nil {
+		return nil, err
 	}
 	if !in.Access.Readable[in.ItemID] {
 		return nil, ErrScheduleNotFound
@@ -288,12 +295,35 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	}
 	deadline, crossing := p.rootPastDeadline()
 	crossing = crossing && role == schedule.RoleTarget
+	var sp *seriesTargetPlan
+	if series {
+		// Every refusal of a series move precedes the revision rules, in
+		// preview and apply alike, so a preview never promises a refused apply.
+		if sp, err = s.planSeriesTargetTx(tx, p); err != nil {
+			return nil, err
+		}
+		if crossing {
+			return nil, fieldErr("to", "range", "a series move cannot put the target after the hard deadline")
+		}
+		if p.revision, err = sp.revision(p.revision); err != nil {
+			return nil, err
+		}
+		if !in.Preview && in.Revision == "" {
+			return nil, fieldErr("revision", "required", "a series move needs the preview revision")
+		}
+	}
 	if crossing && !in.Preview && in.Revision == "" {
 		return nil, fieldErr("revision", "required", "this change needs the preview revision")
 	}
 	res, apply, err := s.settleLinkedPlan(p, budget, linkedOptions{actor: actor, reason: reason, revision: in.Revision, preview: in.Preview, acknowledge: in.AcknowledgeViolations, access: in.Access})
 	if err != nil {
 		return res, err
+	}
+	if sp != nil {
+		res.Series = sp.view()
+		// A move to the target the occurrence already reads at changes no date,
+		// and may still change the offset.
+		apply = apply || (!in.Preview && sp.changed())
 	}
 	if crossing {
 		res.PastDeadline = deadline.UTC().Format(time.RFC3339)
@@ -305,7 +335,9 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 		return res, nil
 	}
 	nowT := s.linkNow().UTC().Truncate(time.Second)
-	if len(p.impact.Changes) > 0 {
+	// A series move has no undo: a reopen restores the occurrence, not the
+	// offset. Its journal rows retire any earlier undo of the schedule.
+	if len(p.impact.Changes) > 0 && !series {
 		n := p.nodes[p.root]
 		operation := "move"
 		if role != schedule.RoleTarget {
@@ -326,6 +358,14 @@ func (s *Store) MoveLinkedDate(workspaceID string, in models.LinkedMoveInput) (*
 	}
 	if err := s.applyLinkedPlanTx(tx, p, actor, linkNoticeActor(actor, in.ActorUserID), reason, "Moved with a linked date", nowT, budget); err != nil {
 		return nil, err
+	}
+	if sp != nil && sp.changed() {
+		if err := budget.check(); err != nil {
+			return nil, err
+		}
+		if err := s.applySeriesTargetTx(tx, p, sp, actor, reason); err != nil {
+			return nil, err
+		}
 	}
 	if p.undo != nil {
 		if err := s.finishResolutionUndoTx(tx, p.nodes[p.root].sc, p.undo); err != nil {
@@ -615,6 +655,9 @@ func (s *Store) applyLinkedPlanTx(tx *sql.Tx, p *linkedPlan, actor, noticeActor,
 	rootChange := newID()
 	if p.undo != nil {
 		rootChange = p.undo.ID
+	}
+	if len(p.impact.Changes) > 0 {
+		p.rootChange = rootChange
 	}
 	if p.incoming != nil && len(p.impact.Changes) > 0 {
 		// A child dragged away from its parent keeps the link at the new offset.
