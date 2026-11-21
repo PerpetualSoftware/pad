@@ -562,6 +562,8 @@ func (s *Store) reopenOccurrenceAt(workspaceID, itemID string, in ReopenInput, n
 				continue
 			}
 			if table == "item_reminders" {
+				// Target-offset bypass: the before-image is restored as captured,
+				// under the roles it was armed with.
 				b["updated_at"] = ptr(now.UTC().Format(time.RFC3339Nano))
 			}
 			// A deleted comment remains deleted; never recreate its row or reference.

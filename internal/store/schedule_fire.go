@@ -169,7 +169,13 @@ func (s *Store) fireManagedTx(tx *sql.Tx, r *models.Reminder, nowTS string) (boo
 	spec := c.Spec()
 
 	if sc.Floating {
-		if precise := NormalizeInstant(fireInstant(at, wall, loc, sc.LeadMinutes, override)); precise > nowTS {
+		roles, err := s.scheduleRolesOf(tx, sc)
+		if err != nil {
+			return false, err
+		}
+		// The exact fire instant is the target read in the recipient zone, less
+		// the lead; the armed bound read the same target at +14, never later.
+		if precise := NormalizeInstant(fireInstant(at, wall, loc, sc.LeadMinutes, roles.target(), override)); precise > nowTS {
 			if _, err := tx.Exec(s.q(`UPDATE item_reminders SET remind_at = ?, fired_at = NULL, updated_at = ? WHERE id = ?`),
 				precise, now(), r.ID); err != nil {
 				return false, fmt.Errorf("defer floating reminder: %w", err)
@@ -399,28 +405,49 @@ func (s *Store) resetFloatingBound(match string, arg string) error {
 		if err != nil {
 			return err
 		}
-		if sc == nil || sc.NextAt == nil || sc.NextWall == nil {
-			continue
-		}
-		bound, err := storedFireInstant(sc, sc.LeadMinutes)
-		if err != nil {
+		if _, err := s.retimeStoredArmingTx(tx, sc); err != nil {
 			return err
-		}
-		// Only an armed row, and only if it actually moves.
-		res, err := tx.Exec(s.q(`
-			UPDATE item_reminders SET remind_at = ?, updated_at = ?
-			WHERE schedule_id = ? AND fired_at IS NULL AND remind_at <> ?`),
-			NormalizeInstant(bound), now(), id, NormalizeInstant(bound))
-		if err != nil {
-			return err
-		}
-		if n, err := res.RowsAffected(); err != nil {
-			return err
-		} else if n > 0 {
-			if err := s.invalidateScheduleReopenTx(tx, id); err != nil {
-				return err
-			}
 		}
 	}
 	return tx.Commit()
+}
+
+// retimeStoredArmingTx re-arms the schedule's armed managed row at the instant
+// its stored outstanding occurrence, target offset, lead and any override give
+// (storedFireInstant). Only an armed row moves, and only if it actually moves;
+// it reports whether one did. The caller holds the schedule row.
+func (s *Store) retimeStoredArmingTx(tx *sql.Tx, sc *models.ItemSchedule) (bool, error) {
+	if sc == nil || sc.NextAt == nil || sc.NextWall == nil {
+		return false, nil
+	}
+	roles, err := s.scheduleRolesOf(tx, sc)
+	if err != nil {
+		return false, err
+	}
+	bound, err := storedFireInstant(sc, sc.LeadMinutes, roles.target())
+	if err != nil {
+		return false, err
+	}
+	return s.retimeArmedRowTx(tx, sc.ID, bound)
+}
+
+// retimeArmedRowTx moves the schedule's armed managed row to at, only while it
+// is armed and only if it actually moves, and retires the reopen checkpoint
+// when it does. It reports whether the row moved.
+func (s *Store) retimeArmedRowTx(tx *sql.Tx, scheduleID string, at time.Time) (bool, error) {
+	res, err := tx.Exec(s.q(`
+		UPDATE item_reminders SET remind_at = ?, updated_at = ?
+		WHERE schedule_id = ? AND fired_at IS NULL AND remind_at <> ?`),
+		NormalizeInstant(at), now(), scheduleID, NormalizeInstant(at))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	return true, s.invalidateScheduleReopenTx(tx, scheduleID)
 }

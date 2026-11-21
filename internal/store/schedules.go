@@ -263,17 +263,45 @@ func wallInstant(loc *time.Location, w schedule.Wall) time.Time {
 	return schedule.Resolve(loc, w)
 }
 
-// fireInstant is the one function that turns an occurrence into the instant its
-// managed row is armed at, used by create, update and the firing path. at is
-// the occurrence's instant (timed occurrences use it as given, which keeps a
-// repeated fall-back hour on an elapsed rule distinct); an all-day occurrence
-// is read at the all-day hour in loc; a set override replaces the base instant
-// before the lead is subtracted.
-func fireInstant(at time.Time, w schedule.Wall, loc *time.Location, leadMinutes int, override *time.Time) time.Time {
-	base := at
-	if w.AllDay {
-		base = wallInstant(loc, w)
+// targetOffset is a schedule's native target offset from each occurrence's
+// start, as civil days and seconds. The zero value is a target at the start.
+type targetOffset struct{ days, secs int }
+
+func (r scheduleRoles) target() targetOffset {
+	return targetOffset{days: r.TargetDays, secs: r.TargetSecs}
+}
+
+// roleWall shifts an occurrence wall by a role offset in civil time, the
+// arithmetic every role value is read with (resolveRoleValue). The result is
+// all-day only when the input is and the offset has no seconds.
+func roleWall(w schedule.Wall, days, secs int) schedule.Wall {
+	civil := time.Date(w.Year, w.Month, w.Day, w.Hour, w.Minute, w.Second, 0, time.UTC).AddDate(0, 0, days).Add(time.Duration(secs) * time.Second)
+	out := wallOf(civil)
+	out.AllDay = w.AllDay && secs == 0
+	return out
+}
+
+// targetBase is the instant an occurrence's target reads at in loc. A zero
+// offset is the occurrence itself: at for a timed one (which keeps a repeated
+// fall-back hour on an elapsed rule distinct, as the agenda does), the all-day
+// hour for an all-day one. Otherwise the shifted wall is resolved in loc, and a
+// date-only target is read at the all-day hour.
+func targetBase(at time.Time, w schedule.Wall, loc *time.Location, off targetOffset) time.Time {
+	if off == (targetOffset{}) {
+		if w.AllDay {
+			return wallInstant(loc, w)
+		}
+		return at
 	}
+	return wallInstant(loc, roleWall(w, off.days, off.secs))
+}
+
+// fireInstant is the one function that turns an occurrence into the instant its
+// managed row is armed at, used by create, update and the firing path: the
+// occurrence's target (targetBase) less the lead. A set override replaces the
+// base, offset included, before the lead is subtracted.
+func fireInstant(at time.Time, w schedule.Wall, loc *time.Location, leadMinutes int, off targetOffset, override *time.Time) time.Time {
+	base := targetBase(at, w, loc, off)
 	if override != nil {
 		base = *override
 	}
@@ -289,18 +317,19 @@ type scheduleArming struct {
 
 // armSchedule computes the arming of an occurrence. Pinned: the occurrence
 // instant and its fire instant in the schedule's own zone. Floating: the early
-// bound for both, decided exactly at fire time.
-func armSchedule(c *schedule.Compiled, occ schedule.Occurrence, lead int, override *time.Time) (scheduleArming, error) {
+// bound for both (the target wall read at +14, never later than any zone reads
+// it), decided exactly at fire time.
+func armSchedule(c *schedule.Compiled, occ schedule.Occurrence, lead int, off targetOffset, override *time.Time) (scheduleArming, error) {
 	spec := c.Spec()
 	if spec.Floating {
 		at := wallInstant(boundZone, occ.Wall)
-		return scheduleArming{NextAt: at, NextWall: occ.Wall, RemindAt: fireInstant(at, occ.Wall, boundZone, lead, override)}, nil
+		return scheduleArming{NextAt: at, NextWall: occ.Wall, RemindAt: fireInstant(at, occ.Wall, boundZone, lead, off, override)}, nil
 	}
 	loc, err := time.LoadLocation(spec.Zone)
 	if err != nil {
 		return scheduleArming{}, fmt.Errorf("load schedule zone: %w", err)
 	}
-	return scheduleArming{NextAt: occ.At, NextWall: occ.Wall, RemindAt: fireInstant(occ.At, occ.Wall, loc, lead, override)}, nil
+	return scheduleArming{NextAt: occ.At, NextWall: occ.Wall, RemindAt: fireInstant(occ.At, occ.Wall, loc, lead, off, override)}, nil
 }
 
 // scheduleRecipientZone is the zone a floating schedule is read in: the item's
@@ -509,7 +538,12 @@ func (s *Store) createScheduleRolesOptionsAt(workspaceID, itemID string, in mode
 	if !found {
 		return nil, ErrScheduleExhausted
 	}
-	arm, err := armSchedule(c, occ, in.LeadMinutes, nil)
+	// Legacy roles (roles nil) have no target offset.
+	var off targetOffset
+	if roles != nil {
+		off = roles.target()
+	}
+	arm, err := armSchedule(c, occ, in.LeadMinutes, off, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -939,6 +973,13 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	var rearm *time.Time
 	leadRetime := false
 	deleteRow := false
+	// The reminder follows the target: the merged roles when the request names
+	// any, else the stored ones.
+	effective := storedRoles
+	if roles != nil {
+		effective = *roles
+	}
+	off := effective.target()
 
 	switch {
 	case timingEdit:
@@ -961,7 +1002,7 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 			deleteRow = true
 			break
 		}
-		arm, err := armSchedule(c, occ, lead, nil)
+		arm, err := armSchedule(c, occ, lead, off, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -969,8 +1010,10 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 		nextAt, nextWall, endedAt = &na, &nw, nil
 		r := arm.RemindAt
 		rearm = &r
-	case lead != cur.LeadMinutes && cur.EndedAt == nil && nextAt != nil && nextWall != nil:
-		r, err := storedFireInstant(cur, lead)
+	case (lead != cur.LeadMinutes || off != storedRoles.target()) && cur.EndedAt == nil && nextAt != nil && nextWall != nil:
+		// A lead or target offset change re-times the armed row from the stored
+		// outstanding occurrence. A result in the past fires on the next tick.
+		r, err := storedFireInstant(cur, lead, off)
 		if err != nil {
 			return nil, err
 		}
@@ -1093,10 +1136,10 @@ func (s *Store) updateCommitmentAt(workspaceID, itemID string, upd models.Schedu
 	return s.GetSchedule(workspaceID, itemID)
 }
 
-// storedFireInstant recomputes a managed row's instant after a lead change from
-// the stored outstanding occurrence, its zone and any override, through
-// fireInstant. It never compiles the rule.
-func storedFireInstant(cur *models.ItemSchedule, lead int) (time.Time, error) {
+// storedFireInstant recomputes a managed row's instant after a lead or target
+// offset change from the stored outstanding occurrence, its zone and any
+// override, through fireInstant. It never compiles the rule.
+func storedFireInstant(cur *models.ItemSchedule, lead int, off targetOffset) (time.Time, error) {
 	wall, err := schedule.ParseWall(*cur.NextWall)
 	if err != nil {
 		return time.Time{}, err
@@ -1122,7 +1165,7 @@ func storedFireInstant(cur *models.ItemSchedule, lead int) (time.Time, error) {
 			return time.Time{}, fmt.Errorf("load schedule zone: %w", err)
 		}
 	}
-	return fireInstant(at, wall, loc, lead, override), nil
+	return fireInstant(at, wall, loc, lead, off, override), nil
 }
 
 // retimeArmedReminderTx moves the managed row's instant only while it is still

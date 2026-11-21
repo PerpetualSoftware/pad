@@ -323,7 +323,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	}
 	if v.state == "move" {
 		long += "\n\nUse --role target|earliest|deadline|occupied_until with --to WHEN to preview a linked cascade. Repeat with --apply --revision TOKEN to commit; --reason records why, and --ack-violations accepts previewed bound crossings. This form refuses --until and --occurrence."
-		long += "\n\n--scope series (with --role target) also moves the target of every later occurrence: it sets the target to the same day and time relative to each occurrence's start, from the outstanding occurrence on. It always needs the preview revision, cannot put the target after the hard deadline, and has no undo; move the series back instead. Only the outstanding occurrence's reminder moves; later occurrences still remind at their start minus the lead."
+		long += "\n\n--scope series (with --role target) also moves the target of every later occurrence: it sets the target to the same day and time relative to each occurrence's start, from the outstanding occurrence on. It always needs the preview revision, cannot put the target after the hard deadline, and has no undo; move the series back instead. Every occurrence's reminder follows its target (target minus the lead)."
 	}
 	example := "  pad remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state]
 	if v.state != "ack" {

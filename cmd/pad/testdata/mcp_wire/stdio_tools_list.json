@@ -657,7 +657,7 @@
             "type": "string"
           },
           "scope": {
-            "description": "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. A series move re-arms only the outstanding occurrence's reminder; later occurrences still arm at their start minus the lead until reminder arming honours target offsets.",
+            "description": "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. Every occurrence's reminder follows its target (target minus the lead).",
             "type": "string"
           },
           "sort": {

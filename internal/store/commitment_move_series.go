@@ -17,9 +17,8 @@ import (
 // (never from its current target) in the zone the schedule is read in, as
 // civil days and seconds, the way every role offset is applied. The hard
 // deadline never changes. Resolved history, carried rows and the overrides on
-// other occurrences are left alone. Reminder arming still reads the start and
-// the lead, not the target offset, so only the outstanding occurrence's
-// reminder follows the move.
+// other occurrences are left alone. Every occurrence's reminder follows its
+// target (target minus the lead).
 
 const seriesMoveReason = "Rescheduled this and future occurrences"
 
@@ -123,6 +122,11 @@ func (s *Store) applySeriesTargetTx(tx *sql.Tx, p *linkedPlan, sp *seriesTargetP
 	if err := s.writeNativeRolesTx(tx, n.sc, sp.after, false); err != nil {
 		return err
 	}
+	// No reminder retime here: the outstanding occurrence always carries the
+	// override the move wrote (or one already at the target), which replaces
+	// the offset and was armed by the move, inside the lead at the target
+	// itself. Later occurrences arm from the new offset when they become
+	// outstanding.
 	snapshot := func(r scheduleRoles) string {
 		b, _ := json.Marshal(models.TargetOffset{TargetDays: r.TargetDays, TargetSecs: r.TargetSecs})
 		return string(b)

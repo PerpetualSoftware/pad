@@ -474,7 +474,7 @@ func TestScheduleLeadWriteDoesNotUnfireARowFiredInBetween(t *testing.T) {
 	t.Parallel()
 	f := newSchedFixture(t)
 	sc := f.create(t, models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"})
-	at, err := storedFireInstant(sc, 60)
+	at, err := storedFireInstant(sc, 60, targetOffset{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -821,15 +821,30 @@ func TestFireInstant(t *testing.T) {
 	allDay, _ := schedule.ParseWall("2026-11-02")
 	at := time.Date(2026, 11, 2, 14, 0, 0, 0, time.UTC)
 	override := time.Date(2026, 11, 3, 18, 0, 0, 0, time.UTC)
+	none := targetOffset{}
+	// 2027-03-14 02:30 does not exist in New York: it reads as 03:30 EDT.
+	beforeGap, _ := schedule.ParseWall("2027-03-14T00:30")
+	// 2026-11-01 01:30 exists twice in New York; the earlier (EDT) half wins.
+	beforeFold, _ := schedule.ParseWall("2026-11-01T00:30")
+	fold, _ := schedule.ParseWall("2026-11-01T01:30")
+	secondHalf := time.Date(2026, 11, 1, 6, 30, 0, 0, time.UTC) // 01:30 EST
 	cases := []struct {
 		name string
 		got  time.Time
 		want time.Time
 	}{
-		{"timed", fireInstant(at, timed, ny, 0, nil), at},
-		{"timed with lead", fireInstant(at, timed, ny, 90, nil), at.Add(-90 * time.Minute)},
-		{"all-day reads 09:00 local, not midnight", fireInstant(time.Date(2026, 11, 2, 5, 0, 0, 0, time.UTC), allDay, ny, 0, nil), at},
-		{"override replaces the base, then the lead", fireInstant(at, timed, ny, 60, &override), override.Add(-time.Hour)},
+		{"timed", fireInstant(at, timed, ny, 0, none, nil), at},
+		{"timed with lead", fireInstant(at, timed, ny, 90, none, nil), at.Add(-90 * time.Minute)},
+		{"all-day reads 09:00 local, not midnight", fireInstant(time.Date(2026, 11, 2, 5, 0, 0, 0, time.UTC), allDay, ny, 0, none, nil), at},
+		{"override replaces the base, then the lead", fireInstant(at, timed, ny, 60, none, &override), override.Add(-time.Hour)},
+		{"pinned timed +2h", fireInstant(at, timed, ny, 30, targetOffset{secs: 7200}, nil), time.Date(2026, 11, 2, 15, 30, 0, 0, time.UTC)},
+		{"pinned timed -1d+3h", fireInstant(at, timed, ny, 0, targetOffset{days: -1, secs: 3 * 3600}, nil), time.Date(2026, 11, 1, 17, 0, 0, 0, time.UTC)},
+		{"all-day +2d secs 0 reads 09:00 of D+2", fireInstant(time.Date(2026, 11, 2, 5, 0, 0, 0, time.UTC), allDay, ny, 0, targetOffset{days: 2}, nil), time.Date(2026, 11, 4, 14, 0, 0, 0, time.UTC)},
+		{"all-day secs 36000 reads 10:00", fireInstant(time.Date(2026, 11, 2, 5, 0, 0, 0, time.UTC), allDay, ny, 15, targetOffset{secs: 36000}, nil), time.Date(2026, 11, 2, 14, 45, 0, 0, time.UTC)},
+		{"spring-forward gap reads after the gap", fireInstant(time.Date(2027, 3, 14, 5, 30, 0, 0, time.UTC), beforeGap, ny, 0, targetOffset{secs: 7200}, nil), time.Date(2027, 3, 14, 7, 30, 0, 0, time.UTC)},
+		{"fall-back fold with offset takes the first half", fireInstant(time.Date(2026, 11, 1, 4, 30, 0, 0, time.UTC), beforeFold, ny, 0, targetOffset{secs: 3600}, nil), time.Date(2026, 11, 1, 5, 30, 0, 0, time.UTC)},
+		{"zero-offset fold keeps at", fireInstant(secondHalf, fold, ny, 0, none, nil), secondHalf},
+		{"override wins over the offset", fireInstant(at, timed, ny, 60, targetOffset{days: 1, secs: 7200}, &override), override.Add(-time.Hour)},
 	}
 	for _, tc := range cases {
 		if !tc.got.Equal(tc.want) {

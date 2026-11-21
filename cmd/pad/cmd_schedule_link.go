@@ -392,7 +392,7 @@ func renderLinkedMove(m models.LinkedMoveResult, apply bool, hint string) {
 	}
 	if s := m.Series; s != nil {
 		fmt.Printf("This and future occurrences, from %s: target offset %s -> %s\n", s.AppliesFrom, fmtTargetOffset(s.CurrentOffset), fmtTargetOffset(s.NewOffset))
-		fmt.Println("Only this occurrence's reminder moves; later occurrences still remind at their start minus the lead.")
+		fmt.Println("Every occurrence's reminder follows its target (target minus the lead).")
 	}
 	if !apply && m.PastDeadline != "" {
 		fmt.Printf("Crosses its hard deadline (%s): --apply needs --past-deadline.\n", fmtInstant(m.PastDeadline, nil))

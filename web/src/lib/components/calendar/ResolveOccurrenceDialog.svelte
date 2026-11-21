@@ -60,7 +60,7 @@
 				</fieldset>
 			{/if}
 			{#if series}
-				<p class="note">Later occurrences move to the same time relative to their start; only this occurrence's reminder moves. There is no Undo: move the series back to undo it.</p>
+				<p class="note">Later occurrences move to the same time relative to their start; every occurrence's reminder follows its target. There is no Undo: move the series back to undo it.</p>
 			{:else}
 				<p class="note">The reminder follows the target.</p>
 			{/if}

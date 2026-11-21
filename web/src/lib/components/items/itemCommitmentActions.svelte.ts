@@ -242,7 +242,7 @@ export class ItemCommitmentActions {
 			if (!sameIdentity()) return;
 			if (refreshed === false) this.refreshFailed = true;
 			const when = dateTime(to, this.#deps.zone(), isAllDay(entry));
-			this.#succeed(series ? `This and future occurrences moved to ${when}. Only this occurrence's reminder moved.` : `Occurrence moved to ${when}. Its reminder follows the target.`);
+			this.#succeed(series ? `This and future occurrences moved to ${when}. Their reminders follow the target.` : `Occurrence moved to ${when}. Its reminder follows the target.`);
 			this.pending = { ...this.pending, [key]: false };
 			await this.#focusMoved();
 		} catch (error) {

@@ -873,7 +873,7 @@
 			]);
 			if (!sameIdentity()) return;
 			if (refreshed === false) { savedRefreshError = true; loadError = false; }
-			succeed(series ? `This and future occurrences moved to ${dateTime(to, zone, isAllDay(entry))}. Only this occurrence's reminder moved.` : `Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`, undo ? { ...undo, label: 'Undo' } : undefined);
+			succeed(series ? `This and future occurrences moved to ${dateTime(to, zone, isAllDay(entry))}. Their reminders follow the target.` : `Occurrence moved to ${dateTime(to, zone, isAllDay(entry))}. Its reminder follows the target.`, undo ? { ...undo, label: 'Undo' } : undefined);
 			pending = { ...pending, [key]: false };
 			await focusMoved(entry);
 		} catch (error) {
