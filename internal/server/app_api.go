@@ -14,6 +14,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/appstore"
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -255,19 +256,19 @@ func writeAppUnauthorized(w http.ResponseWriter) {
 
 // appBearer reads the token from the Authorization header only: the app API
 // takes no token from a query string or a form.
-func appBearer(r *http.Request) string {
+func appBearer(r *http.Request) secret.Secret {
 	auth := r.Header.Get("Authorization")
 	if len(auth) < 8 || !strings.EqualFold(auth[:7], "bearer ") {
-		return ""
+		return secret.Secret{}
 	}
-	return strings.TrimSpace(auth[7:])
+	return secret.New(strings.TrimSpace(auth[7:]))
 }
 
 // appTokenAuth is step 1. It establishes the grant and the actor, and stores
 // a partial app context; the workspace step completes it.
 func (s *Server) appTokenAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ac, err := s.appAdmitToken(r.Context(), appBearer(r))
+		ac, err := s.appAdmitToken(r.Context(), appBearer(r).Reveal())
 		if err != nil {
 			if errors.Is(err, errAppAdmitInternal) {
 				writeInternalError(w, err)

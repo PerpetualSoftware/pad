@@ -2,7 +2,6 @@ package server
 
 import (
 	"context"
-	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -2401,19 +2401,20 @@ func readOrSetConsentCSRF(w http.ResponseWriter, r *http.Request, secure bool) s
 // HTML where the natural carrier is a form field. Same security
 // model, different transport.
 func (s *Server) validateConsentCSRFToken(r *http.Request) error {
-	cookie, err := r.Cookie(csrfCookieName(s.secureCookies))
-	if err != nil || cookie.Value == "" {
+	cookie, ok := cookieSecret(r, csrfCookieName(s.secureCookies))
+	if !ok || cookie.IsZero() {
 		return errors.New("missing CSRF cookie")
 	}
-	form := r.FormValue("csrf_token")
-	if form == "" {
+	form := secret.New(r.FormValue("csrf_token"))
+	if form.IsZero() {
 		return errors.New("missing csrf_token form field")
 	}
 	const expectedLen = csrfTokenLen * 2 // hex
-	if len(cookie.Value) != expectedLen || len(form) != expectedLen {
+	if len(cookie.Reveal()) != expectedLen || len(form.Reveal()) != expectedLen {
 		return errors.New("CSRF token mismatch")
 	}
-	if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(form)) != 1 {
+	// Both sides are non-empty here (checked above).
+	if !cookie.Equal(form.Reveal()) {
 		return errors.New("CSRF token mismatch")
 	}
 	return nil

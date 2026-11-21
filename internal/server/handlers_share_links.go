@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/server/render"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -549,8 +550,8 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	// Password check — via X-Share-Password header (never query string, to
 	// avoid leaking passwords in logs, browser history, and referrers).
 	if link.HasPassword {
-		password := r.Header.Get("X-Share-Password")
-		if password == "" {
+		password := secret.New(r.Header.Get("X-Share-Password"))
+		if password.IsZero() {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"require_password": true,
 				"message":          "Password required to view this content",
@@ -599,7 +600,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		}
-		if !s.store.ValidateShareLinkPassword(link, password) {
+		if !s.store.ValidateShareLinkPassword(link, password.Reveal()) {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
 			return
 		}

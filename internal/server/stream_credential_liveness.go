@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
-	"strings"
 
 	"github.com/ory/fosite"
 
@@ -96,17 +95,18 @@ func (s *Server) streamCredentialStillValid(r *http.Request) bool {
 func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 	switch authKind(r) {
 	case authKindSessionBearer:
-		return s.sessionLiveness(r.Context(), strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")))
+		token, _ := bearerToken(r)
+		return s.sessionLiveness(r.Context(), token.Reveal())
 
 	case authKindSessionCookie:
 		// Both names SessionAuth accepts, including the unprefixed fallback it
 		// keeps for the upgrade path.
 		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
-			cookie, err := r.Cookie(name)
-			if err != nil || cookie.Value == "" {
+			cookie, ok := cookieSecret(r, name)
+			if !ok || cookie.IsZero() {
 				continue
 			}
-			return s.sessionLiveness(r.Context(), cookie.Value)
+			return s.sessionLiveness(r.Context(), cookie.Reveal())
 		}
 		// The middleware said "session cookie" and the request has none. That
 		// is not a state this server produces; treat it as unrecognised.
@@ -126,7 +126,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 		// The LIVENESS door, not the ordinary one: a revalidation tick must not
 		// bump `last_used_at`. See ValidateTokenForLiveness for why that is a
 		// meaning problem as much as a cost one.
-		tok, err := s.store.ValidateTokenForLiveness(token)
+		tok, err := s.store.ValidateTokenForLiveness(token.Reveal())
 		if err != nil {
 			return credentialUnknown
 		}
@@ -137,7 +137,7 @@ func (s *Server) credentialLiveness(r *http.Request) credentialLiveness {
 
 	case authKindOAuth:
 		token, _ := extractBearer(r.Header.Get("Authorization"))
-		return s.oauthLiveness(r.Context(), token)
+		return s.oauthLiveness(r.Context(), token.Reveal())
 
 	case "":
 		// NOTHING TO REVALIDATE, and this branch is explicit rather than a

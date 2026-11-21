@@ -130,25 +130,22 @@ func authKind(r *http.Request) string {
 // the matching IP-change-revoked branch below for the same pattern.
 func (s *Server) TokenAuth(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		auth := r.Header.Get("Authorization")
-		if auth == "" {
+		if r.Header.Get("Authorization") == "" {
 			// No token provided — allow through (localhost access).
 			next.ServeHTTP(w, r)
 			return
 		}
 
 		// Expect "Bearer pad_<64 hex chars>" or "Bearer padsess_<64 hex chars>"
-		if !strings.HasPrefix(auth, "Bearer ") {
+		token, ok := bearerToken(r)
+		if !ok {
 			rejectInvalidBearer(w, r, next, "unauthorized", "Invalid authorization header format")
 			return
 		}
 
-		token := strings.TrimPrefix(auth, "Bearer ")
-		token = strings.TrimSpace(token)
-
 		// Session token (from CLI login)
-		if strings.HasPrefix(token, "padsess_") {
-			session, err := s.store.ValidateSessionContext(r.Context(), token)
+		if strings.HasPrefix(token.Reveal(), "padsess_") {
+			session, err := s.store.ValidateSessionContext(r.Context(), token.Reveal())
 			if err != nil {
 				if r.Context().Err() != nil {
 					return // client gone: nobody to answer, nothing to log (TASK-4278)
@@ -169,7 +166,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			// more than it helps). Checked BEFORE the IP change so a stolen
 			// token replayed from a fresh client is killed on the more stable
 			// of the two signals first.
-			switch s.handleSessionUAChange(w, r, session, token) {
+			switch s.handleSessionUAChange(w, r, session, token.Reveal()) {
 			case sessionIPChangeTerminated:
 				return
 			case sessionIPChangeRevoked:
@@ -183,7 +180,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			}
 			// Session binding: detect IP changes. Log to audit log in all modes;
 			// reject only when PAD_IP_CHANGE_ENFORCE=strict.
-			switch s.handleSessionIPChange(w, r, session, token) {
+			switch s.handleSessionIPChange(w, r, session, token.Reveal()) {
 			case sessionIPChangeTerminated:
 				return
 			case sessionIPChangeRevoked:
@@ -205,7 +202,7 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 			// clients hold the token directly (no cookie to re-issue) — just
 			// push the row's expiry forward. Best-effort: a renewal error must
 			// not fail an otherwise-valid request.
-			if _, _, err := s.store.RenewSessionIfStaleContext(r.Context(), token); err != nil && r.Context().Err() == nil {
+			if _, _, err := s.store.RenewSessionIfStaleContext(r.Context(), token.Reveal()); err != nil && r.Context().Err() == nil {
 				slog.Warn("session renewal failed (request allowed)", "error", err)
 			}
 			ctx := context.WithValue(r.Context(), ctxCurrentUser, session.User)
@@ -216,12 +213,12 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 		}
 
 		// API token
-		if !strings.HasPrefix(token, "pad_") || len(token) != 68 {
+		if !strings.HasPrefix(token.Reveal(), "pad_") || len(token.Reveal()) != 68 {
 			rejectInvalidBearer(w, r, next, "unauthorized", "Invalid token format")
 			return
 		}
 
-		apiToken, err := s.store.ValidateToken(token)
+		apiToken, err := s.store.ValidateToken(token.Reveal())
 		if err != nil {
 			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Token validation failed")
 			return
@@ -303,16 +300,13 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		}
 
 		// Try session cookie (with fallback to unprefixed name for upgrade path)
-		cookie, err := r.Cookie(sessionCookieName(s.secureCookies))
-		if err != nil {
-			cookie, err = r.Cookie("pad_session")
-			if err != nil {
-				next.ServeHTTP(w, r)
-				return
-			}
+		cookie, ok := s.sessionCookie(r)
+		if !ok {
+			next.ServeHTTP(w, r)
+			return
 		}
 
-		session, err := s.store.ValidateSessionContext(r.Context(), cookie.Value)
+		session, err := s.store.ValidateSessionContext(r.Context(), cookie.Reveal())
 		if err != nil && r.Context().Err() != nil {
 			return // client gone: quiet (TASK-4278)
 		}
@@ -328,7 +322,7 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		// as a binding, and false-positives on routine client churn
 		// (browser/WebView updates, DevTools device emulation, mobile-app
 		// rebuilds), so it stays log-only by default.
-		switch s.handleSessionUAChange(w, r, session, cookie.Value) {
+		switch s.handleSessionUAChange(w, r, session, cookie.Reveal()) {
 		case sessionIPChangeTerminated:
 			return
 		case sessionIPChangeRevoked:
@@ -340,7 +334,7 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 
 		// Session binding: detect IP changes. Log to audit log in all modes;
 		// reject only when PAD_IP_CHANGE_ENFORCE=strict.
-		switch s.handleSessionIPChange(w, r, session, cookie.Value) {
+		switch s.handleSessionIPChange(w, r, session, cookie.Reveal()) {
 		case sessionIPChangeTerminated:
 			return
 		case sessionIPChangeRevoked:
@@ -357,14 +351,14 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		// an otherwise-valid request. When this re-issues the CSRF cookie it
 		// also covers the "missing CSRF cookie" case below.
 		renewed := false
-		if newExpiry, didRenew, err := s.store.RenewSessionIfStaleContext(r.Context(), cookie.Value); err != nil {
+		if newExpiry, didRenew, err := s.store.RenewSessionIfStaleContext(r.Context(), cookie.Reveal()); err != nil {
 			if r.Context().Err() != nil {
 				return // client gone: quiet (TASK-4278)
 			}
 			slog.Warn("session renewal failed (request allowed)", "error", err)
 		} else if didRenew {
 			if maxAge := int(time.Until(newExpiry).Seconds()); maxAge > 0 {
-				setSessionCookie(w, cookie.Value, maxAge, s.secureCookies)
+				setSessionCookie(w, cookie.Reveal(), maxAge, s.secureCookies)
 				if !strings.HasPrefix(r.URL.Path, "/api/v1/auth/") {
 					setCSRFCookie(w, maxAge, s.secureCookies)
 				}

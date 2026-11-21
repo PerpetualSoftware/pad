@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/usertz"
 )
@@ -299,15 +300,12 @@ func requestIsLoopback(r *http.Request) bool {
 // rejected on the helper-based routes (CLI-auth approval, account/2FA setup,
 // session check) that call this.
 func (s *Server) validateSessionCookie(r *http.Request) *models.User {
-	cookie, err := r.Cookie(sessionCookieName(s.secureCookies))
-	if err != nil {
-		// Fallback: check the unprefixed name for sessions created before the upgrade
-		cookie, err = r.Cookie("pad_session")
-		if err != nil {
-			return nil
-		}
+	// Falls back to the unprefixed name for sessions created before the upgrade.
+	cookie, ok := s.sessionCookie(r)
+	if !ok {
+		return nil
 	}
-	session, _ := s.store.ValidateSessionContext(r.Context(), cookie.Value)
+	session, _ := s.store.ValidateSessionContext(r.Context(), cookie.Reveal())
 	if session == nil || session.User == nil || !cookieKindAccepted(session) {
 		return nil
 	}
@@ -481,17 +479,17 @@ func (s *Server) destroyReplacedSessions(r *http.Request) {
 		names = append(names, sessionCookieName(false))
 	}
 	for _, name := range names {
-		cookie, err := r.Cookie(name)
-		if err != nil || cookie.Value == "" {
+		cookie, ok := cookieSecret(r, name)
+		if !ok || cookie.IsZero() {
 			continue
 		}
 		// TASK-3365: the replaced session may be another user's, still
 		// streaming in this browser; kick whoever held it.
 		var replacedUserID string
-		if info, verr := s.store.ValidateSessionContext(r.Context(), cookie.Value); verr == nil && info != nil && info.User != nil {
+		if info, verr := s.store.ValidateSessionContext(r.Context(), cookie.Reveal()); verr == nil && info != nil && info.User != nil {
 			replacedUserID = info.User.ID
 		}
-		if err := s.store.DeleteSession(cookie.Value); err != nil {
+		if err := s.store.DeleteSession(cookie.Reveal()); err != nil {
 			slog.Warn("sign-in could not destroy the session it replaced",
 				"cookie", name, "error", err)
 		}
@@ -1450,30 +1448,25 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 			s.invalidateUserAccess(id)
 		}
 	}()
-	sessionOwner := func(token string) {
-		if info, err := s.store.ValidateSessionContext(r.Context(), token); err == nil && info != nil && info.User != nil {
+	sessionOwner := func(token secret.Secret) {
+		if info, err := s.store.ValidateSessionContext(r.Context(), token.Reveal()); err == nil && info != nil && info.User != nil {
 			loggedOut = append(loggedOut, info.User.ID)
 		}
 	}
-	if cookie, err := r.Cookie(sessionCookieName(s.secureCookies)); err == nil {
-		sessionOwner(cookie.Value)
+	if cookie, ok := cookieSecret(r, sessionCookieName(s.secureCookies)); ok {
+		sessionOwner(cookie)
 	}
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		if token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer ")); strings.HasPrefix(token, "padsess_") {
-			sessionOwner(token)
-		}
+	if token, ok := bearerToken(r); ok && strings.HasPrefix(token.Reveal(), "padsess_") {
+		sessionOwner(token)
 	}
 	// Revoke cookie-based session
-	if cookie, err := r.Cookie(sessionCookieName(s.secureCookies)); err == nil {
-		_ = s.store.DeleteSession(cookie.Value)
+	if cookie, ok := cookieSecret(r, sessionCookieName(s.secureCookies)); ok {
+		_ = s.store.DeleteSession(cookie.Reveal())
 	}
 
 	// Revoke Bearer session token (CLI auth uses Authorization: Bearer padsess_...)
-	if auth := r.Header.Get("Authorization"); strings.HasPrefix(auth, "Bearer ") {
-		token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-		if strings.HasPrefix(token, "padsess_") {
-			_ = s.store.DeleteSession(token)
-		}
+	if token, ok := bearerToken(r); ok && strings.HasPrefix(token.Reveal(), "padsess_") {
+		_ = s.store.DeleteSession(token.Reveal())
 	}
 
 	http.SetCookie(w, &http.Cookie{

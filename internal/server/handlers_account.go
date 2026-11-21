@@ -12,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"golang.org/x/crypto/bcrypt"
@@ -64,24 +65,25 @@ func isCLIClient(r *http.Request) bool {
 // middleware authenticated (handlers that fall back to validateSessionCookie)
 // is read from the cookie.
 func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
-	token, fromCookie := "", false
+	var token secret.Secret
+	fromCookie := false
 	switch authKind(r) {
 	case authKindAPIToken:
 		return nil
 	case authKindSessionBearer:
-		token = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		token, _ = bearerToken(r)
 	default:
 		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
-			if c, err := r.Cookie(name); err == nil && c.Value != "" {
-				token, fromCookie = c.Value, true
+			if c, ok := cookieSecret(r, name); ok && !c.IsZero() {
+				token, fromCookie = c, true
 				break
 			}
 		}
 	}
-	if token == "" {
+	if token.IsZero() {
 		return nil
 	}
-	info, err := s.store.ValidateSessionContext(r.Context(), token)
+	info, err := s.store.ValidateSessionContext(r.Context(), token.Reveal())
 	if err != nil || info == nil || info.User == nil {
 		return nil
 	}
