@@ -90,6 +90,7 @@ func stripV2(b *models.WorkspaceExport) {
 					o := v.(map[string]any)
 					delete(o, "actual_done_at")
 					delete(o, "actual_source")
+					delete(o, "roles")
 				}
 			}
 		}

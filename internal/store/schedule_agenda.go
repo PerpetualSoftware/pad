@@ -159,12 +159,14 @@ func (s *Store) agendaHistoryWindow(from, to time.Time) (string, []any) {
 	lo, hi := from.UTC().Add(-36*time.Hour), to.UTC().Add(36*time.Hour)
 	args := []any{lo.Format(time.RFC3339), hi.Format(time.RFC3339)}
 	near := `(h.occurrence_at >= ? AND h.occurrence_at < ?)`
-	epoch := "unixepoch(h.occurrence_at)"
-	if s.dialect.Driver() == DriverPostgres {
-		epoch = "EXTRACT(EPOCH FROM CAST(h.occurrence_at AS timestamptz))"
-	}
+	epoch := s.occurrenceEpochSQL("h")
 	for _, role := range []string{"target", "earliest", "deadline", "occupied"} {
-		days, secs := role+"_days", role+"_secs"
+		// A stamped row is judged by the offsets it was resolved under, an
+		// unstamped one (moved, or never stamped) by the schedule's current ones.
+		pick := func(col string) string {
+			return "(CASE WHEN h.roles_target_days IS NULL THEN item_schedules." + col + " ELSE h.roles_" + col + " END)"
+		}
+		days, secs := pick(role+"_days"), pick(role+"_secs")
 		shifted := "(" + epoch + " + " + days + " * 86400.0 + " + secs + ")"
 		near += " OR ((" + days + " <> 0 OR " + secs + " <> 0) AND " + shifted + " >= ? AND " + shifted + " < ?)"
 		args = append(args, from.Add(-72*time.Hour).Unix(), to.Add(72*time.Hour).Unix())
@@ -173,6 +175,48 @@ func (s *Store) agendaHistoryWindow(from, to time.Time) (string, []any) {
 		OR EXISTS (SELECT 1 FROM schedule_occurrence_overrides v WHERE v.schedule_id=item_schedules.id AND v.value_at >= ? AND v.value_at < ?))`
 	args = append(args, lo.Format(time.RFC3339), hi.Format(time.RFC3339))
 	return query, args
+}
+
+// occurrenceEpochSQL is the Unix epoch of alias.occurrence_at in the dialect.
+func (s *Store) occurrenceEpochSQL(alias string) string {
+	if s.dialect.Driver() == DriverPostgres {
+		return "EXTRACT(EPOCH FROM CAST(" + alias + ".occurrence_at AS timestamptz))"
+	}
+	return "unixepoch(" + alias + ".occurrence_at)"
+}
+
+// agendaSnapshotRows reads a schedule's stamped history rows with any role,
+// at the offsets they were resolved under, near [from, to). The seed windows
+// invert the window with the current offsets, so a row resolved under other
+// offsets can fall outside all of them; this pass finds it. Padding matches
+// agendaHistoryWindow.
+func (s *Store) agendaSnapshotRows(scheduleID string, from, to time.Time) ([]agendaRow, error) {
+	epoch := s.occurrenceEpochSQL("h")
+	args := []any{scheduleID}
+	var near []string
+	for _, role := range []string{"target", "earliest", "deadline", "occupied"} {
+		shifted := "(" + epoch + " + h.roles_" + role + "_days * 86400.0 + h.roles_" + role + "_secs)"
+		near = append(near, "("+shifted+" >= ? AND "+shifted+" < ?)")
+		args = append(args, from.Add(-72*time.Hour).Unix(), to.Add(72*time.Hour).Unix())
+	}
+	rows, err := s.db.Query(s.q(`SELECT h.occurrence_at, h.occurrence_wall, h.state, COALESCE(h.comment_id, ''), h.actor, h.resolved_at, `+occurrenceRolesSelect("h")+`
+		FROM schedule_occurrences h WHERE h.schedule_id = ? AND h.state <> 'moved' AND h.roles_target_days IS NOT NULL AND (`+strings.Join(near, " OR ")+`)
+		ORDER BY h.occurrence_at`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list agenda history: %w", err)
+	}
+	defer rows.Close()
+	var out []agendaRow
+	for rows.Next() {
+		var r agendaRow
+		var snap occurrenceRolesScan
+		if err := rows.Scan(append([]any{&r.at, &r.wall, &r.state, &r.commentID, &r.actor, &r.resolvedAt}, snap.dest()...)...); err != nil {
+			return nil, fmt.Errorf("scan agenda history: %w", err)
+		}
+		r.roles = snap.roles()
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // fillAgendaRolesOrigin sets each row's origin, by schedule id. It is a separate
@@ -260,16 +304,22 @@ type AgendaEntry struct {
 	CommentID      string
 	MissedCount    int // the outstanding entry only
 	Stale          bool
+	// snapshot is the history row's resolved offsets (TASK-4714), nil when the
+	// entry is not a stamped history row.
+	snapshot *scheduleRoles
 }
 
-type agendaRow struct{ at, wall, state, commentID, actor, resolvedAt string }
+type agendaRow struct {
+	at, wall, state, commentID, actor, resolvedAt string
+	roles                                         *scheduleRoles // the stamped offsets, nil when unstamped
+}
 
 // agendaOccurrences reads a schedule's history rows around [from, to), padded a
 // day and a half each way because a floating row is the recipient's reading, plus
 // its moved rows, which can sit anywhere.
 func (s *Store) agendaOccurrences(scheduleID string, from, to time.Time) ([]agendaRow, error) {
 	const f = "2006-01-02T15:04:05Z"
-	rows, err := s.db.Query(s.q(`SELECT occurrence_at, occurrence_wall, state, COALESCE(comment_id, ''), actor, resolved_at
+	rows, err := s.db.Query(s.q(`SELECT occurrence_at, occurrence_wall, state, COALESCE(comment_id, ''), actor, resolved_at, `+occurrenceRolesSelect("schedule_occurrences")+`
 		FROM schedule_occurrences WHERE schedule_id = ? AND ((occurrence_at >= ? AND occurrence_at < ?) OR state = 'moved')`),
 		scheduleID, from.UTC().Add(-36*time.Hour).Format(f), to.UTC().Add(36*time.Hour).Format(f))
 	if err != nil {
@@ -279,9 +329,11 @@ func (s *Store) agendaOccurrences(scheduleID string, from, to time.Time) ([]agen
 	var out []agendaRow
 	for rows.Next() {
 		var r agendaRow
-		if err := rows.Scan(&r.at, &r.wall, &r.state, &r.commentID, &r.actor, &r.resolvedAt); err != nil {
+		var snap occurrenceRolesScan
+		if err := rows.Scan(append([]any{&r.at, &r.wall, &r.state, &r.commentID, &r.actor, &r.resolvedAt}, snap.dest()...)...); err != nil {
 			return nil, fmt.Errorf("scan agenda occurrence: %w", err)
 		}
+		r.roles = snap.roles()
 		out = append(out, r)
 	}
 	return out, rows.Err()
@@ -494,7 +546,7 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 		e := AgendaEntry{At: occ.At, Wall: occ.Wall}
 		r, have := byKey[key(occ.At, occ.Wall)]
 		if have {
-			e.State, e.ResolvedAt, e.Actor, e.CommentID = r.state, r.resolvedAt, r.actor, r.commentID
+			e.State, e.ResolvedAt, e.Actor, e.CommentID, e.snapshot = r.state, r.resolvedAt, r.actor, r.commentID, r.roles
 		}
 		switch {
 		case isO(occ.At, occ.Wall):
@@ -537,7 +589,7 @@ func (s *Store) agendaEntries(sc *models.ItemSchedule, occs []schedule.Occurrenc
 			at, err = schedule.Resolve(loc, w), nil
 		}
 		if err == nil && !at.Before(from) && at.Before(lo) && at.Before(to) {
-			out = append(out, AgendaEntry{At: at, Wall: w, State: r.state, ResolvedAt: r.resolvedAt, Actor: r.actor, CommentID: r.commentID})
+			out = append(out, AgendaEntry{At: at, Wall: w, State: r.state, ResolvedAt: r.resolvedAt, Actor: r.actor, CommentID: r.commentID, snapshot: r.roles})
 		}
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })

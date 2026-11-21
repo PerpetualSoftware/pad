@@ -43,7 +43,7 @@ func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
 			return err
 		}
 		for _, o := range occs {
-			for _, key := range []string{"actual_done_at", "actual_source"} {
+			for _, key := range []string{"actual_done_at", "actual_source", "roles"} {
 				if _, ok := o[key]; ok {
 					x.hasV2Members = true
 				}
@@ -64,7 +64,7 @@ func (x *WorkspaceExport) HasV2ScheduleMembers() bool {
 			return true
 		}
 		for _, o := range sc.Occurrences {
-			if o.ActualDoneAt != "" || o.ActualSource != "" {
+			if o.ActualDoneAt != "" || o.ActualSource != "" || o.Roles != nil {
 				return true
 			}
 		}

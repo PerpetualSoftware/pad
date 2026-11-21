@@ -54,6 +54,9 @@ type carriedSchedule struct {
 type carriedOccurrence struct {
 	At, Wall, State, CommentID, Actor, ResolvedAt string
 	ActualDoneAt, ActualSource                    string
+	// Roles is the bundle's offset snapshot; nil leaves a resolved row to the
+	// migration rule, the offsets of the schedule as imported.
+	Roles *models.ScheduleOccurrenceRolesExport
 }
 
 // scheduleCarryDrop says a carried schedule failed validation and was NOT
@@ -329,10 +332,17 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 		}
 	}
 	for _, o := range occs {
+		var r models.ScheduleOccurrenceRolesExport
+		var td, ts any
+		if o.Roles != nil {
+			r, td, ts = *o.Roles, o.Roles.TargetDays, o.Roles.TargetSecs
+		}
 		if _, err := tx.Exec(s.q(`
-			INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at, actual_done_at, actual_source)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
-			newID(), id, o.At, o.Wall, o.State, nilIfEmpty(o.CommentID), o.Actor, o.ResolvedAt, nilIfEmpty(o.ActualDoneAt), o.ActualSource); err != nil {
+			INSERT INTO schedule_occurrences (id, schedule_id, occurrence_at, occurrence_wall, state, comment_id, actor, resolved_at, actual_done_at, actual_source,
+				roles_target_days, roles_target_secs, roles_earliest_days, roles_earliest_secs, roles_deadline_days, roles_deadline_secs, roles_deadline_behavior, roles_occupied_days, roles_occupied_secs)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`),
+			newID(), id, o.At, o.Wall, o.State, nilIfEmpty(o.CommentID), o.Actor, o.ResolvedAt, nilIfEmpty(o.ActualDoneAt), o.ActualSource,
+			td, ts, r.EarliestDays, r.EarliestSecs, r.DeadlineDays, r.DeadlineSecs, r.DeadlineBehavior, r.OccupiedDays, r.OccupiedSecs); err != nil {
 			return "", fmt.Errorf("insert carried occurrence: %w", err)
 		}
 	}
@@ -340,6 +350,11 @@ func (s *Store) writePreparedSchedule(tx *sql.Tx, workspaceID, itemID string, in
 		if err := s.setLegacyRolesTx(tx, id, in.Kind, spec.Start.String(), in.Dtend); err != nil {
 			return "", err
 		}
+	}
+	// Rows the bundle carried no snapshot for take the offsets just written,
+	// as the migration stamped history.
+	if err := s.stampOccurrenceRolesTx(tx, id, "", ""); err != nil {
+		return "", err
 	}
 	for _, o := range p.overrides {
 		if err := s.upsertScheduleOverrideStoredTx(tx, id, o); err != nil {
@@ -425,8 +440,11 @@ func prepareCarriedOccurrences(in []carriedOccurrence) ([]carriedOccurrence, err
 		if seenAt[at] || (w.AllDay && seenWall[w.String()]) {
 			return nil, dropf("occurrence", "duplicate")
 		}
+		if err := validateCarriedOccurrenceRoles(o.Roles, o.State); err != nil {
+			return nil, err
+		}
 		seenAt[at], seenWall[w.String()] = true, true
-		out = append(out, carriedOccurrence{At: at, Wall: w.String(), State: o.State, CommentID: o.CommentID, Actor: o.Actor, ResolvedAt: resolved, ActualDoneAt: actual, ActualSource: o.ActualSource})
+		out = append(out, carriedOccurrence{At: at, Wall: w.String(), State: o.State, CommentID: o.CommentID, Actor: o.Actor, ResolvedAt: resolved, ActualDoneAt: actual, ActualSource: o.ActualSource, Roles: o.Roles})
 	}
 	return out, nil
 }
@@ -467,7 +485,7 @@ func carriedFromExport(x models.ScheduleExport, commentIDs map[string]string) (c
 	for _, o := range x.Occurrences {
 		in.Occurrences = append(in.Occurrences, carriedOccurrence{
 			At: o.OccurrenceAt, Wall: o.OccurrenceWall, State: o.State, CommentID: commentIDs[x.ItemID+"\x00"+o.CommentID],
-			Actor: o.Actor, ResolvedAt: o.ResolvedAt, ActualDoneAt: o.ActualDoneAt, ActualSource: o.ActualSource,
+			Actor: o.Actor, ResolvedAt: o.ResolvedAt, ActualDoneAt: o.ActualDoneAt, ActualSource: o.ActualSource, Roles: o.Roles,
 		})
 	}
 	return in, nil
@@ -524,7 +542,8 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 	rr.Close()
 
 	occ := map[string][]models.ScheduleOccurrenceExport{}
-	or, err := q.Query(s.q(`SELECT o.schedule_id, o.occurrence_at, o.occurrence_wall, o.state, COALESCE(o.comment_id, ''), o.actor, o.resolved_at, COALESCE(o.actual_done_at,''), COALESCE(o.actual_source,'legacy_unknown')
+	or, err := q.Query(s.q(`SELECT o.schedule_id, o.occurrence_at, o.occurrence_wall, o.state, COALESCE(o.comment_id, ''), o.actor, o.resolved_at, COALESCE(o.actual_done_at,''), COALESCE(o.actual_source,'legacy_unknown'),
+		`+occurrenceRolesSelect("o")+`
 		FROM schedule_occurrences o JOIN item_schedules sc ON sc.id = o.schedule_id
 		WHERE sc.workspace_id = ? ORDER BY o.schedule_id, o.occurrence_at`), workspaceID)
 	if err != nil {
@@ -533,9 +552,14 @@ func (s *Store) exportSchedules(q Queryer, workspaceID string) ([]models.Schedul
 	for or.Next() {
 		var id string
 		var o models.ScheduleOccurrenceExport
-		if err := or.Scan(&id, &o.OccurrenceAt, &o.OccurrenceWall, &o.State, &o.CommentID, &o.Actor, &o.ResolvedAt, &o.ActualDoneAt, &o.ActualSource); err != nil {
+		var snap occurrenceRolesScan
+		if err := or.Scan(append([]any{&id, &o.OccurrenceAt, &o.OccurrenceWall, &o.State, &o.CommentID, &o.Actor, &o.ResolvedAt, &o.ActualDoneAt, &o.ActualSource}, snap.dest()...)...); err != nil {
 			or.Close()
 			return nil, fmt.Errorf("scan schedule occurrence: %w", err)
+		}
+		if r := snap.roles(); r != nil {
+			o.Roles = &models.ScheduleOccurrenceRolesExport{TargetDays: r.TargetDays, TargetSecs: r.TargetSecs, EarliestDays: r.EarliestDays, EarliestSecs: r.EarliestSecs,
+				DeadlineDays: r.DeadlineDays, DeadlineSecs: r.DeadlineSecs, DeadlineBehavior: r.DeadlineBehavior, OccupiedDays: r.OccupiedDays, OccupiedSecs: r.OccupiedSecs}
 		}
 		occ[id] = append(occ[id], o)
 	}

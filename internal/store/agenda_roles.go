@@ -32,6 +32,8 @@ func resolveAgendaRoles(sc *models.ItemSchedule, seed AgendaEntry, loc *time.Loc
 		seed.AcknowledgedAt, seed.AcknowledgedBy = sc.AcknowledgedAt, sc.AcknowledgedBy
 	}
 
+	// A resolved history row resolves from the offsets it was resolved under.
+	roles = historyOffsets(roles, seed.State, seed.snapshot)
 	seed.Roles = models.CommitmentRoles{DeadlineBehavior: roles.DeadlineBehavior, Outcome: roles.Outcome, RolesOrigin: roles.Origin}
 	for _, r := range []struct {
 		name       string
@@ -219,7 +221,7 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 			if err != nil {
 				continue
 			}
-			add([]AgendaEntry{{At: at, Wall: w, State: r.state, ResolvedAt: r.resolvedAt, Actor: r.actor, CommentID: r.commentID}})
+			add([]AgendaEntry{{At: at, Wall: w, State: r.state, ResolvedAt: r.resolvedAt, Actor: r.actor, CommentID: r.commentID, snapshot: r.roles}})
 		}
 	} else {
 		for _, window := range agendaSeedWindows(roles, loc, from, to) {
@@ -279,6 +281,36 @@ func (s *Store) ExpandAgendaCut(sc *models.ItemSchedule, view *time.Location, fr
 			}
 			add(es)
 		}
+	}
+	// History pass: stamped rows whose resolved roles reach the window but
+	// whose seed lies outside every window inverted with the current offsets.
+	if clock().Before(deadline) {
+		hist, err := s.agendaSnapshotRows(sc.ID, from, to)
+		if err != nil {
+			return x, err
+		}
+		for _, r := range hist {
+			if !terminal && sc.NextWall != nil && r.wall == *sc.NextWall {
+				continue
+			}
+			w, err := schedule.ParseWall(r.wall)
+			if err != nil {
+				continue
+			}
+			at, err := time.Parse(time.RFC3339, r.at)
+			if sc.Floating || w.AllDay {
+				at, err = schedule.Resolve(loc, w), nil
+			}
+			if err != nil {
+				continue
+			}
+			if _, ok := candidates[OccurrenceKey(sc, NormalizeInstant(at), w.String())]; ok {
+				continue
+			}
+			add([]AgendaEntry{{At: at, Wall: w, State: r.state, ResolvedAt: r.resolvedAt, Actor: r.actor, CommentID: r.commentID, snapshot: r.roles}})
+		}
+	} else {
+		x.Truncated, x.Unexpanded, x.Unpromised = true, true, true
 	}
 	// Sort seeds before a time cut so repeated reads make the same promise.
 	keys := make([]string, 0, len(candidates))

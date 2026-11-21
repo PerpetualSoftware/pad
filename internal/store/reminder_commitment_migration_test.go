@@ -27,12 +27,16 @@ func reminderMigrationStore(t *testing.T, pg bool) (*Store, string, string) {
 	} else {
 		db, _ := preMigrationDB(t, "183")
 		// Bundle cases use current workspace APIs while testing the old reminder schema.
-		claims, err := migrationsFS.ReadFile("migrations/187_workspace_slug_claims.sql")
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := applySQLiteMigration(db, "187_workspace_slug_claims.sql", string(claims)); err != nil {
-			t.Fatal(err)
+		// 189 because current resolve, agenda and bundle code reads and writes the
+		// occurrence role snapshot columns (TASK-4714).
+		for _, later := range []string{"187_workspace_slug_claims.sql", "189_occurrence_role_offsets.sql"} {
+			body, err := migrationsFS.ReadFile("migrations/" + later)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := applySQLiteMigration(db, later, string(body)); err != nil {
+				t.Fatal(err)
+			}
 		}
 		s = &Store{db: db, dialect: &sqliteDialect{}}
 	}

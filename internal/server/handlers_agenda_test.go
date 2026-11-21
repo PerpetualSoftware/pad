@@ -700,3 +700,50 @@ func TestAgendaPriorityStableIDAfterDeadlineAndTarget(t *testing.T) {
 		}
 	}
 }
+
+// TASK-4714: a series move after a resolution leaves the resolved occurrence
+// where it was in the agenda Week.
+func TestAgendaWeekHistoryStableAfterSeriesMove(t *testing.T) {
+	t.Parallel()
+	w := newAgendaWorld(t, "tasks")
+	it := w.item(t, "tasks", "AG series", `{"status":"open"}`, nil)
+	if _, err := w.srv.store.CreateCommitmentSchedule(w.ws.ID, it.ID, models.ScheduleCreate{Kind: "check", Dtstart: "2031-03-10T09:00", Tz: "UTC", Rrule: "FREQ=DAILY"}, models.CommitmentRolesInput{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.srv.store.ResolveOccurrence(w.ws.ID, it.ID, store.ResolveInput{OccurrenceAt: time.Date(2031, 3, 10, 9, 0, 0, 0, time.UTC), State: "done", Actor: "user"}); err != nil {
+		t.Fatal(err)
+	}
+	const week = "from=2031-03-10T00:00:00Z&to=2031-03-17T00:00:00Z&tz=UTC"
+	targets := func() map[string]string {
+		out := map[string]string{}
+		for _, e := range entriesOf(w.ok(t, w.owner, week)) {
+			if e["type"] != "schedule" {
+				continue
+			}
+			roles, _ := e["roles"].(map[string]any)
+			out[fmt.Sprint(e["wall"])] = fmt.Sprintf("%v %v %v", e["state"], e["at"], roles["target"])
+		}
+		return out
+	}
+	before := targets()
+	if got := before["2031-03-10T09:00:00"]; got != "done 2031-03-10T09:00:00Z 2031-03-10T09:00:00Z" {
+		t.Fatalf("done entry before the move = %q (%v)", got, before)
+	}
+	access := models.CommitmentAccess{Readable: map[string]bool{it.ID: true}, Editable: map[string]bool{it.ID: true}}
+	in := models.LinkedMoveInput{ItemID: it.ID, Role: "target", To: "2031-03-11T14:00:00Z", Actor: "user", Access: access, Scope: "series", Preview: true}
+	preview, err := w.srv.store.MoveLinkedDate(w.ws.ID, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in.Preview, in.Revision = false, preview.Revision
+	if _, err := w.srv.store.MoveLinkedDate(w.ws.ID, in); err != nil {
+		t.Fatal(err)
+	}
+	after := targets()
+	if after["2031-03-10T09:00:00"] != before["2031-03-10T09:00:00"] {
+		t.Fatalf("the done entry moved with the series: %q, was %q", after["2031-03-10T09:00:00"], before["2031-03-10T09:00:00"])
+	}
+	if got := after["2031-03-11T09:00:00"]; !strings.HasSuffix(got, " 2031-03-11T14:00:00Z") {
+		t.Fatalf("outstanding entry = %q, want the moved series target", got)
+	}
+}
