@@ -613,6 +613,7 @@ var nulExcluded = map[string]string{
 	"item_schedules.roles_origin":                    "fixed origin enum constrained by CHECK (TASK-4349)",
 	"schedule_occurrences.actual_source":             "fixed provenance enum constrained by CHECK (TASK-4349)",
 	"schedule_occurrences.actual_done_at":            "UTC instant formatted from a parsed time (TASK-4349)",
+	"schedule_occurrences.roles_deadline_behavior":   "fixed enum constrained by CHECK, copied from item_schedules or a validated bundle (TASK-4714, migration 189)",
 	"schedule_occurrence_overrides.id":               "server UUID (TASK-4349)",
 	"schedule_occurrence_overrides.schedule_id":      "schedule UUID foreign key (TASK-4349)",
 	"schedule_occurrence_overrides.value_at":         "UTC instant formatted from a parsed time (TASK-4349)",
