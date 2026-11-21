@@ -242,7 +242,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "confirm_past_deadline", Type: "bool", Description: "Confirm a move that puts the target after its hard deadline."},
 	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
 	{Name: "reason", Type: "string", Description: "Why dates change; required for renegotiation or graph hard-deadline changes."},
-	{Name: "scope", Type: "string", Description: "schedule-renegotiate: occurrence (default) | series."},
+	{Name: "scope", Type: "string", Description: "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. A series move re-arms only the outstanding occurrence's reminder; later occurrences still arm at their start minus the lead until reminder arming honours target offsets."},
 	{Name: "deadline_days", Type: "number", Description: "schedule-renegotiate: series day offset."},
 	{Name: "deadline_secs", Type: "number", Description: "schedule-renegotiate: series second offset."},
 	{Name: "deadline_behavior", Type: "string", Description: "schedule-renegotiate: lapses | stays_owed."},
@@ -484,6 +484,7 @@ Actions:
     Returns revision, changes, violations, past_deadline, left_in_place, renegotiates_deadline.
     Reviewed apply needs revision plus: reason for deadline changes; acknowledge_violations for bound crossings;
     confirm_past_deadline for past_deadline (target only). Both ends must be readable and editable.
+    scope series (target): also sets later occurrences' target offset; always needs revision; refused past the hard deadline; no undo.
   schedule-gate — Wait for blocker success (fixed occurrence if scheduled): ref, blocker.
     With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
   schedule-dismiss — Clear an ended schedule from Outstanding. ref required.

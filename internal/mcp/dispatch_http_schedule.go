@@ -301,7 +301,7 @@ func mapScheduleMove(input map[string]any) (string, string, []byte, error) {
 	if role, _ := input["role"].(string); role == "" {
 		return mapScheduleResolve("move")(input)
 	}
-	body := graphWriteBody(input, "role", "to", "reason")
+	body := graphWriteBody(input, "role", "to", "reason", "scope")
 	path := itemSchedulePathTemplate + "/move-preview"
 	if apply, _ := input["apply"].(bool); apply {
 		path = itemSchedulePathTemplate + "/move"

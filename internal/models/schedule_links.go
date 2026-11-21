@@ -117,6 +117,25 @@ type LinkedMoveInput struct {
 	// its own bounds. The link and the bound both stay.
 	AcknowledgeViolations bool
 	Access                CommitmentAccess
+	// Scope is occurrence (the default, also for "") or series. A series move
+	// is a target move that also writes the native target offset, measured
+	// from the outstanding occurrence's start, so later occurrences follow it.
+	Scope string
+}
+
+// TargetOffset is a native target offset: days and seconds from an
+// occurrence's start, read as civil time in the schedule's zone.
+type TargetOffset struct {
+	TargetDays int `json:"target_days"`
+	TargetSecs int `json:"target_secs"`
+}
+
+// LinkedMoveSeries is what a series move does to the item's own target
+// offset, from the outstanding occurrence (AppliesFrom, its key) onward.
+type LinkedMoveSeries struct {
+	AppliesFrom   string       `json:"applies_from"`
+	CurrentOffset TargetOffset `json:"current_offset"`
+	NewOffset     TargetOffset `json:"new_offset"`
 }
 
 // LinkedDateChange is one date a move changed, with the item it belongs to.
@@ -144,6 +163,9 @@ type LinkedMoveResult struct {
 	// RenegotiatesDeadline is whether the move changes a hard deadline the
 	// caller can see; it needs a reason and the revision.
 	RenegotiatesDeadline bool `json:"renegotiates_deadline,omitempty"`
+	// Series is set only by a series-scope move or move-preview, and describes
+	// the root item only.
+	Series *LinkedMoveSeries `json:"series,omitempty"`
 }
 
 // ScheduleLinkUpdate changes a link's offset or cancel policy. A new offset moves
