@@ -165,6 +165,15 @@ export function acknowledgedText(at: string | undefined, by: AcknowledgedBy | un
 	return `Acknowledged by ${name}${agent}${at ? ` · ${shortRoleDate(at, zone, now)}` : ''}`;
 }
 
+/** A series move refused with validation_error {field:"to",code:"range"}: the server's message as a sentence, else our own. */
+export function seriesRangeCopy(error: unknown): string {
+	const message = (error as { message?: unknown })?.message;
+	const text = typeof message === 'string' ? message.trim() : '';
+	if (!text) return 'This and future occurrences cannot move past the hard deadline.';
+	const sentence = text[0].toUpperCase() + text.slice(1);
+	return /[.!?]$/.test(sentence) ? sentence : `${sentence}.`;
+}
+
 export function canMove(entry: AgendaEntry): boolean {
 	return canResolve(entry) && !(entry.roles?.deadline != null && entry.roles_origin !== 'native');
 }

@@ -65,6 +65,8 @@
  // The server's display hint; mutations re-check it. Absent or stale means no writes offered.
  const editable = $derived(!readOnly && !!snapshot && current(snapshot) && snapshot.editable);
  const entry = $derived(view && editable && !itemClosed ? commitmentAgendaEntry(view, { wsSlug, item, collection, zone }) : null);
+ // The move dialog offers "This and future occurrences" only on a native recurring schedule.
+ const recurring = $derived(!!view?.rrule?.trim() && view.roles.roles_origin === 'native');
  const dialogOpen = $derived(!!(actions.dialogEntry || actions.review || actions.endChoice || actions.forecastEntry || addDateOpen || editOpen));
 
  async function load() {
@@ -195,7 +197,7 @@
   titles={actions.linkedTitles} onloadtitles={result => { if (entry) void actions.loadTitles(entry, result); }}
   onclose={() => { editOpen = false; }} onsaved={() => void edited()} onreload={() => { editOpen = false; void load(); }} />
  <ForecastDialog open={!!actions.forecastEntry} entry={actions.forecastEntry} {zone} {mobile} {permissionCopy} onclose={actions.closeForecast} onsaved={actions.forecastSaved} />
- <ResolveOccurrenceDialog open={!!actions.dialogEntry} mode={actions.dialogMode} entry={actions.dialogEntry} {zone} {mobile}
+ <ResolveOccurrenceDialog open={!!actions.dialogEntry} mode={actions.dialogMode} entry={actions.dialogEntry} {zone} {mobile} {recurring}
   pending={actions.dialogEntry ? !!actions.pending[entryKey(actions.dialogEntry)] : false} error={actions.actionError}
   onclose={actions.closeDialog} onsubmit={actions.submitDialog} />
  <ScheduleEndDialog open={!!actions.endChoice} entry={actions.endChoice?.entry ?? null} details={actions.endChoice?.details ?? null} {mobile}

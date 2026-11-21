@@ -4286,6 +4286,8 @@ export interface CommitmentMovePreviewRequest {
  role: CommitmentLinkRole;
  to: string;
  reason?: string;
+ /** Omit for the occurrence default. series: target role only; the apply needs a series preview's revision. */
+ scope?: 'occurrence' | 'series';
 }
 export interface CommitmentMoveRequest extends CommitmentMovePreviewRequest {
  confirm_past_deadline?: boolean;
@@ -4306,6 +4308,8 @@ export interface CommitmentMoveResult {
  violations?: CommitmentMoveChange[];
  left_in_place?: CommitmentMoveChange[];
  renegotiates_deadline?: boolean;
+ /** Series moves only: the root's target offset from applies_from (the outstanding occurrence key) onward. */
+ series?: { applies_from: string; current_offset: { target_days: number; target_secs: number }; new_offset: { target_days: number; target_secs: number } };
 }
 export interface CommitmentLinkWriteResult {
  link: CommitmentLink | null;
