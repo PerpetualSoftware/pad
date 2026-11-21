@@ -5,6 +5,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // TestLiveProviderAllThreePrimitives calls the REAL provider.
@@ -34,7 +36,7 @@ func TestLiveProviderAllThreePrimitives(t *testing.T) {
 		t.Skip("no API key in the environment")
 	}
 
-	p, err := New(Config{Provider: ProviderTypesafe, APIKey: key})
+	p, err := New(Config{Provider: ProviderTypesafe, APIKey: secret.New(key)})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}

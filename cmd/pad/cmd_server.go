@@ -162,9 +162,9 @@ func serveCmd() *cobra.Command {
 			if err := cfg.EnsureEncryptionKey(allowGenerate); err != nil {
 				return fmt.Errorf("encryption key: %w", err)
 			}
-			keyBytes, err := hex.DecodeString(cfg.EncryptionKey)
+			keyBytes, err := hex.DecodeString(cfg.EncryptionKey.Reveal())
 			if err != nil || len(keyBytes) != 32 {
-				return fmt.Errorf("encryption key must be a 64-character hex string (32 bytes / 256 bits); got source=%q len=%d", cfg.EncryptionKeySource, len(cfg.EncryptionKey))
+				return fmt.Errorf("encryption key must be a 64-character hex string (32 bytes / 256 bits); got source=%q len=%d", cfg.EncryptionKeySource, len(cfg.EncryptionKey.Reveal()))
 			}
 			s.SetEncryptionKey(keyBytes)
 			switch cfg.EncryptionKeySource {
@@ -388,7 +388,7 @@ func serveCmd() *cobra.Command {
 				}
 			}
 			srv.SetTrustedProxies(cfg.TrustedProxies)
-			srv.SetMetricsToken(cfg.MetricsToken)
+			srv.SetMetricsToken(cfg.MetricsToken.Reveal())
 			srv.SetIPChangeEnforce(cfg.IPChangeEnforce)
 			srv.SetSSELimits(cfg.SSEMaxConnections, cfg.SSEMaxPerWorkspace, cfg.SSEMaxPerUser)
 			// Logged at startup so the BUG-2726 re-point is visible in an
@@ -453,7 +453,7 @@ func serveCmd() *cobra.Command {
 			// picked "Cloud" as their `pad init` connection mode — that
 			// is a client signal, not a server-runtime signal).
 			if cfg.IsCloudServer() {
-				if cfg.CloudSecret == "" {
+				if cfg.CloudSecret.IsZero() {
 					return fmt.Errorf("PAD_CLOUD_SECRET is required when running in cloud mode (PAD_MODE=cloud or PAD_CLOUD=true)")
 				}
 				// B7 (TASK-1932): fail fast rather than relying on the
@@ -465,7 +465,7 @@ func serveCmd() *cobra.Command {
 				if err := validateCloudMCPOAuth(mcpEndpoints); err != nil {
 					return err
 				}
-				srv.SetCloudMode(cfg.CloudSecret)
+				srv.SetCloudMode(cfg.CloudSecret.Reveal())
 				slog.Info("Cloud mode enabled")
 
 				// Reverse pad → pad-cloud client (TASK-690). Used by
@@ -495,7 +495,7 @@ func serveCmd() *cobra.Command {
 				//      rollover completes and CloudSecret collapses to a
 				//      single value, first == last so it's still correct.
 				if cfg.CloudSidecarURL != "" {
-					outboundSecret := billing.ResolveOutboundSecret(cfg.CloudOutboundSecret, cfg.CloudSecret)
+					outboundSecret := billing.ResolveOutboundSecret(cfg.CloudOutboundSecret.Reveal(), cfg.CloudSecret.Reveal())
 					if outboundSecret == "" {
 						return fmt.Errorf("PAD_CLOUD_SIDECAR_URL is set but neither PAD_CLOUD_OUTBOUND_SECRET nor PAD_CLOUD_SECRET supplies a usable outbound secret")
 					}
@@ -511,7 +511,7 @@ func serveCmd() *cobra.Command {
 					}
 					slog.Info("Billing mode", "mode", billingMode)
 					outboundSource := "PAD_CLOUD_SECRET[last]"
-					if strings.TrimSpace(cfg.CloudOutboundSecret) != "" {
+					if strings.TrimSpace(cfg.CloudOutboundSecret.Reveal()) != "" {
 						outboundSource = "PAD_CLOUD_OUTBOUND_SECRET"
 					}
 					slog.Info("Reverse pad-cloud sidecar wired", "url", cfg.CloudSidecarURL,
@@ -947,7 +947,7 @@ func serveCmd() *cobra.Command {
 			srv.StartOutboxDrain()
 
 			// Attach email sender: env vars first, then platform settings overlay
-			if cfg.MailerooAPIKey != "" {
+			if !cfg.MailerooAPIKey.IsZero() {
 				fromAddr := cfg.EmailFrom
 				if fromAddr == "" {
 					fromAddr = "noreply@getpad.dev"
@@ -958,7 +958,7 @@ func serveCmd() *cobra.Command {
 				}
 				// PublicLinkBaseURL — emailed links must use the deployment's
 				// public URL (PUBLIC_URL), not the CLI BaseURL().
-				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey, fromAddr, fromName, cfg.PublicLinkBaseURL()), cfg.MailerooAPIKey)
+				srv.SetEmailSender(email.NewSender(cfg.MailerooAPIKey.Reveal(), fromAddr, fromName, cfg.PublicLinkBaseURL()), cfg.MailerooAPIKey.Reveal())
 				slog.Info("Email sending enabled via Maileroo (env)")
 			}
 			// Platform settings can override or provide email config
@@ -1617,11 +1617,11 @@ func configurePush(srv *server.Server, cfg *config.Config) error {
 // when none is set; startup refuses that while a gateway URL is configured.
 // Lives here so internal/config does not import internal/billing.
 func resolvePushGatewaySecret(c *config.Config) string {
-	explicit := c.PushGatewaySecret
+	explicit := c.PushGatewaySecret.Reveal()
 	if strings.TrimSpace(explicit) == "" {
-		explicit = c.CloudOutboundSecret
+		explicit = c.CloudOutboundSecret.Reveal()
 	}
-	return billing.ResolveOutboundSecret(explicit, c.CloudSecret)
+	return billing.ResolveOutboundSecret(explicit, c.CloudSecret.Reveal())
 }
 
 // applyDBRuntimeLimits swaps the store's Postgres pool for the bounded runtime

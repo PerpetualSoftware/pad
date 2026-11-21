@@ -1,0 +1,37 @@
+mode = "remote"
+host = "10.0.0.7"
+port = 7778
+url = "https://pad.example.test"
+editor = "vim"
+log_level = "debug"
+maileroo_api_key = "fixture-SECRET-maileroo"
+email_from = "noreply@example.test"
+email_from_name = "Pad Test"
+decision_provider = "typesafe"
+typesafe_api_key = "fixture-SECRET-typesafe"
+decision_model = "jev-1.0.0"
+cloud_secret = "fixture-SECRET-cloud-a,fixture-SECRET-cloud-b"
+cloud_sidecar_url = "http://sidecar.example.test:7778"
+cloud_outbound_secret = "fixture-SECRET-outbound"
+push_gateway_url = "https://push.example.test"
+push_gateway_secret = "fixture-SECRET-push"
+mcp_public_url = "https://mcp.example.test"
+auth_server_url = "https://auth.example.test"
+openai_apps_challenge = "challenge-value"
+encryption_key = "fixture-SECRET-encryption"
+cors_origins = "https://a.example.test,https://b.example.test"
+secure_cookies = true
+trusted_proxies = "10.0.0.0/8"
+metrics_token = "fixture-SECRET-metrics"
+ip_change_enforce = "strict"
+sse_max_connections = 11
+sse_max_per_workspace = 12
+sse_max_per_user = 13
+collab_max_per_user = 14
+redis_namespace = "ns1"
+events_publish_epoch = true
+events_heartbeat = true
+watch_heartbeat = true
+
+[push]
+  auto_arm = false

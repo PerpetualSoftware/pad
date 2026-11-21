@@ -1,8 +1,11 @@
 package decision
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 func TestNewReturnsNilWhenUnconfigured(t *testing.T) {
@@ -18,7 +21,7 @@ func TestNewReturnsNilWhenUnconfigured(t *testing.T) {
 		// A key with no provider selected is still off — a stray
 		// PAD_TYPESAFE_API_KEY in the environment must not switch decisions
 		// on behind the operator's back.
-		{APIKey: "secret-key"},
+		{APIKey: secret.New("secret-key")},
 		{Model: "jev-1.13.0"},
 	} {
 		p, err := New(cfg)
@@ -48,7 +51,7 @@ func TestNewErrorsOnConfiguredButUnsatisfiable(t *testing.T) {
 	})
 
 	t.Run("unknown provider", func(t *testing.T) {
-		_, err := New(Config{Provider: "acme", APIKey: "k"})
+		_, err := New(Config{Provider: "acme", APIKey: secret.New("k")})
 		if err == nil {
 			t.Fatal("New succeeded with an unknown provider name")
 		}
@@ -59,7 +62,7 @@ func TestNewErrorsOnConfiguredButUnsatisfiable(t *testing.T) {
 }
 
 func TestNewPinsTheModel(t *testing.T) {
-	p, err := New(Config{Provider: ProviderTypesafe, APIKey: "k"})
+	p, err := New(Config{Provider: ProviderTypesafe, APIKey: secret.New("k")})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -76,7 +79,7 @@ func TestNewPinsTheModel(t *testing.T) {
 		t.Errorf("DefaultModel = %q, which is a moving alias", DefaultModel)
 	}
 
-	p2, err := New(Config{Provider: ProviderTypesafe, APIKey: "k", Model: "jev-9.9.9"})
+	p2, err := New(Config{Provider: ProviderTypesafe, APIKey: secret.New("k"), Model: "jev-9.9.9"})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -86,12 +89,12 @@ func TestNewPinsTheModel(t *testing.T) {
 }
 
 func TestResolvePrecedence(t *testing.T) {
-	file := Config{Provider: ProviderTypesafe, APIKey: "file-key", Model: "jev-1.0.0"}
+	file := Config{Provider: ProviderTypesafe, APIKey: secret.New("file-key"), Model: "jev-1.0.0"}
 
 	t.Run("later source wins per field", func(t *testing.T) {
-		got := Resolve(file, Config{APIKey: "env-key"})
-		if got.APIKey != "env-key" {
-			t.Errorf("APIKey = %q, want env-key", got.APIKey)
+		got := Resolve(file, Config{APIKey: secret.New("env-key")})
+		if got.APIKey.Reveal() != "env-key" {
+			t.Errorf("APIKey = %q, want env-key", got.APIKey.Reveal())
 		}
 		// A source silent about a field must not blank it.
 		if got.Provider != ProviderTypesafe {
@@ -104,8 +107,8 @@ func TestResolvePrecedence(t *testing.T) {
 
 	t.Run("empty does not clobber", func(t *testing.T) {
 		got := Resolve(file, Config{}, Config{Provider: "   "})
-		if got != file {
-			t.Errorf("Resolve = %+v, want the earlier config %+v unchanged", got, file)
+		if !reflect.DeepEqual(got, file) {
+			t.Errorf("Resolve = %+v (key %q), want the earlier config %+v unchanged", got, got.APIKey.Reveal(), file)
 		}
 	})
 
@@ -136,9 +139,9 @@ func TestEnvConfigReadsAndTrims(t *testing.T) {
 	t.Setenv("PAD_DECISION_MODEL", " jev-2.0.0 ")
 
 	got := EnvConfig()
-	want := Config{Provider: ProviderTypesafe, APIKey: "env-key", Model: "jev-2.0.0"}
-	if got != want {
-		t.Errorf("EnvConfig() = %+v, want %+v", got, want)
+	want := Config{Provider: ProviderTypesafe, APIKey: secret.New("env-key"), Model: "jev-2.0.0"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("EnvConfig() = %+v (key %q), want %+v (key %q)", got, got.APIKey.Reveal(), want, want.APIKey.Reveal())
 	}
 }
 
@@ -146,7 +149,7 @@ func TestEnvConfigEmptyWhenUnset(t *testing.T) {
 	t.Setenv("PAD_DECISION_PROVIDER", "")
 	t.Setenv("PAD_TYPESAFE_API_KEY", "")
 	t.Setenv("PAD_DECISION_MODEL", "")
-	if got := EnvConfig(); got != (Config{}) {
+	if got := EnvConfig(); !reflect.DeepEqual(got, Config{}) {
 		t.Errorf("EnvConfig() = %+v, want the zero Config so it cannot clobber another source", got)
 	}
 }
@@ -154,7 +157,7 @@ func TestEnvConfigEmptyWhenUnset(t *testing.T) {
 func TestDescribeNeverLeaksTheKey(t *testing.T) {
 	const key = "sk-super-secret-value"
 
-	name, model := Describe(Config{Provider: ProviderTypesafe, APIKey: key})
+	name, model := Describe(Config{Provider: ProviderTypesafe, APIKey: secret.New(key)})
 	if name != ProviderTypesafe {
 		t.Errorf("name = %q, want %q", name, ProviderTypesafe)
 	}
@@ -178,7 +181,7 @@ func TestDescribeNeverLeaksTheKey(t *testing.T) {
 	// An unknown provider is still described rather than reported as none:
 	// saying "none" for a misconfiguration would hide it from the operator
 	// looking at exactly this output.
-	name, _ = Describe(Config{Provider: "acme", APIKey: key})
+	name, _ = Describe(Config{Provider: "acme", APIKey: secret.New(key)})
 	if name != "acme" {
 		t.Errorf("name = %q, want the configured-but-unknown name reported as-is", name)
 	}

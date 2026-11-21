@@ -9,6 +9,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/decision"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -139,7 +140,7 @@ func (s *Server) storedDecisionConfig() (decision.Config, error) {
 	if kerr != nil {
 		return cfg, kerr
 	}
-	cfg.APIKey = key
+	cfg.APIKey = secret.New(key)
 	return cfg, nil
 }
 
@@ -202,7 +203,7 @@ func (s *Server) buildDecisionSettingsResponseLocked() (decisionSettingsResponse
 		Enabled:   cfg.Enabled(),
 		Provider:  name,
 		Model:     model,
-		APIKeySet: cfg.APIKey != "",
+		APIKeySet: !cfg.APIKey.IsZero(),
 	}
 	resp.Env = decisionEnvFields{
 		Provider: origins.Provider == decision.SourceEnv,
@@ -323,7 +324,7 @@ func (s *Server) handleUpdateDecisionSettings(w http.ResponseWriter, r *http.Req
 	if (in.Provider != nil || in.Enabled != nil) && env.Provider != "" {
 		envSet = append(envSet, "provider")
 	}
-	if (in.APIKey != nil || in.ClearAPIKey) && env.APIKey != "" {
+	if (in.APIKey != nil || in.ClearAPIKey) && !env.APIKey.IsZero() {
 		envSet = append(envSet, "api_key")
 	}
 	if in.Model != nil && env.Model != "" {

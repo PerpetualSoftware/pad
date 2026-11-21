@@ -67,7 +67,7 @@ func TestTASK1069_ServerStartWiresBothChecks(t *testing.T) {
 		t.Fatal(err)
 	}
 	body := string(src)
-	cloud := strings.Index(body, "if cfg.IsCloudServer() {\n\t\t\t\tif cfg.CloudSecret == \"\"")
+	cloud := strings.Index(body, "if cfg.IsCloudServer() {\n\t\t\t\tif cfg.CloudSecret.IsZero()")
 	if cloud < 0 {
 		t.Fatal("cannot find the cloud block; update this guard")
 	}

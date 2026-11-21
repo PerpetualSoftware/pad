@@ -11,6 +11,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // defaultTypesafeEndpoint is typesafe.ai's System One endpoint.
@@ -131,7 +133,7 @@ func (e *APIError) Is(target error) bool {
 
 // typesafeProvider is the typesafe.ai Jev backend.
 type typesafeProvider struct {
-	apiKey   string
+	apiKey   secret.Secret
 	model    string
 	endpoint string
 	client   *http.Client
@@ -148,7 +150,7 @@ type typesafeProvider struct {
 
 func newTypesafe(apiKey, model string) *typesafeProvider {
 	return &typesafeProvider{
-		apiKey:   apiKey,
+		apiKey:   secret.New(apiKey),
 		model:    model,
 		endpoint: defaultTypesafeEndpoint,
 		client:   &http.Client{Timeout: requestTimeout},
@@ -566,7 +568,7 @@ func (p *typesafeProvider) post(ctx context.Context, body []byte) (*wireResponse
 			return nil, fmt.Errorf("decision: create request: %w", err)
 		}
 		req.Header.Set("Content-Type", "application/json")
-		req.Header.Set("Authorization", "Bearer "+p.apiKey)
+		req.Header.Set("Authorization", "Bearer "+p.apiKey.Reveal())
 
 		resp, err := p.client.Do(req)
 		if err != nil {
