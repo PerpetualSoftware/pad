@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strconv"
 	"strings"
@@ -276,6 +277,13 @@ type Config struct {
 	// omitempty tag) never writes an empty table into everyone's
 	// config.toml on the next `pad init` / `pad configure`.
 	Push *PushConfig `toml:"push,omitempty"`
+
+	// fileSnap is the persisted view as config.toml supplied it, before any
+	// environment override; loadSnap is the view Load returned. Save uses the
+	// pair to tell an env-sourced value from a caller's change. Both are nil
+	// for a Config not built by Load.
+	fileSnap *configFile
+	loadSnap *configFile
 }
 
 // PushConfig is the `[push]` table in ~/.pad/config.toml — the per-user
@@ -492,6 +500,8 @@ func Load() (*Config, error) {
 			return nil, err
 		}
 	}
+	fs := cfg.fileView()
+	cfg.fileSnap = &fs
 
 	// Environment variable overrides
 	if v := os.Getenv("PAD_MODE"); v != "" {
@@ -690,6 +700,8 @@ func Load() (*Config, error) {
 		}
 	}
 
+	ls := cfg.fileView()
+	cfg.loadSnap = &ls
 	return cfg, nil
 }
 
@@ -697,7 +709,8 @@ func Load() (*Config, error) {
 // the same toml tag, in the same order, and every credential as a plain
 // string. Config cannot be encoded itself because a secret.Secret marshals as
 // REDACTED, which would replace the operator's credentials in config.toml.
-// TestConfigFileMirrorsConfig keeps the two in step.
+// TestConfigFileMirrorsConfig keeps the two in step. Save writes it through
+// persistView, so a value an environment variable supplied is not written.
 type configFile struct {
 	Mode                string      `toml:"mode"`
 	Host                string      `toml:"host"`
@@ -736,7 +749,8 @@ type configFile struct {
 	Push                *PushConfig `toml:"push,omitempty"`
 }
 
-// fileView is the configFile Save writes, credentials revealed.
+// fileView is the in-memory persisted fields, credentials revealed. It
+// includes environment overrides; Save writes persistView, which drops them.
 func (c *Config) fileView() configFile {
 	return configFile{
 		Mode:                c.Mode,
@@ -777,7 +791,30 @@ func (c *Config) fileView() configFile {
 	}
 }
 
-// Save writes the persisted Pad config to disk.
+// persistView is what Save writes: fileView, except that a field an
+// environment variable changed during Load, and nothing has changed since,
+// keeps the value config.toml had. A Config not built by Load is written as
+// it stands.
+func (c *Config) persistView() configFile {
+	cur := c.fileView()
+	if c.fileSnap == nil || c.loadSnap == nil {
+		return cur
+	}
+	cv := reflect.ValueOf(&cur).Elem()
+	lv := reflect.ValueOf(c.loadSnap).Elem()
+	fv := reflect.ValueOf(c.fileSnap).Elem()
+	for i := 0; i < cv.NumField(); i++ {
+		l, f := lv.Field(i).Interface(), fv.Field(i).Interface()
+		if reflect.DeepEqual(cv.Field(i).Interface(), l) && !reflect.DeepEqual(l, f) {
+			cv.Field(i).Set(fv.Field(i))
+		}
+	}
+	return cur
+}
+
+// Save writes the persisted Pad config to disk. A value an environment
+// variable supplied at Load is not written: the field keeps what config.toml
+// had, unless the caller changed it after Load.
 func (c *Config) Save() error {
 	if err := os.MkdirAll(c.DataDir, 0755); err != nil {
 		return err
@@ -803,7 +840,9 @@ func (c *Config) Save() error {
 		tmp.Close()
 		return err
 	}
-	if err := toml.NewEncoder(tmp).Encode(c.fileView()); err != nil {
+	cur := c.fileView()
+	view := c.persistView()
+	if err := toml.NewEncoder(tmp).Encode(view); err != nil {
 		tmp.Close()
 		return err
 	}
@@ -812,6 +851,12 @@ func (c *Config) Save() error {
 	}
 	if err := os.Rename(tmpName, c.ConfigPath); err != nil {
 		return err
+	}
+	// The file now holds view, and memory still holds cur (env values where
+	// view kept the file's). Snapshotting exactly that keeps a later Save
+	// from writing env values or undoing a change made after this one.
+	if c.fileSnap != nil && c.loadSnap != nil {
+		c.fileSnap, c.loadSnap = &view, &cur
 	}
 
 	c.LoadedFromFile = true
