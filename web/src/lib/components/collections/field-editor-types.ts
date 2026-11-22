@@ -434,17 +434,19 @@ export function blankField(): EditableField {
  *                 Templates pass true so their keys aren't overwritten.
  */
 export function fieldFromDef(def: FieldDef, existing: boolean): EditableField {
+	// The marks are respelled as the value they mark (respellMarks): terminal
+	// values as their option, then abandoned values as that terminal value.
+	const options = def.options ?? [];
+	const terms = respellMarks(def.terminal_options ?? [], options);
 	return {
 		key: def.key,
 		label: def.label || def.key,
 		type: def.type,
 		options: def.options ? [...def.options] : [],
 		originalOptions: existing && def.options ? [...def.options] : [],
-		terminalOptions: def.terminal_options ? [...def.terminal_options] : [],
-		abandonedOptions: def.abandoned_options ? [...def.abandoned_options] : [],
-		awaitsHumanOptions: def.awaits_human_options
-			? canonicalAwaitsHuman(def.awaits_human_options, def.options ?? [])
-			: [],
+		terminalOptions: terms,
+		abandonedOptions: respellMarks(def.abandoned_options ?? [], terms),
+		awaitsHumanOptions: respellMarks(def.awaits_human_options ?? [], options),
 		required: def.required,
 		computed: def.computed,
 		collection: def.collection,
@@ -471,21 +473,23 @@ export function keptAbandoned(abandoned: readonly string[], terms: readonly stri
 }
 
 /**
- * Declared waiting values respelled as the option they match. The server
- * matches awaits_human_options to options trimmed and case-insensitively, so
- * a saved " Review " is a valid mark on the option "review"; the editor
+ * Declared marks respelled as the value of `against` they match: abandoned
+ * values against the field's terminal values, terminal and waiting values
+ * against its options. The server matches abandoned and waiting marks trimmed
+ * and case-insensitively, so a saved "Cancelled" is a valid abandoned mark on
+ * the terminal "cancelled" and a saved " Review " a valid waiting mark on the
+ * option "review"; it stores a terminal value without checking it against the
+ * options, and compares item values to it case-insensitively. The editor
  * compares exactly, and without this the toggle would show unmarked and a
- * save would drop the declaration. A value that matches no option is kept
- * as declared (keptAwaitsHuman drops it on save). Duplicates collapse.
+ * save would drop the declaration (TASK-4677). A
+ * value that matches nothing is kept as declared (keptAbandoned and
+ * keptAwaitsHuman drop it on save). Duplicates collapse.
  */
-export function canonicalAwaitsHuman(
-	declared: readonly string[],
-	options: readonly string[]
-): string[] {
+export function respellMarks(declared: readonly string[], against: readonly string[]): string[] {
 	const norm = (v: string) => v.trim().toLowerCase();
 	const out: string[] = [];
 	for (const d of declared) {
-		const v = options.find((o) => norm(o) === norm(d)) ?? d;
+		const v = against.find((o) => norm(o) === norm(d)) ?? d;
 		if (!out.includes(v)) out.push(v);
 	}
 	return out;

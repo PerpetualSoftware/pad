@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 import type { Collection } from '$lib/types';
-import { fieldFromDef, keptAbandoned, type EditableField } from './field-editor-types';
+import { fieldFromDef, keptAbandoned, respellMarks, type EditableField } from './field-editor-types';
 
 /**
  * BUG-2347 PR 2: the schema editor's "counts as abandoned" toggle, and the
@@ -55,6 +55,39 @@ afterEach(() => {
 describe('keptAbandoned', () => {
 	it('keeps only abandoned values still being saved as terminal', () => {
 		expect(keptAbandoned(['cancelled', 'dropped'], ['done', 'cancelled'])).toEqual(['cancelled']);
+	});
+});
+
+describe('respellMarks (TASK-4677)', () => {
+	it('respells abandoned values as the terminal they match, trimmed and case-insensitively', () => {
+		expect(respellMarks([' Cancelled ', 'CANCELLED', 'cancelled', 'gone'], ['done', 'cancelled'])).toEqual([
+			'cancelled',
+			'gone'
+		]);
+	});
+
+	it('leaves an unmatched value as declared, so keptAbandoned drops it on save', () => {
+		const ab = respellMarks(['Dropped'], ['done']);
+		expect(ab).toEqual(['Dropped']);
+		expect(keptAbandoned(ab, ['done'])).toEqual([]);
+	});
+});
+
+describe('fieldFromDef abandoned values (TASK-4677)', () => {
+	it('respells terminal values as their option, then abandoned values as that terminal', () => {
+		const f = fieldFromDef(
+			{
+				key: 'status',
+				label: 'Status',
+				type: 'select',
+				options: ['open', 'done', 'cancelled'],
+				terminal_options: ['Done', ' CANCELLED '],
+				abandoned_options: ['Cancelled']
+			},
+			true
+		);
+		expect(f.terminalOptions).toEqual(['done', 'cancelled']);
+		expect(f.abandonedOptions).toEqual(['cancelled']);
 	});
 });
 
@@ -247,5 +280,49 @@ describe('EditCollectionModal round trip', () => {
 		expect(status.terminal_options).toEqual(['completed', 'reversed']);
 		expect(status.abandoned_options).toEqual(['reversed']);
 		expect(JSON.stringify(data.migrations ?? [])).toContain('reversed');
+	});
+
+	async function saveStatus(field: Record<string, unknown>): Promise<{ terminal_options?: string[]; abandoned_options?: string[] }> {
+		updateMock.mockImplementation(async () => ({}));
+		const collection = {
+			id: 'c3',
+			slug: 'plans3',
+			name: 'Plans',
+			icon: '',
+			description: '',
+			prefix: 'PLANC',
+			schema: JSON.stringify({ fields: [{ key: 'status', label: 'Status', type: 'select', ...field }] }),
+			settings: '{}',
+			updated_at: '2026-11-22T00:00:00Z'
+		} as unknown as Collection;
+		app = mount(EditCollectionModal, {
+			target: host,
+			props: { open: true, collection, wsSlug: 'ws', initialSection: 'fields' }
+		}) as Record<string, unknown>;
+		await settle();
+		[...document.querySelectorAll<HTMLButtonElement>('button')].find((b) => /^\s*save/i.test(b.textContent ?? ''))!.click();
+		await settle();
+		expect(updateMock).toHaveBeenCalledTimes(1);
+		const data = updateMock.mock.calls[0][2] as { schema: string };
+		return JSON.parse(data.schema).fields.find((f: { key: string }) => f.key === 'status');
+	}
+
+	it('keeps an abandoned value spelled differently from its terminal (TASK-4677)', async () => {
+		const status = await saveStatus({
+			options: ['open', 'done', 'cancelled'],
+			terminal_options: ['done', 'cancelled'],
+			abandoned_options: ['Cancelled']
+		});
+		expect(status.abandoned_options).toEqual(['cancelled']);
+	});
+
+	it('keeps a terminal value spelled differently from its option, and its abandoned mark (TASK-4677)', async () => {
+		const status = await saveStatus({
+			options: ['open', 'done', 'cancelled'],
+			terminal_options: ['Done', ' Cancelled '],
+			abandoned_options: ['CANCELLED']
+		});
+		expect(status.terminal_options).toEqual(['done', 'cancelled']);
+		expect(status.abandoned_options).toEqual(['cancelled']);
 	});
 });

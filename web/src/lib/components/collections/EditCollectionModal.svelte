@@ -14,6 +14,7 @@
 		blankField,
 		coerceDefault,
 		defaultsEqual,
+		fieldFromDef,
 		isSafeDoneFieldKey,
 		keptAbandoned,
 		keptAwaitsHuman,
@@ -475,36 +476,11 @@
 			description = collection.description || '';
 			const schema = parseSchema(collection);
 			schemaRepairs = schemaRenderRepairs(collection);
-			existingFields = schema.fields.map((f) => ({
-				key: f.key,
-				label: f.label || f.key,
-				type: f.type,
-				options: f.options ? [...f.options] : [],
-				originalOptions: f.options ? [...f.options] : [],
-				terminalOptions: f.terminal_options ? [...f.terminal_options] : [],
-				abandonedOptions: f.abandoned_options ? [...f.abandoned_options] : [],
-				awaitsHumanOptions: f.awaits_human_options ? [...f.awaits_human_options] : [],
-				required: f.required,
-				computed: f.computed,
-				collection: f.collection,
-				suffix: f.suffix,
-				default: f.default,
-				// Carry opaque metadata (e.g. seeded pattern / unique_scope
-				// on playbooks.invocation_slug) so re-saving the collection
-				// doesn't strip server-side validation rules the UI doesn't
-				// yet expose. See field-editor-types.ts:EditableField.
-				pattern: f.pattern,
-				uniqueScope: f.unique_scope,
-				// Snapshot the load-time type AND default so the save path
-				// can detect in-session type switches and default mutations
-				// (used for the unsupported-type default preservation
-				// logic). Without originalDefault, a user could round-trip
-				// the type (relation -> text -> relation) with a new
-				// default injected in the middle and we'd preserve the
-				// stale value because originalType still matches.
-				originalType: f.type,
-				originalDefault: f.default
-			}));
+			// fieldFromDef carries every member a save writes back, opaque
+			// metadata (pattern, unique_scope) and the load-time type and
+			// default included, and respells the terminal, abandoned and
+			// waiting marks as the value they mark (TASK-4677).
+			existingFields = schema.fields.map((f) => fieldFromDef(f, true));
 			newFields = [];
 			seededFields = schema.fields.map((f) => ({
 				key: f.key,
