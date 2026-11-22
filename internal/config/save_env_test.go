@@ -282,3 +282,59 @@ func TestSaveOmitsEveryEnvOverride(t *testing.T) {
 		})
 	}
 }
+
+// A caller's choice that equals the env value is still a choice: MarkExplicit
+// makes Save write it, so configure with PAD_URL set to the same URL persists.
+func TestSaveWritesExplicitValueEqualToEnv(t *testing.T) {
+	dir := isolateEnv(t)
+	t.Setenv("PAD_URL", "https://x.example")
+	cfg := mustLoad(t)
+	cfg.Mode = ModeRemote
+	cfg.URL = "https://x.example"
+	cfg.MarkExplicit("mode", "url")
+	mustSave(t, cfg)
+	m := readConfigMap(t, dir)
+	if m["mode"] != ModeRemote || m["url"] != "https://x.example" {
+		t.Errorf("config.toml mode %q url %q, want remote and https://x.example", m["mode"], m["url"])
+	}
+}
+
+// Related fields are saved together: a cloud choice under PAD_CLOUD=true over
+// a file holding mode=local writes mode=cloud with the cloud URL, never
+// mode=local with the cloud URL.
+func TestSaveKeepsModeAndURLTogether(t *testing.T) {
+	dir := isolateEnv(t)
+	writeConfigFile(t, dir, "mode = \"local\"\n")
+	t.Setenv("PAD_CLOUD", "true")
+	cfg := mustLoad(t)
+	cfg.Mode = ModeCloud
+	cfg.URL = CloudBaseURL
+	cfg.MarkExplicit("mode", "url")
+	mustSave(t, cfg)
+	m := readConfigMap(t, dir)
+	if m["mode"] != ModeCloud || m["url"] != CloudBaseURL {
+		t.Errorf("config.toml mode %q url %q, want cloud and %s", m["mode"], m["url"], CloudBaseURL)
+	}
+}
+
+// An unmarked env-sourced field is still not written when a sibling is marked.
+func TestSaveMarkExplicitIsPerField(t *testing.T) {
+	dir := isolateEnv(t)
+	t.Setenv("PAD_CLOUD_SECRET", "fromenv")
+	cfg := mustLoad(t)
+	cfg.URL = "https://chosen.example"
+	cfg.MarkExplicit("url")
+	mustSave(t, cfg)
+	if v, _ := readConfigMap(t, dir)["cloud_secret"].(string); v != "" {
+		t.Errorf("config.toml cloud_secret = %q, want empty", v)
+	}
+}
+
+func TestMarkExplicitPanicsOnUnknownKey(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Error("MarkExplicit(\"no_such_key\") did not panic")
+		}
+	}()
+	DefaultConfig().MarkExplicit("no_such_key")
+}

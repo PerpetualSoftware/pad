@@ -284,6 +284,9 @@ type Config struct {
 	// for a Config not built by Load.
 	fileSnap *configFile
 	loadSnap *configFile
+	// explicit holds the toml keys MarkExplicit named: a caller's choice,
+	// which Save writes even when it equals what the environment supplied.
+	explicit map[string]bool
 }
 
 // PushConfig is the `[push]` table in ~/.pad/config.toml — the per-user
@@ -791,19 +794,57 @@ func (c *Config) fileView() configFile {
 	}
 }
 
+// MarkExplicit records that the caller chose the current values of the named
+// persisted fields (toml keys, e.g. "mode", "url"), so Save writes them even
+// when one equals the value an environment variable supplied. Without it a
+// choice that happens to match the environment would not be saved, and a
+// related field that differs would be saved without it. It panics on a key
+// configFile does not have, which is a programming error.
+func (c *Config) MarkExplicit(keys ...string) {
+	t := reflect.TypeOf(configFile{})
+	for _, k := range keys {
+		found := false
+		for i := 0; i < t.NumField(); i++ {
+			if tomlKey(t.Field(i)) == k {
+				found = true
+				break
+			}
+		}
+		if !found {
+			panic("config: MarkExplicit: no persisted field " + k)
+		}
+		if c.explicit == nil {
+			c.explicit = map[string]bool{}
+		}
+		c.explicit[k] = true
+	}
+}
+
+func tomlKey(f reflect.StructField) string {
+	tag := f.Tag.Get("toml")
+	if i := strings.IndexByte(tag, ','); i >= 0 {
+		tag = tag[:i]
+	}
+	return tag
+}
+
 // persistView is what Save writes: fileView, except that a field an
 // environment variable changed during Load, and nothing has changed since,
-// keeps the value config.toml had. A Config not built by Load is written as
-// it stands.
+// keeps the value config.toml had, unless MarkExplicit named it. A Config not
+// built by Load is written as it stands.
 func (c *Config) persistView() configFile {
 	cur := c.fileView()
 	if c.fileSnap == nil || c.loadSnap == nil {
 		return cur
 	}
+	ct := reflect.TypeOf(cur)
 	cv := reflect.ValueOf(&cur).Elem()
 	lv := reflect.ValueOf(c.loadSnap).Elem()
 	fv := reflect.ValueOf(c.fileSnap).Elem()
 	for i := 0; i < cv.NumField(); i++ {
+		if c.explicit[tomlKey(ct.Field(i))] {
+			continue
+		}
 		l, f := lv.Field(i).Interface(), fv.Field(i).Interface()
 		if reflect.DeepEqual(cv.Field(i).Interface(), l) && !reflect.DeepEqual(l, f) {
 			cv.Field(i).Set(fv.Field(i))

@@ -135,11 +135,14 @@ func applyConfigureValues(cfg *config.Config, values *configureValues) error {
 	case config.ModeLocal:
 		cfg.Mode = config.ModeLocal
 		cfg.URL = ""
+		cfg.MarkExplicit("mode", "url")
 		if values.Host != "" {
 			cfg.Host = strings.TrimSpace(values.Host)
+			cfg.MarkExplicit("host")
 		}
 		if values.Port > 0 {
 			cfg.Port = values.Port
+			cfg.MarkExplicit("port")
 		}
 		if cfg.Host == "" {
 			cfg.Host = "127.0.0.1"
@@ -165,6 +168,7 @@ func applyConfigureValues(cfg *config.Config, values *configureValues) error {
 		}
 		cfg.Mode = config.ModeRemote
 		cfg.URL = normalizedURL
+		cfg.MarkExplicit("mode", "url")
 		return nil
 	case config.ModeCloud:
 		// Cloud is a labeled-Remote at runtime: same flow, hardcoded URL.
@@ -174,6 +178,7 @@ func applyConfigureValues(cfg *config.Config, values *configureValues) error {
 		// public endpoint.
 		cfg.Mode = config.ModeCloud
 		cfg.URL = config.CloudBaseURL
+		cfg.MarkExplicit("mode", "url")
 		return nil
 	default:
 		return fmt.Errorf("invalid mode %q", values.Mode)
