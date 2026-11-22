@@ -428,10 +428,11 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 	// A bare date (TASK-4723) is placed only for target and earliest, and only
-	// after the edit gate. Until it is placed, every refusal it meets answers
-	// main's format refusal for to, so nobody learns more from a bare date
-	// than before: deadline and occupied_until, a bad scope, a caller who may
-	// not edit, a bad revision and an agent-audience schedule alike.
+	// after the edit gate. A caller who may not edit, deadline and
+	// occupied_until, and an agent-audience schedule answer main's format
+	// refusal for to, so the bare form tells nobody more than before. The
+	// scope and revision checks read only the request, so they answer as they
+	// do for an RFC3339 to.
 	bareTo := false
 	if _, err := time.Parse(time.RFC3339, *b.To); err != nil {
 		if _, bare := isBareDate(*b.To); !bare {
@@ -444,30 +445,31 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 		}
 		bareTo = true
 	}
-	refuse := func(err error) bool {
-		if err != nil && bareTo {
-			err = graphField("to", "format")
-		}
-		return s.writeGraphError(w, r, err)
-	}
 	scope := "occurrence"
 	if b.Scope != nil {
 		scope = *b.Scope
 		if scope != "occurrence" && scope != "series" {
-			refuse(graphField("scope", "enum"))
+			s.writeGraphError(w, r, graphField("scope", "enum"))
 			return
 		}
 	}
 	if scope == "series" && *b.Role != "target" {
-		refuse(graphField("scope", "combination"))
+		s.writeGraphError(w, r, graphField("scope", "combination"))
 		return
 	}
 	loader := s.graphAccessLoader(r, ws, commitmentAccessLive, item.ID)
 	access, err := loader(s.store.Q())
-	if s.writeGraphError(w, r, err) || refuse(graphEndsEditable(access, item.ID, item.ID)) {
+	if s.writeGraphError(w, r, err) {
 		return
 	}
-	if refuse(graphRevision(b.Revision)) {
+	if err := graphEndsEditable(access, item.ID, item.ID); err != nil {
+		if bareTo {
+			err = graphField("to", "format")
+		}
+		s.writeGraphError(w, r, err)
+		return
+	}
+	if s.writeGraphError(w, r, graphRevision(b.Revision)) {
 		return
 	}
 	to, resolvedFrom := *b.To, ""

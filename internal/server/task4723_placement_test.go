@@ -229,6 +229,19 @@ func TestTask4723_LinkedMoveBareToRefusals(t *testing.T) {
 	if ec, field, detail := task4699Detail(m); code != http.StatusBadRequest || ec != "validation_error" || field != "to" || detail != "format" || !strings.Contains(raw, "a bare date (YYYY-MM-DD)") || raw == task4723ToRefusal {
 		t.Errorf("malformed: %d %s", code, raw)
 	}
+	// Request-only checks answer for themselves, not as a to format refusal.
+	code, m, raw = move(w, slug, map[string]any{"role": "earliest", "to": day, "scope": "series"})
+	if ec, field, detail := task4699Detail(m); code != http.StatusBadRequest || ec != "validation_error" || field != "scope" || detail != "combination" {
+		t.Errorf("bare earliest series: %d %s, want scope/combination", code, raw)
+	}
+	code, m, raw = move(w, slug, map[string]any{"role": "target", "to": day, "scope": "everything"})
+	if ec, field, detail := task4699Detail(m); code != http.StatusBadRequest || ec != "validation_error" || field != "scope" || detail != "enum" {
+		t.Errorf("bare bad scope: %d %s, want scope/enum", code, raw)
+	}
+	code, m, raw = w.do(t, "POST", "/items/"+slug+"/commitment/move", map[string]any{"role": "target", "to": day, "revision": "not-a-token"})
+	if ec, field, detail := task4699Detail(m); code != http.StatusBadRequest || ec != "validation_error" || field != "revision" || detail != "format" {
+		t.Errorf("bare bad revision: %d %s, want revision/format", code, raw)
+	}
 	// No account zone.
 	nz := newTask4699World(t, "", 450)
 	nzSlug, _ := task4723Commit(t, nz, "No zone", -1)
