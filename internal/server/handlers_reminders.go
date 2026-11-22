@@ -7,9 +7,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
-	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"github.com/PerpetualSoftware/pad/internal/store"
-	"github.com/PerpetualSoftware/pad/internal/usertz"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -63,10 +61,6 @@ func writeRemindAtError(w http.ResponseWriter) {
 	writeError(w, http.StatusBadRequest, "invalid_remind_at", remindAtAgentRefusal)
 }
 
-// remindAtFromDayStart is the resolved_from value of a reminder whose bare
-// date was placed at the caller's day start.
-const remindAtFromDayStart = "day_start"
-
 // resolveRemindAt reads remind_at for the create and re-arm doors. An RFC3339
 // instant is normalized as parseRemindAt does. A bare YYYY-MM-DD (TASK-4699)
 // resolves to that date at the CALLER's day start (unset reads 09:00) in the
@@ -83,8 +77,8 @@ func (s *Server) resolveRemindAt(w http.ResponseWriter, r *http.Request, workspa
 	if at, err := parseRemindAt(raw); err == nil {
 		return at, "", true
 	}
-	day, err := schedule.ParseWall(raw)
-	if err != nil || !day.AllDay {
+	day, bare := isBareDate(raw)
+	if !bare {
 		writeError(w, http.StatusBadRequest, "invalid_remind_at", remindAtMalformedRefusal)
 		return "", "", false
 	}
@@ -97,18 +91,11 @@ func (s *Server) resolveRemindAt(w http.ResponseWriter, r *http.Request, workspa
 		writeRemindAtError(w)
 		return "", "", false
 	}
-	zone := viewerZone(r)
-	if !zone.Set {
+	if !viewerZone(r).Set {
 		writeError(w, http.StatusBadRequest, "invalid_remind_at", remindAtNoZoneRefusal)
 		return "", "", false
 	}
-	var stored *int
-	if u := currentUser(r); u != nil {
-		stored = u.DayStartMinute
-	}
-	minute, _ := usertz.DayStart(stored)
-	day.AllDay, day.Hour, day.Minute = false, minute/60, minute%60
-	return store.NormalizeInstant(schedule.Resolve(zone.Loc, day)), remindAtFromDayStart, true
+	return store.NormalizeInstant(callerDayStartInstant(r, day)), resolvedFromDayStart, true
 }
 
 // handleListItemReminders returns every reminder on an item, armed or fired.

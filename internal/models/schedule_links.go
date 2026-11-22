@@ -166,6 +166,10 @@ type LinkedMoveResult struct {
 	// Series is set only by a series-scope move or move-preview, and describes
 	// the root item only.
 	Series *LinkedMoveSeries `json:"series,omitempty"`
+	// ResolvedFrom is "day_start" when the caller sent a bare date as to and
+	// the server placed it at the caller's day start (TASK-4723), on preview
+	// and apply alike. Empty for an RFC3339 to.
+	ResolvedFrom string `json:"resolved_from,omitempty"`
 }
 
 // ScheduleLinkUpdate changes a link's offset or cancel policy. A new offset moves
