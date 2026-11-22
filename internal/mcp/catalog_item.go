@@ -236,7 +236,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "floating", Type: "bool", Description: "Use recipient wall zone. Excludes tz."},
 	{Name: "day_start", Type: "bool", Description: "With a bare-date start: place it at the caller's day start (09:00 unset), fixed at write; a hard deadline then falls at that time. Not with window or an agent audience. For: remind (schedule), schedule-edit."},
 	{Name: "state", Type: "string", Description: "schedule-resolve: done | skip | snooze | move | ack (fired only; still owed, no comment)."},
-	{Name: "until", Type: "string", Description: "Required snooze/move RFC3339 re-fire/target instant."},
+	{Name: "until", Type: "string", Description: "Required snooze/move RFC3339 re-fire/target instant, or a bare date YYYY-MM-DD at the CALLER's day start (09:00 unset) in the caller's zone; answer marks resolution.until, resolved_from=day_start."},
 	{Name: "resolution_id", Type: "string", Description: "Exact last_resolution ID; required for schedule-reopen."},
 	{Name: "occurrence_at", Type: "string", Description: "Required schedule-resolve RFC3339 next_occurrence.at from schedule."},
 	{Name: "actual_done_at", Type: "string", Description: "Actual completion (RFC3339). schedule-resolve done only."},
@@ -251,7 +251,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "revision", Type: "string", Description: "Opaque preview token; return unchanged with graph applies. Required: schedule-renegotiate preview=false."},
 	{Name: "preview", Type: "bool", Description: "Default preview. schedule-renegotiate: false applies with revision; schedule-link: apply=true commits."},
 	{Name: "from", Type: "string", Description: "Window start, RFC3339 instant. Required: agenda; with stale, resumes the list."},
-	{Name: "to", Type: "string", Description: "Required RFC3339 agenda end (<=92 days after from; excludes stale) or schedule-move destination."},
+	{Name: "to", Type: "string", Description: "Required RFC3339 agenda end (<=92 days after from; excludes stale) or schedule-move destination (role target/earliest: also a bare date at the caller's day start)."},
 	{Name: "stale", Type: "bool", Description: "agenda: yours unresolved over 14 days, not a window."},
 	{Name: "recipient", Type: "string", Description: "agenda: me (default), all (workspace scope; no_date not listed), or a user ID."},
 
@@ -472,7 +472,7 @@ Actions:
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-reopen — Undo one resolution. Required: ref, resolution_id. Keeps its comment.
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
-    snooze and move also need until. Optional: comment, actual_done_at, end_schedule, confirm_past_deadline (move only).
+    snooze and move also need until (RFC3339, or a bare date at your day start). Optional: comment, actual_done_at, end_schedule, confirm_past_deadline (move only).
   schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
     series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a

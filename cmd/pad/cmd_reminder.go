@@ -159,8 +159,14 @@ func remindAtShown(r *models.Reminder) string {
 	if r.ResolvedFrom != "day_start" {
 		return r.RemindAt
 	}
-	at := r.RemindAt
-	if t, err := time.Parse(time.RFC3339, r.RemindAt); err == nil {
+	return placedShown(r.RemindAt)
+}
+
+// placedShown shows an instant the server placed from a bare date in the
+// caller's account zone, marked " (start of your day)" (TASK-4699, TASK-4723).
+func placedShown(raw string) string {
+	at := raw
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
 		if zone := linkAccountZone(); zone != "" {
 			if loc, err := time.LoadLocation(zone); err == nil {
 				at = t.In(loc).Format(time.RFC3339)

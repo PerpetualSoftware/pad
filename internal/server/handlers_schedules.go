@@ -448,6 +448,51 @@ func parseResolveInstant(w http.ResponseWriter, field string, raw *string) (time
 	return t, true
 }
 
+// untilMalformedRefusal answers a snooze or move until that is neither an
+// RFC3339 instant nor a bare date (TASK-4723).
+const untilMalformedRefusal = "until must be an RFC3339 instant (e.g. 2026-08-01T09:00:00Z) or a bare date (YYYY-MM-DD), which lands at the start of your day in your account time zone"
+
+// untilNoZoneRefusal answers a bare until from a caller with no account zone.
+const untilNoZoneRefusal = "A bare date lands at the start of your day in your account time zone, and you have no account time zone. Set one with pad auth timezone <IANA> (or in the web settings), or give until as an RFC3339 instant (e.g. 2026-08-01T09:00:00Z)"
+
+// resolveUntil reads a resolve's until. An RFC3339 instant is read as before.
+// On snooze and move a bare YYYY-MM-DD (TASK-4723) lands at the CALLER's day
+// start in the CALLER's account zone (callerDayStartInstant), and placed
+// reports it. Refusals, written here (ok=false), are 400 validation_error on
+// field until: a bare date on any other state, or on an agent-audience
+// schedule, answers main's format refusal unchanged (the state check comes
+// first, so done and skip do no lookup); a malformed snooze or move until
+// names both forms; a bare date from a caller with no account zone is
+// zone_unset, naming pad auth timezone.
+func (s *Server) resolveUntil(w http.ResponseWriter, r *http.Request, workspaceID, itemID, state, raw string) (until time.Time, placed, ok bool) {
+	if t, err := time.Parse(time.RFC3339, raw); err == nil {
+		return t, false, true
+	}
+	if state != "snooze" && state != "move" {
+		writeResolveField(w, "until", "format", "until must be an RFC3339 instant")
+		return time.Time{}, false, false
+	}
+	day, bare := isBareDate(raw)
+	if !bare {
+		writeResolveField(w, "until", "format", untilMalformedRefusal)
+		return time.Time{}, false, false
+	}
+	sc, err := s.store.GetSchedule(workspaceID, itemID)
+	if err != nil {
+		writeInternalError(w, err)
+		return time.Time{}, false, false
+	}
+	if sc != nil && sc.Audience == "agent" {
+		writeResolveField(w, "until", "format", "until must be an RFC3339 instant")
+		return time.Time{}, false, false
+	}
+	if !viewerZone(r).Set {
+		writeResolveField(w, "until", "zone_unset", untilNoZoneRefusal)
+		return time.Time{}, false, false
+	}
+	return callerDayStartInstant(r, day), true, true
+}
+
 // resolveItemSchedule resolves through the commitment door and publishes the
 // existing schedule and comment side effects.
 func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
@@ -523,12 +568,13 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		}
 		in.EndSchedule = *body.EndSchedule
 	}
+	untilPlaced := false
 	if body.Until != nil {
-		u, ok := parseResolveInstant(w, "until", body.Until)
+		u, placed, ok := s.resolveUntil(w, r, workspaceID, item.ID, in.State, *body.Until)
 		if !ok {
 			return
 		}
-		in.Until = &u
+		in.Until, untilPlaced = &u, placed
 	}
 	if actualDoneAt != nil {
 		actual, ok := parseResolveInstant(w, "actual_done_at", actualDoneAt)
@@ -633,6 +679,10 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.EndedItemOpen {
 		resolution["item_still_open"] = true
+	}
+	if untilPlaced {
+		resolution["until"] = in.Until.UTC().Format(time.RFC3339)
+		resolution["resolved_from"] = resolvedFromDayStart
 	}
 	v, err := s.buildCommitmentView(r, workspaceID, item, res.Schedule, "")
 	if err != nil {

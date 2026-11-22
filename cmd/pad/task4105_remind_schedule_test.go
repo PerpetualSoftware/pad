@@ -233,8 +233,10 @@ func TestRemindUntilForms(t *testing.T) {
 		args []string
 		want string
 	}{
-		{[]string{"snooze", "TASK-5", "--until", "2026-11-10"}, "bare date"},
-		{[]string{"move", "TASK-5", "--until", "2026-11-10"}, "bare date"},
+		// A bare date goes to the server since TASK-4723; one that is not a
+		// calendar date is still refused here.
+		{[]string{"snooze", "TASK-5", "--until", "2026-13-40"}, "--until"},
+		{[]string{"move", "TASK-5", "--until", "2026-13-40"}, "--until"},
 		{[]string{"move", "TASK-5", "--until", "2h"}, "snooze only"},
 		{[]string{"snooze", "TASK-5", "--until", "soon"}, "--until"},
 		{[]string{"snooze", "TASK-5"}, "--until is required"},

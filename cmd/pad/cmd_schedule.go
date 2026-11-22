@@ -319,12 +319,12 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			long += "\n\n--at records when the work was really finished, if that was not now: an RFC3339 instant or a wall time read in your zone (2026-11-08T17:30); a bare date is refused. It cannot be in the future or before the schedule was created; the server says so unchanged."
 		}
 	case "snooze":
-		long += "\n\n--until is an RFC3339 instant, a wall time read in your zone (2026-11-10T09:00), or a duration from now (2h, 1d). A bare date is refused. The occurrence stays outstanding and re-fires once at --until."
+		long += "\n\n--until is an RFC3339 instant, a wall time read in your zone (2026-11-10T09:00), a duration from now (2h, 1d), or a bare date (2026-11-10), which the server places at the start of your day in your account time zone (09:00 unless you set one; refused with no account zone, or on an agent-audience schedule). The occurrence stays outstanding and re-fires once at --until."
 	case "move":
-		long += "\n\n--until is an RFC3339 instant or a wall time read in your zone (2026-11-10T09:00); a bare date is refused. The occurrence stays outstanding and becomes due at --until. A move past the hard deadline needs --past-deadline. A move changes the target only; a hard deadline on a native schedule keeps its own date and changes through renegotiate with a reason (pad remind renegotiate). A legacy hard deadline cannot be moved: PATCH .../commitment naming a role converts it to native roles first."
+		long += "\n\n--until is an RFC3339 instant, a wall time read in your zone (2026-11-10T09:00), or a bare date (2026-11-10), which the server places at the start of your day in your account time zone (09:00 unless you set one; refused with no account zone, or on an agent-audience schedule). The hard-deadline check reads the placed time. The occurrence stays outstanding and becomes due at --until. A move past the hard deadline needs --past-deadline. A move changes the target only; a hard deadline on a native schedule keeps its own date and changes through renegotiate with a reason (pad remind renegotiate). A legacy hard deadline cannot be moved: PATCH .../commitment naming a role converts it to native roles first."
 	}
 	if v.state == "move" {
-		long += "\n\nUse --role target|earliest|deadline|occupied_until with --to WHEN to preview a linked cascade. Repeat with --apply --revision TOKEN to commit; --reason records why, and --ack-violations accepts previewed bound crossings. This form refuses --until and --occurrence."
+		long += "\n\nUse --role target|earliest|deadline|occupied_until with --to WHEN to preview a linked cascade. --to takes the same forms as --until (no duration); a bare date is placed at the start of your day for --role target and earliest only, and refused for deadline and occupied_until. Repeat with --apply --revision TOKEN to commit; --reason records why, and --ack-violations accepts previewed bound crossings. This form refuses --until and --occurrence."
 		long += "\n\n--scope series (with --role target) also moves the target of every later occurrence: it sets the target to the same day and time relative to each occurrence's start, from the outstanding occurrence on. It always needs the preview revision, cannot put the target after the hard deadline, and has no undo; move the series back instead. Every occurrence's reminder follows its target (target minus the lead)."
 	}
 	example := "  pad remind " + v.use + " TASK-5" + map[string]string{"snooze": " --until 2h", "move": " --until 2026-11-10T09:00"}[v.state]
@@ -370,11 +370,11 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				if until == "" {
 					return fmt.Errorf("--until is required for %s", v.use)
 				}
-				t, err := parseUntil(until, v.state == "snooze", time.Now())
+				wire, err := untilWire("--until", until, v.state == "snooze", time.Now())
 				if err != nil {
 					return err
 				}
-				req.Until = t.UTC().Format(time.RFC3339)
+				req.Until = wire
 			}
 			client, _ := getClient()
 			ws := getWorkspace()
@@ -431,7 +431,9 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			var resp struct {
 				Commitment scheduleView `json:"commitment"`
 				Resolution struct {
-					ItemStillOpen bool `json:"item_still_open"`
+					ItemStillOpen bool   `json:"item_still_open"`
+					Until         string `json:"until"`
+					ResolvedFrom  string `json:"resolved_from"`
 				} `json:"resolution"`
 			}
 			_ = json.Unmarshal(raw, &resp)
@@ -456,7 +458,10 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 				}
 				return cli.PrintJSON(raw)
 			}
-			line := resolveSentence(v.state, args[0], req, resp.Commitment)
+			if resp.Resolution.ResolvedFrom == "day_start" && resp.Resolution.Until != "" {
+				req.Until = resp.Resolution.Until
+			}
+			line := resolveSentence(v.state, args[0], req, resp.Commitment, resp.Resolution.ResolvedFrom)
 			switch {
 			case closedWith != "":
 				line += fmt.Sprintf("; closed %s (%s)", args[0], closedWith)
@@ -476,7 +481,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	}
 	if v.state == "move" {
 		c.Flags().StringVar(&role, "role", "", "preview or move a linked date: target | earliest | deadline | occupied_until")
-		c.Flags().StringVar(&to, "to", "", "linked move destination: RFC3339 or a wall time in your zone")
+		c.Flags().StringVar(&to, "to", "", "linked move destination: RFC3339, a wall time in your zone, or a bare date at the start of your day (target and earliest only)")
 		c.Flags().StringVar(&scope, "scope", "", "linked move scope: occurrence (default) | series (role target: this and future occurrences)")
 		linked.addFlags(c)
 		c.Flags().BoolVar(&pastDeadline, "past-deadline", false, "confirm a move that puts the target after its hard deadline")
@@ -487,20 +492,27 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	}
 	c.Flags().StringVar(&occurrence, "occurrence", "", "the occurrence's RFC3339 instant (default: the schedule's current one)")
 	if needsUntil {
-		c.Flags().StringVar(&until, "until", "", "when: an RFC3339 instant, a wall time in your zone (2026-11-10T09:00)"+map[bool]string{true: ", or a duration (2h, 1d)", false: ""}[v.state == "snooze"])
+		c.Flags().StringVar(&until, "until", "", "when: an RFC3339 instant, a wall time in your zone (2026-11-10T09:00)"+map[bool]string{true: ", a duration (2h, 1d)", false: ""}[v.state == "snooze"]+", or a bare date at the start of your day (2026-11-10)")
 	}
 	return c
 }
 
-func resolveSentence(state, ref string, req schedule.CommitmentResolve, s scheduleView) string {
+// resolveSentence is the line a resolve prints. resolvedFrom "day_start"
+// says the server placed a bare --until (req.Until is then the placed
+// instant), which is shown in the account zone and marked (placedShown).
+func resolveSentence(state, ref string, req schedule.CommitmentResolve, s scheduleView, resolvedFrom string) string {
 	occ := fmtInstant(req.OccurrenceAt, nil)
+	until := fmtInstant(req.Until, nil)
+	if resolvedFrom == "day_start" {
+		until = placedShown(req.Until)
+	}
 	switch state {
 	case "ack":
 		return fmt.Sprintf("Acknowledged %s; this occurrence remains outstanding.", ref)
 	case "snooze":
-		return fmt.Sprintf("Snoozed %s until %s", ref, fmtInstant(req.Until, nil))
+		return fmt.Sprintf("Snoozed %s until %s", ref, until)
 	case "move":
-		return fmt.Sprintf("Moved %s to %s", ref, fmtInstant(req.Until, nil))
+		return fmt.Sprintf("Moved %s to %s", ref, until)
 	}
 	verb := map[string]string{"done": "Marked done", "skip": "Skipped"}[state]
 	if req.ActualDoneAt != "" {
@@ -542,10 +554,20 @@ func staleHintWith(err error, ref string, advise bool) error {
 
 var untilDurationRE = regexp.MustCompile(`^(\d+)([mhd])$`)
 
-// parseUntil reads --until: an RFC3339 instant, a wall in the viewer's zone, or
-// (snooze) a duration from now. A bare date is refused as remind-at refuses it.
-func parseUntil(s string, allowDuration bool, now time.Time) (time.Time, error) {
-	return parseInstantFlag("--until", s, allowDuration, now)
+// untilWire is the wire value of --until and of the linked move's --to. A
+// bare date (TASK-4723) is sent unchanged, since only the server knows the
+// caller's day start and account zone; every other form is resolved here to
+// RFC3339 UTC as parseInstantFlag reads it.
+func untilWire(flag, s string, allowDuration bool, now time.Time) (string, error) {
+	s = strings.TrimSpace(s)
+	if w, err := schedule.ParseWall(s); err == nil && w.AllDay {
+		return s, nil
+	}
+	t, err := parseInstantFlag(flag, s, allowDuration, now)
+	if err != nil {
+		return "", err
+	}
+	return t.UTC().Format(time.RFC3339), nil
 }
 
 func parseInstantFlag(flag, s string, allowDuration bool, now time.Time) (time.Time, error) {

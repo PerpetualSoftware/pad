@@ -427,9 +427,23 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 	if s.writeGraphError(w, r, graphRole("role", b.Role)) || s.writeGraphError(w, r, graphRequired("to", b.To)) {
 		return
 	}
+	// A bare date (TASK-4723) is placed only for target and earliest, and only
+	// after the edit gate. A caller who may not edit, deadline and
+	// occupied_until, and an agent-audience schedule answer main's format
+	// refusal for to, so the bare form tells nobody more than before. The
+	// scope and revision checks read only the request, so they answer as they
+	// do for an RFC3339 to.
+	bareTo := false
 	if _, err := time.Parse(time.RFC3339, *b.To); err != nil {
-		s.writeGraphError(w, r, graphField("to", "format"))
-		return
+		if _, bare := isBareDate(*b.To); !bare {
+			s.writeGraphError(w, r, &store.ScheduleFieldError{Field: "to", Code: "format", Message: moveToMalformedRefusal})
+			return
+		}
+		if *b.Role != "target" && *b.Role != "earliest" {
+			s.writeGraphError(w, r, graphField("to", "format"))
+			return
+		}
+		bareTo = true
 	}
 	scope := "occurrence"
 	if b.Scope != nil {
@@ -445,14 +459,29 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 	}
 	loader := s.graphAccessLoader(r, ws, commitmentAccessLive, item.ID)
 	access, err := loader(s.store.Q())
-	if s.writeGraphError(w, r, err) || s.writeGraphError(w, r, graphEndsEditable(access, item.ID, item.ID)) {
+	if s.writeGraphError(w, r, err) {
+		return
+	}
+	if err := graphEndsEditable(access, item.ID, item.ID); err != nil {
+		if bareTo {
+			err = graphField("to", "format")
+		}
+		s.writeGraphError(w, r, err)
 		return
 	}
 	if s.writeGraphError(w, r, graphRevision(b.Revision)) {
 		return
 	}
+	to, resolvedFrom := *b.To, ""
+	if bareTo {
+		placed, ok := s.placeMoveTo(w, r, ws, item.ID, *b.To)
+		if !ok {
+			return
+		}
+		to, resolvedFrom = placed, resolvedFromDayStart
+	}
 	actor, _ := actorFromRequest(r)
-	in := models.LinkedMoveInput{ConfirmPastDeadline: b.ConfirmPastDeadline, ItemID: item.ID, Role: *b.Role, To: *b.To, Actor: actor, ActorUserID: currentUserID(r), Reason: b.Reason, Preview: preview, Revision: b.Revision, AcknowledgeViolations: b.AcknowledgeViolations, Access: access, CommitmentAccessLoader: loader, Scope: scope}
+	in := models.LinkedMoveInput{ConfirmPastDeadline: b.ConfirmPastDeadline, ItemID: item.ID, Role: *b.Role, To: to, Actor: actor, ActorUserID: currentUserID(r), Reason: b.Reason, Preview: preview, Revision: b.Revision, AcknowledgeViolations: b.AcknowledgeViolations, Access: access, CommitmentAccessLoader: loader, Scope: scope}
 	if in.Role == "deadline" {
 		allowed, err := s.canRenegotiateCommitment(r, ws, item)
 		if s.writeGraphError(w, r, err) {
@@ -471,5 +500,35 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 	if s.writeGraphError(w, r, err) {
 		return
 	}
+	result.ResolvedFrom = resolvedFrom
 	writeJSON(w, 200, result)
+}
+
+// moveToMalformedRefusal answers a linked move to that is neither an RFC3339
+// instant nor a bare date (TASK-4723).
+const moveToMalformedRefusal = "to must be an RFC3339 instant (e.g. 2026-08-01T09:00:00Z) or, for role target or earliest, a bare date (YYYY-MM-DD), which lands at the start of your day in your account time zone"
+
+// moveToNoZoneRefusal answers a bare to from a caller with no account zone.
+const moveToNoZoneRefusal = "a bare date lands at the start of your day in your account time zone, and you have no account time zone: set one with pad auth timezone <IANA> (or in the web settings), or give to as an RFC3339 instant (e.g. 2026-08-01T09:00:00Z)"
+
+// placeMoveTo places a bare to at the CALLER's day start in the CALLER's
+// account zone and returns it as RFC3339 UTC. The caller has passed the edit
+// gate. An agent-audience schedule answers main's format refusal; a caller
+// with no account zone is zone_unset. Refusals are written here (ok=false).
+func (s *Server) placeMoveTo(w http.ResponseWriter, r *http.Request, workspaceID, itemID, raw string) (string, bool) {
+	day, _ := isBareDate(raw)
+	sc, err := s.store.GetSchedule(workspaceID, itemID)
+	if err != nil {
+		writeInternalError(w, err)
+		return "", false
+	}
+	if sc != nil && sc.Audience == "agent" {
+		s.writeGraphError(w, r, graphField("to", "format"))
+		return "", false
+	}
+	if !viewerZone(r).Set {
+		s.writeGraphError(w, r, &store.ScheduleFieldError{Field: "to", Code: "zone_unset", Message: moveToNoZoneRefusal})
+		return "", false
+	}
+	return store.NormalizeInstant(callerDayStartInstant(r, day)), true
 }

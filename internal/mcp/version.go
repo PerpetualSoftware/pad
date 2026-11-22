@@ -2365,7 +2365,11 @@ const CmdhelpVersion = "0.1"
 // the caller's day start in the caller's account zone (previously refused);
 // remind and schedule-edit gain day_start (boolean) for a bare-date start.
 // Additive: every value that worked keeps its meaning.
-const ToolSurfaceVersion = "0.125"
+// v0.126 — TASK-4723: pad_item schedule-resolve snooze/move until, and
+// schedule-move to for role target or earliest, take a bare date placed at
+// the caller's day start in the caller's account zone (previously refused);
+// the answers mark it resolved_from=day_start. Additive.
+const ToolSurfaceVersion = "0.126"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
