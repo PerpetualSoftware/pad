@@ -384,7 +384,11 @@ func renderLinkedMove(m models.LinkedMoveResult, apply bool, hint string) {
 		changes []models.LinkedDateChange
 	}{{"Change", m.Changes}, {"Violation", m.Violations}, {"Left in place", m.LeftInPlace}} {
 		for _, ch := range group.changes {
-			fmt.Printf("%s: %s %s: %s -> %s\n", group.label, ch.ItemID, ch.Role, fmtInstant(ch.From, nil), fmtInstant(ch.To, nil))
+			shown := fmtInstant(ch.To, nil)
+			if ch.Root && group.label == "Change" && m.ResolvedFrom == "day_start" {
+				shown = placedShown(ch.To)
+			}
+			fmt.Printf("%s: %s %s: %s -> %s\n", group.label, ch.ItemID, ch.Role, fmtInstant(ch.From, nil), shown)
 		}
 	}
 	if m.RenegotiatesDeadline {
@@ -419,11 +423,11 @@ func runLinkedMove(c *cobra.Command, ref, role, to, scope string, f linkedWriteF
 	if to == "" {
 		return fmt.Errorf("--to is required with --role")
 	}
-	t, err := parseInstantFlag("--to", to, false, time.Now())
+	wire, err := untilWire("--to", to, false, time.Now())
 	if err != nil {
 		return err
 	}
-	body := map[string]any{"role": role, "to": t.UTC().Format(time.RFC3339)}
+	body := map[string]any{"role": role, "to": wire}
 	hint := "pad remind move " + ref + " --role " + role + " --to " + to
 	if c.Flags().Changed("scope") {
 		// The server judges the value, as it does for --role.
