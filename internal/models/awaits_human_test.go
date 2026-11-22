@@ -2,9 +2,9 @@ package models
 
 import "testing"
 
-// TASK-3919 (IDEA-3906): awaits_human reads false when absent, is carried
-// across a settings write that does not mention it, and refuses a non-bool.
-func TestAwaitsHuman_ReadCarrySetValidate(t *testing.T) {
+// TASK-3919 (IDEA-3906): awaits_human reads false when absent, is settable
+// on its own, and refuses a non-bool.
+func TestAwaitsHuman_ReadSetValidate(t *testing.T) {
 	for in, want := range map[string]bool{
 		"": false, "{}": false, "not json": false,
 		`{"awaits_human":true}`: true, `{"awaits_human":false}`: false,
@@ -20,17 +20,6 @@ func TestAwaitsHuman_ReadCarrySetValidate(t *testing.T) {
 	if CollectionAwaitsHumanJSON(stray) || CollectionTracksWorkJSON(stray) {
 		t.Errorf("a stray awaits_human broke the settings read: awaits %v, work %v",
 			CollectionAwaitsHumanJSON(stray), CollectionTracksWorkJSON(stray))
-	}
-
-	stored := `{"awaits_human":true,"layout":"list"}`
-	if got := CarryAwaitsHuman(`{"layout":"board"}`, stored); !CollectionAwaitsHumanJSON(got) {
-		t.Errorf("a write without the key dropped the stored true: %s", got)
-	}
-	if got := CarryAwaitsHuman(`{"awaits_human":false}`, stored); CollectionAwaitsHumanJSON(got) {
-		t.Errorf("a write that says false was overridden by the stored true: %s", got)
-	}
-	if got := CarryAwaitsHuman(`{"layout":"board"}`, `{}`); got != `{"layout":"board"}` {
-		t.Errorf("nothing stored, but the write changed: %s", got)
 	}
 
 	set, err := SetAwaitsHuman(`{"layout":"list"}`, true)

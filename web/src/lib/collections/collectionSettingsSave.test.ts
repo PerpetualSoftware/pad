@@ -38,11 +38,26 @@ describe('buildCollectionSettings (PLAN-3535)', () => {
 		expect(off.awaits_human).toBe(false);
 	});
 
-	it('removes quick actions the form cleared, and keeps the ones it has', () => {
+	it('clears quick actions the form emptied with null, and keeps the ones it has (TASK-4732)', () => {
 		const stored = { settings: JSON.stringify({ quick_actions: [{ label: 'a', prompt: 'p', scope: 'item' }] }) };
-		expect('quick_actions' in buildCollectionSettings(stored, form())).toBe(false);
+		const cleared = buildCollectionSettings(stored, form());
+		expect('quick_actions' in cleared).toBe(true);
+		expect(cleared.quick_actions).toBeNull();
+		expect(JSON.parse(JSON.stringify(cleared)).quick_actions).toBeNull();
 		const qa = [{ label: 'b', prompt: 'q', scope: 'item' as const }];
 		expect(buildCollectionSettings(stored, form({ quickActions: qa })).quick_actions).toEqual(qa);
+	});
+
+	it('sends a cleared group-by or sort as null so the merge deletes it (TASK-4732)', () => {
+		const stored = { settings: JSON.stringify({ board_group_by: 'priority', list_group_by: 'status', list_sort_by: 'title' }) };
+		const out = buildCollectionSettings(stored, form({ boardGroupBy: '', listGroupBy: '', listSortBy: '' }));
+		const wire = JSON.parse(JSON.stringify(out));
+		for (const key of ['board_group_by', 'list_group_by', 'list_sort_by']) {
+			expect(key in wire).toBe(true);
+			expect(wire[key]).toBeNull();
+		}
+		const set = buildCollectionSettings(stored, form({ boardGroupBy: 'status', listGroupBy: 'priority', listSortBy: 'created' }));
+		expect([set.board_group_by, set.list_group_by, set.list_sort_by]).toEqual(['status', 'priority', 'created']);
 	});
 
 	it('survives unparseable stored settings', () => {

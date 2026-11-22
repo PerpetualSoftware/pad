@@ -14,7 +14,7 @@ import (
 // Stored as the settings key `awaits_human`. ABSENT means false, so every existing collection, an API writer that never sends the key,
 // and a client/server skew all read as an ordinary collection. No migration
 // marks existing collections (IDEA-3906 A3, default: set per workspace).
-// Stored, carried and validated exactly like tracks_work (tracks_work.go),
+// Stored and validated exactly like tracks_work (tracks_work.go),
 // but it is not a CollectionSettings field: it is read on its own, so a
 // stored non-boolean reads as false here and breaks no other setting.
 
@@ -27,14 +27,6 @@ func CollectionAwaitsHumanJSON(settingsJSON string) bool {
 		return false
 	}
 	return strings.TrimSpace(string(m["awaits_human"])) == "true"
-}
-
-// CarryAwaitsHuman returns newSettingsJSON with the stored `awaits_human`
-// value carried over when the new settings do not mention the key. Settings
-// are written wholesale and a client written before the key existed rebuilds
-// them without it, so absence on UPDATE means "not mentioned", never "reset".
-func CarryAwaitsHuman(newSettingsJSON, storedSettingsJSON string) string {
-	return carryBoolSetting(newSettingsJSON, storedSettingsJSON, "awaits_human")
 }
 
 // ValidateAwaitsHumanSetting refuses an `awaits_human` that is present but not
@@ -52,37 +44,6 @@ var errAwaitsHumanNotBool = errors.New("settings.awaits_human must be true or fa
 // other key unchanged. Settings that do not parse as an object are an error.
 func SetAwaitsHuman(settingsJSON string, v bool) (string, error) {
 	return setBoolSetting(settingsJSON, "awaits_human", v)
-}
-
-// carryBoolSetting copies key from storedSettingsJSON into newSettingsJSON
-// when the stored settings carry it and the new ones do not. Anything that
-// does not parse as an object is returned unchanged.
-func carryBoolSetting(newSettingsJSON, storedSettingsJSON, key string) string {
-	var stored map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(storedSettingsJSON), &stored); err != nil {
-		return newSettingsJSON
-	}
-	v, ok := stored[key]
-	if !ok {
-		return newSettingsJSON
-	}
-	raw := strings.TrimSpace(newSettingsJSON)
-	if raw == "" {
-		raw = "{}"
-	}
-	var next map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &next); err != nil || next == nil {
-		return newSettingsJSON
-	}
-	if _, has := next[key]; has {
-		return newSettingsJSON
-	}
-	next[key] = v
-	out, err := json.Marshal(next)
-	if err != nil {
-		return newSettingsJSON
-	}
-	return string(out)
 }
 
 // boolSettingValid reports false only when key is present and not a JSON

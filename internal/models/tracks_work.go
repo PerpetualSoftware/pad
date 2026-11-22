@@ -100,16 +100,6 @@ func WithTracksWorkDefault(settingsJSON, schemaJSON string, isSystem bool) strin
 	return string(out)
 }
 
-// CarryTracksWork returns newSettingsJSON with the stored `tracks_work` value
-// carried over when the new settings do not mention the key (PLAN-3535).
-// Settings are written wholesale, and every client written before the key
-// existed rebuilds them without it, so absence on UPDATE means "not
-// mentioned", never "reset to work". A new value that does set the key wins.
-// Anything that does not parse as an object is returned unchanged.
-func CarryTracksWork(newSettingsJSON, storedSettingsJSON string) string {
-	return carryBoolSetting(newSettingsJSON, storedSettingsJSON, "tracks_work")
-}
-
 // ValidateTracksWorkSetting refuses a `tracks_work` that is present but not a
 // JSON boolean. An absent key is fine (it means work on create, "unchanged"
 // on update).

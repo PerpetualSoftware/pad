@@ -118,15 +118,16 @@ func TestUpdateCollectionCoercesEmptyStringSettings(t *testing.T) {
 	if updated == nil {
 		t.Fatalf("UpdateCollection returned nil")
 	}
-	// Coerced to an object, and the stored tracks_work carried into it
-	// (PLAN-3535: a settings write that omits the key keeps it; the create
-	// gave this schemaless collection false).
+	// Still an object, and unchanged: "" is an empty merge (TASK-4732), so
+	// every stored key survives, tracks_work included (the create gave this
+	// schemaless collection false).
 	var got map[string]any
 	if err := json.Unmarshal([]byte(updated.Settings), &got); err != nil {
-		t.Fatalf("UpdateCollection did not coerce empty-string settings to an object: %q", updated.Settings)
+		t.Fatalf("UpdateCollection did not keep empty-string settings an object: %q", updated.Settings)
 	}
-	if !reflect.DeepEqual(got, map[string]any{"tracks_work": false}) {
-		t.Errorf("expected the coerced settings to hold only the carried tracks_work, got %q", updated.Settings)
+	want := map[string]any{"done_field": "status", "done_values": []any{"closed"}, "tracks_work": false}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("expected the empty-string update to leave the stored keys, got %q", updated.Settings)
 	}
 }
 
