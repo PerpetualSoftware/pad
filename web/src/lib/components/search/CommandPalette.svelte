@@ -1531,7 +1531,8 @@
 	}
 	.search-input {
 		flex: 1;
-		padding: var(--space-4) 0;
+		/* Inline padding keeps the inset focus ring off the first glyph. */
+		padding: var(--space-4) var(--space-2);
 		background: transparent;
 		border: none;
 		font-size: 1.1em;
@@ -1539,6 +1540,14 @@
 	}
 	.search-input:focus {
 		border: none;
+	}
+	/*
+		The app-wide field ring (app.css) sits 1px outside the box, so on this
+		borderless full-height input it stood taller than the header row and
+		crossed its bottom border (TASK-4520). Keep the ring, draw it inside.
+	*/
+	.search-input:focus-visible {
+		outline-offset: -2px;
 	}
 	.search-spinner {
 		width: 16px;
@@ -1741,15 +1750,6 @@
 	.result:hover,
 	.result.selected {
 		background: var(--bg-hover);
-	}
-	/*
-		TASK-4520: the browser's own focus ring is drawn outside the box, so it
-		stood taller than the row and crossed its neighbours. Draw it inside.
-	*/
-	.result:focus-visible,
-	.recent-item:focus-visible {
-		outline: 2px solid var(--accent-blue);
-		outline-offset: -2px;
 	}
 	.result-main {
 		display: flex;
