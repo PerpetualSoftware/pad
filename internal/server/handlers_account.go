@@ -12,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/billing"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 	"golang.org/x/crypto/bcrypt"
@@ -64,24 +65,25 @@ func isCLIClient(r *http.Request) bool {
 // middleware authenticated (handlers that fall back to validateSessionCookie)
 // is read from the cookie.
 func (s *Server) requestSessionInfo(r *http.Request) *store.SessionInfo {
-	token, fromCookie := "", false
+	var token secret.Secret
+	fromCookie := false
 	switch authKind(r) {
 	case authKindAPIToken:
 		return nil
 	case authKindSessionBearer:
-		token = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+		token, _ = bearerToken(r)
 	default:
 		for _, name := range []string{sessionCookieName(s.secureCookies), "pad_session"} {
-			if c, err := r.Cookie(name); err == nil && c.Value != "" {
-				token, fromCookie = c.Value, true
+			if c, ok := cookieSecret(r, name); ok && !c.IsZero() {
+				token, fromCookie = c, true
 				break
 			}
 		}
 	}
-	if token == "" {
+	if token.IsZero() {
 		return nil
 	}
-	info, err := s.store.ValidateSessionContext(r.Context(), token)
+	info, err := s.store.ValidateSessionContext(r.Context(), token.Reveal())
 	if err != nil || info == nil || info.User == nil {
 		return nil
 	}
@@ -115,9 +117,9 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Password string `json:"password"`
-		Confirm  bool   `json:"confirm"`
-		TOTPCode string `json:"totp_code"`
+		Password secret.Secret `json:"password"`
+		Confirm  bool          `json:"confirm"`
+		TOTPCode secret.Secret `json:"totp_code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -131,9 +133,9 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if input.Password != "" {
+	if !input.Password.IsZero() {
 		// Password confirmation (normal flow)
-		if err := bcrypt.CompareHashAndPassword([]byte(fullUser.PasswordHash), []byte(input.Password)); err != nil {
+		if err := bcrypt.CompareHashAndPassword([]byte(fullUser.PasswordHash), []byte(input.Password.Reveal())); err != nil {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
 			return
 		}
@@ -175,7 +177,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 	// door uses, so the two share one budget. Only a TOTP code is accepted
 	// here, as before.
 	if fullUser.TOTPEnabled {
-		code := strings.TrimSpace(input.TOTPCode)
+		code := strings.TrimSpace(input.TOTPCode.Reveal())
 		if code == "" {
 			writeError(w, http.StatusBadRequest, "totp_required", "A 2FA code is required to delete your account")
 			return

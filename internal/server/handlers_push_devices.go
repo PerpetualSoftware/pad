@@ -12,6 +12,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/notify"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -108,8 +109,8 @@ func strictBodyBytes[T any](raw []byte) (T, error) {
 }
 
 type pushDeviceBody struct {
-	Platform string `json:"platform"`
-	Token    string `json:"token"`
+	Platform string        `json:"platform"`
+	Token    secret.Secret `json:"token"`
 	// Environment is accepted for client compatibility and ignored: every
 	// token is an FCM token, and FCM routes APNs itself.
 	Environment json.RawMessage `json:"environment"`
@@ -150,7 +151,8 @@ func (s *Server) handlePutPushDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "platform must be ios or android")
 		return
 	}
-	if in.Token == "" || len(in.Token) > pushTokenMaxBytes || !bindableText(in.Token) {
+	token := in.Token.Reveal()
+	if token == "" || len(token) > pushTokenMaxBytes || !bindableText(token) {
 		writeError(w, http.StatusBadRequest, "validation_error", "token must be a non-empty string of at most 4096 bytes")
 		return
 	}
@@ -158,7 +160,7 @@ func (s *Server) handlePutPushDevice(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", "app_version must be at most 64 characters")
 		return
 	}
-	dev, err := s.store.RegisterPushDevice(info.User.ID, info.ID, connectionID, in.Platform, in.Token, in.AppVersion)
+	dev, err := s.store.RegisterPushDevice(info.User.ID, info.ID, connectionID, in.Platform, token, in.AppVersion)
 	if errors.Is(err, store.ErrPushSessionGone) {
 		writeError(w, http.StatusUnauthorized, "unauthorized", "Your session has ended. Sign in again.")
 		return

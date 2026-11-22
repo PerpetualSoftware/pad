@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/server/render"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/go-chi/chi/v5"
@@ -107,11 +108,11 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 	}
 
 	var input struct {
-		Password        string  `json:"password,omitempty"`
-		ExpiresAt       *string `json:"expires_at,omitempty"`
-		MaxViews        *int    `json:"max_views,omitempty"`
-		RequireAuth     bool    `json:"require_auth,omitempty"`
-		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
+		Password        secret.Secret `json:"password,omitempty"`
+		ExpiresAt       *string       `json:"expires_at,omitempty"`
+		MaxViews        *int          `json:"max_views,omitempty"`
+		RequireAuth     bool          `json:"require_auth,omitempty"`
+		RestrictToEmail string        `json:"restrict_to_email,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
@@ -131,7 +132,7 @@ func (s *Server) handleCreateItemShareLink(w http.ResponseWriter, r *http.Reques
 	}
 
 	opts := &store.ShareLinkOptions{
-		Password:        input.Password,
+		Password:        input.Password.Reveal(),
 		ExpiresAt:       input.ExpiresAt,
 		MaxViews:        input.MaxViews,
 		RequireAuth:     input.RequireAuth,
@@ -179,11 +180,11 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 	}
 
 	var collInput struct {
-		Password        string  `json:"password,omitempty"`
-		ExpiresAt       *string `json:"expires_at,omitempty"`
-		MaxViews        *int    `json:"max_views,omitempty"`
-		RequireAuth     bool    `json:"require_auth,omitempty"`
-		RestrictToEmail string  `json:"restrict_to_email,omitempty"`
+		Password        secret.Secret `json:"password,omitempty"`
+		ExpiresAt       *string       `json:"expires_at,omitempty"`
+		MaxViews        *int          `json:"max_views,omitempty"`
+		RequireAuth     bool          `json:"require_auth,omitempty"`
+		RestrictToEmail string        `json:"restrict_to_email,omitempty"`
 	}
 	if err := decodeJSON(r, &collInput); err != nil && !errors.Is(err, io.EOF) {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid JSON body")
@@ -202,7 +203,7 @@ func (s *Server) handleCreateCollectionShareLink(w http.ResponseWriter, r *http.
 	}
 
 	collOpts := &store.ShareLinkOptions{
-		Password:        collInput.Password,
+		Password:        collInput.Password.Reveal(),
 		ExpiresAt:       collInput.ExpiresAt,
 		MaxViews:        collInput.MaxViews,
 		RequireAuth:     collInput.RequireAuth,
@@ -549,8 +550,8 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 	// Password check — via X-Share-Password header (never query string, to
 	// avoid leaking passwords in logs, browser history, and referrers).
 	if link.HasPassword {
-		password := r.Header.Get("X-Share-Password")
-		if password == "" {
+		password := secret.New(r.Header.Get("X-Share-Password"))
+		if password.IsZero() {
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"require_password": true,
 				"message":          "Password required to view this content",
@@ -599,7 +600,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 				return
 			}
 		}
-		if !s.store.ValidateShareLinkPassword(link, password) {
+		if !s.store.ValidateShareLinkPassword(link, password.Reveal()) {
 			writeError(w, http.StatusForbidden, "forbidden", "Incorrect password")
 			return
 		}

@@ -13,6 +13,7 @@ import (
 	"github.com/ory/fosite"
 
 	"github.com/PerpetualSoftware/pad/internal/oauth"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -95,8 +96,8 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 		// PAT path: prefix `pad_` + 68 chars total (4 prefix + 64 hex
 		// secret). Cheap shape gate before the DB lookup. Anything
 		// else falls into the OAuth introspection branch.
-		if strings.HasPrefix(token, "pad_") && len(token) == 68 {
-			s.handleMCPPATAuth(w, r, token, next, mcpAuthStart)
+		if strings.HasPrefix(token.Reveal(), "pad_") && len(token.Reveal()) == 68 {
+			s.handleMCPPATAuth(w, r, token.Reveal(), next, mcpAuthStart)
 			return
 		}
 
@@ -109,7 +110,7 @@ func (s *Server) MCPBearerAuth(next http.Handler) http.Handler {
 			s.writeMCPUnauthorized(w, r, "invalid_token", "Token format not recognized.")
 			return
 		}
-		s.handleMCPOAuthAuth(w, r, token, next, mcpAuthStart)
+		s.handleMCPOAuthAuth(w, r, token.Reveal(), next, mcpAuthStart)
 	})
 }
 
@@ -562,23 +563,20 @@ func oauthScopesToJSON(scopes []string) string {
 // extractBearer parses an Authorization header value. Returns the
 // token and true on success. Anything that isn't "Bearer <token>"
 // (case-insensitive scheme, single space, non-empty token) returns
-// "", false. Permissive on the scheme casing because RFC 6750 §2.1
-// says it's case-insensitive; strict on the single-space separator
-// to match the actual wire format mainstream clients send.
-func extractBearer(h string) (string, bool) {
-	if h == "" {
-		return "", false
-	}
+// the empty Secret and false. Permissive on the scheme casing because
+// RFC 6750 §2.1 says it's case-insensitive; strict on the single-space
+// separator to match the actual wire format mainstream clients send.
+func extractBearer(h string) (secret.Secret, bool) {
 	const prefix = "Bearer "
 	if len(h) <= len(prefix) {
-		return "", false
+		return secret.Secret{}, false
 	}
 	if !strings.EqualFold(h[:len(prefix)], prefix) {
-		return "", false
+		return secret.Secret{}, false
 	}
-	tok := strings.TrimSpace(h[len(prefix):])
-	if tok == "" {
-		return "", false
+	tok := secret.New(strings.TrimSpace(h[len(prefix):]))
+	if tok.IsZero() {
+		return secret.Secret{}, false
 	}
 	return tok, true
 }

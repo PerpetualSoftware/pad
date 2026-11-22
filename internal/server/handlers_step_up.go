@@ -10,6 +10,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -177,9 +178,9 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var input struct {
-		Code         string `json:"code"`
-		RecoveryCode string `json:"recovery_code"`
-		Password     string `json:"password"`
+		Code         secret.Secret `json:"code"`
+		RecoveryCode secret.Secret `json:"recovery_code"`
+		Password     secret.Secret `json:"password"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
@@ -188,11 +189,11 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 	failed := func() { s.logAuditEvent(models.ActionStepUpFailed, r, auditMeta(map[string]string{"factor": factor})) }
 	switch factor {
 	case "totp":
-		if input.Code == "" && input.RecoveryCode == "" {
+		if input.Code.IsZero() && input.RecoveryCode.IsZero() {
 			writeError(w, http.StatusBadRequest, "validation_error", "code or recovery_code is required")
 			return
 		}
-		verified, answered := s.checkSecondFactor(w, user, "user:"+user.ID, input.Code, input.RecoveryCode)
+		verified, answered := s.checkSecondFactor(w, user, "user:"+user.ID, input.Code.Reveal(), input.RecoveryCode.Reveal())
 		if !verified {
 			failed()
 			if !answered {
@@ -201,11 +202,11 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "email":
-		if input.Code == "" {
+		if input.Code.IsZero() {
 			writeError(w, http.StatusBadRequest, "validation_error", "code is required")
 			return
 		}
-		verified, err := s.store.VerifyStepUpCode(user.ID, session.ID, input.Code)
+		verified, err := s.store.VerifyStepUpCode(user.ID, session.ID, input.Code.Reveal())
 		if err != nil {
 			writeInternalError(w, err)
 			return
@@ -216,7 +217,7 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	case "password":
-		if input.Password == "" {
+		if input.Password.IsZero() {
 			writeError(w, http.StatusBadRequest, "validation_error", "password is required")
 			return
 		}
@@ -225,7 +226,7 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 			writeRateLimitResponse(w, s.rateLimiters.RecoveryCode.config)
 			return
 		}
-		verified, err := s.store.ValidatePassword(user.Email, input.Password)
+		verified, err := s.store.ValidatePassword(user.Email, input.Password.Reveal())
 		if err != nil {
 			writeInternalError(w, err)
 			return

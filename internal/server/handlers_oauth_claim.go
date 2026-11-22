@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -75,16 +76,16 @@ func (s *Server) handleOAuthClaim(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var input struct {
-		Workspace string `json:"workspace"`
-		Code      string `json:"code"`
+		Workspace string        `json:"workspace"`
+		Code      secret.Secret `json:"code"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	input.Workspace = strings.TrimSpace(input.Workspace)
-	input.Code = strings.TrimSpace(input.Code)
-	if input.Workspace == "" || input.Code == "" {
+	input.Code = secret.New(strings.TrimSpace(input.Code.Reveal()))
+	if input.Workspace == "" || input.Code.IsZero() {
 		writeError(w, http.StatusBadRequest, "bad_request",
 			"Both workspace (slug) and code (6 digits) are required.")
 		return
@@ -123,7 +124,7 @@ func (s *Server) handleOAuthClaim(w http.ResponseWriter, r *http.Request) {
 	// 5-min bucket (sliding 5–10 min lifetime per IDEA-1517 §4) and
 	// constant-time compares to prevent timing oracles from leaking
 	// which bucket matched.
-	if !VerifyClaimCode(s.claimSecret, user.ID, ws.ID, input.Code, time.Now()) {
+	if !VerifyClaimCode(s.claimSecret, user.ID, ws.ID, input.Code.Reveal(), time.Now()) {
 		writeError(w, http.StatusUnauthorized, "invalid_code",
 			"Claim code is invalid or expired. Generate a fresh code in the workspace's Connect modal.")
 		return

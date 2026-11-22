@@ -14,6 +14,7 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/appmanifest"
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
@@ -388,19 +389,19 @@ func (s *Server) handleRedeemAppInstallCode(w http.ResponseWriter, r *http.Reque
 	// json.Decoder stops after the first value, so a body padded past the cap
 	// after a valid object was never refused) and applies the NUL refusal.
 	var in struct {
-		Code string `json:"code"`
+		Code secret.Secret `json:"code"`
 	}
-	if err := decodeJSONWithLimit(r, &in, appRedeemMaxBody); err != nil || in.Code == "" {
+	if err := decodeJSONWithLimit(r, &in, appRedeemMaxBody); err != nil || in.Code.IsZero() {
 		writeError(w, http.StatusBadRequest, "invalid_install_code", "Invalid install code")
 		return
 	}
 	if s.rateLimiters != nil {
-		if installID, ok := s.store.InstallForLiveCode(in.Code); ok && !s.rateLimiters.AppRedeemInstall.allow(installID) {
+		if installID, ok := s.store.InstallForLiveCode(in.Code.Reveal()); ok && !s.rateLimiters.AppRedeemInstall.allow(installID) {
 			writeRateLimitResponse(w, s.rateLimiters.AppRedeemInstall.config)
 			return
 		}
 	}
-	red, err := s.store.RedeemInstallCode(in.Code)
+	red, err := s.store.RedeemInstallCode(in.Code.Reveal())
 	if errors.Is(err, store.ErrInstallCodeInvalid) {
 		writeError(w, http.StatusBadRequest, "invalid_install_code", "Invalid install code")
 		return

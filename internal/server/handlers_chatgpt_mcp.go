@@ -58,7 +58,7 @@ func (s *Server) requireChatGPTAvailable(next http.Handler) http.Handler {
 // otherwise accept the token without the OAuth audience check.
 func (s *Server) refusePATs(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if token, ok := extractBearer(r.Header.Get("Authorization")); ok && strings.HasPrefix(token, "pad_") {
+		if token, ok := extractBearer(r.Header.Get("Authorization")); ok && strings.HasPrefix(token.Reveal(), "pad_") {
 			s.writeMCPUnauthorized(w, r, "invalid_token",
 				"This endpoint accepts OAuth sign-in only; personal access tokens are not accepted here.")
 			return

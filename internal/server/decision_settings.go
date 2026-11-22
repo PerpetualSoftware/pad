@@ -265,11 +265,11 @@ func (s *Server) handleGetDecisionSettings(w http.ResponseWriter, r *http.Reques
 // field is left as stored. api_key is write-only: a non-empty value replaces
 // the stored key, and clear_api_key removes it.
 type decisionSettingsInput struct {
-	Provider    *string `json:"provider"`
-	Enabled     *bool   `json:"enabled"`
-	Model       *string `json:"model"`
-	APIKey      *string `json:"api_key"`
-	ClearAPIKey bool    `json:"clear_api_key"`
+	Provider    *string        `json:"provider"`
+	Enabled     *bool          `json:"enabled"`
+	Model       *string        `json:"model"`
+	APIKey      *secret.Secret `json:"api_key"`
+	ClearAPIKey bool           `json:"clear_api_key"`
 }
 
 // handleUpdateDecisionSettings: PUT /api/v1/admin/decision-provider.
@@ -312,7 +312,7 @@ func (s *Server) handleUpdateDecisionSettings(w http.ResponseWriter, r *http.Req
 		}
 	}
 	if in.APIKey != nil {
-		key = strings.TrimSpace(*in.APIKey)
+		key = strings.TrimSpace(in.APIKey.Reveal())
 		if key == "" {
 			writeError(w, http.StatusBadRequest, "bad_request", "api_key is empty; use clear_api_key to remove the stored key")
 			return

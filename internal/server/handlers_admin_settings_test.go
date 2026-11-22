@@ -267,8 +267,8 @@ func TestAdminSettings_DisableTearsDownLiveSender(t *testing.T) {
 	if srv.email != nil {
 		t.Error("live sender not torn down after clearing key — email still active until restart")
 	}
-	if srv.emailAPIKey != "" {
-		t.Errorf("emailAPIKey=%q after disable, want empty", srv.emailAPIKey)
+	if !srv.emailAPIKey.IsZero() {
+		t.Errorf("emailAPIKey=%q after disable, want empty", srv.emailAPIKey.Reveal())
 	}
 }
 

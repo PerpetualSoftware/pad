@@ -11,6 +11,7 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 // BUG-3361: platform administration requires an interactive session. An
@@ -180,7 +181,7 @@ func TestBUG1926_CloudBillingRoutesTakeAnAdminSessionNotAnAdminPAT(t *testing.T)
 	t.Setenv("PAD_DISABLE_RATE_LIMITS", "1")
 	f := newAdminPATFixture(t)
 	f.srv.cloudMode = true
-	f.srv.cloudSecrets = []string{"cloud-secret-1926"}
+	f.srv.cloudSecrets = []secret.Secret{secret.New("cloud-secret-1926")}
 	for _, mr := range cloudOnlyAdminRoutes {
 		method, path, _ := strings.Cut(mr, " ")
 		// The POST handlers decode the body (where the secret travels) before

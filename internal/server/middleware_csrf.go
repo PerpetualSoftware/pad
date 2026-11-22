@@ -2,10 +2,11 @@ package server
 
 import (
 	"crypto/rand"
-	"crypto/subtle"
 	"encoding/hex"
 	"net/http"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/secret"
 )
 
 const (
@@ -256,14 +257,14 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		// mutations until the next login mints __Host--prefixed cookies —
 		// self-heals within the session TTL. See
 		// TestCSRF_LegacyCookieFallback_NotAcceptedWhenSecure.
-		cookie, err := r.Cookie(csrfCookieName(s.secureCookies))
-		if err != nil || cookie.Value == "" {
+		cookie, ok := cookieSecret(r, csrfCookieName(s.secureCookies))
+		if !ok || cookie.IsZero() {
 			writeError(w, http.StatusForbidden, "csrf_error", "Missing CSRF token")
 			return
 		}
 
-		headerToken := r.Header.Get(csrfHeader)
-		if headerToken == "" {
+		headerToken := secret.New(r.Header.Get(csrfHeader))
+		if headerToken.IsZero() {
 			writeError(w, http.StatusForbidden, "csrf_error", "Missing CSRF header")
 			return
 		}
@@ -279,14 +280,14 @@ func (s *Server) CSRFProtect(next http.Handler) http.Handler {
 		// both values are bounded to csrfTokenLen*2 bytes so the
 		// allocation is a fixed, tiny cost.
 		const expectedLen = csrfTokenLen * 2 // hex encoding
-		if len(cookie.Value) != expectedLen || len(headerToken) != expectedLen {
+		if len(cookie.Reveal()) != expectedLen || len(headerToken.Reveal()) != expectedLen {
 			writeError(w, http.StatusForbidden, "csrf_error", "CSRF token mismatch")
 			return
 		}
-		// subtle.ConstantTimeCompare evaluates the byte compare in time
-		// independent of where the first differing byte lives, removing
-		// the timing side-channel that the previous `!=` had.
-		if subtle.ConstantTimeCompare([]byte(cookie.Value), []byte(headerToken)) != 1 {
+		// Equal compares in time independent of where the first differing
+		// byte lives, removing the timing side-channel that the previous
+		// `!=` had. Both sides are non-empty here (checked above).
+		if !cookie.Equal(headerToken.Reveal()) {
 			writeError(w, http.StatusForbidden, "csrf_error", "CSRF token mismatch")
 			return
 		}
