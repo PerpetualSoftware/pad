@@ -120,7 +120,7 @@ guards the schedule's state, not the flags, so repeat the previewed flags.
 					// still sent; its refusal is then explained, not left bare.
 					var apiErr *cli.APIError
 					if lapses && errors.As(err, &apiErr) && apiErr.Code == "commitment_changed" {
-						return fmt.Errorf("the occurrence lapsed because its deadline had passed; nothing else changed\n%s", repreviewHint(ref))
+						return fmt.Errorf("the deadline had passed, so the occurrence has probably lapsed (or the schedule changed meanwhile); the change was not applied\n%s", repreviewHint(ref))
 					}
 					return renegotiateHint(err, ref)
 				}

@@ -357,7 +357,7 @@ func TestRemindRenegotiateLapsesOnApply(t *testing.T) {
 		if len(calls) != 2 || bodyOf(t, calls[1])["preview"] != false || bodyOf(t, calls[1])["revision"] != "rev-1" {
 			t.Fatalf("calls=%+v", calls)
 		}
-		if err == nil || !strings.Contains(err.Error(), "the occurrence lapsed because its deadline had passed") || !strings.Contains(err.Error(), "re-preview with: pad remind renegotiate TASK-5") {
+		if err == nil || !strings.Contains(err.Error(), "the deadline had passed, so the occurrence has probably lapsed (or the schedule changed meanwhile); the change was not applied") || !strings.Contains(err.Error(), "re-preview with: pad remind renegotiate TASK-5") {
 			t.Fatalf("err=%v", err)
 		}
 	})

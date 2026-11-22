@@ -131,7 +131,7 @@
 				review = null;
 				await preview(r.body, live);
 				// A preview that promised a lapse explains the conflict as that lapse.
-				if (live()) notice = r.result.preview.lapses_on_apply ? 'The deadline had passed, so the occurrence lapsed. Review the new preview and confirm again.' : 'The date changed meanwhile. Review the new preview and confirm again.';
+				if (live()) notice = r.result.preview.lapses_on_apply ? 'The deadline had passed, so the occurrence has probably lapsed, or it changed meanwhile. Review the new preview and confirm again.' : 'The date changed meanwhile. Review the new preview and confirm again.';
 			}
 		});
 	}

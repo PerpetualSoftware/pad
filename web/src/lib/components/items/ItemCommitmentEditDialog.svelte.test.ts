@@ -124,7 +124,7 @@ it('explains the conflict as the lapse when the confirmed preview promised one',
  await fireEvent.click(screen.getByLabelText('Lapses'));
  await input('Reason for the deadline change', 'Softer'); await save();
  await fireEvent.click(await screen.findByRole('button', { name: 'Change deadline' }));
- expect(await screen.findByText('The deadline had passed, so the occurrence lapsed. Review the new preview and confirm again.')).toBeTruthy();
+ expect(await screen.findByText('The deadline had passed, so the occurrence has probably lapsed, or it changed meanwhile. Review the new preview and confirm again.')).toBeTruthy();
  expect(screen.queryByText(/The date changed meanwhile/)).toBeNull();
  expect(screen.queryByText(lapseWarning)).toBeNull();
  expect(onsaved).not.toHaveBeenCalled();
