@@ -104,3 +104,23 @@ export function loadCalendarConfig(ws: string, coll: string): CalendarConfig {
 export function storeCalendarConfig(ws: string, coll: string, config: CalendarConfig): void {
  write(`pad-calendar:${ws}:${coll}`, JSON.stringify(config));
 }
+
+export function sortReversedKey(ws: string, coll: string): string {
+	return `pad-sort-reversed:${ws}:${coll}`;
+}
+
+export function loadSortReversed(ws: string, coll: string): boolean {
+	return read(sortReversedKey(ws, coll)) === '1';
+}
+
+export function storeSortReversed(ws: string, coll: string, reversed: boolean): void {
+	if (reversed) {
+		write(sortReversedKey(ws, coll), '1');
+	} else {
+		try {
+			localStorage.removeItem(sortReversedKey(ws, coll));
+		} catch {
+			/* not remembered; the page still works */
+		}
+	}
+}

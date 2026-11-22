@@ -20,8 +20,12 @@ identityGateSuite({
 			},
 			deltaSync: { reviewed: '411fdaffa22b', why: 'identityHeld(epochAtEntry) after the reconcile; the page commits nothing itself' },
 			refreshProgress: { reviewed: 'db4bab6d2f71', why: `${ENTRY}, on both arms` },
+			// BUG-3994: the new synchronous sort-reversal preference read sits beside
+			// loadSortMode, after the existing loadSeq + identityHeld checks; no await
+			// or fence moved. The views and members catch rows change only through
+			// this enclosing context: they still return fallbacks and commit nothing.
 			loadCollection: {
-				reviewed: '3f07cb2f8bf0',
+				reviewed: '806b355f4895',
 				why: 'loadSeq then identityHeld(epochAtEntry) after every await, with collection writes also gated on collectionGen; re-stamps identityEpochAtLoad at entry; the finally clears metaLoading on loadSeq alone, deliberately',
 			},
 			handleStatusChange: {
@@ -54,9 +58,9 @@ identityGateSuite({
 		continuations: [
 			{ call: /replaceState: true \}\)\)\.then\($/, body: /renameNav = null/, in: 'chatSurface.runAfterClose(…)', why: 'rename navigation outcome: when it did not commit (failed, or a guard cancelled it) clears renameNav only if it still holds this target; reports the outcome to the surface', reviewed: 'fbd3c8f94338' },
 			{ call: /plansProgress\(ws\)\.catch\($/, body: /./, why: 'refreshProgress fetch: a failure reads as none; commits nothing', reviewed: 'd4d3603af105' },
-			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: 'b95fa0909634' },
+			{ call: /api\.views\.list\(ws, coll\)\.catch\($/, body: /./, why: 'loadCollection views fetch: a failure reads as none; commits nothing', reviewed: '9774cef2bfa9' },
 			{ call: /handleStatusChange\(item, value, 'priority'\)\.catch\($/, body: /./, why: 'card priority write (TASK-2214): the rejection was already toasted inside handleStatusChange, which fences its own commits; the catch commits nothing', reviewed: '8405d65b80af' },
-			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: 'd50d87e83266' },
+			{ call: /api\.members\.list\(ws\)\.catch\($/, body: /./, why: 'loadCollection members fetch: a failure reads as none; commits nothing', reviewed: '4f10c69b758a' },
 			{ call: /^setTimeout\($/, body: /BODY_SEARCH_PAGE/, why: 'search timer, as the deferred callback: the same unit as the nested row above', reviewed: '0a4e19e8c85e' },
 			{ call: /^setTimeout\($/, body: /identityHeld\(epochAtSchedule\)\) return; bypassNavGuard/, why: 'leave-guard popstate reset: identityHeld(epochAtSchedule) before clearing bypassNavGuard. TASK-4315: the enclosing guard now returns first on a shallow navigation; the reset and its fence did not move', reviewed: 'd112d92b84d9' },
 			{
