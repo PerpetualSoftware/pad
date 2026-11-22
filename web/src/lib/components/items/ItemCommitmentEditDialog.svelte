@@ -130,7 +130,8 @@
 				if (!live() || (e as { code?: string })?.code !== 'commitment_changed') throw e;
 				review = null;
 				await preview(r.body, live);
-				if (live()) notice = 'The date changed meanwhile. Review the new preview and confirm again.';
+				// A preview that promised a lapse explains the conflict as that lapse.
+				if (live()) notice = r.result.preview.lapses_on_apply ? 'The deadline had passed, so the occurrence lapsed. Review the new preview and confirm again.' : 'The date changed meanwhile. Review the new preview and confirm again.';
 			}
 		});
 	}
@@ -152,6 +153,7 @@
 					<p class="row"><span class="k">New deadline</span> <span>{show(p.new_deadline)}{#if p.new_deadline_behavior}{' · '}{p.new_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</span></p>
 					{#if appliesFrom(p.applies_from)}<p class="row"><span class="k">Applies from</span> <span>{roleText(appliesFrom(p.applies_from), zone)}</span></p>{/if}
 					{#if p.miss_recorded_first}<p>The deadline already passed: its miss is recorded first.</p>{/if}
+					{#if p.lapses_on_apply}<p class="warn">This occurrence lapses because its deadline passed. Confirming closes it as lapsed and does not apply this change.</p>{/if}
 					{#if p.keeps_deadline_override}<p>This occurrence keeps its own moved deadline.</p>{/if}
 					{#each (review.result.cascade?.changes ?? []).filter(c => !c.root) as change}<p>{title(change)}: {roleName(change.role)} moves to {roleText(change.to, zone)}</p>{/each}
 					{#each review.result.cascade?.violations ?? [] as change}<p class="warn">{title(change)}: {roleName(change.role)} lands outside its own bounds ({roleText(change.to, zone)})</p>{/each}
