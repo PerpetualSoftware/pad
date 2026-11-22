@@ -219,6 +219,7 @@
 	});
 	const lifted = $derived(new Set(attention.filter(item => item.inWindow).map(item => entryKey(item.entry))));
 	const markers = $derived(new Map([...roleMarkers(unfiltered, zone, data?.forecasts ?? [], data?.next_from)].map(([date, roles]) => [date, { deadlines: filterAudience(roles.deadlines, audience), forecasts: filterAudience(roles.forecasts, audience) }])));
+	const markerCounts = $derived(new Map([...markers].map(([date, roles]) => [date, { forecasts: roles.forecasts.length, deadlines: roles.deadlines.length }])));
 	const dayRows = (date: string) => groups.find(group => group.day === date)?.entries ?? [];
 	function summary(date: string) {
 		const deadlines = markers.get(date)?.deadlines.length ?? 0;
@@ -1035,7 +1036,7 @@
 	<!-- On a phone in Week range this is the one panel the two tabs show; elsewhere it is a plain wrapper. -->
 	<div id={`${surfaceId}-surface`} role={switching ? 'tabpanel' : undefined} aria-labelledby={switching ? `${surfaceId}-tab-${surface}` : undefined}>
 		{#if schedule}
-			<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} loadState={stripLoad} {zone} {now} compact={mobile}
+			<AgendaWeekStrip days={stripDays} {today} selected={mode === 'day' ? day : undefined} {entries} loadState={stripLoad} markers={markerCounts} {zone} {now} compact={mobile}
 				{dragging} {hoverDay} onselect={pickDay} onswipe={swipeWeek} onenter={enterDay} ondrop={dropDay} />
 		{/if}
 		<div class="layout">

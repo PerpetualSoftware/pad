@@ -19,7 +19,7 @@
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
 	import AgendaCompleted from '$lib/components/calendar/AgendaCompleted.svelte';
 	import { audienceCounts, filterAudience, type AudienceView } from '$lib/calendar/audience';
-	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, dayCounts, outstandingMatches, shiftDay, dayWindow, weekLabel, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, dayCounts, outstandingMatches, shiftDay, dayWindow, weekLabel, workOccurrence, roleMarkers, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaResponse, AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
@@ -45,6 +45,10 @@
 	const stripEntries = $derived(weekOffset === 0 ? entries : filterEntries(stripAgenda?.entries ?? [], false));
 	// The strip follows the audience toggle, so its counts agree with the summary and Today.
 	const stripAudienceEntries = $derived(filterAudience(stripEntries, audience));
+	// Forecasts and deadlines landing on a day, from the answer the strip already counts, as the agenda page reads them.
+	const stripResponse = $derived(weekOffset === 0 ? homeOverview.agenda : stripAgenda);
+	const stripMarkers = $derived(new Map([...roleMarkers(stripEntries, zone, stripResponse?.forecasts ?? [], stripResponse?.next_from)].map(([day, roles]) =>
+		[day, { forecasts: filterAudience(roles.forecasts, audience).length, deadlines: filterAudience(roles.deadlines, audience).length }])));
 	const stripLoad = () => weekOffset === 0
 		? homeOverview.loading ? 'none' : homeOverview.agenda?.window_complete === false ? 'partial' : 'full'
 		: !stripAgenda ? 'none' : stripAgenda.window_complete === false ? 'partial' : 'full';
@@ -160,7 +164,7 @@
 	{#if weekOffset !== 0}
 		<div class="strip-week"><span>{weekLabel(firstDay, viewport.isMobile)}</span><button type="button" class="invitations-toggle" onclick={backToThisWeek}>This week</button></div>
 	{/if}
-	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripAudienceEntries} {zone} dragging={null} hoverDay="" onselect={openAgendaOn} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} />
+	<AgendaWeekStrip compact={viewport.isMobile} {days} {today} entries={stripAudienceEntries} {zone} dragging={null} hoverDay="" onselect={openAgendaOn} onswipe={swipeWeek} onenter={() => {}} ondrop={() => {}} loadState={stripLoad} markers={stripMarkers} />
 	<div class="overview-columns">
 		<section class="panel needs-panel" aria-label="Needs you">
 			<header><h2>Needs you <span class="badge">{homeOverview.needs?.total ?? '…'}</span></h2><span class="sort">Oldest waiting</span></header>

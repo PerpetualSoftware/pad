@@ -75,6 +75,32 @@ describe('AgendaWeekStrip', () => {
 		mount({ loadState: () => 'partial' });
 		expect(button('2031-03-12')).toHaveAccessibleName('Wednesday 12 March, not fully loaded'); expect(button('2031-03-12').querySelector('.n')?.textContent).toBe('');
 	});
+	it('shows a fully loaded day holding only markers as not empty, with a marker pip and the markers named', () => {
+		const markers = new Map([['2031-03-12', { forecasts: 1, deadlines: 0 }], ['2031-03-13', { forecasts: 0, deadlines: 2 }], ['2031-03-14', { forecasts: 2, deadlines: 1 }]]);
+		mount({ markers });
+		const forecast = button('2031-03-12');
+		expect(forecast.classList.contains('quiet')).toBe(false); expect(forecast.querySelector('.n')?.textContent).not.toBe('–');
+		expect([...forecast.querySelectorAll('.pip')].map(pip => (pip as HTMLElement).dataset.marker)).toEqual(['forecast']);
+		expect(forecast).toHaveAccessibleName('Wednesday 12 March, no entries, 1 forecast');
+		expect(button('2031-03-13')).toHaveAccessibleName('Thursday 13 March, no entries, 2 deadlines');
+		expect([...button('2031-03-13').querySelectorAll('.pip')].map(pip => (pip as HTMLElement).dataset.marker)).toEqual(['deadline']);
+		expect(button('2031-03-14')).toHaveAccessibleName('Friday 14 March, no entries, 2 forecasts, 1 deadline');
+		// A day with nothing at all is still empty.
+		expect(button('2031-03-15').classList.contains('quiet')).toBe(true); expect(button('2031-03-15').querySelector('.n')?.textContent).toBe('–');
+	});
+	it('keeps the entry count of a day that also has a marker', () => {
+		mount({ entries: [entry(), entry({ state: 'done' })], markers: new Map([['2031-03-10', { forecasts: 1, deadlines: 0 }]]) });
+		expect(button('2031-03-10').querySelector('.n')?.textContent).toBe('2');
+		expect(button('2031-03-10')).toHaveAccessibleName('Monday 10 March, 2 entries, 1 owed, 1 forecast');
+		expect([...button('2031-03-10').querySelectorAll('.pip')].map(pip => (pip as HTMLElement).dataset.tone ?? `marker:${(pip as HTMLElement).dataset.marker}`)).toEqual(['owed', 'done', 'marker:forecast']);
+	});
+	it('leaves a partly loaded or not loaded day as it was, markers or not', () => {
+		const markers = new Map(days.map(day => [day, { forecasts: 1, deadlines: 1 }]));
+		mount({ loadState: (day: string) => day === '2031-03-10' ? 'partial' : 'none', markers });
+		expect(button('2031-03-10')).toHaveAccessibleName('Monday 10 March, not fully loaded'); expect(button('2031-03-10').querySelector('.n')?.textContent).toBe('');
+		expect(button('2031-03-10').querySelectorAll('.pip')).toHaveLength(0);
+		expect(button('2031-03-12')).toHaveAccessibleName('Wednesday 12 March, not loaded'); expect(button('2031-03-12').querySelectorAll('.pip')).toHaveLength(0);
+	});
 	it('is one tab stop whose arrow keys rove, and a press picks the day', async () => {
 		const { buttons, onselect } = mount();
 		expect(buttons.map(b => b.tabIndex)).toEqual([-1, 0, -1, -1, -1, -1, -1]);

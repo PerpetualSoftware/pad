@@ -138,3 +138,22 @@ it('names who acknowledged an acknowledged occurrence, open and not closed, in t
  render(CalendarEntry, { row: { ...base, ...acknowledged }, zone: 'UTC', preview: true });
  expect(link().getAttribute('title')).toMatch(/Acknowledged by Alex · /);
 });
+const forecastSummary = { value: '2026-03-12', set_by: 'u1', set_by_name: 'Alex', set_by_kind: 'agent' as const, set_at: 'now', source: '' };
+const count = (text: string | null | undefined, word: string) => (text ?? '').split(word).length - 1;
+it('shows the word Forecast before the title of a forecast chip, in the month line and the full entry', () => {
+ line({ kind: 'forecast', title: 'Ship it', forecast: forecastSummary });
+ expect(link().textContent?.trim()).toBe('ForecastShip it');
+ expect(link().querySelector('.kind')).toHaveTextContent('Forecast'); expect(link().querySelector('.kind + .t')).toHaveTextContent('Ship it');
+ expect(count(link().getAttribute('aria-label'), 'Forecast')).toBe(1); expect(link()).toHaveAttribute('title', link().getAttribute('aria-label')!);
+ cleanup();
+ show({ kind: 'forecast', title: 'Ship it' });
+ expect(link().textContent?.trim()).toMatch(/^Forecast\s*TASK-1\s*Ship it/);
+ expect(link().querySelector('.kind')).toHaveTextContent('Forecast');
+ expect(count(screen.getByRole('link').textContent, 'Forecast')).toBe(1);
+ expect(link()).toHaveAccessibleName(/^Forecast TASK-1 Ship it/); expect(link()).not.toHaveAccessibleName(/Forecast.*Forecast/);
+});
+it('does not label an ordinary chip a forecast', () => {
+ line({ title: 'Ship it' }); expect(link().textContent).not.toContain('Forecast'); expect(link().querySelector('.kind')).toBeNull();
+ cleanup();
+ show({ title: 'Ship it' }); expect(link().textContent).not.toContain('Forecast'); expect(link().querySelector('.kind')).toBeNull();
+});

@@ -13,6 +13,8 @@
 		entries: AgendaEntry[];
 		/** How much of a day `entries` holds. A day not loaded shows no count; one partly loaded shows no total. */
 		loadState?: (day: string) => 'full' | 'partial' | 'none';
+		/** Forecast and deadline markers per day. A marker is not an entry: it is named and drawn on a fully loaded day, never counted. */
+		markers?: ReadonlyMap<string, { forecasts: number; deadlines: number }>;
 		zone: string;
 		now?: Date;
 		/** Phone layout: the cells are narrow, so each shows fewer pips. */
@@ -27,7 +29,7 @@
 		ondrop: (day: string) => void;
 	}
 
-	let { days, today, selected, entries, loadState = () => 'full', zone, now = new Date(Date.now()), compact = false, dragging, hoverDay, onselect, onenter, ondrop, onswipe }: Props = $props();
+	let { days, today, selected, entries, loadState = () => 'full', markers, zone, now = new Date(Date.now()), compact = false, dragging, hoverDay, onselect, onenter, ondrop, onswipe }: Props = $props();
 
 	type Tone = 'bad' | 'owed' | 'quiet' | 'done';
 	const ORDER: Tone[] = ['bad', 'owed', 'quiet', 'done'];
@@ -135,7 +137,12 @@
 		const rows = state === 'none' ? [] : entries.filter(entry => entry.day === day && (entry.type === 'schedule' || entry.type === 'date'));
 		const tones = rows.map(tone).sort((a, b) => ORDER.indexOf(a) - ORDER.indexOf(b));
 		const { owed } = dayCounts(rows);
-		return [day, { state, count: rows.length, owed, tones: tones.slice(0, compact ? MAX_PIPS_COMPACT : MAX_PIPS) }] as const;
+		// Only a fully loaded day can say what it holds, markers included.
+		const marked = state === 'full' ? markers?.get(day) : undefined;
+		const forecasts = marked?.forecasts ?? 0, deadlines = marked?.deadlines ?? 0;
+		const flags = [...(deadlines ? ['deadline' as const] : []), ...(forecasts ? ['forecast' as const] : [])];
+		const cap = compact ? MAX_PIPS_COMPACT : MAX_PIPS;
+		return [day, { state, count: rows.length, owed, forecasts, deadlines, flags, tones: tones.slice(0, cap - flags.length) }] as const;
 	})));
 	// One tab stop: the day last focused, else the selected day, else today, else the first.
 	const stop = $derived([focused, selected, today].find(day => day && days.includes(day)) ?? days[0]);
@@ -144,16 +151,19 @@
 		: dragging.roles?.earliest && roleDay(dragging.roles.earliest, zone) === day ? 'Available from' : '';
 
 	function label(day: string): string {
-		const { state, count, owed } = load.get(day)!;
+		const { state, count, owed, forecasts, deadlines } = load.get(day)!;
 		const name = [longDay(day), ...(day === today ? ['Today'] : [])];
 		// Only a fully loaded day has a total, or can be called empty.
 		if (state !== 'full') return [...name, state === 'none' ? 'not loaded' : 'not fully loaded'].join(', ');
-		return [...name, count ? `${count} ${count === 1 ? 'entry' : 'entries'}` : 'no entries', ...(owed ? [`${owed} owed`] : [])].join(', ');
+		return [...name, count ? `${count} ${count === 1 ? 'entry' : 'entries'}` : 'no entries', ...(owed ? [`${owed} owed`] : []),
+			...(forecasts ? [`${forecasts} ${forecasts === 1 ? 'forecast' : 'forecasts'}`] : []),
+			...(deadlines ? [`${deadlines} ${deadlines === 1 ? 'deadline' : 'deadlines'}`] : [])].join(', ');
 	}
 	function figure(day: string): string | number {
-		const { state, count, owed } = load.get(day)!;
+		const { state, count, owed, flags } = load.get(day)!;
 		if (state !== 'full') return state === 'partial' && count ? `${count}+` : '';
-		return count === 0 ? '–' : day === today && owed ? `${owed} owed` : count;
+		// A day holding only markers is not empty, but has no entries to count: its marker pips say it.
+		return count === 0 ? flags.length ? '' : '–' : day === today && owed ? `${owed} owed` : count;
 	}
 	function onkeydown(event: KeyboardEvent, index: number) {
 		if (event.altKey || event.ctrlKey || event.metaKey) return;
@@ -182,7 +192,7 @@
 					{@const info = load.get(day)!}
 					{@const pinned = pin(day)}
 					{@const over = !!dragging && hoverDay === day}
-					<button type="button" class="day" class:today={day === today} class:quiet={info.state === 'full' && info.count === 0} class:over class:pinned={pinned === 'Deadline'}
+					<button type="button" class="day" class:today={day === today} class:quiet={info.state === 'full' && info.count === 0 && !info.flags.length} class:over class:pinned={pinned === 'Deadline'}
 						data-strip-day={day} data-load={info.state === 'full' ? undefined : info.state} data-drop={dragging ? 'true' : undefined}
 						aria-label={label(day)} aria-current={day === today ? 'date' : undefined} aria-pressed={selected ? day === selected : undefined}
 						tabindex={day === stop ? 0 : -1}
@@ -193,7 +203,7 @@
 						<span class="date"><span class="dow">{weekday(day)}</span><span class="num">{+day.slice(8)}</span></span>
 						<span class="load">
 							<span class="n">{over && !pinned ? 'Move here' : pinned || figure(day)}</span>
-							<span class="pips">{#each info.tones as pip, at (at)}<span class="pip" data-tone={pip}></span>{/each}</span>
+							<span class="pips">{#each info.tones as pip, at (at)}<span class="pip" data-tone={pip}></span>{/each}{#each info.flags as flag (flag)}<span class="pip marker" data-marker={flag}></span>{/each}</span>
 						</span>
 					</button>
 				{/each}
@@ -230,6 +240,9 @@
 	.pip[data-tone='owed'] { background: var(--accent-amber); }
 	.pip[data-tone='bad'] { background: var(--accent-red); }
 	.pip[data-tone='done'] { background: var(--accent-green); }
+	/* A marker is an estimate or a limit, not an entry: a hollow ring, never a filled dot. */
+	.pip.marker { background: transparent; box-shadow: inset 0 0 0 1.5px var(--text-muted); }
+	.pip[data-marker='deadline'] { box-shadow: inset 0 0 0 1.5px var(--accent-red); }
 	.today { border-color: var(--accent-primary); box-shadow: inset 0 0 0 1px var(--accent-primary); }
 	.today .num { color: var(--accent-primary); }
 	.quiet { background: transparent; }
