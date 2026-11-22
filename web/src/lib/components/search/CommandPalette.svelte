@@ -4,6 +4,7 @@
 	import { api } from '$lib/api/client';
 	import { uniqueBy } from '$lib/utils/unique';
 	import { statusColor } from '$lib/utils/fieldColors';
+	import { snippetSegments, windowSnippet, type SnippetSegment } from '$lib/utils/snippetSegments';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { categoricalValueFor } from '$lib/collections/categoricalFieldValue';
@@ -919,8 +920,14 @@
 		requestAnimationFrame(() => inputEl?.focus());
 	}
 
-	function stripHtml(s: string): string {
-		return s.replace(/<[^>]*>/g, '');
+	// TASK-4520: the snippet is raw stored text with <mark> around matched
+	// terms. It becomes text segments (never HTML), and the lead before the
+	// first match is cut short so a row that truncates at its end still shows
+	// the match. On desktop the FTS window is already short, so this rarely
+	// trims there.
+	const SNIPPET_LEAD = 24;
+	function snippetParts(s: string): SnippetSegment[] {
+		return windowSnippet(snippetSegments(s), SNIPPET_LEAD);
 	}
 
 	// statusColor imported from $lib/utils/fieldColors (canonical palette).
@@ -998,7 +1005,9 @@
 	{@const marker = matchMarker(r)}
 	<div class="result-snippet" class:has-marker={!!marker}>
 		{#if isBodyStale(r.item)}<StaleBodyDot />{/if}<span class="snippet-text"
-			>{stripHtml(r.snippet)}</span
+			>{#each snippetParts(r.snippet) as seg, k (k)}{#if seg.hit}<mark class="snippet-hit"
+						>{seg.text}</mark
+					>{:else}{seg.text}{/if}{/each}</span
 		>{#if marker}<span class="match-marker" data-testid="match-marker"
 				><span class="sr-only">{', matched '}</span>{marker}</span
 			>{/if}
@@ -1586,17 +1595,6 @@
 		border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
 		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 	}
-	.scope-dot {
-		width: 8px;
-		height: 8px;
-		border-radius: 50%;
-		background: var(--text-muted);
-		border: 1px solid var(--border);
-	}
-	.scope-dot.on {
-		background: var(--accent-blue);
-		border-color: var(--accent-blue);
-	}
 
 	/* Filter chips */
 	.filters-row {
@@ -1744,6 +1742,15 @@
 	.result.selected {
 		background: var(--bg-hover);
 	}
+	/*
+		TASK-4520: the browser's own focus ring is drawn outside the box, so it
+		stood taller than the row and crossed its neighbours. Draw it inside.
+	*/
+	.result:focus-visible,
+	.recent-item:focus-visible {
+		outline: 2px solid var(--accent-blue);
+		outline-offset: -2px;
+	}
 	.result-main {
 		display: flex;
 		align-items: center;
@@ -1798,6 +1805,14 @@
 		quiet source label sits beside it. The row becomes a flex line so a long
 		snippet truncates and the label stays whole at its end.
 	*/
+	/* A matched term: bolder and lightly tinted, not the browser's yellow. */
+	.snippet-hit {
+		color: var(--text-secondary);
+		font-weight: 600;
+		background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+		border-radius: 3px;
+		padding: 0;
+	}
 	.result-snippet.has-marker {
 		display: flex;
 		align-items: center;
