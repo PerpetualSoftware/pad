@@ -127,12 +127,12 @@
   {/if}
   {#if summary && (summary.total > 0 || canEdit)}
    <div class="children" data-role="children">
-    {#if summary.total > 0}<p>{summary.counted} of {summary.total} counted · {summary.waivers} waivers · {resultText}</p>{/if}
+    {#if summary.total > 0}<p>{summary.counted} of {summary.total} counted · {summary.waivers} {summary.waivers === 1 ? 'waiver' : 'waivers'} · {resultText}</p>{/if}
     {#if summary.children.length}
      <ul>{#each summary.children as child, index (index)}
       <li>
        <div class="child-row">
-        <span>{child.item_ref} · {child.close_state}{#if child.waived} · Waiver: {child.reason}{/if}</span>
+        <span>{child.item_ref} · {child.close_state}{#if child.waived}{' '}· Waiver: {child.reason}{/if}</span>
         {#if canEdit}
          <span class="child-actions">
           {#if !child.waived && waiving !== child.item_ref}<Button variant="ghost" size="sm" touch aria-label={`Waive ${child.item_ref}`} disabled={childBusy} onclick={() => startWaive(child.item_ref)}>Waive</Button>{/if}
@@ -211,7 +211,7 @@
  .child-actions { display: inline-flex; flex-wrap: wrap; gap: var(--space-1); }
  .waive { margin-top: var(--space-2); }
  .inline { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); }
- .inline input { flex: 1 1 0; }
+ .inline input { flex: 1 1 12rem; min-width: 0; }
  .two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
  .field { min-width: 0; }
  label { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }

@@ -52,7 +52,7 @@ it('loads the past notice and child summary including unknown, and clears',async
  h.get.mockResolvedValue({forecast:f,milestone:{...milestone,counted:1,total:2,waivers:1,result:'unknown',children:[{item_ref:'TASK-2',close_state:'open',kind:'waiver',waived:true,reason:'not needed'}]},roles:{deadline:null}});
  const {onsaved}=mount();await screen.findByText('This date has passed.');
  expect((screen.getByLabelText(DATE) as HTMLInputElement).value).toBe(f.value);
- expect(screen.getByText(/Unknown: includes items you cannot see/)).toHaveTextContent('1 of 2 counted · 1 waivers');
+ expect(screen.getByText(/Unknown: includes items you cannot see/)).toHaveTextContent('1 of 2 counted · 1 waiver ·');
  expect(screen.getByText(/TASK-2/)).toHaveTextContent('open');expect(screen.getByText(/not needed/)).toBeTruthy();
  const clear=screen.getByRole('button',{name:'Clear forecast'});expect(clear).toHaveClass('ghost');
  expect(primaries()).toEqual(['Save forecast']);
@@ -114,7 +114,7 @@ it('waive needs a reason before Confirm, then calls waive',async()=>{
  await fireEvent.click(confirm);
  await waitFor(()=>expect(h.waive).toHaveBeenCalledWith('work','TASK-1','TASK-2','not needed'));
  expect(await screen.findByText(/1 of 1 counted/)).toHaveTextContent('Completed');
- expect(screen.getByText(/Waiver: not needed/)).toBeTruthy();
+ expect(screen.getByText(/Waiver: not needed/)).toHaveTextContent('TASK-2 · open · Waiver: not needed');
  expect(screen.queryByRole('button',{name:'Waive TASK-2'})).toBeNull();
  expect(screen.getByRole('button',{name:'Remove TASK-2'})).toBeTruthy();
 });
