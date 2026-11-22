@@ -1068,6 +1068,52 @@ func timezoneLabel(zone *string) string {
 	return *zone
 }
 
+func dayStartLabel(v *string) string {
+	if v == nil {
+		return usertz.FormatDayStart(usertz.DefaultDayStartMinute) + " (default)"
+	}
+	return *v
+}
+
+func dayStartCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:     "day-start [HH:MM]",
+		Short:   "Show or set the time your day starts at",
+		Example: "  pad auth day-start 07:30",
+		Args:    cobra.MaximumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if len(args) == 1 {
+				if _, err := usertz.ParseDayStart(args[0]); err != nil {
+					return err
+				}
+			}
+			client, _ := getClient()
+			var user *cli.LoginUser
+			var err error
+			if len(args) == 0 {
+				user, err = client.GetCurrentUser()
+			} else {
+				user, err = client.SetDayStart(args[0])
+			}
+			if err != nil {
+				return err
+			}
+			if len(args) == 1 && (user.DayStart == nil || *user.DayStart != args[0]) {
+				return fmt.Errorf("the server did not save the day start (it may predate day start support)")
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(map[string]any{"day_start": user.DayStart})
+			}
+			if len(args) == 1 {
+				fmt.Printf("Day start set to %s\n", dayStartLabel(user.DayStart))
+			} else {
+				fmt.Printf("Day starts at: %s\n", dayStartLabel(user.DayStart))
+			}
+			return nil
+		},
+	}
+}
+
 func timezoneCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:     "timezone [zone]",

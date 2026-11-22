@@ -2,6 +2,7 @@
   "avatar_url": "",
   "chat_enabled": false,
   "created_at": "<string>",
+  "day_start": null,
   "email": "<string>",
   "id": "<string>",
   "name": "<string>",

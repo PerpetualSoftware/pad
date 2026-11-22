@@ -30,6 +30,7 @@ func authCmd() *cobra.Command {
 		logoutCmd(),
 		whoamiCmd(),
 		timezoneCmd(),
+		dayStartCmd(),
 		resetPasswordCmd(),
 		twoFactorCmd(),
 	)

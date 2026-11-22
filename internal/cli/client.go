@@ -2121,6 +2121,9 @@ type LoginResponse struct {
 // LoginUser is the user info returned from auth endpoints.
 type LoginUser struct {
 	Timezone *string `json:"timezone"`
+	// DayStart is the caller's day start "HH:MM", nil when never set or from
+	// a server that predates the setting (TASK-4699).
+	DayStart *string `json:"day_start"`
 	ID       string  `json:"id"`
 	Email    string  `json:"email"`
 	Name     string  `json:"name"`
@@ -2345,6 +2348,12 @@ func (c *Client) GetCurrentUserContext(ctx context.Context) (*LoginUser, error) 
 func (c *Client) SetTimezone(zone string) (*LoginUser, error) {
 	var result LoginUser
 	return &result, c.patch("/auth/me", map[string]string{"timezone": zone}, &result)
+}
+
+// SetDayStart updates the authenticated user's day start ("HH:MM").
+func (c *Client) SetDayStart(hhmm string) (*LoginUser, error) {
+	var result LoginUser
+	return &result, c.patch("/auth/me", map[string]string{"day_start": hhmm}, &result)
 }
 
 // CheckSession returns the current auth status.

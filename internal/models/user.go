@@ -42,9 +42,13 @@ type User struct {
 	// ChatEnabled is the user's Chat display preference (TASK-4315): off by
 	// default, on for users who had sent a Chat message before the column
 	// existed. It hides surfaces; it is not access control.
-	ChatEnabled bool      `json:"chat_enabled"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ChatEnabled bool `json:"chat_enabled"`
+	// DayStartMinute is the minute of the day (0..1439) the user's day starts
+	// at; nil = never set (read as usertz.DefaultDayStartMinute). Not
+	// serialized: the auth payloads emit it as "day_start" HH:MM (TASK-4699).
+	DayStartMinute *int      `json:"-"`
+	CreatedAt      time.Time `json:"created_at"`
+	UpdatedAt      time.Time `json:"updated_at"`
 }
 
 // UserKindHuman and UserKindApp are the values of users.kind.
@@ -168,6 +172,9 @@ type UserUpdate struct {
 	Timezone *string `json:"timezone,omitempty"`
 	// ChatEnabled sets the Chat display preference (TASK-4315).
 	ChatEnabled *bool `json:"chat_enabled,omitempty"`
+	// DayStartMinute sets the day start (TASK-4699); the caller validates it
+	// with usertz.ParseDayStart. Nil = leave it; there is no clear.
+	DayStartMinute *int `json:"-"`
 	// ExpectedEpoch, when set with Password, makes the password write
 	// conditional on the account's credential_epoch still being this value:
 	// the epoch the caller's authority (the current password, a reset token)

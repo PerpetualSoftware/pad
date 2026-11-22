@@ -3,6 +3,7 @@
   "token": "<string>",
   "user": {
     "chat_enabled": false,
+    "day_start": null,
     "email": "<string>",
     "email_verified": true,
     "id": "<string>",

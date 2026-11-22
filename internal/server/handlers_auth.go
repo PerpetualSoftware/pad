@@ -79,6 +79,7 @@ func sessionUserPayload(user *models.User) map[string]interface{} {
 		"email_verified": user.IsEmailVerified(),
 		"timezone":       user.Timezone,
 		"chat_enabled":   user.ChatEnabled,
+		"day_start":      dayStartPayload(user.DayStartMinute),
 	}
 }
 
@@ -1512,6 +1513,7 @@ func (s *Server) handleGetCurrentUser(w http.ResponseWriter, r *http.Request) {
 		"password_set": user.HasPassword(),
 		"timezone":     user.Timezone,
 		"chat_enabled": user.ChatEnabled,
+		"day_start":    dayStartPayload(user.DayStartMinute),
 		"created_at":   user.CreatedAt,
 		"updated_at":   user.UpdatedAt,
 	}
@@ -1561,10 +1563,23 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		// There is no way to name another user: the target is always the
 		// authenticated caller. Absent/null = leave it.
 		ChatEnabled *bool `json:"chat_enabled,omitempty"`
+		// DayStart is the caller's own day start, 24-hour "HH:MM"
+		// (TASK-4699). Absent/null = leave it. It cannot be cleared: "" is
+		// invalid_day_start, as "" is invalid_tz for timezone.
+		DayStart *string `json:"day_start,omitempty"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
 		return
+	}
+	var dayStartMinute *int
+	if input.DayStart != nil {
+		m, err := usertz.ParseDayStart(*input.DayStart)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "invalid_day_start", "`day_start` must be a 24-hour time HH:MM between 00:00 and 23:59, such as 09:00")
+			return
+		}
+		dayStartMinute = &m
 	}
 	if input.Timezone != nil {
 		if _, err := usertz.Validate(*input.Timezone); err != nil {
@@ -1666,6 +1681,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		update.Timezone = input.Timezone
 	}
 	update.ChatEnabled = input.ChatEnabled
+	update.DayStartMinute = dayStartMinute
 	if !input.NewPassword.IsZero() {
 		newPassword := input.NewPassword.Reveal()
 		update.Password = &newPassword
@@ -1704,6 +1720,7 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		"avatar_url":   updated.AvatarURL,
 		"timezone":     updated.Timezone,
 		"chat_enabled": updated.ChatEnabled,
+		"day_start":    dayStartPayload(updated.DayStartMinute),
 		"created_at":   updated.CreatedAt,
 		"updated_at":   updated.UpdatedAt,
 	}
