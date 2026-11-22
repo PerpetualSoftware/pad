@@ -1800,11 +1800,6 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
-	/*
-		A comment match: the snippet was cut from a comment, not the body, so a
-		quiet source label sits beside it. The row becomes a flex line so a long
-		snippet truncates and the label stays whole at its end.
-	*/
 	/* A matched term: bolder and lightly tinted, not the browser's yellow. */
 	.snippet-hit {
 		color: var(--text-secondary);
@@ -1813,6 +1808,11 @@
 		border-radius: 3px;
 		padding: 0;
 	}
+	/*
+		A comment match: the snippet was cut from a comment, not the body, so a
+		quiet source label sits beside it. The row becomes a flex line so a long
+		snippet truncates and the label stays whole at its end.
+	*/
 	.result-snippet.has-marker {
 		display: flex;
 		align-items: center;
