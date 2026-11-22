@@ -7,7 +7,9 @@ import (
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/usertz"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -32,13 +34,8 @@ type reminderRequest struct {
 // store never has to reason about zones and there is exactly one place that
 // decides what an instant means.
 //
-// A BARE DATE IS REFUSED, and this is the one refusal worth explaining: the
-// `date` schema type accepts `YYYY-MM-DD`, so a caller reasonably expects it
-// here too. But a bare date does not name an instant — "2026-08-01" is a
-// 24-hour span, and picking midnight for them would be this code inventing a
-// time the user did not choose and then firing at it. Refusing with a message
-// that names the accepted form costs one round trip; guessing costs a reminder
-// that arrives at 00:00 for someone who meant "that morning".
+// A bare date is not an instant and is not accepted here; resolveRemindAt
+// places it at the caller's day start (TASK-4699).
 func parseRemindAt(raw string) (string, error) {
 	t, err := time.Parse(time.RFC3339, raw)
 	if err != nil {
@@ -47,9 +44,66 @@ func parseRemindAt(raw string) (string, error) {
 	return store.NormalizeInstant(t), nil
 }
 
+// remindAtAgentRefusal is the bare-date refusal from before TASK-4699, kept
+// byte for byte: an agent-audience commitment still refuses a bare date, since
+// an agent has no day to start, and a malformed value gets the same answer.
+const remindAtAgentRefusal = "remind_at must be an RFC3339 instant (e.g. 2026-08-01T09:00:00Z). A bare date has no time of day, so it is refused rather than assumed to mean midnight."
+
+// remindAtNoZoneRefusal answers a bare date from a caller with no account
+// zone: there is no day to place it in, and assuming UTC would be an invented
+// time.
+const remindAtNoZoneRefusal = "A bare date lands at the start of your day in your account time zone, and you have no account time zone. Set one with pad auth timezone <IANA> (or in the web settings), or give remind_at as an RFC3339 instant (e.g. 2026-08-01T09:00:00Z)."
+
 func writeRemindAtError(w http.ResponseWriter) {
-	writeError(w, http.StatusBadRequest, "invalid_remind_at",
-		"remind_at must be an RFC3339 instant (e.g. 2026-08-01T09:00:00Z). A bare date has no time of day, so it is refused rather than assumed to mean midnight.")
+	writeError(w, http.StatusBadRequest, "invalid_remind_at", remindAtAgentRefusal)
+}
+
+// remindAtFromDayStart is the resolved_from value of a reminder whose bare
+// date was placed at the caller's day start.
+const remindAtFromDayStart = "day_start"
+
+// resolveRemindAt reads remind_at for the create and re-arm doors. An RFC3339
+// instant is normalized as parseRemindAt does. A bare YYYY-MM-DD (TASK-4699)
+// resolves to that date at the CALLER's day start (unset reads 09:00) in the
+// CALLER's account zone, never the recipient's: reading the recipient's would
+// leak their setting and zone through the stored instant. A spring-forward
+// gap shifts the time forward and a fall-back overlap takes the earlier
+// instant (schedule.Resolve).
+//
+// Refusals, which it writes itself (ok=false): a malformed value, or a bare
+// date on an item whose commitment is agent-audience, answers the old refusal
+// unchanged; a bare date from a caller with no account zone names pad auth
+// timezone.
+func (s *Server) resolveRemindAt(w http.ResponseWriter, r *http.Request, workspaceID, itemID, raw string) (at, from string, ok bool) {
+	if at, err := parseRemindAt(raw); err == nil {
+		return at, "", true
+	}
+	day, err := schedule.ParseWall(raw)
+	if err != nil || !day.AllDay {
+		writeRemindAtError(w)
+		return "", "", false
+	}
+	sc, err := s.store.GetSchedule(workspaceID, itemID)
+	if err != nil {
+		writeInternalError(w, err)
+		return "", "", false
+	}
+	if sc != nil && sc.Audience == "agent" {
+		writeRemindAtError(w)
+		return "", "", false
+	}
+	zone := viewerZone(r)
+	if !zone.Set {
+		writeError(w, http.StatusBadRequest, "invalid_remind_at", remindAtNoZoneRefusal)
+		return "", "", false
+	}
+	var stored *int
+	if u := currentUser(r); u != nil {
+		stored = u.DayStartMinute
+	}
+	minute, _ := usertz.DayStart(stored)
+	day.AllDay, day.Hour, day.Minute = false, minute/60, minute%60
+	return store.NormalizeInstant(schedule.Resolve(zone.Loc, day)), remindAtFromDayStart, true
 }
 
 // handleListItemReminders returns every reminder on an item, armed or fired.
@@ -115,9 +169,8 @@ func (s *Server) handleCreateItemReminder(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, "invalid_body", "Request body must be JSON")
 		return
 	}
-	remindAt, err := parseRemindAt(req.RemindAt)
-	if err != nil {
-		writeRemindAtError(w)
+	remindAt, from, ok := s.resolveRemindAt(w, r, workspaceID, item.ID, req.RemindAt)
+	if !ok {
 		return
 	}
 
@@ -142,6 +195,7 @@ func (s *Server) handleCreateItemReminder(w http.ResponseWriter, r *http.Request
 		action, fields = "schedule_updated", []string{"dtstart"}
 	}
 	s.recordScheduleWrite(r, workspaceID, item, action, scheduleActivityMeta("check", fields))
+	reminder.ResolvedFrom = from
 	writeJSON(w, http.StatusCreated, reminder)
 }
 
@@ -162,9 +216,8 @@ func (s *Server) handleRearmReminder(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid_body", "Request body must be JSON")
 		return
 	}
-	remindAt, err := parseRemindAt(req.RemindAt)
-	if err != nil {
-		writeRemindAtError(w)
+	remindAt, from, ok := s.resolveRemindAt(w, r, workspaceID, item.ID, req.RemindAt)
+	if !ok {
 		return
 	}
 
@@ -181,6 +234,7 @@ func (s *Server) handleRearmReminder(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta("check", []string{"dtstart"}))
+	updated.ResolvedFrom = from
 	writeJSON(w, http.StatusOK, updated)
 }
 

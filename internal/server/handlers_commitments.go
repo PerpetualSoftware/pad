@@ -9,7 +9,9 @@ import (
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
+	"github.com/PerpetualSoftware/pad/internal/schedule"
 	"github.com/PerpetualSoftware/pad/internal/store"
+	"github.com/PerpetualSoftware/pad/internal/usertz"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -217,6 +219,38 @@ func (s *Server) handleGetItemCommitment(w http.ResponseWriter, r *http.Request)
 type commitmentCreateBody struct {
 	models.ScheduleCreate
 	Roles *models.CommitmentRolesInput `json:"roles"`
+	// DayStart (TASK-4699) places a bare start date at the caller's day start.
+	DayStart bool `json:"day_start"`
+}
+
+// writeDayStartRefusal is the 400 for a day_start the body cannot honour.
+func writeDayStartRefusal(w http.ResponseWriter, code, message string) {
+	writeError2(w, http.StatusBadRequest, "validation_error", message, map[string]interface{}{"field": "day_start", "code": code})
+}
+
+const (
+	dayStartRequiresDate  = "day_start places a bare start date at the start of your day: give dtstart as a date (YYYY-MM-DD) with it"
+	dayStartAudienceAgent = "day_start is for a person's day, and this commitment's audience is agent: give dtstart a time of day instead"
+	dayStartZoneUnset     = "day_start needs a time zone and you have no account time zone: set one with pad auth timezone <IANA>, or give tz or floating"
+)
+
+// dayStartWall rewrites a bare-date start D to DTHH:MM:00 at the CALLER's day
+// start (unset reads 09:00), never the recipient's. The wall is read in the
+// schedule zone (the pinned tz, or the recipient's when floating) like any
+// other start, and is fixed at write: a later change to the setting moves
+// nothing. ok is false when raw is not a bare date.
+func dayStartWall(r *http.Request, raw string) (string, bool) {
+	day, err := schedule.ParseWall(raw)
+	if err != nil || !day.AllDay {
+		return "", false
+	}
+	var stored *int
+	if u := currentUser(r); u != nil {
+		stored = u.DayStartMinute
+	}
+	minute, _ := usertz.DayStart(stored)
+	day.AllDay, day.Hour, day.Minute = false, minute/60, minute%60
+	return day.String(), true
 }
 
 func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Request) {
@@ -257,6 +291,21 @@ func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	req := body.ScheduleCreate
+	if body.DayStart {
+		wall, isDate := dayStartWall(r, req.Dtstart)
+		switch {
+		case !isDate:
+			writeDayStartRefusal(w, "requires_date", dayStartRequiresDate)
+			return
+		case req.Audience == "agent":
+			writeDayStartRefusal(w, "audience_agent", dayStartAudienceAgent)
+			return
+		case !req.Floating && req.Tz == "" && !viewerZone(r).Set:
+			writeDayStartRefusal(w, "zone_unset", dayStartZoneUnset)
+			return
+		}
+		req.Dtstart = wall
+	}
 	note := ""
 	if !req.Floating && req.Tz == "" {
 		req.Tz, note = defaultScheduleZone(r)
@@ -282,6 +331,8 @@ type commitmentPatchBody struct {
 	Audience    json.RawMessage `json:"audience,omitempty"`
 	LeadMinutes json.RawMessage `json:"lead_minutes,omitempty"`
 	Roles       json.RawMessage `json:"roles,omitempty"`
+	// DayStart (TASK-4699) is an instruction about dtstart, not a change member.
+	DayStart json.RawMessage `json:"day_start,omitempty"`
 	// ExpectedRevision is a precondition, not a change member (TASK-4630).
 	ExpectedRevision json.RawMessage `json:"expected_revision,omitempty"`
 }
@@ -323,6 +374,9 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 				return
 			}
 		}
+	}
+	if !s.applyPatchDayStart(w, r, workspaceID, item.ID, members) {
+		return
 	}
 	if len(members) == 0 {
 		writeScheduleRequired(w, "body")
@@ -377,6 +431,57 @@ func (s *Server) handleUpdateItemCommitment(w http.ResponseWriter, r *http.Reque
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, fields))
 	s.writeItemCommitment(w, r, workspaceID, item, http.StatusOK, note)
+}
+
+// applyPatchDayStart removes day_start from a PATCH's members and, when it is
+// true, rewrites the bare dtstart member in place. The effective audience is
+// the patched one, else the stored one. It writes the refusal itself and
+// returns false; false or null is the same as absent.
+func (s *Server) applyPatchDayStart(w http.ResponseWriter, r *http.Request, workspaceID, itemID string, members map[string]json.RawMessage) bool {
+	raw, present := members["day_start"]
+	delete(members, "day_start")
+	on := false
+	if present && !isJSONNull(raw) {
+		if err := json.Unmarshal(raw, &on); err != nil {
+			writeScheduleBodyError(w)
+			return false
+		}
+	}
+	if !on {
+		return true
+	}
+	var start string
+	if v, ok := members["dtstart"]; !ok || isJSONNull(v) || json.Unmarshal(v, &start) != nil {
+		writeDayStartRefusal(w, "requires_date", dayStartRequiresDate)
+		return false
+	}
+	wall, isDate := dayStartWall(r, start)
+	if !isDate {
+		writeDayStartRefusal(w, "requires_date", dayStartRequiresDate)
+		return false
+	}
+	audience := ""
+	if v, ok := members["audience"]; ok && !isJSONNull(v) {
+		if json.Unmarshal(v, &audience) != nil {
+			writeScheduleBodyError(w)
+			return false
+		}
+	} else {
+		cur, err := s.store.GetSchedule(workspaceID, itemID)
+		if err != nil {
+			writeInternalError(w, err)
+			return false
+		}
+		if cur != nil {
+			audience = cur.Audience
+		}
+	}
+	if audience == "agent" {
+		writeDayStartRefusal(w, "audience_agent", dayStartAudienceAgent)
+		return false
+	}
+	members["dtstart"], _ = json.Marshal(wall)
+	return true
 }
 
 type commitmentResolveBody struct {

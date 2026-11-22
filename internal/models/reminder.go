@@ -14,6 +14,11 @@ type Reminder struct {
 	// cannot carry.
 	RemindAt string `json:"remind_at"`
 
+	// ResolvedFrom is set on a create or re-arm answer only, never stored:
+	// "day_start" when remind_at was a bare date placed at the caller's day
+	// start (TASK-4699), so the caller sees the instant that was chosen.
+	ResolvedFrom string `json:"resolved_from,omitempty"`
+
 	// FiredAt is nil while armed. Non-nil means the scheduler emitted this
 	// reminder's event; it is never cleared except by an explicit re-arm.
 	FiredAt *string `json:"fired_at,omitempty"`

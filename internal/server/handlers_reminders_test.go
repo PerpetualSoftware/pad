@@ -32,11 +32,12 @@ func armViaAPI(t *testing.T, srv *Server, wsSlug string, item models.Item, at st
 	return r
 }
 
-// TestArmRejectsABareDate. The `date` schema type accepts YYYY-MM-DD, so a
-// caller will try it here. It is refused rather than assumed to mean midnight:
-// a bare date names a 24-hour span, and picking an hour inside it would be the
-// server inventing a time the user did not choose and then firing at it.
-func TestArmRejectsABareDate(t *testing.T) {
+// TestTask4699_ArmRefusesABareDateWithoutAZone (formerly
+// TestArmRejectsABareDate). A bare date lands at the caller's day start in
+// the caller's account zone (TASK-4699); a caller with no account zone has no
+// zone to read the day in, so it is refused rather than assumed to be UTC, and
+// the refusal names both remedies.
+func TestTask4699_ArmRefusesABareDateWithoutAZone(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
 	slug := createWSWithCollections(t, srv)
@@ -46,13 +47,13 @@ func TestArmRejectsABareDate(t *testing.T) {
 
 	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/reminders",
 		map[string]string{"remind_at": "2026-08-01"})
-	if rr.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400 for a bare date, got %d: %s", rr.Code, rr.Body.String())
+	if rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), `"invalid_remind_at"`) {
+		t.Fatalf("expected 400 invalid_remind_at for a bare date with no zone, got %d: %s", rr.Code, rr.Body.String())
 	}
-	// The message has to name the accepted form, or the refusal costs the
-	// caller a guess instead of a round trip.
-	if !strings.Contains(rr.Body.String(), "RFC3339") {
-		t.Errorf("refusal does not name the accepted form: %s", rr.Body.String())
+	for _, want := range []string{"pad auth timezone", "RFC3339"} {
+		if !strings.Contains(rr.Body.String(), want) {
+			t.Errorf("refusal does not name %q: %s", want, rr.Body.String())
+		}
 	}
 }
 
