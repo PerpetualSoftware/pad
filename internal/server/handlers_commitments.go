@@ -464,17 +464,17 @@ func (s *Server) applyPatchDayStart(w http.ResponseWriter, r *http.Request, work
 		writeDayStartRefusal(w, "requires_date", dayStartRequiresDate)
 		return false
 	}
+	// Decoded into the type the write itself uses, so key matching (which
+	// encoding/json does case-insensitively) is the same as the write's.
 	if v, ok := members["roles"]; ok && !isJSONNull(v) {
-		var roles map[string]json.RawMessage
+		var roles models.CommitmentRolesPatch
 		if json.Unmarshal(v, &roles) != nil {
 			writeScheduleBodyError(w)
 			return false
 		}
-		for _, k := range []string{"occupied_days", "occupied_secs"} {
-			if o, ok := roles[k]; ok && !isJSONNull(o) {
-				writeDayStartRefusal(w, "window", dayStartWindow)
-				return false
-			}
+		if roles.OccupiedDays.Value != nil || roles.OccupiedSecs.Value != nil {
+			writeDayStartRefusal(w, "window", dayStartWindow)
+			return false
 		}
 	}
 	audience := ""

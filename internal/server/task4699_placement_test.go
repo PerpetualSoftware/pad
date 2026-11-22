@@ -263,6 +263,7 @@ func TestTask4699_CommitmentDayStartRefusals(t *testing.T) {
 		{"patched agent", slug, map[string]any{"dtstart": "2026-11-10", "audience": "agent", "day_start": true}, "audience_agent"},
 		{"stored agent", agentSlug, map[string]any{"dtstart": "2026-11-10", "day_start": true}, "audience_agent"},
 		{"window", slug, map[string]any{"dtstart": "2026-11-10", "day_start": true, "roles": map[string]any{"target_days": 0, "target_secs": 0, "occupied_days": 0, "occupied_secs": 3600}}, "window"},
+		{"window, upper-case keys", slug, map[string]any{"dtstart": "2026-11-10", "day_start": true, "roles": map[string]any{"OCCUPIED_DAYS": 0, "OCCUPIED_SECS": 3600}}, "window"},
 	} {
 		code, m, got := w.do(t, "PATCH", "/items/"+c.slug+"/commitment", c.body)
 		if ec, field, detail := task4699Detail(m); code != http.StatusBadRequest || ec != "validation_error" || field != "day_start" || detail != c.want {
