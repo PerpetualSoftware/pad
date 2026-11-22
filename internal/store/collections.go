@@ -758,25 +758,21 @@ func (s *Store) UpdateCollection(id string, input models.CollectionUpdate) (*mod
 
 	// Settings, against the row as it stands under the locks (PLAN-3535).
 	if input.Settings != nil {
-		// Normalize the empty-string sentinel to a valid JSON object before
-		// writing. The NOT NULL DEFAULT '{}' constraint (IDEA-1484) only
-		// fires when the UPDATE omits the column; explicit values are
-		// written verbatim. Postgres rejects `""` at JSONB type-validation;
-		// SQLite would silently store invalid JSON. Same boundary
-		// normalization as ImportWorkspace.
 		if err := models.CheckSettingsObject(*input.Settings); err != nil {
 			return nil, err
 		}
-		settings := *input.Settings
-		if settings == "" {
-			settings = "{}"
+		// The supplied settings are merged onto the stored ones (TASK-4732):
+		// a key they do not mention is kept, a key sent as null is deleted,
+		// and "" (the empty sentinel) changes nothing. Clients rebuild
+		// settings from the keys they know, so a wholesale write would drop
+		// every key another client owns, tracks_work and awaits_human
+		// included. The merge always yields a JSON object, so the column
+		// never receives `""` (Postgres rejects it; SQLite would store
+		// invalid JSON).
+		settings, err := models.MergeCollectionSettings(lockedSettings.String, *input.Settings)
+		if err != nil {
+			return nil, err
 		}
-		// A settings write that does not mention tracks_work keeps the stored
-		// value: clients rebuild settings wholesale, and one that predates the
-		// key would otherwise reset a reference collection to work.
-		// awaits_human (IDEA-3906) is carried the same way.
-		settings = models.CarryTracksWork(settings, lockedSettings.String)
-		settings = models.CarryAwaitsHuman(settings, lockedSettings.String)
 		set, err := applyCollectionSettingFlags(settings, input)
 		if err != nil {
 			return nil, err

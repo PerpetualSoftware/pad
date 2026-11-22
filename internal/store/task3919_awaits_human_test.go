@@ -40,7 +40,7 @@ func TestTASK3919_AwaitsHumanRoundTrip(t *testing.T) {
 				t.Fatalf("the create member was not stored: %s", got.Settings)
 			}
 
-			// A wholesale settings write from a client that never heard of the key keeps it.
+			// A settings write from a client that never heard of the key keeps it.
 			old := `{"layout":"balanced","default_view":"list"}`
 			up, err := s.UpdateCollection(coll.ID, models.CollectionUpdate{Settings: &old})
 			if err != nil {

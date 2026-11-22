@@ -3250,9 +3250,10 @@ export function collectionAwaitsHuman(collection: Pick<Collection, 'settings'>):
 }
 
 /**
- * The stored settings object, WITHOUT defaults merged in: what an editor must
- * start from when it writes settings back, so keys it does not edit survive
- * (settings are stored wholesale).
+ * The stored settings object, WITHOUT defaults merged in: what an editor
+ * starts from when it writes settings back. The server merges a settings
+ * write onto the stored settings: a key not mentioned is kept, and a null
+ * deletes it.
  */
 export function storedSettings(collection: Pick<Collection, 'settings'>): Record<string, unknown> {
 	try {

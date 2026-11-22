@@ -293,7 +293,8 @@ function collectionSchema(args: Record<string, unknown>): string | undefined {
  * Roll the collection settings params (layout / default_view / board_group_by)
  * into the JSON `settings` string the endpoint persists — the browser mirror
  * of the CLI's CollectionSettings build. Returns undefined when none were
- * supplied so an update doesn't clobber existing settings.
+ * supplied. The server merges a settings write onto the stored settings, so
+ * keys not named here are kept.
  */
 function collectionSettings(args: Record<string, unknown>): string | undefined {
 	const settings: Record<string, unknown> = {};

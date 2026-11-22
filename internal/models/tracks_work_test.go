@@ -69,31 +69,6 @@ func TestWithTracksWorkDefault(t *testing.T) {
 	}
 }
 
-func TestCarryTracksWork(t *testing.T) {
-	// The update does not mention the key: the stored value survives.
-	got := CarryTracksWork(`{"layout":"x"}`, `{"tracks_work":false,"layout":"y"}`)
-	if CollectionTracksWorkJSON(got) != false {
-		t.Fatalf("stored reference was reset: %s", got)
-	}
-	var m map[string]any
-	_ = json.Unmarshal([]byte(got), &m)
-	if m["layout"] != "x" {
-		t.Fatalf("the update's other keys were not kept: %s", got)
-	}
-	// The update sets the key: it wins.
-	if got := CarryTracksWork(`{"tracks_work":true}`, `{"tracks_work":false}`); CollectionTracksWorkJSON(got) != true {
-		t.Fatalf("an explicit update lost: %s", got)
-	}
-	// Nothing stored: unchanged.
-	if got := CarryTracksWork(`{"layout":"x"}`, `{}`); got != `{"layout":"x"}` {
-		t.Fatalf("nothing to carry, yet changed: %s", got)
-	}
-	// An empty update with a stored key gets the key.
-	if got := CarryTracksWork(``, `{"tracks_work":false}`); CollectionTracksWorkJSON(got) != false {
-		t.Fatalf("empty update lost the stored key: %q", got)
-	}
-}
-
 func TestSetAndValidateTracksWork(t *testing.T) {
 	got, err := SetTracksWork(`{"layout":"x","tracks_work":true}`, false)
 	if err != nil || CollectionTracksWorkJSON(got) != false {

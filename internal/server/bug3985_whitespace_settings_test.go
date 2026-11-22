@@ -25,15 +25,14 @@ func storedObject(t *testing.T, raw string) map[string]any {
 	return m
 }
 
-// The "" sentinel on PATCH replaces the settings with {} and carries the
-// typed members (PLAN-3535, IDEA-3906). Whitespace-only settings must do the
-// same.
+// The "" sentinel on PATCH is an empty merge (TASK-4732): every stored key is
+// kept. Whitespace-only settings must do the same.
 func TestBUG3985_WhitespaceSettingsOnPatchActAsEmpty(t *testing.T) {
 	t.Parallel()
 	forEachDialect(t, func(t *testing.T, d store.DriverType) {
 		f := newBUG3976Fixture(t, d)
 		const seed = `{"layout":"balanced","tracks_work":true,"awaits_human":true}`
-		want := map[string]any{"tracks_work": true, "awaits_human": true}
+		want := map[string]any{"layout": "balanced", "tracks_work": true, "awaits_human": true}
 
 		for i, raw := range []string{"", " ", "\t\n "} {
 			c := f.corruptCollection("Things "+string(rune('a'+i)), seed)
