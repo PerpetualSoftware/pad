@@ -642,7 +642,6 @@
 	}
 
 	async function handleFinalize(columnValue: string, e: CustomEvent<DndEvent<Item>>) {
-		if (laneSortFor(columnValue).reversed) return;
 		// The FULL lane, not the window: every write below numbers the whole
 		// lane, and numbering the window alone would collide with the hidden
 		// tail (TASK-2230).
@@ -654,7 +653,10 @@
 
 		// The zone that RECEIVED the card owns the group-value change + the
 		// target-lane reindex; delegate that to the shared commit path,
-		// passing the dnd-provided drop order as the placement.
+		// passing the dnd-provided drop order as the placement. A reversed lane
+		// (BUG-3994) still accepts the card, like any non-manual lane: the
+		// commit path changes its group value and skips the reindex, since the
+		// rendered indexes there are the stored order upside down.
 		if (trigger === TRIGGERS.DROPPED_INTO_ZONE) {
 			const originalItem = items.find((i) => i.id === itemId);
 			if (originalItem) {
@@ -666,7 +668,7 @@
 		// Source/other zone (the card left this lane) or the item is gone:
 		// no status change — just re-densify this lane's remaining order.
 		dropCooldown = true;
-		if (onReorder) {
+		if (onReorder && !laneSortFor(columnValue).reversed) {
 			const reorderUpdates = lane
 				.filter((i: any) => !i[SHADOW_ITEM_MARKER_PROPERTY_NAME])
 				.map((item, index) => ({ slug: item.id, sort_order: index }));
@@ -1091,7 +1093,6 @@
 					// phone is wider than the mobile breakpoint, and a finger held
 					// past delayTouchStart while scrolling picked the card up and
 					// dropped it in another lane. The card menu's move stays.
-					dropFromOthersDisabled: laneSortFor(colValue).reversed,
 					dragDisabled: noTouchDrag || !canEdit || preserveOrder || !isReorderable(laneSortFor(colValue).mode, laneSortFor(colValue).reversed)
 				}}
 				onconsider={(e) => handleConsider(colValue, e)}

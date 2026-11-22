@@ -71,7 +71,7 @@ describe('lane reversal (BUG-3994)', () => {
 		expect(domOrder(zones[0])).toEqual(['constructor-newer', 'constructor-older']);
 	});
 
-	it('a manual lane override disables only that lane and rejects an incoming drop', async () => {
+	it('a reversed manual lane refuses drags out but takes a drop in as a status move, with no reindex', async () => {
 		const onReorder = vi.fn();
 		const onLaneChange = vi.fn();
 		const r = render(BoardView, { props: { items, collection, onReorder, onLaneChange } });
@@ -80,13 +80,24 @@ describe('lane reversal (BUG-3994)', () => {
 		await fireEvent.click(r.getByRole('menuitemcheckbox', { name: 'Reverse order' }));
 		const zones = r.container.querySelectorAll('.column-cards');
 		expect(zones[0]).toHaveAttribute('data-drag-disabled', 'true');
-		expect(zones[0]).toHaveAttribute('data-drop-disabled', 'true');
+		expect(zones[0]).not.toHaveAttribute('data-drop-disabled', 'true');
 		expect(zones[1]).toHaveAttribute('data-drag-disabled', 'false');
+		// open-older dropped into the reversed constructor lane.
 		await fireEvent(zones[0], new CustomEvent('finalize', { detail: {
 			items: [items[2], items[1], items[0]], info: { trigger: 'droppedIntoZone', id: items[2].id },
 		} }));
+		expect(onLaneChange).toHaveBeenCalledTimes(1);
+		expect(onLaneChange.mock.calls[0][0].id).toBe(items[2].id);
+		expect(onLaneChange.mock.calls[0][1]).toBe('constructor');
+		// Rendered indexes in a reversed lane are the stored order upside down;
+		// writing them would flip it for everyone.
 		expect(onReorder).not.toHaveBeenCalled();
-		expect(onLaneChange).not.toHaveBeenCalled();
+		// The source lane (not reversed) still re-densifies what it has left.
+		await fireEvent(zones[1], new CustomEvent('finalize', { detail: {
+			items: [items[3]], info: { trigger: 'droppedIntoAnother', id: items[2].id },
+		} }));
+		expect(onReorder).toHaveBeenCalledTimes(1);
+		expect(onReorder.mock.calls[0][0]).toEqual([{ slug: items[3].id, sort_order: 0 }]);
 	});
 
 	it('inherits the page reversal, can override it, and preserves search relevance', async () => {
@@ -117,7 +128,6 @@ describe('lane reversal (BUG-3994)', () => {
 					expect(zones.length).toBe(2);
 					for (const zone of zones) {
 						expect(zone).toHaveAttribute('data-drag-disabled', String(reversed));
-						if (reversed) expect(zone).toHaveAttribute('data-drop-disabled', 'true');
 					}
 				}
 				if (view === 'table') {
