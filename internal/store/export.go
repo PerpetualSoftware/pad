@@ -1587,6 +1587,23 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if !insertedItems[newItemID] {
 			continue
 		}
+		// Normalize the stamps to the RFC3339 UTC the store writes (TASK-4701).
+		// The body is user content, so an unreadable stamp never drops the
+		// comment. Native comment creation writes the two stamps equal, so an
+		// unreadable one takes the other's value; only when neither is an
+		// instant does the comment get the import time.
+		createdAt, cerr := normalizeImportedInstant(cm.CreatedAt)
+		updatedAt, uerr := normalizeImportedInstant(cm.UpdatedAt)
+		switch {
+		case cerr != nil && uerr != nil:
+			slog.Warn("workspace import: a comment carries no readable stamp; using the import time", "workspace_id", ws.ID, "item_id", newItemID)
+			createdAt = now()
+			updatedAt = createdAt
+		case cerr != nil:
+			createdAt = updatedAt
+		case uerr != nil:
+			updatedAt = createdAt
+		}
 		// Stamp BEFORE the INSERT (BUG-2415).
 		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
 			return nil, err
@@ -1596,7 +1613,7 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at, imported)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`),
 			newCommentID, newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
-			cm.CreatedAt, cm.UpdatedAt)
+			createdAt, updatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
 		}
