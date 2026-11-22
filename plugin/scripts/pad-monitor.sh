@@ -68,7 +68,8 @@ pad session register >/dev/null 2>&1 || true
 # plain decimal of one to four digits with no leading zero; anything else
 # takes the default rather than erroring. That one rule excludes zero (the
 # counter would never advance), a leading zero (shell arithmetic reads 08 as
-# bad octal) and an over-long number (it overflows the test builtin).
+# bad octal) and an over-long number (it overflows the test builtin). A poll
+# longer than the wait is cut so the wait never overruns (TASK-4731).
 if [ "${1:-}" = "--await-consent" ]; then
 	wait_max="${PAD_MONITOR_CONSENT_WAIT:-60}"
 	poll="${PAD_MONITOR_CONSENT_POLL:-2}"
@@ -85,8 +86,13 @@ if [ "${1:-}" = "--await-consent" ]; then
 		if [ "$waited" -ge "$wait_max" ]; then
 			exit 0
 		fi
-		sleep "$poll"
-		waited=$((waited + poll))
+		# Never sleep past the wait: the last nap is cut to what is left.
+		nap="$poll"
+		if [ $((waited + nap)) -gt "$wait_max" ]; then
+			nap=$((wait_max - waited))
+		fi
+		sleep "$nap"
+		waited=$((waited + nap))
 	done
 fi
 

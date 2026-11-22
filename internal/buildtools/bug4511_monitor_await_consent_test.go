@@ -160,6 +160,30 @@ func TestBUG4511_AwaitConsent_ExitsSilentlyWhenConsentNeverArrives(t *testing.T)
 	}
 }
 
+// TASK-4731: a poll interval longer than the whole wait must not stretch the
+// wait to one full poll. The last sleep is cut to what remains of the wait, and
+// consent is checked once more after it.
+func TestTASK4731_AwaitConsent_PollLongerThanWaitStaysBounded(t *testing.T) {
+	r := runMonitor(t, []string{"--await-consent"},
+		[]string{"PAD_MONITOR_CONSENT_WAIT=1", "PAD_MONITOR_CONSENT_POLL=20"},
+		-1)
+	if r.err != nil {
+		t.Fatalf("exit: %v (stderr %q, took %v)", r.err, r.stderr, r.elapsed)
+	}
+	if r.streamed {
+		t.Fatal("streamed without consent")
+	}
+	if r.stdout != "" || r.stderr != "" {
+		t.Fatalf("script printed output: stdout %q stderr %q", r.stdout, r.stderr)
+	}
+	if r.elapsed > 5*time.Second {
+		t.Fatalf("WAIT=1 POLL=20 took %v, want about 1s", r.elapsed)
+	}
+	if n := strings.Count(r.calls(t), "should-arm"); n < 2 {
+		t.Fatalf("expected a consent check after the shortened sleep, got %d checks", n)
+	}
+}
+
 // Overrides other than a plain decimal of one to four digits with no leading
 // zero fall back to the default: a zero poll never advances the counter, a
 // leading zero reads as octal in shell arithmetic (08 is an error), and an
