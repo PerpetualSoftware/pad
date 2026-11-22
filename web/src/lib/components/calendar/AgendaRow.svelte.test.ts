@@ -98,6 +98,14 @@ describe('AgendaRow', () => {
 		const { row } = mount({}, { marker: 'deadline' });
 		expect(row.dataset.role).toBe('deadline'); expect(row.textContent).toMatch(/Deadline\s*Work/); expect(screen.queryByRole('button')).toBeNull();
 	});
+	it('a forecast marker row is drawn as a dashed outline and has no empty time column on desktop', () => {
+		const { row } = mount({}, { marker: 'forecast' });
+		expect(row.dataset.role).toBe('forecast'); expect(row).toHaveClass('outlined');
+		expect(row.querySelector('.time')).toBeNull(); expect(row.firstElementChild).toHaveClass('flag');
+		cleanup();
+		const deadline = mount({}, { marker: 'deadline' }).row;
+		expect(deadline).not.toHaveClass('outlined'); expect(deadline.querySelector('.time')).toBeNull();
+	});
 	it('pending disables both controls and says so', () => {
 		mount({}, { pending: true });
 		expect(screen.getByRole('button', { name: 'Done TASK-1' })).toBeDisabled(); expect(screen.getByRole('button', { name: 'Actions TASK-1' })).toBeDisabled();

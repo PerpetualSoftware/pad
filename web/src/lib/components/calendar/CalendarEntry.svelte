@@ -35,13 +35,13 @@
 </script>
 {#if preview}
  <a class="line" class:with-owner={!!owner || !!snooze} class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:attention class:closed class:struck={row.abandoned} {href} title={tip} aria-label={tip} tabindex={keyboard ? 0 : -1} onclick={click}>
-  <StateMark {...mark} overdue={overdue || attention} />{#if time}<time>{time}</time>{/if}<span class="t">{name}</span>{#if audienceEntry}<AudienceChip entry={audienceEntry} view={audience} {isAgent} />{/if}
+  <StateMark {...mark} overdue={overdue || attention} />{#if time}<time>{time}</time>{/if}{#if row.kind === 'forecast'}<span class="kind" aria-hidden="true">Forecast</span>{/if}<span class="t">{name}</span>{#if audienceEntry}<AudienceChip entry={audienceEntry} view={audience} {isAgent} />{/if}
   {#if snooze}<span class="snooze-line"><SnoozeLabel label={snooze} /></span>{/if}
   {#if owner}<span class="owner-meta"><span class="ref">{owner.item_ref}</span><AgentOwner entry={owner} /></span>{/if}
  </a>
 {:else}
 <a class="entry" class:forecast-marker={row.kind === 'forecast'} data-role={row.kind === 'forecast' ? 'forecast' : undefined} class:closed class:struck={row.abandoned} class:bad {href} tabindex={keyboard ? 0 : -1} onclick={click}>
- <span class="title"><StateMark {...mark} {overdue} /> <span class="ref">{row.ref}</span>{#if audienceEntry}<AgentOwner entry={audienceEntry} />{/if} <span class="name">{name}</span></span>
+ <span class="title"><StateMark {...mark} {overdue} /> {#if row.kind === 'forecast'}<span class="kind" aria-hidden="true">Forecast</span> {/if}<span class="ref">{row.ref}</span>{#if audienceEntry}<AgentOwner entry={audienceEntry} />{/if} <span class="name">{name}</span></span>
  <span class="meta">
   {#if audienceEntry}<AudienceChip entry={audienceEntry} view={audience} {isAgent} />{/if}
   {#if row.allDay}<span>All day</span>{:else if time}<span>{time}</span>{/if}
@@ -81,6 +81,8 @@
  /* The month cell line: mark, time, title. */
  .line { --state-mark-size:9px; display:flex; align-items:center; gap:5px; min-width:0; padding:1px 4px; border-radius:4px; font-size:12px; line-height:1.55; color:var(--text-primary); text-decoration:none; }
  .line time { flex:0 0 auto; color:var(--text-muted); font-size:11px; font-variant-numeric:tabular-nums; }
+ /* The forecast label, as the agenda row's: small and muted. It keeps its width; the title truncates. */
+ .kind { flex:0 0 auto; font-size:11px; font-weight:500; color:var(--text-muted); white-space:nowrap; }
  .t { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
  .attention .t { color:var(--accent-red); font-weight:600; }
  @media (pointer:coarse) { .entry, .line { min-height:44px; } }

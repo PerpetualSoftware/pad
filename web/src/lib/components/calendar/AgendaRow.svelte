@@ -78,11 +78,10 @@
 	<span class="chips">{#each chips as chip, index (index)}<Chip size="sm" color={chip.color}>{chip.text}</Chip>{/each}</span>
 {/snippet}
 
-<li class="agenda-row" class:compact class:dragging class:closed={schedule && !live} class:done={schedule && entry.state === 'done'}
+<li class="agenda-row" class:compact class:dragging class:closed={schedule && !live} class:done={schedule && entry.state === 'done'} class:outlined={marker === 'forecast'}
 	data-ref={entry.item_ref} data-density={density} data-role={marker} {draggable}
 	ondragstart={event => ondragstart?.(entry, event)} ondragend={ondragend}>
 	{#if marker}
-		{#if !compact}<div class="time"></div>{/if}
 		<span class="flag" aria-hidden="true">
 			<svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
 				{#if marker === 'deadline'}<path d="M5 21V4h11l-2 4 2 4H5" />{:else}<path d="M4 9c3-3 5 3 8 0s5 3 8 0" /><path d="M4 15c3-3 5 3 8 0s5 3 8 0" />{/if}
@@ -168,12 +167,15 @@
 	[data-density='marker'] .title { font-weight: 500; font-size: 13px; color: var(--text-secondary); }
 	[data-role='deadline'] .flag { color: var(--accent-red); }
 	[data-role='forecast'] .flag { color: var(--text-muted); }
-	/* A forecast is an estimate: a dashed rule above it, not a filled band. */
-	[data-role='forecast'] { background: linear-gradient(to right, var(--border-strong) 50%, transparent 0) top / 8px 1px repeat-x; }
+	/* A marker row has no time of its own: the flag leads, with no empty time column before it. */
+	.agenda-row[data-density='marker']:not(.compact) { grid-template-columns: 20px minmax(0, 1fr); }
+	/* A forecast is an estimate: outlined dashed all round and unfilled, as its calendar chip is, with no list rule showing through. */
+	.agenda-row.outlined { border: 1px dashed var(--border-strong); border-radius: var(--radius-sm); background: transparent; }
+	.agenda-row.outlined + :global(.agenda-row) { border-top-color: transparent; }
 
 	@container agenda-list (max-width: 720px) {
 		.agenda-row:not(.compact) { row-gap: var(--space-2); }
-		.agenda-row:not(.compact) .body { grid-column: 3; grid-row: 1; }
+		.agenda-row:not(.compact):not([data-density='marker']) .body { grid-column: 3; grid-row: 1; }
 		.agenda-row:not(.compact) .row-end { display: contents; }
 		/* Pills get their own line in the body column, without a second copy in the DOM. */
 		.agenda-row:not(.compact) .row-pills { display: flex; flex-wrap: wrap; gap: var(--space-2); grid-column: 3 / -1; grid-row: 2; min-width: 0; }
@@ -183,7 +185,7 @@
 		.agenda-row:not(.compact) .inline-meta { white-space: normal; }
 	}
 	@container agenda-list (max-width: 480px) {
-		.agenda-row:not(.compact) .body { grid-column: 3 / -1; }
+		.agenda-row:not(.compact):not([data-density='marker']) .body { grid-column: 3 / -1; }
 		.agenda-row:not(.compact) .trail { grid-column: 3 / -1; grid-row: 3; flex-wrap: wrap; }
 	}
 
