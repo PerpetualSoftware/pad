@@ -262,3 +262,32 @@ it('a stale preview shows Reload', async () => {
  expect(onsaved).not.toHaveBeenCalled();
  expect(h.calls).toEqual(['get', 'preview']);
 });
+// TASK-4699: "Start of my day" fills the time field with the signed-in user's
+// day start (09:00 when unset); it is hidden for an agent audience, and the
+// PATCH carries the wall it filled, never day_start.
+it.each([
+ ['06:45', '06:45'],
+ [null, '09:00']
+])('Start of my day fills the time with day_start %s', async (dayStart, want) => {
+ (h.auth as { user: unknown }).user = { timezone: 'America/New_York', day_start: dayStart };
+ const eleven = { ...plain(), dtstart: '2031-03-10T11:00:00' };
+ h.get.mockResolvedValue(eleven);
+ const { onsaved } = mount(eleven);
+ await fireEvent.click(screen.getByRole('button', { name: 'Start of my day' }));
+ expect((screen.getByLabelText('Time (optional)') as HTMLInputElement).value).toBe(want);
+ await save();
+ await waitFor(() => expect(onsaved).toHaveBeenCalledTimes(1));
+ const body = h.update.mock.calls[0][2] as Record<string, unknown>;
+ expect(body.dtstart).toBe(`2031-03-10T${want}`);
+ expect(body).not.toHaveProperty('day_start');
+});
+it('hides Start of my day for an agent-audience commitment', async () => {
+ for (const audience of ['human', 'both'] as const) {
+  mount({ ...plain(), audience });
+  expect(screen.getByRole('button', { name: 'Start of my day' })).toBeTruthy();
+  cleanup();
+ }
+ mount({ ...plain(), audience: 'agent' });
+ expect(screen.getByLabelText('Time (optional)')).toBeTruthy();
+ expect(screen.queryByRole('button', { name: 'Start of my day' })).toBeNull();
+});

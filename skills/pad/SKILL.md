@@ -134,7 +134,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 
 **Querying:**
 - "what's on my plate?" → role-filtered queue if a role is active, otherwise `pad project next`
-- "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad remind`, creating a commitment. The time is an **instant**, not a date — ask for a time of day rather than picking one, since the server refuses a bare date on purpose. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack <reminder-id-or-ref>` — `next` prints the exact ack command under the entry, so you never have to go looking for the id; **closed items pause firing until reopened**; acknowledgement keeps the commitment outstanding on the agenda and suppresses ordinary next/ready suggestions
+- "remind me about this on <date>" / "revisit TASK-5 next Tuesday" → `pad remind`, creating a commitment. The time is an **instant** or a bare date: a bare date for a person's reminder lands at the start of the CALLER's day (`pad auth day-start`, 09:00 when unset) in their account zone, and the CLI prints the instant it chose; an agent-audience commitment still refuses a bare date, and with no account zone it is refused (`pad auth timezone`). If the user names a time of day, give the instant. A fired reminder shows up in `pad project next` / `ready` until someone runs `pad item ack <reminder-id-or-ref>` — `next` prints the exact ack command under the entry, so you never have to go looking for the id; **closed items pause firing until reopened**; acknowledgement keeps the commitment outstanding on the agenda and suppresses ordinary next/ready suggestions
 `pad remind forecast set|clear` sets a hand-set milestone estimate; it arms nothing and is never a missed deadline.
 
 - "check this every weekday at 9" / "this is due Friday 5pm" / "what's on my agenda?" → a **schedule**: `pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays` (`--deadline hard|soft` for a due time, `--window 2h` for a span). The start is a wall time in the user's zone (no `Z`, no offset); omit `--tz` unless asked, and the server pins the account zone. Resolve an occurrence with `pad remind done|skip|snooze|move TASK-5`; list with `pad remind agenda`. There is no `pad cal`.
@@ -224,12 +224,12 @@ pad item show TASK-5 --lines 40-80   # numbered body lines + seq, to quote a pat
 pad item delete TASK-5
 pad item search "query"
 pad item comment TASK-5 "..." [--reply-to <comment-id>]   # or --stdin for a multi-line body; an empty one is refused
-pad remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # create a run-once commitment (RFC3339 instant; bare dates refused)
+pad remind TASK-5 --remind-at 2026-08-01T09:00:00Z   # create a run-once commitment (RFC3339 instant; a bare date lands at the start of your day)
 pad item reminders TASK-5                                  # armed / fired / acknowledged
 pad item ack <reminder-id-or-ref>                             # ref: fired run-once alarm; ack keeps work outstanding
 pad item unremind <reminder-id>
 pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays   # schedule (daily weekdays weekly biweekly monthly monthly-last quarterly yearly, or an RRULE)
-pad remind TASK-5 --start 2026-11-14 --deadline hard           # a due date (all-day) the item must not miss
+pad remind TASK-5 --start 2026-11-14 --deadline hard           # a due date (all-day) the item must not miss; add --day-start to place it (and the hard deadline) at the start of your day
 pad remind show TASK-5                                        # kind, rule, next occurrence, missed count
 pad remind done TASK-5 -m "shipped"                           # also skip; snooze/move take --until <RFC3339|2026-11-10T09:00|2h>; move past a hard deadline needs --past-deadline
 pad remind done TASK-5 --at 2026-11-08T17:30                       # done earlier than now: records when the work really finished (not future)

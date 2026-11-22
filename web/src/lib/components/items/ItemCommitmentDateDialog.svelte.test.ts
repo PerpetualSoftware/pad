@@ -90,3 +90,19 @@ it('shows the account zone the server pins, else UTC with a note', async () => {
  cleanup(); h.auth.user = { }; mount();
  expect(screen.getByText('Time zone: UTC (no account time zone set)')).toBeTruthy();
 });
+// TASK-4699: "Start of my day" fills the time field with the signed-in user's
+// day start; the request carries the wall it filled, never day_start.
+it.each([
+ ['07:30', '07:30'],
+ [null, '09:00'],
+ [undefined, '09:00']
+])('Start of my day fills the time with day_start %s', async (dayStart, want) => {
+ h.auth.user = { timezone: 'America/New_York', day_start: dayStart } as { timezone?: string };
+ mount();
+ await input('Target date', '2031-03-10');
+ await fireEvent.click(screen.getByRole('button', { name: 'Start of my day' }));
+ expect((screen.getByLabelText('Time (optional)') as HTMLInputElement).value).toBe(want);
+ await submit();
+ await waitFor(() => expect(h.create).toHaveBeenCalledWith('work', 'TASK-1', { dtstart: `2031-03-10T${want}`, roles: { target_days: 0, target_secs: 0 } }));
+ expect(h.create.mock.calls[0][2]).not.toHaveProperty('day_start');
+});
