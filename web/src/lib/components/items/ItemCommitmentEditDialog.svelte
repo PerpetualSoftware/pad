@@ -236,7 +236,8 @@
 	.review { display: flex; flex-direction: column; gap: var(--space-2); font-size: 14px; overflow-wrap: anywhere; }
 	.row { display: grid; grid-template-columns: 110px minmax(0, 1fr); column-gap: var(--space-3); align-items: baseline; }
 	.k { color: var(--text-secondary); font-weight: 600; font-size: 12px; }
-	.warn { color: var(--color-warning, var(--text-primary)); }
+	/* Amber left rule + tint, primary text: bare light-theme amber is 3.19:1 on white, below AA for body text. */
+	.warn { padding: var(--space-2) var(--space-3); border-left: 3px solid var(--accent-amber); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-amber) 12%, transparent); color: var(--text-primary); }
 	.two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 	.field { min-width: 0; }
 	label, legend { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
