@@ -16,16 +16,20 @@ import (
 
 // scheduleParamKeys are the pad_item parameters that make `remind` a schedule
 // and are the members of schedule-edit.
-var scheduleParamKeys = []string{"every", "start", "deadline", "window", "anchor", "audience", "tz", "floating"}
+var scheduleParamKeys = []string{"every", "start", "deadline", "window", "anchor", "audience", "tz", "floating", "day_start"}
+
+// scheduleBoolParams are the boolean members of scheduleParamKeys; false is
+// inert, as an unset flag is.
+var scheduleBoolParams = map[string]bool{"floating": true, "day_start": true}
 
 // withoutInertScheduleParams returns a copy of input with the schedule
-// parameters that carry no value removed: null, a blank string, and
-// floating=false. A client that pads unused optional parameters with "" must
+// parameters that carry no value removed: null, a blank string, and a false
+// boolean (floating, day_start). A client that pads unused optional parameters with "" must
 // not be turned into a schedule, nor into an edit that clears a rule, so both
 // transports read these as not provided; stdio would otherwise send --every ""
 // to the CLI, where an empty value is a real one. Strings are trimmed, and a
-// value of the wrong type is refused (floating is a boolean, the rest are
-// strings), in the order of scheduleParamKeys, so both transports answer the
+// value of the wrong type is refused (floating and day_start are booleans,
+// the rest are strings), in the order of scheduleParamKeys, so both transports answer the
 // same input the same way. given reports whether any schedule parameter is
 // left.
 func withoutInertScheduleParams(input map[string]any) (out map[string]any, given bool, err error) {
@@ -42,10 +46,10 @@ func withoutInertScheduleParams(input map[string]any) (out map[string]any, given
 			delete(out, k)
 			continue
 		}
-		if k == "floating" {
+		if scheduleBoolParams[k] {
 			b, ok := v.(bool)
 			if !ok {
-				return nil, false, fmt.Errorf("floating must be a boolean, got %T", v)
+				return nil, false, fmt.Errorf("%s must be a boolean, got %T", k, v)
 			}
 			if !b {
 				delete(out, k)

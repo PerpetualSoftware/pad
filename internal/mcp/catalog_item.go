@@ -212,7 +212,7 @@ var padItemSchemaParams = []ParamDef{
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
-	{Name: "remind_at", Type: "string", Description: "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset). Required: one-shot commitment (no wall-time parameters). A bare date is REFUSED, not assumed to be midnight."},
+	{Name: "remind_at", Type: "string", Description: "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset), or a bare date YYYY-MM-DD, which lands at the CALLER's day start (09:00 unset) in the caller's account zone; the answer's remind_at is the instant, marked resolved_from=day_start. Bare dates are refused with no account zone and on agent-audience commitments. Required: one-shot commitment (no wall-time parameters)."},
 	// PR metadata for action=link-pr (TASK-3611), sent as given.
 	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required: link-pr."},
 	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required: link-pr."},
@@ -224,7 +224,7 @@ var padItemSchemaParams = []ParamDef{
 
 	// ── Schedules ── (TASK-4105)
 	{Name: "every", Type: "string", Description: "Repeat rule: daily, weekdays, weekly, biweekly, monthly, monthly-last, quarterly, yearly, or an RRULE. For remind (schedule) and schedule-edit."},
-	{Name: "start", Type: "string", Description: "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day. Required: remind as a schedule. For: schedule-edit."},
+	{Name: "start", Type: "string", Description: "Wall time, no Z or offset: 2026-11-09T09:00, or 2026-11-09 all-day (with day_start: at the caller's day start). Required: remind as a schedule. For: schedule-edit."},
 	{Name: "forecast", Type: "string", Description: "schedule-forecast estimate: YYYY-MM-DD or RFC3339; excludes clear_forecast."},
 	{Name: "clear_forecast", Type: "bool", Description: "schedule-forecast: true clears; excludes forecast."},
 	{Name: "forecast_source", Type: "string", Description: "With forecast only; max 280 characters."},
@@ -234,6 +234,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
 	{Name: "tz", Type: "string", Description: "IANA wall/display zone (default: account zone). Excludes floating."},
 	{Name: "floating", Type: "bool", Description: "Use recipient wall zone. Excludes tz."},
+	{Name: "day_start", Type: "bool", Description: "With a bare-date start: place it at the caller's day start (09:00 unset), fixed at write; a hard deadline then falls at that time. Not with window or an agent audience. For: remind (schedule), schedule-edit."},
 	{Name: "state", Type: "string", Description: "schedule-resolve: done | skip | snooze | move | ack (fired only; still owed, no comment)."},
 	{Name: "until", Type: "string", Description: "Required snooze/move RFC3339 re-fire/target instant."},
 	{Name: "resolution_id", Type: "string", Description: "Exact last_resolution ID; required for schedule-reopen."},
@@ -463,10 +464,10 @@ Actions:
     Required: ref, pr_number, pr_url. Optional: pr_title, pr_state, pr_branch, pr_repo.
     Replaces any previous link; returns the item.
   unlink-pr — Remove PR link. Required: ref.
-  remind — Create a commitment. Required: ref, remind_at (RFC3339 INSTANT; bare dates refused).
+  remind — Create a commitment. Required: ref, remind_at (RFC3339 INSTANT, or a bare date at your day start).
     Ended simple run-once without alarm: reuse; else schedule_exists. Closed items pause firing.
     start replaces remind_at for wall time; optional every, deadline, window,
-    anchor, audience, tz, floating. Past remind_at fires next tick.
+    anchor, audience, tz, floating, day_start. Past remind_at fires next tick.
   schedule — Read the item's schedule. Required: ref.
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-reopen — Undo one resolution. Required: ref, resolution_id. Keeps its comment.

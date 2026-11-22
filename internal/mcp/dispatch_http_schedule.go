@@ -38,7 +38,7 @@ var itemRemindOneShot = routeSpec{
 // actionItemScheduleEdit do before dispatch.
 type scheduleParams struct {
 	every, start, deadline, window, anchor, audience, tz string
-	floating                                             bool
+	floating, dayStart                                   bool
 	given                                                map[string]bool
 }
 
@@ -65,13 +65,22 @@ func readScheduleParams(input map[string]any) (scheduleParams, error) {
 			*dst, p.given[k] = s, true
 		}
 	}
-	if v, ok := input["floating"]; ok && v != nil {
+	// In scheduleParamKeys order, so the first wrong member is the one named.
+	for _, m := range []struct {
+		k   string
+		dst *bool
+	}{{"floating", &p.floating}, {"day_start", &p.dayStart}} {
+		k, dst := m.k, m.dst
+		v, ok := input[k]
+		if !ok || v == nil {
+			continue
+		}
 		b, ok := v.(bool)
 		if !ok {
-			return p, fmt.Errorf("floating must be a boolean, got %T", v)
+			return p, fmt.Errorf("%s must be a boolean, got %T", k, v)
 		}
 		if b {
-			p.floating, p.given["floating"] = true, true
+			*dst, p.given[k] = true, true
 		}
 	}
 	return p, nil
@@ -208,7 +217,7 @@ func mapScheduleRenegotiate(input map[string]any) (string, string, []byte, error
 }
 
 func commitmentFlags(p scheduleParams) schedule.CommitmentFlags {
-	return schedule.CommitmentFlags{Every: p.every, Start: p.start, Deadline: p.deadline, Window: p.window, Anchor: p.anchor, Audience: p.audience, Tz: p.tz, Floating: p.floating}
+	return schedule.CommitmentFlags{Every: p.every, Start: p.start, Deadline: p.deadline, Window: p.window, Anchor: p.anchor, Audience: p.audience, Tz: p.tz, Floating: p.floating, DayStart: p.dayStart}
 }
 
 func scheduleCreateBody(p scheduleParams) (map[string]any, error) {

@@ -176,8 +176,10 @@ func runScheduleCreate(cmd *cobra.Command, args []string, f scheduleFlags) error
 	return nil
 }
 
+// flagChanged reads CommitmentBody's member names (day_start) as flag names
+// (--day-start).
 func flagChanged(cmd *cobra.Command) func(string) bool {
-	return func(n string) bool { return cmd.Flags().Changed(n) }
+	return func(n string) bool { return cmd.Flags().Changed(strings.ReplaceAll(n, "_", "-")) }
 }
 
 func remindShowCmd() *cobra.Command {

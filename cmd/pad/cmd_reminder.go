@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"text/tabwriter"
+	"time"
 
 	"github.com/fatih/color"
 	"github.com/google/uuid"
@@ -41,11 +42,12 @@ func newRemindCmd(alias bool) *cobra.Command {
   pad remind TASK-5 --start 2026-11-14T17:00 --deadline hard`,
 		Long: `Create a run-once commitment at a specific instant.
 
-The instant is RFC3339 and must carry a time of day — 2026-08-01T09:00:00Z, or
-2026-08-01T09:00:00-04:00, which is stored as the same moment in UTC. A bare
-date is refused rather than assumed to mean midnight: "2026-08-01" names a
-24-hour span, and picking an hour inside it would be Pad choosing a time you
-did not and then firing at it.
+The instant is RFC3339 — 2026-08-01T09:00:00Z, or 2026-08-01T09:00:00-04:00,
+which is stored as the same moment in UTC — or a bare date. A bare date
+(2026-08-01) lands at the start of YOUR day (pad auth day-start; 09:00 when
+unset) in your account time zone, and the instant chosen is printed. It needs
+an account time zone (pad auth timezone), and an agent-audience commitment
+still refuses it.
 
 When the reminder fires it appears in 'pad project next' and 'pad project
 ready' until you acknowledge it with 'pad item ack', and it emits an
@@ -71,6 +73,8 @@ Use --start for wall time, with optional recurrence, deadline or occupied time.
   --audience  human | agent | both (default both)
   --tz        IANA zone the wall is read in; default is your account zone
   --floating  read the wall in the zone of whoever it fires for
+  --day-start with a bare --start date: place it at the start of your day
+              (fixed when written; not for an agent audience or with --window)
 
 Schedule flags cannot be combined with --remind-at or --rearm. Rules only the
 server can judge (a firing floor on HOURLY and MINUTELY, anchor completion with
@@ -116,7 +120,7 @@ Subcommands: forecast, show, done, skip, snooze, move, renegotiate, link, gate, 
 				if formatFlag == "json" {
 					return cli.PrintJSON(r)
 				}
-				fmt.Printf("Re-armed commitment alarm %s for %s\n", r.ID, r.RemindAt)
+				fmt.Printf("Re-armed commitment alarm %s for %s\n", r.ID, remindAtShown(r))
 				return nil
 			}
 
@@ -134,18 +138,36 @@ Subcommands: forecast, show, done, skip, snooze, move, renegotiate, link, gate, 
 			if formatFlag == "json" {
 				return cli.PrintJSON(r)
 			}
-			fmt.Printf("Run-once commitment created on %s for %s (id %s)\n", item.Ref, r.RemindAt, r.ID)
+			fmt.Printf("Run-once commitment created on %s for %s (id %s)\n", item.Ref, remindAtShown(r), r.ID)
 			return nil
 		},
 	}
 	if alias {
 		cmd.Long = remindAliasNote + cmd.Long
 	}
-	cmd.Flags().StringVar(&remindAtFlag, "remind-at", "", "when to fire (RFC3339 instant, e.g. 2026-08-01T09:00:00Z)")
+	cmd.Flags().StringVar(&remindAtFlag, "remind-at", "", "when to fire (RFC3339 instant, e.g. 2026-08-01T09:00:00Z, or a bare date for the start of your day)")
 	cmd.Flags().StringVar(&remindRearmID, "rearm", "", "move an existing reminder by id instead of arming a new one")
 	bindScheduleFlags(cmd, &remindSched)
 	addRemindSubcommands(cmd)
 	return cmd
+}
+
+// remindAtShown is the instant a create or re-arm answered. One the server
+// placed from a bare date is shown in the caller's account zone and marked,
+// so the day start used (09:00 when unset) is visible rather than silent.
+func remindAtShown(r *models.Reminder) string {
+	if r.ResolvedFrom != "day_start" {
+		return r.RemindAt
+	}
+	at := r.RemindAt
+	if t, err := time.Parse(time.RFC3339, r.RemindAt); err == nil {
+		if zone := linkAccountZone(); zone != "" {
+			if loc, err := time.LoadLocation(zone); err == nil {
+				at = t.In(loc).Format(time.RFC3339)
+			}
+		}
+	}
+	return at + " (start of your day)"
 }
 
 func remindersCmd() *cobra.Command {
