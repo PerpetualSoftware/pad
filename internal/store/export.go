@@ -1587,16 +1587,32 @@ func (s *Store) importWorkspace(data *models.WorkspaceExport, newName string, ow
 		if !insertedItems[newItemID] {
 			continue
 		}
+		// Normalize the stamps to the RFC3339 UTC the store writes (TASK-4701).
+		// A created_at that is not an instant skips the comment, like the
+		// set-aside loop. Checked before any statement: a failed one poisons a
+		// Postgres transaction, and a skipped comment stamps no refs.
+		createdAt, err := normalizeImportedInstant(cm.CreatedAt)
+		if err != nil {
+			slog.Warn("workspace import: skipping a comment with a malformed created_at", "workspace_id", ws.ID, "item_id", newItemID)
+			continue
+		}
+		// The body is user content and updated_at is secondary: native
+		// comment creation writes updated_at equal to created_at, so that is
+		// the fallback for an unreadable one.
+		updatedAt, err := normalizeImportedInstant(cm.UpdatedAt)
+		if err != nil {
+			updatedAt = createdAt
+		}
 		// Stamp BEFORE the INSERT (BUG-2415).
 		if err := stampAttachmentRefsTx(tx, s, ws.ID, cm.Body); err != nil {
 			return nil, err
 		}
 		newCommentID := newID()
-		_, err := tx.Exec(s.q(`
+		_, err = tx.Exec(s.q(`
 			INSERT INTO comments (id, item_id, workspace_id, author, body, created_by, source, created_at, updated_at, imported)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`),
 			newCommentID, newItemID, ws.ID, cm.Author, cm.Body, cm.CreatedBy, cm.Source,
-			cm.CreatedAt, cm.UpdatedAt)
+			createdAt, updatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("import comment: %w", err)
 		}
