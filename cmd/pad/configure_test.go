@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/PerpetualSoftware/pad/internal/config"
@@ -156,5 +158,39 @@ func TestNormalizeBaseURL(t *testing.T) {
 				t.Fatalf("expected %q, got %q", tt.want, got)
 			}
 		})
+	}
+}
+
+// pad auth configure --mode cloud under PAD_CLOUD=true, over a config.toml
+// holding mode=local, saves mode=cloud with the cloud URL: the env value it
+// matches must not split the pair.
+func TestConfigureCloudUnderEnvSavesModeWithURL(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("PAD_DATA_DIR", dir)
+	for _, k := range []string{"PAD_DB_PATH", "PAD_MODE", "PAD_HOST", "PAD_PORT", "PAD_URL"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("PAD_CLOUD", "true")
+	if err := os.WriteFile(filepath.Join(dir, "config.toml"), []byte("mode = \"local\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := applyConfigureValues(cfg, &configureValues{Mode: config.ModeCloud}); err != nil {
+		t.Fatal(err)
+	}
+	if err := cfg.Save(); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PAD_CLOUD", "")
+	got, err := config.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Mode != config.ModeCloud || got.URL != config.CloudBaseURL {
+		t.Errorf("after reload without env: mode %q url %q, want cloud and %s", got.Mode, got.URL, config.CloudBaseURL)
 	}
 }

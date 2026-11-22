@@ -317,6 +317,9 @@ func loadConfig() (*config.Config, error) {
 		if cfg.Mode == "" || cfg.Mode == config.ModeLocal {
 			cfg.Mode = config.ModeRemote
 		}
+		// The flag chooses url and mode together: a save writes both, even
+		// where one matches what the environment supplied.
+		cfg.MarkExplicit("url", "mode")
 	}
 	return cfg, nil
 }
