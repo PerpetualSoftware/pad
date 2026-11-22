@@ -5,7 +5,9 @@
 	(once or one of the server's shorthands) and an optional hard deadline in
 	the same precision as the target. It sends zone-less walls with no tz: the
 	server pins the account zone, or UTC when the account has none, so that is
-	the zone shown here (never the browser's).
+	the zone shown here (never the browser's). "Start of my day" fills the time
+	with the user's day start (09:00 when unset); the request carries that wall,
+	never day_start (TASK-4699).
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -22,6 +24,7 @@
 	} = $props();
 	const id = $props.id();
 	const accountZone = $derived(authStore.user?.timezone || '');
+	const dayStart = $derived(authStore.user?.day_start || '09:00');
 	let date = $state('');
 	let time = $state('');
 	let rule = $state<CommitmentRecurrence>('once');
@@ -86,6 +89,7 @@
 			<div class="field">
 				<label for={`${id}-time`}>Time <span class="optional">(optional)</span></label>
 				<input id={`${id}-time`} type="time" bind:value={time} disabled={pending} aria-invalid={invalid('time')} />
+				<Button size="sm" touch={mobile} class="day-start" title={`Set the time to ${dayStart}, when your day starts`} disabled={pending} onclick={() => { time = dayStart; }}>Start of my day</Button>
 			</div>
 		</div>
 		<p class="hint">Time zone: {accountZone || 'UTC (no account time zone set)'}</p>
@@ -129,6 +133,7 @@
 	.hint { color: var(--text-muted); font-size: 12px; overflow-wrap: anywhere; }
 	.two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 	.field { min-width: 0; }
+	.field :global(.day-start) { margin-top: 6px; }
 	label, legend { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 	.optional { font-weight: 400; color: var(--text-muted); }
 	fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }

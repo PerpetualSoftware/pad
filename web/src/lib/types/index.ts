@@ -4226,11 +4226,15 @@ export interface CommitmentGate {
 export interface CommitmentCreateRequest {
  dtstart: string;
  rrule?: string;
+ /** With a bare-date dtstart: the server places it at the caller's day start (TASK-4699). The web never sends it; its "Start of my day" button fills the time instead. */
+ day_start?: boolean;
  roles: { target_days: 0; target_secs: 0 } & ({} | { deadline_days: number; deadline_secs: number; deadline_behavior: 'lapses' | 'stays_owed' });
 }
 /** PATCH .../commitment: only the members being changed. rrule null clears recurrence. */
 export interface CommitmentUpdateRequest {
  dtstart?: string;
+ /** As on CommitmentCreateRequest; never sent by the web. */
+ day_start?: boolean;
  rrule?: string | null;
  roles?: Partial<{
   earliest_days: number | null; earliest_secs: number | null;

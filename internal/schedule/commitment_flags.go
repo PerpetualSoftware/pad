@@ -11,10 +11,11 @@ import (
 // CommitmentFlags is the existing remind command's time flags, shared by the
 // CLI and MCP. Changed is nil on create; on edit it preserves explicit values
 // such as --every "" and --floating=false. CurrentStart is read only when a
-// window edit omits start.
+// window edit omits start. DayStart (TASK-4699) asks the server to place a
+// bare start date at the caller's day start; changed names it "day_start".
 type CommitmentFlags struct {
 	Every, Start, Deadline, Window, Anchor, Audience, Tz string
-	Floating                                             bool
+	Floating, DayStart                                   bool
 }
 
 // CommitmentBody translates flags to native roles using the former create
@@ -43,6 +44,8 @@ func CommitmentBody(f CommitmentFlags, changed func(string) bool, currentStart s
 			return f.Tz != ""
 		case "floating":
 			return f.Floating
+		case "day_start":
+			return f.DayStart
 		}
 		return false
 	}
@@ -52,7 +55,15 @@ func CommitmentBody(f CommitmentFlags, changed func(string) bool, currentStart s
 	if given("deadline") && given("window") {
 		return nil, fmt.Errorf("--deadline and --window cannot be combined")
 	}
+	if given("day_start") && f.DayStart && given("window") {
+		return nil, fmt.Errorf("--day-start cannot be combined with --window yet; give --start a time of day for a window")
+	}
 	body := map[string]any{}
+	// The server rewrites the bare start and judges the rest (a timed or
+	// missing start, an agent audience, no zone to read the day in).
+	if given("day_start") && f.DayStart {
+		body["day_start"] = true
+	}
 	var start Wall
 	var err error
 	if create || given("start") || given("window") {
@@ -151,7 +162,7 @@ func CommitmentBody(f CommitmentFlags, changed func(string) bool, currentStart s
 		}
 	}
 	if len(body) == 0 {
-		return nil, fmt.Errorf("nothing to change: give at least one of --start, --every, --deadline, --window, --anchor, --audience, --tz, --floating")
+		return nil, fmt.Errorf("nothing to change: give at least one of --start, --every, --deadline, --window, --anchor, --audience, --tz, --floating, --day-start")
 	}
 	return body, nil
 }

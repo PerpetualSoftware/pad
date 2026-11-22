@@ -8,6 +8,9 @@
 	are sent. A native row's deadline changes through renegotiate alone (preview,
 	review, apply); everything else goes in one PATCH.
 	Writes carry the opened view's commitment_revision as expected_revision (TASK-4630).
+	"Start of my day" fills the time with the user's day start (09:00 when unset)
+	and is hidden for an agent audience; the PATCH carries that wall, never
+	day_start (TASK-4699).
 -->
 <script lang="ts">
 	import { untrack } from 'svelte';
@@ -44,6 +47,7 @@
 	// Plain ticket: a new opening or a close drops an answer still in flight.
 	let ticket = 0;
 	const scheduleZone = $derived(opened?.floating ? zone : opened?.tz ?? zone);
+	const dayStart = $derived(authStore.user?.day_start || '09:00');
 	const oneOff = $derived(rule === 'once');
 	const wall = $derived(deadline ? offsetWall(date || st?.initial.date || '', time, deadline.days, deadline.secs) : null);
 	const ruleLabel = (rrule: string | undefined) => rrule ? describeRecurrence({ rrule, rdates: [], dtstart: date || '2000-01-03', anchor: 'calendar' }) : 'Once';
@@ -167,6 +171,9 @@
 					<div class="field">
 						<label for={`${id}-time`}>Time <span class="optional">(optional)</span></label>
 						<input id={`${id}-time`} type="time" value={time} oninput={e => { time = e.currentTarget.value; }} disabled={pending || !!st.timingLock || (st.timeLocked && !st.initial.time)} aria-invalid={invalid('time')} />
+						{#if opened.audience !== 'agent'}
+							<Button size="sm" touch={mobile} class="day-start" title={`Set the time to ${dayStart}, when your day starts`} disabled={pending || !!st.timingLock || (st.timeLocked && !st.initial.time)} onclick={() => { time = dayStart; }}>Start of my day</Button>
+						{/if}
 					</div>
 				</div>
 				<p class="hint">Time zone: {opened.floating ? 'Floating' : opened.tz ?? zone}</p>
@@ -240,6 +247,7 @@
 	.warn { padding: var(--space-2) var(--space-3); border-left: 3px solid var(--accent-amber); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-amber) 12%, transparent); color: var(--text-primary); }
 	.two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 	.field { min-width: 0; }
+	.field :global(.day-start) { margin-top: 6px; }
 	label, legend { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 	.optional { font-weight: 400; color: var(--text-muted); }
 	fieldset { border: 0; margin: 0; padding: 0; min-width: 0; }

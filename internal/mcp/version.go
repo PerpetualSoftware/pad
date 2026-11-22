@@ -2361,7 +2361,11 @@ const CmdhelpVersion = "0.1"
 // on and answers with a series member. Without scope nothing changes.
 // v0.124 adds the owner-only pad_workspace.rename action.
 // The current and new slugs are explicit, and the old slug stays an alias.
-const ToolSurfaceVersion = "0.124"
+// v0.125 — TASK-4699: pad_item remind takes a bare-date remind_at, placed at
+// the caller's day start in the caller's account zone (previously refused);
+// remind and schedule-edit gain day_start (boolean) for a bare-date start.
+// Additive: every value that worked keeps its meaning.
+const ToolSurfaceVersion = "0.125"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

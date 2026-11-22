@@ -1090,10 +1090,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 	}
 }
 
-// scheduleFlags adds the `floating` bool to a string-flag set, as the real
-// `pad item remind` and `pad item remind edit` declare it.
+// scheduleFlags adds the `floating` and `day-start` bools to a string-flag
+// set, as the real `pad item remind` and `pad item remind edit` declare them.
 func scheduleFlags(base map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
 	base["floating"] = cmdhelp.Flag{Type: "bool"}
+	base["day-start"] = cmdhelp.Flag{Type: "bool"}
 	return base
 }
 

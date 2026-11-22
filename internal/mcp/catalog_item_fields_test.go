@@ -1716,7 +1716,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		// agenda (TASK-4105). A schedule is its own row with its own routes;
 		// none of these is an item field, so none can collide with `fields`.
 		"every": true, "start": true, "deadline": true, "window": true, "anchor": true,
-		"audience": true, "tz": true, "floating": true,
+		"audience": true, "tz": true, "floating": true, "day_start": true,
 		"state": true, "until": true, "occurrence_at": true, "from": true, "to": true,
 
 		// schedule-resolve's actual_done_at and schedule-renegotiate (TASK-4356):

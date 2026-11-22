@@ -20,7 +20,7 @@ import (
 // are carried only so a mixed call is refused with a pointer to --start.
 type scheduleFlags struct {
 	Every, Start, Deadline, Window, Anchor, Audience, Tz string
-	Floating                                             bool
+	Floating, DayStart                                   bool
 	RemindAt, Rearm                                      string
 }
 
@@ -32,7 +32,9 @@ const scheduleFlagHelp = `
   --anchor    calendar (default) | completion (next one an interval after you mark it done)
   --audience  human | agent | both (default both)
   --tz        IANA zone the wall is read in (default: your account zone)
-  --floating  read the wall in the zone of whoever it fires for; exclusive with --tz`
+  --floating  read the wall in the zone of whoever it fires for; exclusive with --tz
+  --day-start with a bare --start date: place it at the start of your day (pad auth day-start, default 09:00);
+              fixed when written, not for an agent audience, not with --window`
 
 func bindScheduleFlags(cmd *cobra.Command, f *scheduleFlags) {
 	cmd.Flags().StringVar(&f.Start, "start", "", "schedule: wall time, 2026-11-09T09:00 or 2026-11-09 (no Z or offset)")
@@ -43,9 +45,10 @@ func bindScheduleFlags(cmd *cobra.Command, f *scheduleFlags) {
 	cmd.Flags().StringVar(&f.Audience, "audience", "", "schedule: human|agent|both")
 	cmd.Flags().StringVar(&f.Tz, "tz", "", "schedule: IANA zone the wall is read in (default: your account zone)")
 	cmd.Flags().BoolVar(&f.Floating, "floating", false, "schedule: read the wall in the recipient's zone; exclusive with --tz")
+	cmd.Flags().BoolVar(&f.DayStart, "day-start", false, "schedule: place a bare --start date at the start of your day; not with --window")
 }
 
-var scheduleModeFlagNames = []string{"every", "start", "deadline", "window", "anchor", "audience", "tz", "floating"}
+var scheduleModeFlagNames = []string{"every", "start", "deadline", "window", "anchor", "audience", "tz", "floating", "day-start"}
 
 func scheduleModeRequested(cmd *cobra.Command) bool {
 	for _, n := range scheduleModeFlagNames {
@@ -57,7 +60,7 @@ func scheduleModeRequested(cmd *cobra.Command) bool {
 }
 
 func commitmentFlags(f scheduleFlags) schedule.CommitmentFlags {
-	return schedule.CommitmentFlags{Every: f.Every, Start: f.Start, Deadline: f.Deadline, Window: f.Window, Anchor: f.Anchor, Audience: f.Audience, Tz: f.Tz, Floating: f.Floating}
+	return schedule.CommitmentFlags{Every: f.Every, Start: f.Start, Deadline: f.Deadline, Window: f.Window, Anchor: f.Anchor, Audience: f.Audience, Tz: f.Tz, Floating: f.Floating, DayStart: f.DayStart}
 }
 
 func buildScheduleCreate(f scheduleFlags) (map[string]any, error) {
