@@ -1152,7 +1152,7 @@
 			<h2 class="card-title">Two-Factor Authentication</h2>
 			<div class="card-body">
 				{#if totpStepUp}
-					<StepUpPrompt factor={totpStepUp.factor} onverified={totpIdentityVerified} formId="totp-step-up" bind:busy={totpStepUpBusy} bind:canVerify={totpStepUpCanVerify} description="Verify your identity before turning on two-factor authentication. Verification lasts 10 minutes in this session." />
+					<StepUpPrompt factor={totpStepUp.factor} unavailableReason={totpStepUp.unavailable_reason} onverified={totpIdentityVerified} formId="totp-step-up" bind:busy={totpStepUpBusy} bind:canVerify={totpStepUpCanVerify} description="Verify your identity before turning on two-factor authentication. Verification lasts 10 minutes in this session." />
 					<div class="btn-row">
 						{#if totpStepUp.factor !== 'unavailable'}
 							<Button variant="primary" type="submit" form="totp-step-up" disabled={!totpStepUpCanVerify}>{totpStepUpBusy ? 'Verifying…' : 'Verify'}</Button>
@@ -1381,7 +1381,7 @@
 				{/if}
 
 				{#if tokenStepUp?.retry === 'create'}
-					<StepUpPrompt factor={tokenStepUp.status.factor} onverified={tokenIdentityVerified} formId="token-create-step-up" bind:busy={tokenStepUpBusy} bind:canVerify={tokenStepUpCanVerify} description="Verify your identity to create this key. Verification lasts 10 minutes in this session." />
+					<StepUpPrompt factor={tokenStepUp.status.factor} unavailableReason={tokenStepUp.status.unavailable_reason} onverified={tokenIdentityVerified} formId="token-create-step-up" bind:busy={tokenStepUpBusy} bind:canVerify={tokenStepUpCanVerify} description="Verify your identity to create this key. Verification lasts 10 minutes in this session." />
 					<div class="modal-actions">
 						<Button variant="secondary" onclick={cancelTokenStepUp} disabled={tokenStepUpBusy}>Cancel</Button>
 						{#if tokenStepUp.status.factor !== 'unavailable'}
@@ -1636,7 +1636,7 @@
 	{#if tokenToRotate && tokenStepUp?.retry === 'rotate'}
 		<div class="delete-token-modal">
 			<h3 id="rotate-token-title" class="modal-title">Rotate the token “{tokenToRotate.name}”?</h3>
-			<StepUpPrompt factor={tokenStepUp.status.factor} onverified={tokenIdentityVerified} formId="token-rotate-step-up" bind:busy={tokenStepUpBusy} bind:canVerify={tokenStepUpCanVerify} description="Verify your identity to rotate this key. Verification lasts 10 minutes in this session." />
+			<StepUpPrompt factor={tokenStepUp.status.factor} unavailableReason={tokenStepUp.status.unavailable_reason} onverified={tokenIdentityVerified} formId="token-rotate-step-up" bind:busy={tokenStepUpBusy} bind:canVerify={tokenStepUpCanVerify} description="Verify your identity to rotate this key. Verification lasts 10 minutes in this session." />
 			<div class="modal-actions">
 				<Button variant="secondary" onclick={closeRotateToken} disabled={tokenStepUpBusy}>Cancel</Button>
 				{#if tokenStepUp.status.factor !== 'unavailable'}

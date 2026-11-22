@@ -81,4 +81,12 @@ describe('EditTokenAccessDialog', () => {
 		expect(await screen.findByRole('alert')).toHaveTextContent('Try again');
 		expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
 	});
+	it('passes the unavailable reason to the step-up prompt (TASK-4602)', async () => {
+		vi.mocked(api.auth.tokens.update).mockRejectedValueOnce(new PadApiError({ code: 'step_up_required', message: 'Verify identity' }));
+		vi.mocked(api.auth.stepUp.status).mockResolvedValue({ factor: 'unavailable', unavailable_reason: 'sign_in_again', active_until: null });
+		mount();
+		await fireEvent.click(screen.getByRole('radio', { name: 'Read and write' }));
+		await fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+		expect(await screen.findByText('This session started before you turned on two-factor authentication. Sign out and sign in again, then retry within 10 minutes.')).toBeInTheDocument();
+	});
 });

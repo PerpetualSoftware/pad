@@ -2181,6 +2181,10 @@ func (c *Client) GetAccountSecurity() (*AccountSecurity, error) {
 type StepUpStatusResponse struct {
 	Factor      string     `json:"factor"`
 	ActiveUntil *time.Time `json:"active_until"`
+	// UnavailableReason is set only when Factor is "unavailable":
+	// "sign_in_again" (2FA was turned on after this session signed in) or
+	// "no_factor". An older server omits it.
+	UnavailableReason string `json:"unavailable_reason,omitempty"`
 }
 
 func (c *Client) StepUpStatus() (*StepUpStatusResponse, error) {

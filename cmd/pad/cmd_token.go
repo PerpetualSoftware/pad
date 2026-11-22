@@ -399,6 +399,8 @@ func retryAfterStepUp(client *cli.Client, in *bufio.Reader, errOut io.Writer, in
 func keyStepUpError(err error, unchanged string) error {
 	var apiErr *cli.APIError
 	switch {
+	case errors.Is(err, errStepUpSignInAgain):
+		return &tokenEditErr{msg: signInAgainAfterEnrol + unchanged, err: err}
 	case errors.Is(err, errStepUpUnavailable), errors.As(err, &apiErr) && apiErr.Code == "step_up_unavailable":
 		return &tokenEditErr{msg: signInAgainForKeys + unchanged, err: err}
 	case errors.As(err, &apiErr) && apiErr.Code == "step_up_factor_mismatch":
@@ -412,6 +414,11 @@ func keyStepUpError(err error, unchanged string) error {
 // browser-approved CLI session keeps the browser session's sign-in time: the
 // browser must sign in afresh first.
 const signInAgainForKeys = "No verification method is available for this account: sign out of Pad in the browser and sign in again, then run 'pad auth logout' and 'pad auth login' and the command within 10 minutes, or turn on two-factor authentication ('pad auth 2fa setup'); "
+
+// signInAgainAfterEnrol is the remedy when 2FA was turned on after this
+// session signed in: the same browser-first sign-in, without the advice to
+// turn 2FA on.
+const signInAgainAfterEnrol = "this session started before two-factor authentication was turned on: sign out of Pad in the browser and sign in again, then run 'pad auth logout' and 'pad auth login' and the command within 10 minutes; "
 
 // tokenEditErr words a refusal for a person while keeping the server's
 // error reachable through errors.As (the root's rate_limited marker reads it).
