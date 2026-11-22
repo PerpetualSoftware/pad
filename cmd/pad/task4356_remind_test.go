@@ -321,6 +321,54 @@ func TestRemindRenegotiate(t *testing.T) {
 	})
 }
 
+func TestRemindRenegotiateLapsesOnApply(t *testing.T) {
+	lapsing := strings.Replace(reneg, `"miss_recorded_first":false`, `"miss_recorded_first":true,"lapses_on_apply":true`, 1)
+	quiet := strings.Replace(reneg, `"miss_recorded_first":false`, `"miss_recorded_first":true,"lapses_on_apply":false`, 1)
+	reply := func(preview string, applyStatus int, applyBody string) func(recordedCall) (int, string) {
+		return func(c recordedCall) (int, string) {
+			if strings.Contains(c.body, `"preview":true`) {
+				return 200, preview
+			}
+			return applyStatus, applyBody
+		}
+	}
+	const changed = `{"error":{"code":"commitment_changed","message":"The commitment changed; re-preview before applying"}}`
+	base := []string{"remind", "renegotiate", "TASK-5", "--reason", "slipped", "--deadline", "2099-01-01T09:00:00Z"}
+	const line = "The deadline has passed and this occurrence lapses: --apply closes it (lapsed) and changes nothing else; preview again afterwards.\n"
+	t.Run("preview prints the lapse after the miss line", func(t *testing.T) {
+		withLapse, _, err, _ := runSched(t, reply(lapsing, 404, ""), "", base...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		without, _, err, _ := runSched(t, reply(quiet, 404, ""), "", base...)
+		if err != nil {
+			t.Fatal(err)
+		}
+		const miss = "The outstanding occurrence is recorded as missed first.\n"
+		if strings.Contains(without, "lapses") || !strings.Contains(without, miss) {
+			t.Fatalf("without=%q", without)
+		}
+		if want := strings.Replace(without, miss, miss+line, 1); withLapse != want {
+			t.Fatalf("with lapse:\n%q\nwant:\n%q", withLapse, want)
+		}
+	})
+	t.Run("apply still sends and explains the lapse", func(t *testing.T) {
+		_, _, err, calls := runSched(t, reply(lapsing, 409, changed), "", append(base, "--apply")...)
+		if len(calls) != 2 || bodyOf(t, calls[1])["preview"] != false || bodyOf(t, calls[1])["revision"] != "rev-1" {
+			t.Fatalf("calls=%+v", calls)
+		}
+		if err == nil || !strings.Contains(err.Error(), "the deadline had passed, so the occurrence has probably lapsed (or the schedule changed meanwhile); the change was not applied") || !strings.Contains(err.Error(), "re-preview with: pad remind renegotiate TASK-5") {
+			t.Fatalf("err=%v", err)
+		}
+	})
+	t.Run("a conflict without the lapse keeps the server message", func(t *testing.T) {
+		_, _, err, _ := runSched(t, reply(quiet, 409, changed), "", append(base, "--apply")...)
+		if err == nil || strings.Contains(err.Error(), "lapsed") || !strings.HasPrefix(err.Error(), "The commitment changed; re-preview before applying\nre-preview with:") {
+			t.Fatalf("err=%v", err)
+		}
+	})
+}
+
 func TestRemindAgendaMatchesTheEndpoint(t *testing.T) {
 	const body = `{"timezone_note":"","entries":[{"type":"occurrence","at":"2026-11-09T14:00:00Z","item_ref":"TASK-5"}],"truncated":false,"extra":1}`
 	out, _, err, calls := runSched(t, okReply(body), "", "remind", "agenda", "--days", "7", "--format", "json")

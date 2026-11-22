@@ -16,7 +16,7 @@ const base = { target: '2031-03-10T13:00:00Z', earliest: null, deadline: null, d
 const offsets = { target_days: 0, target_secs: 0, earliest_days: null, earliest_secs: null, deadline_days: null, deadline_secs: null, occupied_days: null, occupied_secs: null };
 const plain = () => view({ dtstart: '2031-03-10T09:00:00', tz: 'America/New_York', rrule: 'FREQ=WEEKLY', roles: { ...base }, role_offsets: { ...offsets }, updated_at: '2031-03-01T00:00:00Z', next_occurrence: { at: '2031-03-10T13:00:00Z', wall: '2031-03-10T09:00:00', state: 'outstanding' } });
 const native = () => ({ ...plain(), roles: { ...base, deadline: '2031-03-11T05:00:00Z', deadline_behavior: 'stays_owed' as const }, role_offsets: { ...offsets, deadline_days: 1, deadline_secs: -28800 } });
-const previewResult = (revision: string, extra = {}) => ({ revision, preview: { scope: 'series', occurrence_key: 'k', applies_from: '2031-03-10T13:00:00Z|2031-03-10T09:00:00', current_deadline: '2031-03-11T05:00:00Z', new_deadline: '2031-03-12T05:00:00Z', current_deadline_behavior: 'stays_owed', new_deadline_behavior: 'stays_owed', current_offset: null, new_offset: null, miss_recorded_first: false, miss_occurrence_key: null, keeps_deadline_override: false, clears_deadline_overrides: false }, ...extra });
+const previewResult = (revision: string, extra = {}) => ({ revision, preview: { scope: 'series', occurrence_key: 'k', applies_from: '2031-03-10T13:00:00Z|2031-03-10T09:00:00', current_deadline: '2031-03-11T05:00:00Z', new_deadline: '2031-03-12T05:00:00Z', current_deadline_behavior: 'stays_owed', new_deadline_behavior: 'stays_owed', current_offset: null, new_offset: null, miss_recorded_first: false, miss_occurrence_key: null, lapses_on_apply: false, keeps_deadline_override: false, clears_deadline_overrides: false }, ...extra });
 function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>(a => { resolve = a; }); return { promise, resolve }; }
 const mount = (v: ItemCommitmentView) => {
  const onsaved = vi.fn(), onclose = vi.fn(), onreload = vi.fn(), onloadtitles = vi.fn();
@@ -97,6 +97,38 @@ it('re-previews on commitment_changed and applies with the new revision', async 
  await waitFor(() => expect(onsaved).toHaveBeenCalledTimes(1));
  expect(h.calls).toEqual(['get', 'preview', 'apply', 'preview', 'apply']);
  expect(h.reneg).toHaveBeenLastCalledWith('work', 'TASK-1', { scope: 'series', deadline_behavior: 'lapses', reason: 'Softer', revision: 'rev2' });
+});
+const lapseWarning = 'This occurrence lapses because its deadline passed. Confirming closes it as lapsed and does not apply this change.';
+const lapsing = (revision: string) => { const r = previewResult(revision); r.preview.miss_recorded_first = true; r.preview.lapses_on_apply = true; return r; };
+it('warns in the review when apply lapses the occurrence, and not otherwise', async () => {
+ h.get.mockResolvedValue(native()); h.reneg.mockResolvedValueOnce(lapsing('rev1'));
+ mount(native());
+ await fireEvent.click(screen.getByLabelText('Lapses'));
+ await input('Reason for the deadline change', 'Softer'); await save();
+ const panel = await screen.findByRole('region', { name: 'Review the deadline change' });
+ const warning = [...panel.querySelectorAll('p')].find(p => p.textContent === lapseWarning);
+ expect(warning?.classList.contains('warn')).toBe(true);
+ cleanup();
+ h.reneg.mockResolvedValueOnce(previewResult('rev1'));
+ mount(native());
+ await fireEvent.click(screen.getByLabelText('Lapses'));
+ await input('Reason for the deadline change', 'Softer'); await save();
+ const quiet = await screen.findByRole('region', { name: 'Review the deadline change' });
+ expect(quiet.textContent).not.toContain('lapses because');
+});
+it('explains the conflict as the lapse when the confirmed preview promised one', async () => {
+ h.get.mockResolvedValue(native());
+ h.reneg.mockResolvedValueOnce(lapsing('rev1')).mockRejectedValueOnce({ status: 409, code: 'commitment_changed', message: 'The commitment changed; re-preview before applying' })
+  .mockResolvedValueOnce(previewResult('rev2'));
+ const { onsaved } = mount(native());
+ await fireEvent.click(screen.getByLabelText('Lapses'));
+ await input('Reason for the deadline change', 'Softer'); await save();
+ await fireEvent.click(await screen.findByRole('button', { name: 'Change deadline' }));
+ expect(await screen.findByText('The deadline had passed, so the occurrence has probably lapsed, or it changed meanwhile. Review the new preview and confirm again.')).toBeTruthy();
+ expect(screen.queryByText(/The date changed meanwhile/)).toBeNull();
+ expect(screen.queryByText(lapseWarning)).toBeNull();
+ expect(onsaved).not.toHaveBeenCalled();
+ expect(h.calls).toEqual(['get', 'preview', 'apply', 'preview']);
 });
 it('shows the server sentence for deadline_owner_required on preview', async () => {
  h.get.mockResolvedValue(native());

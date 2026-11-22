@@ -130,7 +130,8 @@
 				if (!live() || (e as { code?: string })?.code !== 'commitment_changed') throw e;
 				review = null;
 				await preview(r.body, live);
-				if (live()) notice = 'The date changed meanwhile. Review the new preview and confirm again.';
+				// A preview that promised a lapse explains the conflict as that lapse.
+				if (live()) notice = r.result.preview.lapses_on_apply ? 'The deadline had passed, so the occurrence has probably lapsed, or it changed meanwhile. Review the new preview and confirm again.' : 'The date changed meanwhile. Review the new preview and confirm again.';
 			}
 		});
 	}
@@ -152,6 +153,7 @@
 					<p class="row"><span class="k">New deadline</span> <span>{show(p.new_deadline)}{#if p.new_deadline_behavior}{' · '}{p.new_deadline_behavior === 'lapses' ? 'Lapses' : 'Still owed'}{/if}</span></p>
 					{#if appliesFrom(p.applies_from)}<p class="row"><span class="k">Applies from</span> <span>{roleText(appliesFrom(p.applies_from), zone)}</span></p>{/if}
 					{#if p.miss_recorded_first}<p>The deadline already passed: its miss is recorded first.</p>{/if}
+					{#if p.lapses_on_apply}<p class="warn">This occurrence lapses because its deadline passed. Confirming closes it as lapsed and does not apply this change.</p>{/if}
 					{#if p.keeps_deadline_override}<p>This occurrence keeps its own moved deadline.</p>{/if}
 					{#each (review.result.cascade?.changes ?? []).filter(c => !c.root) as change}<p>{title(change)}: {roleName(change.role)} moves to {roleText(change.to, zone)}</p>{/each}
 					{#each review.result.cascade?.violations ?? [] as change}<p class="warn">{title(change)}: {roleName(change.role)} lands outside its own bounds ({roleText(change.to, zone)})</p>{/each}
@@ -234,7 +236,8 @@
 	.review { display: flex; flex-direction: column; gap: var(--space-2); font-size: 14px; overflow-wrap: anywhere; }
 	.row { display: grid; grid-template-columns: 110px minmax(0, 1fr); column-gap: var(--space-3); align-items: baseline; }
 	.k { color: var(--text-secondary); font-weight: 600; font-size: 12px; }
-	.warn { color: var(--color-warning, var(--text-primary)); }
+	/* Amber left rule + tint, primary text: bare light-theme amber is 3.19:1 on white, below AA for body text. */
+	.warn { padding: var(--space-2) var(--space-3); border-left: 3px solid var(--accent-amber); border-radius: var(--radius); background: color-mix(in srgb, var(--accent-amber) 12%, transparent); color: var(--text-primary); }
 	.two { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-3); }
 	.field { min-width: 0; }
 	label, legend { display: block; margin-bottom: 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }

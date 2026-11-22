@@ -273,6 +273,7 @@ type CommitmentRenegotiationPreview struct {
 	NewOffset               *CommitmentDeadlineOffset `json:"new_offset"`
 	MissRecordedFirst       bool                      `json:"miss_recorded_first"`
 	MissOccurrenceKey       *string                   `json:"miss_occurrence_key"`
+	LapsesOnApply           bool                      `json:"lapses_on_apply"`
 	KeepsDeadlineOverride   bool                      `json:"keeps_deadline_override"`
 	ClearsDeadlineOverrides bool                      `json:"clears_deadline_overrides"`
 }

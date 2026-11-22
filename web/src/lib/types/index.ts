@@ -4329,6 +4329,7 @@ export interface CommitmentRenegotiationPreview {
  new_offset: { deadline_days: number; deadline_secs: number } | null;
  miss_recorded_first: boolean;
  miss_occurrence_key: string | null;
+ lapses_on_apply: boolean;
  keeps_deadline_override: boolean;
  clears_deadline_overrides: boolean;
 }

@@ -537,6 +537,23 @@ func (s *Store) recordDeadlineMissTx(tx *sql.Tx, d deadlineCandidate) error {
 	return nil
 }
 
+// lapsesNowTx reports, without writing, whether the outstanding occurrence of
+// an open item's schedule would lapse now: its native deadline is due after any
+// legacy conversion, and lapseOccurrenceTx would close it (stored behavior
+// lapses, no schedule error). It does not depend on whether the miss is
+// already recorded. The caller has already checked the item's terminal status.
+func (s *Store) lapsesNowTx(tx *sql.Tx, sc *models.ItemSchedule, nowT time.Time) (bool, error) {
+	d, state, err := s.deadlineStateTx(tx, sc.ID)
+	if err != nil || d == nil || !d.dueAfterConversion(nowT, state) {
+		return false, err
+	}
+	var behavior sql.NullString
+	if err := tx.QueryRow(s.q(`SELECT deadline_behavior FROM item_schedules WHERE id=?`), sc.ID).Scan(&behavior); err != nil {
+		return false, err
+	}
+	return behavior.String == "lapses" && sc.ErrorCode == nil, nil
+}
+
 // lapseOccurrenceTx closes a lapsing promise immediately after its miss is
 // recorded. All callers hold the schedule pin and commit both writes together.
 // The behavior is read under that pin, never from the scan page.
