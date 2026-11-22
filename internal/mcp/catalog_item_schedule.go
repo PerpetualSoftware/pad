@@ -201,10 +201,13 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	needsUntil := state == "snooze" || state == "move"
 	switch {
 	case needsUntil && strings.TrimSpace(until) == "":
-		return errStructured(name, fmt.Errorf("until is required to %s: the RFC3339 instant it re-fires or becomes due", state)), nil
+		return errStructured(name, fmt.Errorf("until is required to %s: the RFC3339 instant it re-fires or becomes due, or a bare date (YYYY-MM-DD)", state)), nil
+	case needsUntil && isBareDate(until):
+		// The server places a bare date at the caller's day start (TASK-4723);
+		// it is forwarded unchanged on both transports.
 	case needsUntil:
 		if t, err := time.Parse(time.RFC3339, until); err != nil {
-			return errStructured(name, fmt.Errorf("until %q is not an RFC3339 instant (2026-11-10T09:00:00Z)", until)), nil
+			return errStructured(name, fmt.Errorf("until %q is not an RFC3339 instant (2026-11-10T09:00:00Z) or a bare date (YYYY-MM-DD), which lands at the start of your day in your account time zone", until)), nil
 		} else if err := wholeSecond("until", until, t); err != nil {
 			return errStructured(name, err), nil
 		}
@@ -387,6 +390,13 @@ func copyInputMap(in map[string]any) map[string]any {
 // instants to the second and the route keeps the fraction, so the same value
 // would land on different seconds on the two transports (an until that fires
 // early, an agenda bound that includes an occurrence on one and not the other).
+// isBareDate reports whether raw is a calendar date YYYY-MM-DD, the form the
+// server places at the caller's day start.
+func isBareDate(raw string) bool {
+	_, err := time.Parse("2006-01-02", raw)
+	return err == nil
+}
+
 func wholeSecond(param, raw string, t time.Time) error {
 	if t.Nanosecond() != 0 {
 		return fmt.Errorf("%s %q has a fraction of a second: give a whole-second instant (2026-11-09T09:00:00Z)", param, raw)
@@ -615,15 +625,19 @@ func actionItemScheduleGraph(action string) ActionFn {
 			} else {
 				delete(out, "confirm_past_deadline")
 			}
-			to := out["to"].(string)
-			t, err := time.Parse(time.RFC3339, to)
-			if err != nil {
-				return fail(fmt.Errorf("to must be an RFC3339 instant"))
+			// A bare date is forwarded unchanged: the server places it at the
+			// caller's day start for role target or earliest (TASK-4723) and
+			// judges the role.
+			if to := out["to"].(string); !isBareDate(to) {
+				t, err := time.Parse(time.RFC3339, to)
+				if err != nil {
+					return fail(fmt.Errorf("to must be an RFC3339 instant or, for role target or earliest, a bare date (YYYY-MM-DD), which lands at the start of your day in your account time zone"))
+				}
+				if err = wholeSecond("to", to, t); err != nil {
+					return fail(err)
+				}
+				out["to"] = t.UTC().Format(time.RFC3339)
 			}
-			if err = wholeSecond("to", to, t); err != nil {
-				return fail(err)
-			}
-			out["to"] = t.UTC().Format(time.RFC3339)
 			path = append(path, "move")
 		case "schedule-gate":
 			if _, remove := out["gate_id"]; remove {
