@@ -474,6 +474,9 @@ func init() {
 		"item remind edit":           mapItemScheduleEdit,
 		"item remind forecast set":   routeSpec{method: http.MethodPut, pathTemplate: itemSchedulePathTemplate + "/forecast", bodyKeys: []string{"value", "source"}}.toRouteMapper(),
 		"item remind forecast clear": routeSpec{method: http.MethodDelete, pathTemplate: itemSchedulePathTemplate + "/forecast"}.toRouteMapper(),
+		"item remind child select":   mapMilestoneChild("child"),
+		"item remind child waive":    mapMilestoneChild("waiver"),
+		"item remind child remove":   routeSpec{method: http.MethodDelete, pathTemplate: itemMilestoneChildPath}.toRouteMapper(),
 		"item remind rm": routeSpec{
 			method:       http.MethodDelete,
 			pathTemplate: itemSchedulePathTemplate,

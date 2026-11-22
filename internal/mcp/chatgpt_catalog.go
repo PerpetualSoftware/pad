@@ -344,6 +344,7 @@ var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_item", "unremind"}:             "deferred to v2",
 	{"pad_item", "schedule"}:             "deferred to v2",
 	{"pad_item", "schedule-forecast"}:    "deferred to v2",
+	{"pad_item", "schedule-child"}:       "deferred to v2",
 	{"pad_item", "schedule-edit"}:        "deferred to v2",
 	{"pad_item", "schedule-delete"}:      "deferred to v2",
 	{"pad_item", "schedule-dismiss"}:     "deferred to v2",

@@ -148,6 +148,7 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		// Schedules ride `pad item remind <subcommand>` (TASK-4105).
 		{"pad_item", "schedule"}:             {"item", "remind", "show"},
 		{"pad_item", "schedule-forecast"}:    {"item", "remind", "forecast", "set"},
+		{"pad_item", "schedule-child"}:       {"item", "remind", "child", "select"},
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-dismiss"}:     {"item", "remind", "dismiss"},
@@ -352,6 +353,7 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		// Schedules ride `pad item remind <subcommand>` (TASK-4105).
 		{"pad_item", "schedule"}:             {"item", "remind", "show"},
 		{"pad_item", "schedule-forecast"}:    {"item", "remind", "forecast", "set"},
+		{"pad_item", "schedule-child"}:       {"item", "remind", "child", "select"},
 		{"pad_item", "schedule-edit"}:        {"item", "remind", "edit"},
 		{"pad_item", "schedule-delete"}:      {"item", "remind", "rm"},
 		{"pad_item", "schedule-dismiss"}:     {"item", "remind", "dismiss"},
@@ -791,6 +793,9 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			},
 			"item remind forecast set":   {Summary: "set a forecast", Args: mkArgs("ref", "value"), Flags: mkFlags("workspace", "source")},
 			"item remind forecast clear": {Summary: "clear a forecast", Args: mkArgs("ref"), Flags: mkFlags("workspace")},
+			"item remind child select":   {Summary: "select a child", Args: mkArgs("ref", "child-ref"), Flags: mkFlags("workspace")},
+			"item remind child waive":    {Summary: "waive a child", Args: mkArgs("ref", "child-ref"), Flags: mkFlags("workspace", "reason")},
+			"item remind child remove":   {Summary: "remove a child", Args: mkArgs("ref", "child-ref"), Flags: mkFlags("workspace")},
 			"item remind show": {
 				Summary: "show a schedule",
 				Args:    mkArgs("ref"),

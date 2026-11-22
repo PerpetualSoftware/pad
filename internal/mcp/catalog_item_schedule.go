@@ -705,6 +705,45 @@ func actionItemScheduleForecast(ctx context.Context, input map[string]any, env A
 	return env.Dispatch(ctx, []string{"item", "remind", "forecast", verb}, out)
 }
 
+// actionItemScheduleChild selects, waives or removes a milestone child. The
+// combinations are checked here so both transports refuse with the same text
+// before anything is dispatched.
+func actionItemScheduleChild(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	refuse := func(message string) (*CallToolResult, error) {
+		return errStructured("pad_item.schedule-child", fmt.Errorf("%s", message)), nil
+	}
+	ref, ok := input["ref"].(string)
+	if !ok || strings.TrimSpace(ref) == "" {
+		return refuse("ref is required: the milestone")
+	}
+	child, ok := input["child"].(string)
+	if !ok || strings.TrimSpace(child) == "" {
+		return refuse("child is required: the child item's ref")
+	}
+	verb, _ := input["child_action"].(string)
+	switch verb {
+	case "select", "waive", "remove":
+	default:
+		return refuse("child_action must be one of select, waive or remove")
+	}
+	rawReason, hasReason := input["reason"]
+	hasReason = hasReason && rawReason != nil
+	out := map[string]any{"ref": ref, "child_ref": child}
+	if ws, ok := input["workspace"]; ok {
+		out["workspace"] = ws
+	}
+	if verb == "waive" {
+		reason, ok := rawReason.(string)
+		if !ok || strings.TrimSpace(reason) == "" {
+			return refuse("reason is required for child_action waive")
+		}
+		out["reason"] = reason
+	} else if hasReason {
+		return refuse("reason is only for child_action waive")
+	}
+	return env.Dispatch(ctx, []string{"item", "remind", "child", verb}, out)
+}
+
 // Reopen requires an explicit identity on both transports; no implicit GET.
 func actionItemScheduleReopen(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	raw, present := input["resolution_id"]
