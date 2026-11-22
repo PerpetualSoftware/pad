@@ -386,10 +386,6 @@ func copyInputMap(in map[string]any) map[string]any {
 	return out
 }
 
-// wholeSecond refuses an instant with a fraction of a second. The CLI formats
-// instants to the second and the route keeps the fraction, so the same value
-// would land on different seconds on the two transports (an until that fires
-// early, an agenda bound that includes an occurrence on one and not the other).
 // isBareDate reports whether raw is a calendar date YYYY-MM-DD, the form the
 // server places at the caller's day start.
 func isBareDate(raw string) bool {
@@ -397,6 +393,10 @@ func isBareDate(raw string) bool {
 	return err == nil
 }
 
+// wholeSecond refuses an instant with a fraction of a second. The CLI formats
+// instants to the second and the route keeps the fraction, so the same value
+// would land on different seconds on the two transports (an until that fires
+// early, an agenda bound that includes an occurrence on one and not the other).
 func wholeSecond(param, raw string, t time.Time) error {
 	if t.Nanosecond() != 0 {
 		return fmt.Errorf("%s %q has a fraction of a second: give a whole-second instant (2026-11-09T09:00:00Z)", param, raw)
