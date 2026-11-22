@@ -81,3 +81,22 @@ describe('TASK-4516: step-up prompt focus and labelling', () => {
 		await waitFor(() => expect(input).toHaveFocus());
 	});
 });
+
+// TASK-4602: an account that just turned on 2FA has no usable factor until
+// it signs in again; telling it to turn 2FA on would send it in a circle.
+describe('TASK-4602: unavailable reason copy', () => {
+	const today = 'No verification method is available for this account. Sign out and sign in again, then retry within 10 minutes, or turn on two-factor authentication.';
+	it('sign_in_again: says the session predates 2FA, not to turn it on', () => {
+		render(StepUpPrompt, { factor: 'unavailable', unavailableReason: 'sign_in_again', onverified: vi.fn() });
+		expect(screen.getByText('This session started before you turned on two-factor authentication. Sign out and sign in again, then retry within 10 minutes.')).toBeInTheDocument();
+		expect(screen.queryByText(/turn on two-factor authentication/)).toBeNull();
+	});
+	it('no_factor keeps today’s text', () => {
+		render(StepUpPrompt, { factor: 'unavailable', unavailableReason: 'no_factor', onverified: vi.fn() });
+		expect(screen.getByText(today)).toBeInTheDocument();
+	});
+	it('an absent reason (older server) keeps today’s text', () => {
+		mount('unavailable');
+		expect(screen.getByText(today)).toBeInTheDocument();
+	});
+});

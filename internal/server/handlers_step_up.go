@@ -90,6 +90,21 @@ func (s *Server) stepUpFactor(user *models.User, session *store.SessionInfo) (st
 	}
 }
 
+// stepUpUnavailableReason says why stepUpFactor returned "unavailable", and
+// is "" for any other factor. With TOTP on, stepUpFactor is unavailable only
+// when the session signed in before enrolment, so signing in again fixes it;
+// otherwise the account has no factor at all.
+func stepUpUnavailableReason(user *models.User, factor string) string {
+	switch {
+	case factor != "unavailable":
+		return ""
+	case user.TOTPEnabled:
+		return "sign_in_again"
+	default:
+		return "no_factor"
+	}
+}
+
 func (s *Server) stepUpSession(w http.ResponseWriter, r *http.Request) *store.SessionInfo {
 	session := s.requestSessionInfo(r)
 	if session == nil || session.User == nil || session.User.ID != currentUserID(r) {
@@ -113,9 +128,10 @@ func (s *Server) handleStepUpStatus(w http.ResponseWriter, r *http.Request) {
 		active = nil
 	}
 	writeJSON(w, http.StatusOK, struct {
-		Factor      string     `json:"factor"`
-		ActiveUntil *time.Time `json:"active_until"`
-	}{factor, active})
+		Factor            string     `json:"factor"`
+		ActiveUntil       *time.Time `json:"active_until"`
+		UnavailableReason string     `json:"unavailable_reason,omitempty"`
+	}{factor, active, stepUpUnavailableReason(session.User, factor)})
 }
 
 func (s *Server) handleStepUpEmail(w http.ResponseWriter, r *http.Request) {
@@ -174,7 +190,11 @@ func (s *Server) handleStepUpVerify(w http.ResponseWriter, r *http.Request) {
 	user := session.User
 	factor, _ := s.stepUpFactor(user, session)
 	if factor == "unavailable" {
-		writeError(w, http.StatusConflict, "step_up_unavailable", "No verification method is available for this account")
+		msg := "No verification method is available for this account"
+		if stepUpUnavailableReason(user, factor) == "sign_in_again" {
+			msg = "This session started before two-factor authentication was turned on. Sign in again, then retry within 10 minutes"
+		}
+		writeError(w, http.StatusConflict, "step_up_unavailable", msg)
 		return
 	}
 	var input struct {

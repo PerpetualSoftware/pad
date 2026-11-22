@@ -16,6 +16,12 @@ import (
 // exception; widening a key does not).
 var errStepUpUnavailable = errors.New("no verification method is available for this account")
 
+// errStepUpSignInAgain is the unavailable case where 2FA was turned on after
+// this session signed in (unavailable_reason "sign_in_again"): signing in
+// again makes the authenticator usable. It wraps errStepUpUnavailable, so
+// callers that only ask whether a factor exists still match it.
+var errStepUpSignInAgain = fmt.Errorf("this session started before two-factor authentication was turned on: %w", errStepUpUnavailable)
+
 // runStepUp asks for whichever proof the session's current factor takes and
 // verifies it once (GET /auth/step-up, then POST /auth/step-up/verify). It
 // runs only after the server answered step_up_required, so it always asks.
@@ -36,6 +42,9 @@ func runStepUp(client *cli.Client, in *bufio.Reader, out io.Writer, interactive 
 	var code, recovery, password string
 	switch status.Factor {
 	case "unavailable":
+		if status.UnavailableReason == "sign_in_again" {
+			return errStepUpSignInAgain
+		}
 		return errStepUpUnavailable
 	case "totp":
 		fmt.Fprint(out, "Code from your authenticator app (or a recovery code): ")

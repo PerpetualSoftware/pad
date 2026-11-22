@@ -67,6 +67,8 @@ export interface APITokenUpdate {
 export interface StepUpStatus {
 	factor: 'totp' | 'email' | 'password' | 'unavailable';
 	active_until: string | null;
+	/** Set only when factor is 'unavailable'; an older server omits it. */
+	unavailable_reason?: 'sign_in_again' | 'no_factor';
 }
 
 export interface StepUpProof {

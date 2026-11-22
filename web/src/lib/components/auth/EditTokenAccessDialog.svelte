@@ -80,7 +80,7 @@
 
 <DialogShell open={!!token} onclose={close} title="Edit API key access" subject={token?.name} {mobile} pending={busy || stepUpBusy}>
 	{#if stepUp}
-		<StepUpPrompt factor={stepUp.factor} onverified={verified} formId="{id}-verify" bind:busy={stepUpBusy} bind:canVerify />
+		<StepUpPrompt factor={stepUp.factor} unavailableReason={stepUp.unavailable_reason} onverified={verified} formId="{id}-verify" bind:busy={stepUpBusy} bind:canVerify />
 	{:else}
 		<form id="{id}-edit" onsubmit={save}>
 			<label for="edit-token-name">Key name</label>
