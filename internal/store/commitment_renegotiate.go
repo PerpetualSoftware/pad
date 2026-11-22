@@ -308,17 +308,25 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 		return nil, err
 	}
 	var miss *deadlineCandidate
+	lapses := false
 	if open {
 		miss, err = s.deadlineMissCandidateTx(tx, sc.ID, nowT)
+		if err != nil {
+			return nil, err
+		}
+		// The apply's root lapse decision. Cascade dependents are left out, so a
+		// dependent the caller cannot read does not change the preview.
+		lapses, err = s.lapsesNowTx(tx, sc, nowT)
 		if err != nil {
 			return nil, err
 		}
 	}
 	// Revision inputs: the schedule (including ID, updated_at, timing and
 	// outstanding state), every role column, the outstanding key and deadline
-	// override value, the effective zone, and the miss-first decision. Including
-	// that decision also invalidates a preview when the old deadline passes or
-	// the evaluator records its miss before apply. The request is not hashed.
+	// override value, the effective zone, and the miss-first and lapse
+	// decisions. Including them also invalidates a preview when the old deadline
+	// passes or the evaluator records its miss before apply. The request is not
+	// hashed.
 	state, err := json.Marshal(struct {
 		Schedule  *models.ItemSchedule
 		Roles     *models.ScheduleRolesExport
@@ -326,7 +334,8 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 		Override  *string
 		Zone      string
 		MissFirst bool
-	}{sc, stored, key, overrideFor(overrides, "deadline"), loc.String(), miss != nil})
+		Lapses    bool
+	}{sc, stored, key, overrideFor(overrides, "deadline"), loc.String(), miss != nil, lapses})
 	if err != nil {
 		return nil, err
 	}
@@ -353,7 +362,7 @@ func (s *Store) planRenegotiationTx(tx *sql.Tx, sc *models.ItemSchedule, in mode
 	p.result.Revision = revision
 	view := &p.result.Preview
 	*view = models.CommitmentRenegotiationPreview{Scope: in.Scope, OccurrenceKey: key, AppliesFrom: key, CurrentDeadline: ptr(prior.value), CurrentDeadlineBehavior: cur.DeadlineBehavior, NewDeadlineBehavior: cur.DeadlineBehavior,
-		CurrentOffset: &models.CommitmentDeadlineOffset{DeadlineDays: cur.DeadlineDays, DeadlineSecs: cur.DeadlineSecs}, MissRecordedFirst: miss != nil}
+		CurrentOffset: &models.CommitmentDeadlineOffset{DeadlineDays: cur.DeadlineDays, DeadlineSecs: cur.DeadlineSecs}, MissRecordedFirst: miss != nil, LapsesOnApply: lapses}
 	view.NewOffset = view.CurrentOffset
 	if miss != nil {
 		view.MissOccurrenceKey = ptr(miss.key)

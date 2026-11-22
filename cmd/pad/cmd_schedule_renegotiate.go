@@ -20,6 +20,7 @@ type renegotiatePreview struct {
 		CurrentDeadline   *string `json:"current_deadline"`
 		NewDeadline       *string `json:"new_deadline"`
 		MissRecordedFirst bool    `json:"miss_recorded_first"`
+		LapsesOnApply     bool    `json:"lapses_on_apply"`
 	} `json:"preview"`
 	Revision string `json:"revision"`
 }
@@ -97,6 +98,7 @@ guards the schedule's state, not the flags, so repeat the previewed flags.
 			ws, ref := getWorkspace(), args[0]
 			var raw json.RawMessage
 			var err error
+			lapses := false
 			if !apply || revision == "" {
 				body["preview"] = true
 				if raw, err = client.RenegotiateItemCommitment(ws, ref, body); err != nil {
@@ -110,9 +112,16 @@ guards the schedule's state, not the flags, so repeat the previewed flags.
 						return fmt.Errorf("the preview carried no revision to apply")
 					}
 					body["revision"] = p.Revision
+					lapses = p.Preview.LapsesOnApply
 				}
 				body["preview"] = false
 				if raw, err = client.RenegotiateItemCommitment(ws, ref, body); err != nil {
+					// The server's lapse is the evaluator's own write, so the apply is
+					// still sent; its refusal is then explained, not left bare.
+					var apiErr *cli.APIError
+					if lapses && errors.As(err, &apiErr) && apiErr.Code == "commitment_changed" {
+						return fmt.Errorf("the occurrence lapsed because its deadline had passed; nothing else changed\n%s", repreviewHint(ref))
+					}
 					return renegotiateHint(err, ref)
 				}
 			}
@@ -131,6 +140,9 @@ guards the schedule's state, not the flags, so repeat the previewed flags.
 			fmt.Printf("Deadline: %s -> %s\n", instantOrNone(p.Preview.CurrentDeadline), instantOrNone(p.Preview.NewDeadline))
 			if p.Preview.MissRecordedFirst {
 				fmt.Println("The outstanding occurrence is recorded as missed first.")
+			}
+			if p.Preview.LapsesOnApply {
+				fmt.Println("The deadline has passed and this occurrence lapses: --apply closes it (lapsed) and changes nothing else; preview again afterwards.")
 			}
 			fmt.Printf("Revision: %s\nApply with: pad remind renegotiate %s ... --apply (add --revision %s to apply only if the schedule is unchanged since this preview; repeat the same flags)\n", p.Revision, ref, p.Revision)
 			return nil
@@ -153,7 +165,11 @@ guards the schedule's state, not the flags, so repeat the previewed flags.
 func renegotiateHint(err error, ref string) error {
 	var apiErr *cli.APIError
 	if errors.As(err, &apiErr) && apiErr.Code == "commitment_changed" {
-		return fmt.Errorf("%s\nre-preview with: pad remind renegotiate %s ... (without --apply), then apply the new revision", apiErr.Message, ref)
+		return fmt.Errorf("%s\n%s", apiErr.Message, repreviewHint(ref))
 	}
 	return staleHintWith(err, ref, false)
+}
+
+func repreviewHint(ref string) string {
+	return fmt.Sprintf("re-preview with: pad remind renegotiate %s ... (without --apply), then apply the new revision", ref)
 }
