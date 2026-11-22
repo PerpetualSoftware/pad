@@ -242,6 +242,12 @@ export const authStore = {
 		session.user.chat_enabled = enabled;
 	},
 
+	// Mirrors setTimezone: ignored unless the signed-in user is still userId (TASK-4699).
+	setDayStart(userId: string, dayStart: string | null) {
+		if (!session?.user || session.user.id !== userId) return;
+		session.user.day_start = dayStart;
+	},
+
 	async load() {
 		if (inflight) return inflight;
 		loading = true;

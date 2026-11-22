@@ -61,6 +61,35 @@
 		}
 	}
 
+	// Day start (TASK-4699): the caller's own "HH:MM"; unset reads as 09:00.
+	const DEFAULT_DAY_START = '09:00';
+	let dayStart = $state('');
+	let dayStartSaving = $state(false);
+	let dayStartError = $state('');
+	let dayStartMsg = $state('');
+	async function saveDayStart() {
+		const userId = authStore.userId;
+		const isSameIdentity = authStore.identityFence();
+		dayStartSaving = true;
+		dayStartError = '';
+		dayStartMsg = '';
+		try {
+			const updated = await api.auth.setDayStart(dayStart);
+			if (!isSameIdentity()) return;
+			if (updated.day_start !== undefined) {
+				authStore.setDayStart(userId, updated.day_start);
+				dayStart = updated.day_start ?? DEFAULT_DAY_START;
+			}
+			// Merge, as the time zone Save does: the PATCH answer is not the whole profile.
+			profile = profile ? { ...profile, ...updated } : updated;
+			dayStartMsg = 'Day start updated.';
+		} catch (err) {
+			if (isSameIdentity()) dayStartError = err instanceof Error ? err.message : 'Failed to set day start';
+		} finally {
+			if (isSameIdentity()) dayStartSaving = false;
+		}
+	}
+
 	// Chat (TASK-4315): a per-user display preference, stored on the server.
 	let chatSaving = $state(false);
 	let chatError = $state('');
@@ -273,6 +302,7 @@
 			profileName = me.name;
 			profileUsername = me.username;
 			timezone = me.timezone ?? '';
+			dayStart = me.day_start ?? DEFAULT_DAY_START;
 			tokens = tokenList;
 			loadedEpoch = epoch;
 		} catch {
@@ -362,6 +392,11 @@
 			timezoneSaving = false;
 			timezoneError = '';
 			timezoneMsg = '';
+			// So did a day start Save in flight.
+			dayStart = '';
+			dayStartSaving = false;
+			dayStartError = '';
+			dayStartMsg = '';
 			// A Chat write in flight belonged to the previous identity too.
 			chatSaving = false;
 			chatError = '';
@@ -1015,6 +1050,16 @@
 					{/if}
 					{#if timezoneError}<p class="error" role="alert">{timezoneError}</p>{/if}
 					{#if timezoneMsg}<p class="success" role="status">{timezoneMsg}</p>{/if}
+				</div>
+				<div class="field">
+					<label for="day-start">Day starts at</label>
+					<div class="timezone-row">
+						<input id="day-start" type="time" bind:value={dayStart} disabled={dayStartSaving} />
+						<Button onclick={saveDayStart} disabled={!profileReady || dayStartSaving || !dayStart}>Save day start</Button>
+					</div>
+					{#if profile && profile.day_start == null}<p class="plan-desc">Not set, defaults to {DEFAULT_DAY_START}</p>{/if}
+					{#if dayStartError}<p class="error" role="alert">{dayStartError}</p>{/if}
+					{#if dayStartMsg}<p class="success" role="status">{dayStartMsg}</p>{/if}
 				</div>
 				{#if profileError}
 					<p class="error">{profileError}</p>

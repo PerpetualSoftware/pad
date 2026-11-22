@@ -7,6 +7,9 @@ export interface User {
 	// Chat display preference (TASK-4315): per user, off by default. A display
 	// preference only, not access control.
 	chat_enabled?: boolean;
+	// Day start (TASK-4699): 24-hour "HH:MM", null when never set (read as
+	// 09:00). Carried only on the caller's own /auth/me and session payloads.
+	day_start?: string | null;
 	id: string;
 	email: string;
 	username: string;
@@ -40,6 +43,7 @@ export interface TOTPDisableResponse {
 export interface UserProfileUpdate {
 	timezone?: string;
 	chat_enabled?: boolean;
+	day_start?: string;
 	if_unset?: boolean;
 	name?: string;
 	username?: string;
