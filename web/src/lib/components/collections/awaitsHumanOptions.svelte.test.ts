@@ -177,6 +177,13 @@ describe('EditCollectionModal round trip', () => {
 		expect(fields.find((f) => f.key === 'status')!.awaits_human_options).toEqual(['review']);
 	});
 
+	it('keeps a waiting value spelled differently from its option (TASK-4677)', async () => {
+		const fields = await saveSchema([
+			{ key: 'status', label: 'Status', type: 'select', options: ['open', 'review', 'done'], terminal_options: ['done'], awaits_human_options: [' Review '] }
+		]);
+		expect(fields.find((f) => f.key === 'status')!.awaits_human_options).toEqual(['review']);
+	});
+
 	it('saves them on a field that declares no terminal options', async () => {
 		const fields = await saveSchema([
 			{ key: 'status', label: 'Status', type: 'select', options: ['open', 'done'], terminal_options: ['done'] },
