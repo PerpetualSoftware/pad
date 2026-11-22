@@ -107,6 +107,23 @@ func TestTask4699_InstantRemindAtIsUnmarked(t *testing.T) {
 	}
 }
 
+// A value that is neither an instant nor a date names both accepted forms,
+// not the agent-audience refusal, whose "a bare date is refused" is false for
+// a person now.
+func TestTask4699_MalformedRemindAtNamesBothForms(t *testing.T) {
+	t.Parallel()
+	w := newTask4699World(t, "America/New_York", 450)
+	for _, v := range []string{"next tuesday", "2026-11-09T10:00", "2026-13-40"} {
+		code, m, raw := w.arm(t, "Malformed "+v, v)
+		if c, _, _ := task4699Detail(m); code != http.StatusBadRequest || c != "invalid_remind_at" {
+			t.Fatalf("%q: %d %s, want 400 invalid_remind_at", v, code, raw)
+		}
+		if raw == task4699AgentRefusal || !strings.Contains(raw, "or a bare date (YYYY-MM-DD)") {
+			t.Errorf("%q: %s, want the message naming both forms", v, raw)
+		}
+	}
+}
+
 func TestTask4699_BareRemindAtNeedsAnAccountZone(t *testing.T) {
 	t.Parallel()
 	w := newTask4699World(t, "", 450)

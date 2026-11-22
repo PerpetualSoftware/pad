@@ -46,8 +46,13 @@ func parseRemindAt(raw string) (string, error) {
 
 // remindAtAgentRefusal is the bare-date refusal from before TASK-4699, kept
 // byte for byte: an agent-audience commitment still refuses a bare date, since
-// an agent has no day to start, and a malformed value gets the same answer.
+// an agent has no day to start.
 const remindAtAgentRefusal = "remind_at must be an RFC3339 instant (e.g. 2026-08-01T09:00:00Z). A bare date has no time of day, so it is refused rather than assumed to mean midnight."
+
+// remindAtMalformedRefusal answers a value that is neither an RFC3339 instant
+// nor a bare date. It names both accepted forms, since a bare date is now
+// placed rather than refused.
+const remindAtMalformedRefusal = "remind_at must be an RFC3339 instant (e.g. 2026-08-01T09:00:00Z) or a bare date (YYYY-MM-DD), which lands at the start of your day in your account time zone."
 
 // remindAtNoZoneRefusal answers a bare date from a caller with no account
 // zone: there is no day to place it in, and assuming UTC would be an invented
@@ -70,17 +75,17 @@ const remindAtFromDayStart = "day_start"
 // gap shifts the time forward and a fall-back overlap takes the earlier
 // instant (schedule.Resolve).
 //
-// Refusals, which it writes itself (ok=false): a malformed value, or a bare
-// date on an item whose commitment is agent-audience, answers the old refusal
-// unchanged; a bare date from a caller with no account zone names pad auth
-// timezone.
+// Refusals, which it writes itself (ok=false), all 400 invalid_remind_at: a
+// bare date on an item whose commitment is agent-audience answers the old
+// refusal unchanged; a malformed value names both accepted forms; a bare date
+// from a caller with no account zone names pad auth timezone.
 func (s *Server) resolveRemindAt(w http.ResponseWriter, r *http.Request, workspaceID, itemID, raw string) (at, from string, ok bool) {
 	if at, err := parseRemindAt(raw); err == nil {
 		return at, "", true
 	}
 	day, err := schedule.ParseWall(raw)
 	if err != nil || !day.AllDay {
-		writeRemindAtError(w)
+		writeError(w, http.StatusBadRequest, "invalid_remind_at", remindAtMalformedRefusal)
 		return "", "", false
 	}
 	sc, err := s.store.GetSchedule(workspaceID, itemID)
