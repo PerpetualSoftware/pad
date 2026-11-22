@@ -233,6 +233,7 @@ func TestTask4699_CommitmentDayStartRefusals(t *testing.T) {
 		{"no start", w, map[string]any{"rrule": "FREQ=DAILY", "day_start": true}, "requires_date"},
 		{"agent", w, map[string]any{"dtstart": "2026-11-09", "rrule": "FREQ=DAILY", "audience": "agent", "day_start": true}, "audience_agent"},
 		{"no zone", noZone, map[string]any{"dtstart": "2026-11-09", "rrule": "FREQ=DAILY", "day_start": true}, "zone_unset"},
+		{"window", w, map[string]any{"dtstart": "2026-11-09", "rrule": "FREQ=DAILY", "day_start": true, "roles": map[string]any{"target_days": 0, "target_secs": 0, "occupied_days": 0, "occupied_secs": 3600}}, "window"},
 	}
 	for _, c := range cases {
 		code, m, raw := task4699Commit(t, c.w, "Refuse "+c.name, c.body)
@@ -261,6 +262,7 @@ func TestTask4699_CommitmentDayStartRefusals(t *testing.T) {
 		{"timed", slug, map[string]any{"dtstart": "2026-11-10T07:00", "day_start": true}, "requires_date"},
 		{"patched agent", slug, map[string]any{"dtstart": "2026-11-10", "audience": "agent", "day_start": true}, "audience_agent"},
 		{"stored agent", agentSlug, map[string]any{"dtstart": "2026-11-10", "day_start": true}, "audience_agent"},
+		{"window", slug, map[string]any{"dtstart": "2026-11-10", "day_start": true, "roles": map[string]any{"target_days": 0, "target_secs": 0, "occupied_days": 0, "occupied_secs": 3600}}, "window"},
 	} {
 		code, m, got := w.do(t, "PATCH", "/items/"+c.slug+"/commitment", c.body)
 		if ec, field, detail := task4699Detail(m); code != http.StatusBadRequest || ec != "validation_error" || field != "day_start" || detail != c.want {

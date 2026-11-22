@@ -232,6 +232,7 @@ const (
 	dayStartRequiresDate  = "day_start places a bare start date at the start of your day: give dtstart as a date (YYYY-MM-DD) with it"
 	dayStartAudienceAgent = "day_start is for a person's day, and this commitment's audience is agent: give dtstart a time of day instead"
 	dayStartZoneUnset     = "day_start needs a time zone and you have no account time zone: set one with pad auth timezone <IANA>, or give tz or floating"
+	dayStartWindow        = "day_start cannot be combined with a window (occupied_days or occupied_secs) yet: give dtstart a time of day for a window"
 )
 
 // dayStartWall rewrites a bare-date start D to DTHH:MM:00 at the CALLER's day
@@ -296,6 +297,9 @@ func (s *Server) handleCreateItemCommitment(w http.ResponseWriter, r *http.Reque
 		switch {
 		case !isDate:
 			writeDayStartRefusal(w, "requires_date", dayStartRequiresDate)
+			return
+		case body.Roles != nil && (body.Roles.OccupiedDays != nil || body.Roles.OccupiedSecs != nil):
+			writeDayStartRefusal(w, "window", dayStartWindow)
 			return
 		case req.Audience == "agent":
 			writeDayStartRefusal(w, "audience_agent", dayStartAudienceAgent)
@@ -459,6 +463,19 @@ func (s *Server) applyPatchDayStart(w http.ResponseWriter, r *http.Request, work
 	if !isDate {
 		writeDayStartRefusal(w, "requires_date", dayStartRequiresDate)
 		return false
+	}
+	if v, ok := members["roles"]; ok && !isJSONNull(v) {
+		var roles map[string]json.RawMessage
+		if json.Unmarshal(v, &roles) != nil {
+			writeScheduleBodyError(w)
+			return false
+		}
+		for _, k := range []string{"occupied_days", "occupied_secs"} {
+			if o, ok := roles[k]; ok && !isJSONNull(o) {
+				writeDayStartRefusal(w, "window", dayStartWindow)
+				return false
+			}
+		}
 	}
 	audience := ""
 	if v, ok := members["audience"]; ok && !isJSONNull(v) {
