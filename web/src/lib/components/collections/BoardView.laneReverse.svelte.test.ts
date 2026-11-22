@@ -100,6 +100,40 @@ describe('lane reversal (BUG-3994)', () => {
 		expect(onReorder.mock.calls[0][0]).toEqual([{ slug: items[3].id, sort_order: 0 }]);
 	});
 
+	it('reversing a lane keeps it following the page sort mode', async () => {
+		const props = { items, collection, sortMode: 'created' as const, onLaneChange: vi.fn() };
+		const r = render(BoardView, { props });
+		const zone = r.container.querySelector('.column-cards')!;
+		await fireEvent.click(r.getByRole('button', { name: 'Constructor lane actions' }));
+		await fireEvent.click(r.getByRole('menuitem', { name: /Sort lane by/ }));
+		await fireEvent.click(r.getByRole('menuitemcheckbox', { name: 'Reverse order' }));
+		expect(r.getByRole('menuitemradio', { name: /Page default/ })).toHaveAttribute('aria-checked', 'true');
+		// created, reversed: oldest first.
+		expect(domOrder(zone)).toEqual(['constructor-older', 'constructor-newer']);
+		// The page switches to manual (oldest first); the lane's reversal now
+		// applies to manual, so newest first. A pinned mode would stay put.
+		await r.rerender({ ...props, sortMode: 'manual' });
+		expect(domOrder(zone)).toEqual(['constructor-newer', 'constructor-older']);
+	});
+
+	it('list: a late finalize while reversed still clears the drag, so the list follows new props', async () => {
+		const props = { items, collection, sortMode: 'manual' as const, sortReversed: true, canEdit: true, onReorder: vi.fn(), onLaneChange: vi.fn(), groupField: 'status' };
+		const r = render(ListView, { props });
+		await tick();
+		const zone = r.container.querySelector('.group-items')!;
+		await fireEvent(zone, new CustomEvent('consider', { detail: {
+			items: [items[0], items[1]], info: { trigger: 'dragStarted', id: items[1].id },
+		} }));
+		await fireEvent(zone, new CustomEvent('finalize', { detail: {
+			items: [items[0], items[1]], info: { trigger: 'droppedIntoZone', id: items[1].id },
+		} }));
+		expect(props.onReorder).not.toHaveBeenCalled();
+		const added = { ...items[0], id: 'constructor-added', slug: 'constructor-added', title: 'constructor-added', created_at: '2026-03-01T00:00:00Z' } as Item;
+		await r.rerender({ ...props, items: [...items, added] });
+		await tick();
+		expect(domOrder(zone)).toEqual(['constructor-added', 'constructor-newer', 'constructor-older']);
+	});
+
 	it('inherits the page reversal, can override it, and preserves search relevance', async () => {
 		const props = { items, collection, sortMode: 'created' as const, sortReversed: true, onLaneChange: vi.fn() };
 		const r = render(BoardView, { props });

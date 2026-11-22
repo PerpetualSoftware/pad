@@ -186,18 +186,25 @@
 	// INHERITED member for every Object.prototype name, so a lane named
 	// `constructor` read a function as its override, ignored the page sort and
 	// lost its reorder menu.
-	let laneSortOverrides = $state<Record<string, { mode: SortMode; reversed: boolean }>>({});
+	// The mode and the direction override independently (BUG-3994): reversing
+	// a lane leaves it following the page's sort mode, and picking a lane mode
+	// leaves it following the page's direction. "Page default" clears both.
+	let laneSortOverrides = $state<Record<string, { mode?: SortMode; reversed?: boolean }>>({});
 	function setLaneSort(colValue: string, mode: SortMode | null) {
+		const key = laneKey(colValue);
 		if (mode === null) {
-			delete laneSortOverrides[laneKey(colValue)];
+			delete laneSortOverrides[key];
 		} else {
-			laneSortOverrides[laneKey(colValue)] = { mode, reversed: laneSortFor(colValue).reversed };
+			laneSortOverrides[key] = { ...laneSortOverrides[key], mode };
 		}
 	}
-	const laneSortFor = (colValue: string) =>
-		laneSortOverrides[laneKey(colValue)] ?? { mode: sortMode, reversed: sortReversed };
+	const laneSortFor = (colValue: string) => {
+		const o = laneSortOverrides[laneKey(colValue)];
+		return { mode: o?.mode ?? sortMode, reversed: o?.reversed ?? sortReversed };
+	};
 	function setLaneReversed(colValue: string, reversed: boolean) {
-		laneSortOverrides[laneKey(colValue)] = { mode: laneSortFor(colValue).mode, reversed };
+		const key = laneKey(colValue);
+		laneSortOverrides[key] = { ...laneSortOverrides[key], reversed };
 	}
 
 	// ── Inline draft cards (TASK-1676) ──────────────────────────────────

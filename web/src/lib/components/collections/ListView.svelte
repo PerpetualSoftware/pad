@@ -430,7 +430,6 @@
 	}
 
 	async function handleFinalize(groupName: string, e: CustomEvent<DndEvent<Item>>) {
-		if (sortReversed) return;
 		groupData[laneKey(groupName)] = e.detail.items;
 
 		// Capture the desired order BEFORE setting isDragging = false or awaiting,
@@ -488,7 +487,11 @@
 			}
 		}
 
-		if (onReorder && reorderUpdates.length > 0) {
+		// Reversed (BUG-3994): the rendered indexes are the stored order upside
+		// down, so writing them would flip it for everyone. Skip only the write:
+		// the drag state above must still clear, or the list stops following
+		// its props.
+		if (onReorder && reorderUpdates.length > 0 && !sortReversed) {
 			onReorder(reorderUpdates, itemId);
 		}
 	}
