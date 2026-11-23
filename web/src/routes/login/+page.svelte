@@ -177,9 +177,9 @@
 	}
 
 	// The providers the page can send the user through to finish the link.
-	const pendingLinkProviders = $derived(
-		(pendingLink?.providers ?? []).filter((p): p is 'github' | 'google' => p === 'github' || p === 'google')
-	);
+	const pendingLinkProviders = $derived([
+		...new Set((pendingLink?.providers ?? []).filter((p): p is 'github' | 'google' => p === 'github' || p === 'google'))
+	]);
 
 	// Consent rides with the sign-in only when a link is on offer; absent, the
 	// server links nothing.
