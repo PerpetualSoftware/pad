@@ -9,6 +9,22 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
 
+// activityMaxLimit caps the `limit` an activity list door accepts. Each
+// returned row also costs one item lookup for enrichment, so an unbounded
+// limit is an unbounded server-side read (BUG-4767).
+const activityMaxLimit = 200
+
+// activityLimitFromQuery reads `limit` leniently, as the doors always have:
+// absent, non-numeric or non-positive returns 0, which the store reads as its
+// default of 20. Anything larger than activityMaxLimit is clamped to it.
+func activityLimitFromQuery(r *http.Request) int {
+	n, err := strconv.Atoi(r.URL.Query().Get("limit"))
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return min(n, activityMaxLimit)
+}
+
 func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Request) {
 	// Guests should not see workspace-level activity, which includes
 	// audit events (member invites, role changes, etc.) with operational metadata.
@@ -26,11 +42,7 @@ func (s *Server) handleListWorkspaceActivity(w http.ResponseWriter, r *http.Requ
 		Source: r.URL.Query().Get("source"),
 	}
 
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil {
-			params.Limit = l
-		}
-	}
+	params.Limit = activityLimitFromQuery(r)
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
 		if o, err := strconv.Atoi(offsetStr); err == nil {
 			params.Offset = o
@@ -135,11 +147,7 @@ func (s *Server) handleListDocumentActivity(w http.ResponseWriter, r *http.Reque
 		Actor:  r.URL.Query().Get("actor"),
 	}
 
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil {
-			params.Limit = l
-		}
-	}
+	params.Limit = activityLimitFromQuery(r)
 	if offsetStr := r.URL.Query().Get("offset"); offsetStr != "" {
 		if o, err := strconv.Atoi(offsetStr); err == nil {
 			params.Offset = o
