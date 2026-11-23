@@ -19,7 +19,7 @@ Found a problem that isn't an issue yet? Open one describing it (and how to repr
 
 ### Prerequisites
 
-- [Go 1.26+](https://go.dev/dl/)
+- [Go 1.27+](https://go.dev/dl/)
 - [Node.js 22+](https://nodejs.org/)
 - Make
 

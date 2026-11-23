@@ -2,7 +2,7 @@
   lib,
   stdenv,
   buildGoModule,
-  go_1_26,
+  go_1_27,
   nodejs_26,
   importNpmLock,
 }:
@@ -64,7 +64,7 @@ buildGoModule {
   pname = "pad";
   inherit version src;
 
-  go = go_1_26;
+  go = go_1_27;
 
   # Update alongside go.sum — though CI no longer depends on you remembering
   # (TASK-2954). Every Nix run IN CI recomputes this in its working tree before
