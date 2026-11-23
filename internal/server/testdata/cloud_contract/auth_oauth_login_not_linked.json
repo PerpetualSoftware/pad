@@ -1,0 +1,10 @@
+{
+  "error": {
+    "code": "oauth_provider_not_linked",
+    "details": {
+      "pending_link_token": "<string>",
+      "provider": "<string>"
+    },
+    "message": "<string>"
+  }
+}

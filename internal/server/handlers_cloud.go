@@ -225,6 +225,13 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		// caller's address, and login-verify needs the matching code_verifier
 		// (TASK-4137), for a native app whose address is not the sidecar's.
 		TwoFactorPKCEChallenge *string `json:"two_factor_pkce_challenge"`
+		// PendingLink: the sidecar can hold a pending-link token for this
+		// browser, so a not-linked refusal issues one (TASK-4745).
+		PendingLink bool `json:"pending_link"`
+		// PendingLinkToken: the browser's pending-link cookie, forwarded by
+		// the sidecar. Sending it is consent: a completed sign-in links
+		// its provider when it is this account's (TASK-4745).
+		PendingLinkToken secret.Secret `json:"pending_link_token"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -412,8 +419,23 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 				"email":    input.Email,
 				"reason":   "provider_not_linked",
 			}))
+			const notLinkedMsg = "An account with this email already exists. Sign in with your password and link "
+			// TASK-4745: hold the identity for this account's next full
+			// sign-in in the browser the sidecar sets the token on. The
+			// token goes to the sidecar only, never into a log line.
+			if input.PendingLink && pendingLinkEligible(user, input.Provider, input.EmailPrimary) {
+				tok, err := s.store.CreateOAuthPendingLink(user.ID, input.Provider, input.Subject, user.Email)
+				if err != nil {
+					writeInternalError(w, err)
+					return
+				}
+				writeError2(w, http.StatusForbidden, "oauth_provider_not_linked",
+					notLinkedMsg+input.Provider+" from account settings.",
+					map[string]interface{}{"provider": input.Provider, "pending_link_token": tok})
+				return
+			}
 			writeError(w, http.StatusForbidden, "oauth_provider_not_linked",
-				"An account with this email already exists. Sign in with your password and link "+input.Provider+" from account settings.")
+				notLinkedMsg+input.Provider+" from account settings.")
 			return
 		}
 
@@ -499,6 +521,11 @@ func (s *Server) handleOAuthLogin(w http.ResponseWriter, r *http.Request) {
 		"user":     sessionUserPayload(user),
 		"token":    token,
 		"new_user": isNewUser,
+	}
+	// TASK-4745: a pending link from an earlier not-linked refusal, sent
+	// by the sidecar from the browser's cookie.
+	if pl := s.completePendingLink(r, user, input.PendingLinkToken, true); pl != nil {
+		resp["pending_link"] = pl
 	}
 	// Where a first signup lands (TASK-3595). The sidecar redirects a new
 	// user here when the sign-in carried no explicit destination; an older
@@ -815,6 +842,8 @@ func (s *Server) handleOAuthLink(w http.ResponseWriter, r *http.Request) {
 		"email":    input.Email,
 		"action":   "link_provider",
 	}))
+	// A link adds a way in: the owner hears of it (TASK-4745).
+	s.sendProviderLinkedNotice(user, input.Provider)
 
 	slog.Info("oauth-link: provider linked", "provider", input.Provider, "user_id", user.ID)
 
