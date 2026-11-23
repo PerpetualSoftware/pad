@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -500,6 +501,25 @@ type gateRow struct {
 	key             string
 }
 
+// sortGatesByCreation puts gates in creation order, the id breaking ties. It
+// compares parsed instants, not the stored text: RFC3339Nano drops trailing
+// zeros, so "05Z" sorts after "05.1Z" as text, and an imported stamp keeps its
+// own offset.
+func sortGatesByCreation(gates []gateRow) {
+	at := make(map[string]time.Time, len(gates))
+	for _, g := range gates {
+		t, _ := time.Parse(time.RFC3339Nano, g.CreatedAt)
+		at[g.ID] = t
+	}
+	sort.SliceStable(gates, func(i, j int) bool {
+		a, b := at[gates[i].ID], at[gates[j].ID]
+		if !a.Equal(b) {
+			return a.Before(b)
+		}
+		return gates[i].ID < gates[j].ID
+	})
+}
+
 // gateEvaluator judges gates of one workspace. The workspace's done filters are
 // read on its Queryer the first time a status decides a gate.
 type gateEvaluator struct {
@@ -663,6 +683,7 @@ func (s *Store) evaluateGatesQ(q Queryer, workspaceID, itemID string) (*gateEval
 	if err != nil {
 		return nil, err
 	}
+	sortGatesByCreation(gates)
 	ev := &gateEvaluation{gates: []models.ScheduleGate{}}
 	eval := &gateEvaluator{s: s, q: q, workspaceID: workspaceID}
 	outcomes := map[schedule.Node]schedule.Outcome{}
@@ -748,6 +769,7 @@ func (s *Store) ScheduleGateDependents(workspaceID, itemID string, access models
 	if err != nil {
 		return nil, err
 	}
+	sortGatesByCreation(gates)
 	out := []models.ScheduleGate{}
 	eval := &gateEvaluator{s: s, q: s.db, workspaceID: workspaceID}
 	for _, g := range gates {
