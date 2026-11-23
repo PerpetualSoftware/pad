@@ -2369,7 +2369,12 @@ const CmdhelpVersion = "0.1"
 // schedule-move to for role target or earliest, take a bare date placed at
 // the caller's day start in the caller's account zone (previously refused);
 // the answers mark it resolved_from=day_start. Additive.
-const ToolSurfaceVersion = "0.126"
+// v0.127 — TASK-4496: additive pad_item schedule-child selects, waives or
+// removes a milestone child (ref, child, child_action select|waive|remove;
+// reason for waive only), checked before dispatch with the same refusals on
+// both transports. New parameter child_action; child and reason gain the
+// action in their descriptions. ChatGPT: deferred to v2.
+const ToolSurfaceVersion = "0.127"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

@@ -24,7 +24,29 @@ const (
 	itemScheduleResolvePath  = itemSchedulePathTemplate + "/resolve"
 
 	itemScheduleRenegotiatePath = itemSchedulePathTemplate + "/renegotiate"
+
+	itemMilestoneChildPath = itemSchedulePathTemplate + "/children/{child_ref}"
 )
+
+// mapMilestoneChild is `item remind child select|waive`: a PUT whose kind the
+// subcommand names. actionItemScheduleChild has already checked the reason.
+func mapMilestoneChild(kind string) RouteMapper {
+	return func(input map[string]any) (string, string, []byte, error) {
+		path, err := expandPath(itemMilestoneChildPath, input)
+		if err != nil {
+			return "", "", nil, err
+		}
+		body := map[string]any{"kind": kind}
+		if reason, _ := input["reason"].(string); reason != "" && kind == "waiver" {
+			body["reason"] = reason
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			return "", "", nil, err
+		}
+		return http.MethodPut, path, raw, nil
+	}
+}
 
 // itemRemindOneShot is the one-shot reminder route, unchanged since IDEA-2641.
 var itemRemindOneShot = routeSpec{

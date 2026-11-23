@@ -3810,6 +3810,12 @@ export const api = {
   request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/forecast`, {method: 'PUT', body: JSON.stringify(body)}),
  clearCommitmentForecast: (ws: string, ref: string) =>
   request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/forecast`, {method: 'DELETE'}),
+ selectMilestoneChild: (ws: string, ref: string, childRef: string) =>
+  request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/children/${encodeURIComponent(childRef)}`, {method: 'PUT', body: JSON.stringify({kind: 'child'})}),
+ waiveMilestoneChild: (ws: string, ref: string, childRef: string, reason: string) =>
+  request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/children/${encodeURIComponent(childRef)}`, {method: 'PUT', body: JSON.stringify({kind: 'waiver', reason})}),
+ removeMilestoneChild: (ws: string, ref: string, childRef: string) =>
+  request<ItemCommitmentView>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/children/${encodeURIComponent(childRef)}`, {method: 'DELETE'}),
 	reopenCommitment: (ws: string, ref: string, body: CommitmentReopenRequest) =>
  request<CommitmentReopenResult>(`/workspaces/${encodeURIComponent(ws)}/items/${encodeURIComponent(ref)}/commitment/reopen`, { method: 'POST', body: JSON.stringify(body) }),
 	resolveCommitment: (ws: string, ref: string, body: CommitmentResolveRequest) =>

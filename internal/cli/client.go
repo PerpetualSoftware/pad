@@ -3843,6 +3843,24 @@ func (c *Client) ClearCommitmentForecast(ws, ref string) (json.RawMessage, error
 	return result, c.deleteWithResult(commitmentBase(ws, ref)+"/forecast", &result)
 }
 
+// SetMilestoneChild selects child (kind "child") or waives it (kind "waiver",
+// with a reason) on the milestone ref and returns the commitment view.
+func (c *Client) SetMilestoneChild(ws, ref, child, kind, reason string) (json.RawMessage, error) {
+	body := map[string]any{"kind": kind}
+	if reason != "" {
+		body["reason"] = reason
+	}
+	var result json.RawMessage
+	return result, c.put(commitmentBase(ws, ref)+"/children/"+url.PathEscape(child), body, &result)
+}
+
+// RemoveMilestoneChild removes a selection or waiver softly and returns the
+// commitment view.
+func (c *Client) RemoveMilestoneChild(ws, ref, child string) (json.RawMessage, error) {
+	var result json.RawMessage
+	return result, c.deleteWithResult(commitmentBase(ws, ref)+"/children/"+url.PathEscape(child), &result)
+}
+
 // WriteScheduleActiveError preserves the refusal for stdio MCP and names the
 // occurrence that closing will silence for CLI users.
 func WriteScheduleActiveError(w io.Writer, apiErr *APIError) {

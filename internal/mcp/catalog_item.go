@@ -107,6 +107,7 @@ var padItemTool = ToolDef{
 		"schedule":             passThrough([]string{"item", "remind", "show"}),
 		"schedule-edit":        actionItemScheduleEdit,
 		"schedule-forecast":    actionItemScheduleForecast,
+		"schedule-child":       actionItemScheduleChild,
 		"schedule-delete":      actionItemScheduleDelete,
 		"schedule-dismiss":     passThrough([]string{"item", "remind", "dismiss"}),
 		"schedule-resolve":     actionItemScheduleResolve,
@@ -242,7 +243,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "actual_done_at", Type: "string", Description: "Actual completion (RFC3339). schedule-resolve done only."},
 	{Name: "confirm_past_deadline", Type: "bool", Description: "Confirm a move that puts the target after its hard deadline."},
 	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
-	{Name: "reason", Type: "string", Description: "Why dates change; required for renegotiation or graph hard-deadline changes."},
+	{Name: "reason", Type: "string", Description: "Why dates change; required for renegotiation or graph hard-deadline changes. schedule-child: required for waive only."},
 	{Name: "scope", Type: "string", Description: "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. Every occurrence's reminder follows its target (target minus the lead)."},
 	{Name: "deadline_days", Type: "number", Description: "schedule-renegotiate: series day offset."},
 	{Name: "deadline_secs", Type: "number", Description: "schedule-renegotiate: series second offset."},
@@ -255,7 +256,8 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "stale", Type: "bool", Description: "agenda: yours unresolved over 14 days, not a window."},
 	{Name: "recipient", Type: "string", Description: "agenda: me (default), all (workspace scope; no_date not listed), or a user ID."},
 
-	{Name: "child", Type: "string", Description: "Child ref for schedule-link creation; ref is the parent."},
+	{Name: "child", Type: "string", Description: "Child ref for schedule-link creation or schedule-child; ref is the parent."},
+	{Name: "child_action", Type: "string", Description: "schedule-child: select, waive (a reason; counts as delivered) or remove.", Enum: []string{"select", "waive", "remove"}},
 	{Name: "parent_role", Type: "string", Description: "schedule-link: parent's target | earliest | deadline | occupied_until."},
 	{Name: "child_role", Type: "string", Description: "schedule-link: child's target | earliest | deadline | occupied_until."},
 	{Name: "link_offset", Type: "object", Description: "schedule-link: {mode:elapsed,elapsed_secs} or {mode:civil,days,clock_secs,all_day,zone}. All chosen members required (even 0/false), no others. zone: pinned IANA, never Local."},
@@ -474,6 +476,7 @@ Actions:
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
     snooze and move also need until (RFC3339, or a bare date at your day start). Optional: comment, actual_done_at, end_schedule, confirm_past_deadline (move only).
   schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
+  schedule-child — Milestone child: ref, child, child_action select|waive|remove; reason for waive only.
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
     series: deadline_days/deadline_secs, deadline_behavior or remove_deadline. Previews, returning a
     revision; preview=false with it applies. Hard deadline: assignee or owner only.

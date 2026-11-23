@@ -312,6 +312,9 @@ func TestChatArmHasNoMCPPath(t *testing.T) {
 									delete(input, "ref") // ref and reminder_id are alternatives.
 								case "schedule-forecast":
 									input["forecast"] = "2031-03-12"
+								case "schedule-child":
+									input["child"], input["child_action"] = "TASK-2", "select"
+									delete(input, "reason")
 								case "schedule-edit":
 									input["deadline"] = "hard"
 								case "schedule-reopen":

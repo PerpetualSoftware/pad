@@ -251,16 +251,7 @@ whether the schedule is active, ended or in error.`,
 				}
 				fmt.Fprintf(w, "Forecast:\t%s)\n", text)
 			}
-			if m := v.Milestone; m.Total != 0 || m.Result != nil {
-				result := "none"
-				if m.Result != nil {
-					result = *m.Result
-				}
-				if result == "unknown" {
-					result += " (includes items you cannot see)"
-				}
-				fmt.Fprintf(w, "Children:\t%d of %d counted, %d waivers, result %s\n", m.Counted, m.Total, m.Waivers, result)
-			}
+			renderMilestoneSummary(w, v.Milestone)
 			fmt.Fprintf(w, "State:\t%s\n", state)
 			for _, link := range v.Links {
 				renderCommitmentLink(w, link)
@@ -1187,7 +1178,7 @@ func agendaGroupWhen(r agendaGroupRow, loc *time.Location) string {
 }
 
 func addRemindSubcommands(cmd *cobra.Command) {
-	cmd.AddCommand(remindShowCmd(), remindForecastCmd(), remindReopenCmd())
+	cmd.AddCommand(remindShowCmd(), remindForecastCmd(), remindChildCmd(), remindReopenCmd())
 	for _, v := range resolveVerbs {
 		cmd.AddCommand(remindResolveCmd(v))
 	}

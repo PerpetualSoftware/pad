@@ -32,6 +32,11 @@ func task4105FixtureFor(name string, in map[string]any) {
 		in["forecast"] = "2031-03-12"
 	case "item remind forecast set":
 		in["value"] = "2031-03-12"
+	case "pad_item.schedule-child":
+		in["child"], in["child_action"] = "TASK-2", "select"
+		delete(in, "reason")
+	case "item remind child select", "item remind child waive", "item remind child remove":
+		in["child_ref"] = "TASK-2"
 	case "pad_item.schedule-link", "item remind link add":
 		in["child"], in["parent_role"], in["child_role"] = "TASK-2", "target", "target"
 		in["link_offset"] = map[string]any{"mode": "elapsed", "elapsed_secs": 0}
