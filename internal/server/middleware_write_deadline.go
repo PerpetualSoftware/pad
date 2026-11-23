@@ -249,8 +249,9 @@ func (d *deadlineWriter) Flush() {
 	_ = d.FlushError()
 }
 
-// Hijack satisfies http.Hijacker, which gorilla/websocket type-asserts for
-// rather than going through http.ResponseController. A WebSocket
+// Hijack satisfies http.Hijacker: gorilla/websocket hijacks through
+// http.ResponseController, which checks each writer for Hijack before
+// following Unwrap, so deadlineWriter.Hijack still runs. A WebSocket
 // route that is not in ownsWriteDeadline would otherwise fail its upgrade
 // with a 500. http.Hijacker's contract leaves any deadline on the connection
 // to the caller, so the write deadline this middleware armed is cleared here
