@@ -112,10 +112,13 @@
 	// Set only by loadWorkspaces, never by an effect: true once the list has loaded (TASK-4571).
 	let workspacesLoaded = $state(false);
 	const showTutorial = $derived(showHomeTutorial(workspacesLoaded, workspaceStore.workspaces, authStore.userId));
-	// owner_username comes from a JOIN and can be absent; fall back to the signed-in user (BUG-4576).
-	function workspaceUrl(ws: Workspace): string {
-		const owner = ws.owner_username || authStore.user?.username || '';
-		return `/${owner}/${ws.slug}`;
+	// owner_username comes from a JOIN and can be absent (BUG-4576). Fall back to the signed-in
+	// user only for a workspace with no owner or one they own. With no owner name, render no link:
+	// an empty first segment would make //<slug>, a link to another host.
+	function workspaceUrl(ws: Workspace): string | undefined {
+		const mine = !ws.owner_id || ws.owner_id === authStore.userId;
+		const owner = ws.owner_username || (mine ? authStore.user?.username : '');
+		return owner ? `/${owner}/${ws.slug}` : undefined;
 	}
 	async function loadWorkspaces() {
 		workspaceError = false;
