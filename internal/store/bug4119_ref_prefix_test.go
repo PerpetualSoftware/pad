@@ -285,11 +285,10 @@ func TestBUG4119_LowercaseRefMove(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			current, err := s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: "Filler"})
-			if err != nil {
+			if _, err := s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: "Filler"}); err != nil {
 				t.Fatal(err)
 			}
-			current, err = s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: "Current task"})
+			current, err := s.CreateItem(f.Workspace.ID, task.ID, models.ItemCreate{Title: "Current task"})
 			if err != nil {
 				t.Fatal(err)
 			}

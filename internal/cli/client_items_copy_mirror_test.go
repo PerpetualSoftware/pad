@@ -151,7 +151,7 @@ func sortedUnion(a, b map[string]jsonField) []string {
 }
 
 func deref(t reflect.Type) reflect.Type {
-	for t.Kind() == reflect.Ptr {
+	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	return t
