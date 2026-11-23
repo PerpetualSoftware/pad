@@ -42,6 +42,7 @@ func (s *Server) handleCreateCommitmentGate(w http.ResponseWriter, r *http.Reque
 	if s.writeGraphError(w, r, err) {
 		return
 	}
+	s.publishCommitmentGraphWrite(r, ws, nil, item.ID, blocker.ID)
 	writeJSON(w, 201, gate)
 }
 func (s *Server) handleDeleteCommitmentGate(w http.ResponseWriter, r *http.Request) {
@@ -62,6 +63,7 @@ func (s *Server) handleDeleteCommitmentGate(w http.ResponseWriter, r *http.Reque
 	if s.writeGraphError(w, r, s.store.DeleteScheduleGate(ws, id, access, loader)) {
 		return
 	}
+	s.publishCommitmentGraphWrite(r, ws, nil, a, b)
 	w.WriteHeader(204)
 }
 

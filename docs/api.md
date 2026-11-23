@@ -490,6 +490,8 @@ Both ends must be readable before edit, duplicate, cycle or limit errors are rep
 
 Missing, unreadable, soft-deleted, foreign-workspace and disappearing resources all return `404` with the same body: `{"error":{"code":"schedule_link_not_found","message":"Commitment link or gate not found"}}`. Missing deletes also return this 404. For the two deletes only, workspace owners (by workspace owner ID or membership role `owner`, never an app principal) may remove links and gates across collection restrictions and soft-deleted ends, including a deleted parent. This removal exception grants no live-mode access to deleted items.
 
+Each applied (non-preview) link create, update or delete, gate create or delete, and move publishes `item_updated` for both ends and for every item whose date moved, each once, including items the caller cannot read: the event stream delivers each event per subscriber's own visibility, and soft-deleted items get none. Previews and refusals publish nothing. The items' `seq` is unchanged, as for other schedule writes.
+
 Link and gate detail is visible only when both ends are readable. Move changes, violations and left-in-place entries are filtered to readable items, with no count of hidden entries. The hidden-partner sentence remains: “This date is linked to something you can't view. Ask a workspace owner to change or remove the link.” For anyone but a workspace owner, one or several hidden or deleted partners produce identical refusals. A workspace owner reads the graph through their own collection access like any member; only removal reaches past it and onto deleted ends, so the owner's refusal offers removal of the hidden links (see `schedule_linked` above).
 
 | HTTP status | Error code | Details |

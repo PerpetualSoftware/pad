@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -215,6 +216,34 @@ func (s *Server) writeGraphError(w http.ResponseWriter, r *http.Request, err err
 	return true
 }
 
+// publishCommitmentGraphWrite publishes item_updated, as every schedule write
+// does, for each item an applied graph write touched: its ends and every item
+// whose date the cascade changed, each once. An item the caller cannot read is
+// published too: the event stream filters each event per subscriber, and the
+// response is unaffected. A removed item is skipped. Best-effort: a failed
+// lookup is logged and changes no response.
+func (s *Server) publishCommitmentGraphWrite(r *http.Request, workspaceID string, changed []string, ends ...string) {
+	if s.events == nil {
+		return
+	}
+	seen := map[string]bool{}
+	for _, id := range append(append([]string(nil), ends...), changed...) {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		item, err := s.store.GetItem(id)
+		if err != nil {
+			slog.Warn("commitment graph write: item event not published", "item_id", id, "error", err)
+			continue
+		}
+		if item == nil || item.WorkspaceID != workspaceID || item.DeletedAt != nil {
+			continue
+		}
+		s.publishItemVerified(workspaceID, item, r)
+	}
+}
+
 // graphResourceEnds is private: it deliberately returns neither end to the
 // caller until the component builder has admitted both of them.
 func (s *Server) graphResourceEnds(w http.ResponseWriter, r *http.Request, workspaceID, id string, gate bool) (string, string, bool) {
@@ -325,6 +354,8 @@ func (s *Server) handleCreateCommitmentLink(w http.ResponseWriter, r *http.Reque
 	status := http.StatusCreated
 	if b.Preview {
 		status = http.StatusOK
+	} else {
+		s.publishCommitmentGraphWrite(r, ws, result.Moved.ChangedItemIDs, item.ID, child.ID)
 	}
 	writeJSON(w, status, commitmentLinkWriteView{result.Link, result.Moved})
 }
@@ -374,6 +405,9 @@ func (s *Server) handleUpdateCommitmentLink(w http.ResponseWriter, r *http.Reque
 	if s.writeGraphError(w, r, err) {
 		return
 	}
+	if !body.Preview {
+		s.publishCommitmentGraphWrite(r, ws, result.Moved.ChangedItemIDs, a, b)
+	}
 	writeJSON(w, 200, commitmentLinkWriteView{result.Link, result.Moved})
 }
 func (s *Server) handleDeleteCommitmentLink(w http.ResponseWriter, r *http.Request) {
@@ -394,6 +428,7 @@ func (s *Server) handleDeleteCommitmentLink(w http.ResponseWriter, r *http.Reque
 	if s.writeGraphError(w, r, s.store.DeleteScheduleLink(ws, id, access, loader)) {
 		return
 	}
+	s.publishCommitmentGraphWrite(r, ws, nil, a, b)
 	w.WriteHeader(204)
 }
 func (s *Server) handlePreviewCommitmentMove(w http.ResponseWriter, r *http.Request) {
@@ -501,6 +536,9 @@ func (s *Server) handleCommitmentMove(w http.ResponseWriter, r *http.Request, pr
 		return
 	}
 	result.ResolvedFrom = resolvedFrom
+	if !preview {
+		s.publishCommitmentGraphWrite(r, ws, result.ChangedItemIDs, item.ID)
+	}
 	writeJSON(w, 200, result)
 }
 

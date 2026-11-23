@@ -170,6 +170,11 @@ type LinkedMoveResult struct {
 	// the server placed it at the caller's day start (TASK-4723), on preview
 	// and apply alike. Empty for an RFC3339 to.
 	ResolvedFrom string `json:"resolved_from,omitempty"`
+	// ChangedItemIDs is every item whose date the plan changes, readable by the
+	// caller or not, once each in plan order. It never serializes: the server
+	// uses it only to publish item events, which the event stream filters per
+	// subscriber.
+	ChangedItemIDs []string `json:"-"`
 }
 
 // ScheduleLinkUpdate changes a link's offset or cancel policy. A new offset moves

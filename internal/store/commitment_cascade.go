@@ -615,7 +615,8 @@ func keysOfNodes(m map[string]*linkNode) []string {
 	return keysOf(set)
 }
 
-// linkedResult keeps only the changes and violations on items the caller can read.
+// linkedResult keeps only the changes and violations on items the caller can
+// read. ChangedItemIDs alone names every changed item, and never serializes.
 func (s *Store) linkedResult(p *linkedPlan, acc models.CommitmentAccess, renegotiates bool) *models.LinkedMoveResult {
 	res := &models.LinkedMoveResult{Revision: p.revision, Changes: []models.LinkedDateChange{}, RenegotiatesDeadline: renegotiates}
 	format := func(t time.Time) string {
@@ -624,8 +625,14 @@ func (s *Store) linkedResult(p *linkedPlan, acc models.CommitmentAccess, renegot
 		}
 		return t.UTC().Format(time.RFC3339Nano)
 	}
+	seen := map[string]bool{}
 	for _, ch := range p.impact.Changes {
-		if item := p.c.itemOf(ch.Node.Schedule); acc.Readable[item] {
+		item := p.c.itemOf(ch.Node.Schedule)
+		if item != "" && !seen[item] {
+			seen[item] = true
+			res.ChangedItemIDs = append(res.ChangedItemIDs, item)
+		}
+		if acc.Readable[item] {
 			res.Changes = append(res.Changes, models.LinkedDateChange{ItemID: item, Role: linkRoleName(ch.Role), From: format(ch.From), To: format(ch.To), Root: ch.Root})
 		}
 	}
