@@ -161,3 +161,23 @@ it('forecast-only row deduped against an inline entry', () => {
  data.forecasts = [other];
  expect(calendarRows(data, collection, 'due', '2026-04').filter(r => r.kind === 'forecast')).toHaveLength(1);
 });
+
+describe('day tally: a forecast marker is not an entry', () => {
+ const rows = (day: string) => calendarRows({ ...response('2026-04-01'), items: [], entries: [
+  { type: 'schedule', at: '2026-04-09T13:00:00Z', day: '2026-04-09', item_ref: 'TASK-2', item_title: 'A', collection: 'tasks', schedule_id: 's2' },
+  // An entry that also carries a forecast is still one entry; its forecast draws a marker on its own day (04-02).
+  { type: 'schedule', at: '2026-04-09T15:00:00Z', day: '2026-04-09', item_ref: 'TASK-3', item_title: 'B', collection: 'tasks', schedule_id: 's3', forecast: forecastOnly().forecast }
+ ], forecasts: [forecastOnly(), { ...forecastOnly(), schedule_id: 's4', item_ref: 'TASK-4', day: '2026-04-09', forecast: { ...forecastOnly().forecast, value: '2026-04-09' } }] }, collection, 'due', '2026-04').filter(r => r.day === day);
+ it('counts entries only, and names markers apart', async () => {
+  const { dayTally, dayWords } = await import('./monthGrid');
+  expect(rows('2026-04-09')).toHaveLength(3);
+  expect(dayTally(rows('2026-04-09'))).toEqual({ entries: 2, forecasts: 1 });
+  expect(dayTally(rows('2026-04-02'))).toEqual({ entries: 0, forecasts: 2 });
+  expect(dayTally([])).toEqual({ entries: 0, forecasts: 0 });
+  expect(dayWords(dayTally(rows('2026-04-09')), 'No entries')).toEqual(['2 entries', '1 forecast']);
+  expect(dayWords(dayTally(rows('2026-04-02')), 'No entries')).toEqual(['No entries', '2 forecasts']);
+  expect(dayWords({ entries: 0, forecasts: 1 }, 'No entries')).toEqual(['No entries', '1 forecast']);
+  expect(dayWords({ entries: 1, forecasts: 2 }, 'No entries')).toEqual(['1 entry', '2 forecasts']);
+  expect(dayWords({ entries: 0, forecasts: 0 }, '0 entries')).toEqual(['0 entries']);
+ });
+});

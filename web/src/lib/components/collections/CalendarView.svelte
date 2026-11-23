@@ -4,7 +4,7 @@
  import type { CalendarResponse, Collection, Item } from '$lib/types';
  import { authStore } from '$lib/stores/auth.svelte';
  import { viewport } from '$lib/stores/breakpoint.svelte';
- import { attentionFirst, calendarError, calendarRows, dayLabel, entryCount, fieldLabel, incomplete, incompleteDay, monthLabel, monthWindow, moveMonth, safeZone, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
+ import { attentionFirst, calendarError, calendarRows, dayLabel, dayTally, dayWords, fieldLabel, incomplete, incompleteDay, monthLabel, monthWindow, moveMonth, safeZone, staleConfig, STALE_FIELD, UNSUPPORTED_FIELD, zoneDay, type CalendarConfig, type CalendarRow } from '$lib/calendar/monthGrid';
  import MonthGrid from '../calendar/MonthGrid.svelte';
  import CalendarToolbar from '../calendar/CalendarToolbar.svelte';
  import CalendarEntry from '../calendar/CalendarEntry.svelte';
@@ -63,6 +63,9 @@
   for (const [day, list] of map) map.set(day, attentionFirst(list, row => !!row.attention));
   return map;
  });
+ // Counts name entries only; a forecast marker is drawn and named apart, never counted.
+ let tallies = $derived(new Map([...byDay].map(([day, list]) => [day, dayTally(list)])));
+ const tally = (day:string) => tallies.get(day) ?? { entries: 0, forecasts: 0 };
 
  $effect(() => {
   const {filters: appliedFilters, filterProblem: appliedProblem} = applied;
@@ -116,7 +119,7 @@
  function changeConfig(next:CalendarConfig) { onConfigChange(next); }
  function filtersAction() { openedDay=null; onFilters(); }
  function listAction() { openedDay=null; onList(); }
- function cellLabel(day:string) { return `${dayLabel(day,true)}${day===today ? ', Today' : ''}, ${entryCount(byDay.get(day)?.length ?? 0)}${data && incompleteDay(data,day) ? ', Incomplete' : ''}`; }
+ function cellLabel(day:string) { return `${dayLabel(day,true)}${day===today ? ', Today' : ''}, ${dayWords(tally(day),'0 entries').join(', ')}${data && incompleteDay(data,day) ? ', Incomplete' : ''}`; }
 </script>
 
 <section class="calendar" class:updating={loading && !!data} aria-label="Calendar" aria-busy={loading && !!data}>
@@ -138,8 +141,8 @@
    {/if}
   {/if}
   <MonthGrid bind:this={grid} {month} {today} {selected} mobile={viewport.isMobile} {cellLabel}
-   summary={(day) => data && incompleteDay(data,day) ? 'Not fully loaded' : byDay.get(day)?.length ? entryCount(byDay.get(day)!.length) : 'No entries'}
-   count={(day) => byDay.get(day)?.length ? String(byDay.get(day)!.length) : ''} empty={(day) => !byDay.get(day)?.length && !(data && incompleteDay(data,day))}
+   summary={(day) => data && incompleteDay(data,day) ? 'Not fully loaded' : dayWords(tally(day),'No entries').join(' · ')}
+   count={(day) => tally(day).entries ? String(tally(day).entries) : ''} empty={(day) => !byDay.get(day)?.length && !(data && incompleteDay(data,day))}
    onopen={openDay} onchoose={chooseDay} loaded={data} cell={entries} />
   {#if data}
    <CalendarDayDialog day={openedDay} rows={openedDay ? byDay.get(openedDay) ?? [] : []} {data} {zone} {basePath} onclose={() => openedDay=null} onopen={openEntry} onfilters={filtersAction} onlist={listAction} />

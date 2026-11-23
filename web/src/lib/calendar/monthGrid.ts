@@ -60,6 +60,16 @@ export function dayLabel(day: string, full = false): string {
 export function entryCount(count: number): string {
  return `${count} ${count === 1 ? 'entry' : 'entries'}`;
 }
+/** What a day holds. A forecast marker is not an entry: it is drawn and named, never counted, as in the agenda week strip. A schedule entry that carries a forecast is still one entry. */
+export function dayTally(rows: readonly CalendarRow[]): { entries: number; forecasts: number } {
+ let forecasts = 0;
+ for (const row of rows) if (row.kind === 'forecast') forecasts++;
+ return { entries: rows.length - forecasts, forecasts };
+}
+/** A day's tally in words: the entry count (or `none` when there are none), then any forecasts, named apart. */
+export function dayWords({ entries, forecasts }: { entries: number; forecasts: number }, none: string): string[] {
+ return [entries ? entryCount(entries) : none, ...(forecasts ? [`${forecasts} ${forecasts === 1 ? 'forecast' : 'forecasts'}`] : [])];
+}
 export function monthLabel(month: string): string {
  return new Intl.DateTimeFormat('en-GB', {timeZone:'UTC',month:'long',year:'numeric'}).format(new Date(`${month}-01T12:00:00Z`));
 }
