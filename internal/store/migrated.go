@@ -293,6 +293,7 @@ var migratedExcludedTables = map[string]string{
 	"app_token_bindings":          "auth",
 	"password_reset_tokens":       "auth",
 	"email_verification_tokens":   "auth",
+	"oauth_pending_links":         "auth",
 	"email_optouts":               "auth",
 	"cli_auth_sessions":           "auth",
 	"platform_settings":           "platform",
