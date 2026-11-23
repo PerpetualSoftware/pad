@@ -294,7 +294,7 @@ export function groupHistory(entries: readonly TimelineEntry[]): HistoryRow[] {
 
 // ── Presentation helpers (pure, so the wording is tested) ───────────────────
 
-const SCHEDULE_PHRASES: Record<string, (meta: Record<string, unknown>) => string> = {
+const SCHEDULE_PHRASES: Record<string, (meta: Record<string, unknown>, activity: Activity) => string> = {
 	schedule_created: () => 'added a schedule',
 	schedule_updated: () => 'changed the schedule',
 	schedule_deleted: () => 'removed the schedule',
@@ -309,8 +309,20 @@ const SCHEDULE_PHRASES: Record<string, (meta: Record<string, unknown>) => string
 	},
 	schedule_acknowledged: () => 'acknowledged an occurrence',
 	schedule_end_dismissed: () => "dismissed the schedule's end notice",
-	schedule_reopened: (meta) => {
+	schedule_reopened: (meta, activity) => {
 		const label = resolutionLabel(meta.state);
+		// The resolving user's name, when the server resolved one and the
+		// undoer is someone else: an agent, or another user. Same rule as
+		// TimelineActivityCard's getActionLabel.
+		const name = activity.original_actor_name;
+		if (
+			meta.original_actor === 'user' &&
+			typeof name === 'string' &&
+			name !== '' &&
+			(activity.actor !== 'user' || meta.original_actor_user_id !== activity.user_id)
+		) {
+			return label ? `reopened an occurrence (undid ${name}'s ${label})` : `reopened an occurrence (resolved by ${name})`;
+		}
 		return label ? `reopened an occurrence (undid ${label})` : 'reopened an occurrence';
 	}
 };
@@ -340,7 +352,7 @@ export function eventVerb(ev: HistoryEvent, noun = 'item', fieldLabel: (key: str
 		else if (a.action === 'archived') parts.push(`archived this ${noun}`);
 		else if (a.action === 'restored') parts.push(`restored this ${noun}`);
 		else if (a.action === 'reordered') parts.push(`moved this ${noun} within its list`);
-		else if (Object.hasOwn(SCHEDULE_PHRASES, a.action)) parts.push(SCHEDULE_PHRASES[a.action](parseMeta(a.metadata)));
+		else if (Object.hasOwn(SCHEDULE_PHRASES, a.action)) parts.push(SCHEDULE_PHRASES[a.action](parseMeta(a.metadata), a));
 		else parts.push(a.action);
 	}
 	if (!created && ev.changes.length > 0) {

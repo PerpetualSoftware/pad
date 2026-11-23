@@ -17,7 +17,15 @@ const at = (sec: number) => new Date(T0 + sec * 1000).toISOString();
 function activity(
 	id: string,
 	sec: number,
-	opts: { action?: string; actor?: 'user' | 'agent'; name?: string; source?: string; meta?: Record<string, string> } = {}
+	opts: {
+		action?: string;
+		actor?: 'user' | 'agent';
+		name?: string;
+		source?: string;
+		meta?: Record<string, string>;
+		userId?: string;
+		originalActorName?: string;
+	} = {}
 ): TimelineEntry {
 	const actor = opts.actor ?? 'user';
 	return {
@@ -34,7 +42,9 @@ function activity(
 			actor_name: opts.name ?? 'Dave',
 			source: opts.source ?? 'web',
 			metadata: JSON.stringify(opts.meta ?? {}),
-			created_at: at(sec)
+			created_at: at(sec),
+			...(opts.userId !== undefined ? { user_id: opts.userId } : {}),
+			...(opts.originalActorName !== undefined ? { original_actor_name: opts.originalActorName } : {})
 		}
 	};
 }
@@ -236,6 +246,42 @@ describe('eventVerb', () => {
 		['unknown', 'reopened an occurrence']
 	])('describes a reopened occurrence with state %s', (state, phrase) => {
 		const [ev] = events([activity('a', 0, { action: 'schedule_reopened', meta: { state } })]);
+		expect(eventVerb(ev)).toBe(phrase);
+	});
+
+	it.each<[string, Parameters<typeof activity>[2], string]>([
+		[
+			'an agent undid a user\'s Done',
+			{ actor: 'agent', userId: 'u1', originalActorName: 'Ada', meta: { state: 'done', original_actor: 'user', original_actor_user_id: 'u1' } },
+			"reopened an occurrence (undid Ada's Done)"
+		],
+		[
+			'a different user undid a user\'s Skip',
+			{ actor: 'user', userId: 'u2', originalActorName: 'Ada', meta: { state: 'skip', original_actor: 'user', original_actor_user_id: 'u1' } },
+			"reopened an occurrence (undid Ada's Skip)"
+		],
+		[
+			'the same user undid their own Done',
+			{ actor: 'user', userId: 'u1', originalActorName: 'Ada', meta: { state: 'done', original_actor: 'user', original_actor_user_id: 'u1' } },
+			'reopened an occurrence (undid Done)'
+		],
+		[
+			'a user original with no resolved name',
+			{ actor: 'agent', userId: 'u1', meta: { state: 'done', original_actor: 'user', original_actor_user_id: 'u1' } },
+			'reopened an occurrence (undid Done)'
+		],
+		[
+			'an agent original with a name present',
+			{ actor: 'user', userId: 'u2', originalActorName: 'Ada', meta: { state: 'done', original_actor: 'agent', original_actor_user_id: 'u1' } },
+			'reopened an occurrence (undid Done)'
+		],
+		[
+			'an unknown state with a named user original',
+			{ actor: 'agent', userId: 'u1', originalActorName: 'Ada', meta: { state: 'unknown', original_actor: 'user', original_actor_user_id: 'u1' } },
+			'reopened an occurrence (resolved by Ada)'
+		]
+	])('names the original resolver on a reopened occurrence: %s', (_case, opts, phrase) => {
+		const [ev] = events([activity('a', 0, { action: 'schedule_reopened', ...opts })]);
 		expect(eventVerb(ev)).toBe(phrase);
 	});
 
