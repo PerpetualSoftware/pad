@@ -37,6 +37,8 @@
 	let actionError = $state('');
 	let menu = $state('');
 	let busy = $state<Record<string, boolean>>({});
+	// A call fenced off by an identity change never clears its busy flag, so the next person starts with none.
+	onDestroy(authStore.onIdentityChange(() => { busy = {}; menu = ''; actionError = ''; }));
 	const zone = $derived(homeOverview.zone);
 	const today = $derived(homeOverview.today);
 	let weekOffset = $state(0);

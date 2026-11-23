@@ -16,7 +16,8 @@ const h = vi.hoisted(() => ({
 	membersList: vi.fn(),
 	mobile: false,
 	epoch: 0,
-	reset: () => {}
+	resets: new Set<() => void>(),
+	reset: () => { for (const r of [...h.resets]) r(); }
 }));
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -51,7 +52,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 		userId: 'u-me',
 		user: { name: 'Mara', timezone: 'UTC' },
 		identityFence: () => { const epoch = h.epoch; return () => epoch === h.epoch; },
-		onIdentityChange: (reset: () => void) => { h.reset = reset; return () => {}; }
+		onIdentityChange: (reset: () => void) => { h.resets.add(reset); return () => { h.resets.delete(reset); }; }
 	}
 }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
@@ -219,6 +220,21 @@ it('desktop: no state is written after an identity change mid-call', async () =>
 	await settle();
 	expect(screen.queryByRole('alert')).not.toBeInTheDocument();
 	expect(forcedLoads(load)).toBe(0);
+});
+
+it('desktop: an identity change mid-call does not leave the row busy for the next person', async () => {
+	await mount();
+	h.notMine.mockReturnValue(new Promise(() => {}));
+	await click(within(rowEl('TASK-0')).getByRole('button', { name: 'More actions TASK-0' }));
+	await click(menuButton('Not mine'));
+	expect(within(rowEl('TASK-0')).getByRole('button', { name: 'More actions TASK-0' })).toBeDisabled();
+	h.epoch++;
+	h.reset();
+	// The next person's overview loads the same row (same workspace and ref).
+	await homeOverview.load('/', true);
+	await vi.waitFor(() => expect(rowEl('TASK-0')).toBeTruthy());
+	await settle();
+	expect(within(rowEl('TASK-0')).getByRole('button', { name: 'More actions TASK-0' })).not.toBeDisabled();
 });
 
 it('phone: the compact row sheet contains Not mine and Give to, and Not mine sends the marker', async () => {
