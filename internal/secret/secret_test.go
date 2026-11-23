@@ -142,8 +142,10 @@ func TestSecretJSON(t *testing.T) {
 		t.Errorf("null changed the value to %q", in.Password.Reveal())
 	}
 
-	// A wrong type is refused with the same text a plain string field gives
-	// (both structs are named body, so the messages compare whole).
+	// A wrong type is refused with the type error a plain string field gives:
+	// same JSON value kind, same Go type. Only the field path can differ,
+	// because encoding/json adds it to an UnmarshalJSON method's error on
+	// some Go releases and not others.
 	var wantErr error
 	{
 		type body struct {
@@ -153,8 +155,9 @@ func TestSecretJSON(t *testing.T) {
 		wantErr = json.Unmarshal([]byte(`{"password":42}`), &p)
 	}
 	gotErr := json.Unmarshal([]byte(`{"password":42}`), &in)
-	if wantErr == nil || gotErr == nil || gotErr.Error() != wantErr.Error() {
-		t.Errorf("number error = %v, want %v", gotErr, wantErr)
+	var want, got *json.UnmarshalTypeError
+	if !errors.As(wantErr, &want) || !errors.As(gotErr, &got) || got.Value != want.Value || got.Type != want.Type {
+		t.Errorf("number error = %v, want the type error of %v", gotErr, wantErr)
 	}
 
 	var u secret.Secret
