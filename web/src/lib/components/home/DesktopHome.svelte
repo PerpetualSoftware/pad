@@ -23,7 +23,7 @@
 	import AgendaCompleted from '$lib/components/calendar/AgendaCompleted.svelte';
 	import { audienceCounts, filterAudience, type AudienceView } from '$lib/calendar/audience';
 	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, dayCounts, outstandingMatches, shiftDay, dayWindow, weekLabel, workOccurrence, roleMarkers, type AgendaAction } from '$lib/calendar/presentation';
-	import type { AgendaResponse, AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
+	import type { AgendaResponse, AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest, Workspace } from '$lib/types';
 
 	let audience = $state<AudienceView>('mine');
 	// The agenda's Show completed preference, per user: hidden there means hidden here.
@@ -112,6 +112,11 @@
 	// Set only by loadWorkspaces, never by an effect: true once the list has loaded (TASK-4571).
 	let workspacesLoaded = $state(false);
 	const showTutorial = $derived(showHomeTutorial(workspacesLoaded, workspaceStore.workspaces, authStore.userId));
+	// owner_username comes from a JOIN and can be absent; fall back to the signed-in user (BUG-4576).
+	function workspaceUrl(ws: Workspace): string {
+		const owner = ws.owner_username || authStore.user?.username || '';
+		return `/${owner}/${ws.slug}`;
+	}
 	async function loadWorkspaces() {
 		workspaceError = false;
 		workspacesLoaded = false;
@@ -238,7 +243,7 @@
 		{/if}
 		{#if workspaceError}<p role="alert">Couldn’t load your workspaces. <button onclick={loadWorkspaces}>Retry</button></p>{/if}
 		<div class="workspace-cards">{#each workspaceStore.workspaces as ws (ws.id)}
-			<a class="workspace-card" href="/{ws.owner_username}/{ws.slug}"><strong><span class="avatar" style:background={avatarColor(ws.name)}>{ws.name.charAt(0).toUpperCase()}</span>{ws.name}</strong>
+			<a class="workspace-card" href={workspaceUrl(ws)}><strong><span class="avatar" style:background={avatarColor(ws.name)}>{ws.name.charAt(0).toUpperCase()}</span>{ws.name}</strong>
 				{#if ws.is_guest}<span>Shared with you · guest</span>{:else if homeOverview.needs}<span>{homeOverview.needs.workspaces.find(w => w.slug === ws.slug)?.count ?? 0} need you</span>{/if}
 			</a>
 		{/each}</div>
