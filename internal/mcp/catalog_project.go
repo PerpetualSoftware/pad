@@ -51,7 +51,7 @@ var padProjectTool = ToolDef{
 			{
 				Name:        "limit",
 				Type:        "number",
-				Description: "Maximum number of entries to return. Optional for action=activity (default 20).",
+				Description: "Maximum number of entries to return. Optional for action=activity (default 20, max 200).",
 			},
 		},
 	},
