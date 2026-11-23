@@ -15,7 +15,9 @@ import (
 // preflight asks the same planScheduleCarry the copy runs.
 //
 // The destination is armed FRESH: its timing, kind, audience and lead carry, its
-// resolved occurrences do not, a COPY drops its snooze, and its outstanding occurrence is
+// resolved occurrences do not (a MOVE carries one: the `moved` row of the
+// pending occurrence it carries, with that occurrence's overrides), a COPY
+// drops its snooze, and its outstanding occurrence is
 // the first one strictly after the copy instant. A copy never fires an occurrence that is
 // already due or past. The one exception is a MOVE of a source whose current
 // occurrence is OUTSTANDING and due, whether it has fired (and is unresolved) or
@@ -53,8 +55,10 @@ type ScheduleCarryReport struct {
 	HasSchedule bool
 	// Carried is true when the destination got a schedule.
 	Carried bool
-	// HistoryDropped is how many resolved occurrences the source schedule has:
-	// copies and moves drop resolved occurrences.
+	// HistoryDropped is how many of the source schedule's occurrence rows do not
+	// reach the destination: every row on a copy or when nothing is carried; on
+	// a carried move every row but the pending occurrence's `moved` row, which
+	// travels with that occurrence's overrides.
 	HistoryDropped int
 	// ChangesDropped is how many journal rows of the source schedule do not
 	// reach the destination: every row on a copy or when nothing is carried, and
@@ -180,6 +184,35 @@ func carriedFromLive(sc *models.ItemSchedule, roles *models.ScheduleRolesExport,
 	return in, ""
 }
 
+// pendingMovedOccurrenceQ is the source's history row for its pending
+// occurrence when that row is `moved`, else nil. The identity is the one
+// readScheduleRefireAt reads: the wall for a floating or all-day occurrence,
+// the instant otherwise. CommentID is "": a cross-workspace copy carries no
+// comments, so the source's comment has no destination id. Roles stay nil, as
+// a moved row never holds an offset snapshot.
+func (s *Store) pendingMovedOccurrenceQ(q Queryer, sc *models.ItemSchedule) (*carriedOccurrence, error) {
+	if sc.NextWall == nil {
+		return nil, nil
+	}
+	column, identity := "occurrence_wall", *sc.NextWall
+	if !sc.Floating && len(*sc.NextWall) != 10 {
+		if sc.NextAt == nil {
+			return nil, nil
+		}
+		column, identity = "occurrence_at", *sc.NextAt
+	}
+	var o carriedOccurrence
+	err := q.QueryRow(s.q(`SELECT occurrence_at, occurrence_wall, state, actor, resolved_at FROM schedule_occurrences WHERE schedule_id = ? AND `+column+` = ? AND state = 'moved'`), sc.ID, identity).
+		Scan(&o.At, &o.Wall, &o.State, &o.Actor, &o.ResolvedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read moved occurrence: %w", err)
+	}
+	return &o, nil
+}
+
 // liveOverride is the source's snooze when it is still ahead of nowT, else "".
 func liveOverride(sc *models.ItemSchedule, nowT time.Time) string {
 	if sc.NextOverrideAt == nil {
@@ -266,6 +299,7 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 		}
 	}
 	in, skip := carriedFromLive(sc, roles, move, view, srcView, nowT)
+	var moved *carriedOccurrence // the pending occurrence's moved row, carried on a move
 	if move && skip == "" {
 		samePending := in.NextAt == derefStr(sc.NextAt)
 		if sc.Floating {
@@ -284,13 +318,32 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 					in.Overrides = append(in.Overrides, o)
 				}
 			}
+			// The move's target override travels, so its moved row must too:
+			// without it the destination reads next_override_at as a snooze
+			// (scheduleRefireAt) and shows no move (BUG-4710).
+			if moved, err = s.pendingMovedOccurrenceQ(q, sc); err != nil {
+				return nil, err
+			}
 		}
 		if p.changes, err = s.scheduleChangesQ(q, workspaceID, sc.ID); err != nil {
 			return nil, err
 		}
 	}
 	if skip == "" {
-		if _, err := prepareCarriedSchedule(in); err != nil {
+		prepared, err := prepareCarriedSchedule(in)
+		if err == nil && moved != nil {
+			// The row is keyed on the destination's outstanding instant, the one
+			// a later resolve there matches: a floating schedule's can differ
+			// from the source's (another recipient zone). prepareCarriedSchedule
+			// is pure and the history does not feed the arming, so the commit's
+			// own prepare of in derives the same instant.
+			if at, ok := prepared.nextAt.(string); ok {
+				moved.At = at
+			}
+			in.Occurrences = append(in.Occurrences, *moved)
+			_, err = prepareCarriedOccurrences(in.Occurrences)
+		}
+		if err != nil {
 			var drop *scheduleCarryDrop
 			if !errors.As(err, &drop) {
 				return nil, err
@@ -305,6 +358,10 @@ func (s *Store) planScheduleCarry(q Queryer, workspaceID, itemID string, who sch
 		return nil, &ScheduleNotCarriedError{Reason: skip}
 	}
 	p.in, p.report.Skipped, p.report.Carried = in, skip, skip == ""
+	if p.report.Carried {
+		// The carried moved row reaches the destination; every other row does not.
+		p.report.HistoryDropped -= len(in.Occurrences)
+	}
 	if p.report.Carried && move {
 		// The commit restores these rows with the same classifier, so the
 		// preview and the commit agree. The destination ids are placeholders:
