@@ -20,7 +20,10 @@ type graphHTTP struct {
 }
 
 func newGraphHTTP(t *testing.T, roles ...models.CommitmentRolesInput) *graphHTTP {
-	f := &graphHTTP{schedHTTP: newSchedHTTP(t), access: models.CommitmentAccess{Readable: map[string]bool{}, Editable: map[string]bool{}}}
+	return newGraphHTTPOn(t, testServer(t), roles...)
+}
+func newGraphHTTPOn(t *testing.T, srv *Server, roles ...models.CommitmentRolesInput) *graphHTTP {
+	f := &graphHTTP{schedHTTP: newSchedHTTPOn(t, srv), access: models.CommitmentAccess{Readable: map[string]bool{}, Editable: map[string]bool{}}}
 	for i, r := range roles {
 		it := f.item
 		if i > 0 {
