@@ -1531,7 +1531,28 @@ export interface LoginResponse {
 	token?: string;
 	requires_2fa?: boolean;
 	challenge_token?: string;
+	pending_link?: PendingLinkResult;
 }
+
+// The outcome of a pending provider link on a completed sign-in (TASK-4745).
+// Present only when the browser held a pending-link cookie, in cloud mode.
+export type PendingLinkResult =
+	| { linked: true; provider: string }
+	| {
+			linked: false;
+			code:
+				| 'pending_link_invalid'
+				| 'pending_link_not_requested'
+				| 'pending_link_ineligible'
+				| 'oauth_subject_mismatch'
+				| 'pending_link_failed';
+	  };
+
+// GET /auth/pending-link (TASK-4745, cloud mode): what the login page offers
+// when an OAuth sign-in matched this account without that provider linked.
+export type PendingLinkState =
+	| { pending: false }
+	| { pending: true; provider: string; email: string; password: boolean; providers: string[] };
 
 // Non-consuming invitation preview (BUG-1934). `found` is false for
 // invalid/expired/missing codes (the endpoint is always-200 for enumeration
@@ -3239,16 +3260,26 @@ export const api = {
 		// never answered left the app's auth load pending for good (BUG-3211).
 		session: (): Promise<AuthSession> =>
 			fetchJsonWithDeadline<AuthSession>(BASE + '/auth/session', { credentials: 'same-origin' }),
-		login: (email: string, password: string) =>
+		// linkPending: link this browser's pending provider once signed in
+		// (TASK-4745). Omitted, nothing is linked.
+		login: (email: string, password: string, linkPending?: boolean) =>
 			request<LoginResponse>('/auth/login', {
 				method: 'POST',
-				body: JSON.stringify({ email, password })
+				body: JSON.stringify({ email, password, ...(linkPending !== undefined ? { link_pending: linkPending } : {}) })
 			}),
-		verify2FA: (challengeToken: string, code?: string, recoveryCode?: string) =>
-			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string }>('/auth/2fa/login-verify', {
+		verify2FA: (challengeToken: string, code?: string, recoveryCode?: string, linkPending?: boolean) =>
+			request<{ user: { id: string; email: string; username: string; name: string; role: string }; token: string; pending_link?: PendingLinkResult }>('/auth/2fa/login-verify', {
 				method: 'POST',
-				body: JSON.stringify({ challenge_token: challengeToken, code: code || undefined, recovery_code: recoveryCode || undefined })
+				body: JSON.stringify({
+					challenge_token: challengeToken,
+					code: code || undefined,
+					recovery_code: recoveryCode || undefined,
+					...(linkPending !== undefined ? { link_pending: linkPending } : {})
+				})
 			}),
+		// The pending provider link held behind this browser's cookie
+		// (TASK-4745). Cloud mode only; the server answers 404 elsewhere.
+		pendingLink: () => request<PendingLinkState>('/auth/pending-link'),
 		register: (
 			email: string,
 			name: string,
