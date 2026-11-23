@@ -52,6 +52,14 @@
 		if (action === 'schedule_reopened') {
 			const operation = resolutionLabel(metadata.state);
 			const original = metadata.original_actor;
+			// The resolving user's name, when the server resolved one and the
+			// undoer is someone else: an agent, or another user (TASK-4580).
+			const name = activity.original_actor_name;
+			if (original === 'user' && name && (activity.actor !== 'user' || metadata.original_actor_user_id !== activity.user_id)) {
+				return operation
+					? `Reopened schedule occurrence: undid ${name}'s ${operation}`
+					: `Reopened schedule occurrence (resolved by ${name})`;
+			}
 			const resolvedBy = typeof original === 'string' && original && original !== activity.actor
 				? ` (resolved by ${getActorLabel({ actor: original }, {})})` : '';
 			return `Reopened schedule occurrence${operation ? `: undid ${operation}` : ''}${resolvedBy}`;

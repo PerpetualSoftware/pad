@@ -128,6 +128,14 @@ type Activity struct {
 	ItemRef        string `json:"item_ref,omitempty"` // e.g. "BUG-1748" — computed from the referenced item
 	CollectionSlug string `json:"collection_slug,omitempty"`
 	ActorName      string `json:"actor_name,omitempty"`
+	// OriginalActorName is the display name of the user whose resolution a
+	// schedule_reopened row undid (TASK-4580), resolved at read time from
+	// metadata.original_actor_user_id through the same users table that
+	// gives ActorName. Set only on schedule_reopened rows whose
+	// metadata.original_actor is "user" and whose user still exists. Never
+	// set for an "agent" original: that row's user id is the human the agent
+	// authenticated as, and naming them would claim a human resolved it.
+	OriginalActorName string `json:"original_actor_name,omitempty"`
 }
 
 type ActivityListParams struct {

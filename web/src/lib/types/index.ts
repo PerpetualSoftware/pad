@@ -2052,6 +2052,13 @@ export interface Activity {
 	action: string;
 	actor: string;
 	actor_name?: string;
+	/** The account the write rode on (an agent's is the human it
+	 *  authenticated as). Omitted when the row has none. */
+	user_id?: string;
+	/** On a `schedule_reopened` row only: the display name of the user whose
+	 *  resolution was undone, when `metadata.original_actor` is `user` and
+	 *  that user still exists (TASK-4580). Never set for an agent original. */
+	original_actor_name?: string;
 	source: string;
 	metadata: string;
 	created_at: string;

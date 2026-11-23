@@ -132,4 +132,24 @@ describe('schedule reopen activity (TASK-4539)', () => {
   const { container } = render(TimelineActivityCard, { activity: activity({ action: 'schedule_reopened', actor: 'user', metadata: JSON.stringify({ state: 'done', original_actor: 'user' }) }) });
   expect(container.querySelector('.action-label')?.textContent).toBe('Reopened schedule occurrence: undid Done');
  });
+ // TASK-4580: the original resolver's display name, when the server resolved one.
+ const reopenLabel = (overrides: Partial<Activity>, meta: Record<string, unknown>) => {
+  const { container } = render(TimelineActivityCard, { activity: activity({ action: 'schedule_reopened', metadata: JSON.stringify(meta), ...overrides }) });
+  return container.querySelector('.action-label')?.textContent;
+ };
+ it('names the original user when another user undid it', () => {
+  expect(reopenLabel({ actor: 'user', user_id: 'u-bob', original_actor_name: 'Ann' }, { state: 'done', original_actor: 'user', original_actor_user_id: 'u-ann' })).toBe("Reopened schedule occurrence: undid Ann's Done");
+ });
+ it('names the original user with no known operation', () => {
+  expect(reopenLabel({ actor: 'user', user_id: 'u-bob', original_actor_name: 'Ann' }, { state: 'unknown', original_actor: 'user', original_actor_user_id: 'u-ann' })).toBe('Reopened schedule occurrence (resolved by Ann)');
+ });
+ it('names nobody when the same user undid their own resolution', () => {
+  expect(reopenLabel({ actor: 'user', user_id: 'u-ann', original_actor_name: 'Ann' }, { state: 'done', original_actor: 'user', original_actor_user_id: 'u-ann' })).toBe('Reopened schedule occurrence: undid Done');
+ });
+ it('names the original user when an agent undid it', () => {
+  expect(reopenLabel({ actor: 'agent', user_id: 'u-ann', original_actor_name: 'Ann' }, { state: 'done', original_actor: 'user', original_actor_user_id: 'u-ann', agent: 'wren' })).toBe("Reopened schedule occurrence: undid Ann's Done");
+ });
+ it('keeps the generic Agent suffix for an agent original even with a name', () => {
+  expect(reopenLabel({ actor: 'user', user_id: 'u-bob', original_actor_name: 'Ann' }, { state: 'done', original_actor: 'agent', original_actor_user_id: 'u-ann' })).toBe('Reopened schedule occurrence: undid Done (resolved by Agent)');
+ });
 });
