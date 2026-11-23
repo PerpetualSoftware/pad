@@ -213,7 +213,9 @@ func (l *logSink) Handle(_ context.Context, r slog.Record) error {
 func (l *logSink) WithAttrs([]slog.Attr) slog.Handler { return l }
 func (l *logSink) WithGroup(string) slog.Handler      { return l }
 
-// find returns the records containing every one of subs.
+// find returns the records containing every one of subs. Each record is
+// matched with a trailing space, so a sub ending in a space (pidAttr) matches
+// an attribute that ends the record too.
 func (l *logSink) find(subs ...string) []string {
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -221,13 +223,32 @@ func (l *logSink) find(subs ...string) []string {
 next:
 	for _, r := range l.recs {
 		for _, s := range subs {
-			if !strings.Contains(r, s) {
+			if !strings.Contains(r+" ", s) {
 				continue next
 			}
 		}
 		out = append(out, r)
 	}
 	return out
+}
+
+// pidAttr is the whole-token form of a pid attribute for find: "pid=704"
+// alone also matches a record carrying pid=7044.
+func pidAttr(pid int) string { return " pid=" + strconv.Itoa(pid) + " " }
+
+func TestLogSinkFindPidIsWholeToken(t *testing.T) {
+	l := &logSink{recs: []string{
+		"WARN materialize worker stopped pid=704 reason=exit",
+		"WARN materialize worker stopped pid=7044 reason=exit",
+		"INFO materialize worker stderr: helper pid=704",
+		"INFO materialize worker stderr: helper pid=7044",
+	}}
+	if got := l.find("materialize worker stopped", pidAttr(704)); len(got) != 1 {
+		t.Fatalf("stop lines for pid 704: %q", got)
+	}
+	if got := l.find("materialize worker stderr", pidAttr(704)); len(got) != 1 {
+		t.Fatalf("stderr lines for pid 704 (pid last on the line): %q", got)
+	}
 }
 
 func (l *logSink) warns() []string {
@@ -443,7 +464,7 @@ func TestSupervisorDeadlineKillsChild(t *testing.T) {
 	if err := processGone(pid); err != nil {
 		t.Fatalf("the hung worker survived its deadline: %v", err)
 	}
-	if got := h.log.find("materialize worker stopped", "reason=deadline", "pid="+strconv.Itoa(pid)); len(got) != 1 {
+	if got := h.log.find("materialize worker stopped", "reason=deadline", pidAttr(pid)); len(got) != 1 {
 		t.Fatalf("stop line: %q", got)
 	}
 
@@ -547,7 +568,7 @@ func TestSupervisorCrashAndBackoff(t *testing.T) {
 	// Every death is logged with its reason, and the child's stderr reached
 	// the log, attributed.
 	for _, pid := range pids {
-		p := "pid=" + strconv.Itoa(pid)
+		p := pidAttr(pid)
 		if got := h.log.find("materialize worker stopped", "reason=exit", "exit status 3", p); len(got) != 1 {
 			t.Fatalf("stop line for %s: %q", p, got)
 		}
@@ -592,7 +613,7 @@ func TestSupervisorProtocolErrors(t *testing.T) {
 		if err := processGone(pid); err != nil {
 			t.Fatalf("%s: worker not killed: %v", bad, err)
 		}
-		if got := h.log.find("materialize worker stopped", "reason=protocol", "pid="+strconv.Itoa(pid)); len(got) != 1 {
+		if got := h.log.find("materialize worker stopped", "reason=protocol", pidAttr(pid)); len(got) != 1 {
 			t.Fatalf("%s: stop line %q", bad, got)
 		}
 		if md, err := h.s.Materialize(context.Background(), script("echo:ok")); err != nil || md != "echo:ok" {
@@ -659,7 +680,7 @@ func TestSupervisorMemoryCapPlatform(t *testing.T) {
 				t.Fatal(err)
 			}
 			pid := h.lastPid(t)
-			started := h.log.find("materialize worker started", "pid="+strconv.Itoa(pid))
+			started := h.log.find("materialize worker started", pidAttr(pid))
 			if len(started) != 1 || !strings.Contains(started[0], "mem_limit=512MiB") || !strings.Contains(started[0], "mem_baseline=") {
 				t.Fatalf("start line: %q", started)
 			}
@@ -681,7 +702,7 @@ func TestSupervisorMemoryCapPlatform(t *testing.T) {
 			if !errors.Is(err, ErrMemoryLimit) || !errors.Is(err, ErrChildDied) {
 				t.Fatalf("1 GiB of growth under a 512 MiB limit: %q, %v; want ErrMemoryLimit", md, err)
 			}
-			if got := h.log.find("materialize worker stopped", "reason=memory", "pid="+strconv.Itoa(pid)); len(got) != 1 {
+			if got := h.log.find("materialize worker stopped", "reason=memory", pidAttr(pid)); len(got) != 1 {
 				t.Fatalf("stop line: %q", got)
 			}
 			if md, err := h.s.Materialize(context.Background(), script("echo:ok")); err != nil || md != "echo:ok" {
@@ -998,7 +1019,7 @@ func TestSupervisorIdleExit(t *testing.T) {
 	waitIdleStopped(t, h)
 
 	// A clean stop: INFO, status 0, and no WARN stop line.
-	p := "pid=" + strconv.Itoa(pid)
+	p := pidAttr(pid)
 	if got := h.log.find("INFO materialize worker stopped", "reason=idle", "exited with status 0", p, "idle_for=200ms"); len(got) != 1 {
 		t.Fatalf("idle stop line: %s", h.log.dump())
 	}
@@ -1213,10 +1234,10 @@ func TestSupervisorCloseDuringIdleStop(t *testing.T) {
 	}
 	// Its stop line names Close, not idleness.
 	deadline := time.Now().Add(5 * time.Second)
-	for len(h.log.find("materialize worker stopped", "pid="+strconv.Itoa(pid))) == 0 && time.Now().Before(deadline) {
+	for len(h.log.find("materialize worker stopped", pidAttr(pid))) == 0 && time.Now().Before(deadline) {
 		time.Sleep(20 * time.Millisecond)
 	}
-	if got := h.log.find("materialize worker stopped", "pid="+strconv.Itoa(pid), "reason=closed"); len(got) != 1 {
+	if got := h.log.find("materialize worker stopped", pidAttr(pid), "reason=closed"); len(got) != 1 {
 		t.Fatalf("stop line for a worker Close ended mid idle stop: %s", h.log.dump())
 	}
 }
