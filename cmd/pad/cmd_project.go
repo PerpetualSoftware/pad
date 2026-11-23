@@ -1291,7 +1291,7 @@ enriched activity feed the web UI uses (item refs, titles, change details).`,
 		},
 	}
 
-	cmd.Flags().IntVar(&limit, "limit", 20, "maximum number of activity entries to return")
+	cmd.Flags().IntVar(&limit, "limit", 20, "maximum number of activity entries to return (the server caps this at 200)")
 	cmd.Flags().StringVar(&actor, "actor", "", "filter by actor category: user or agent")
 	cmd.Flags().StringVar(&since, "since", "", "only show activity on or after this date (YYYY-MM-DD)")
 
