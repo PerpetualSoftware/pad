@@ -4720,11 +4720,7 @@ func (s *Server) handleListItemActivity(w http.ResponseWriter, r *http.Request) 
 		Actor:  r.URL.Query().Get("actor"),
 		Source: r.URL.Query().Get("source"),
 	}
-	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
-		if l, err := strconv.Atoi(limitStr); err == nil {
-			params.Limit = l
-		}
-	}
+	params.Limit = activityLimitFromQuery(r)
 	// This door never took offset, and it takes the keyset cursor its
 	// siblings do (BUG-2781): a cursor it ignored would answer every "next
 	// page" with the first page again.
