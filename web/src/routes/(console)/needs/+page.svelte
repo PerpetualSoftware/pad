@@ -1,12 +1,22 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { api, isUpdateConflictError } from '$lib/api/client';
+	import { api } from '$lib/api/client';
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
 	import NeedsRowView from '$lib/components/needs/NeedsRow.svelte';
-	import { loadGiveTargets, type GiveTarget, type GiveTargets } from '$lib/components/needs/NotMinePicker.svelte';
+	import type { GiveTarget } from '$lib/components/needs/NotMinePicker.svelte';
+	import {
+		createGiveTargetCache,
+		errMsg,
+		gaveMessage,
+		giveTo,
+		markedMessage,
+		markNotMine,
+		undoNotMine as undoNotMineFlow,
+		type Gave
+	} from '$lib/components/needs/notMineActions';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import type { Item, ItemUpdate, NeedsRow, NeedsSort, NeedsView, NeedsWorkspaceCount } from '$lib/types';
+	import type { NeedsRow, NeedsSort, NeedsView, NeedsWorkspaceCount } from '$lib/types';
 
 	// "Needs you" (TASK-3923, IDEA-3906 unit A6): what is waiting on this person
 	// across every workspace, oldest first by default. Dismiss and Defer hide a
@@ -211,8 +221,6 @@
 		}
 	}
 
-	const errMsg = (e: unknown, fallback = 'That did not go through') => (e instanceof Error ? e.message : fallback);
-
 	/** Runs `fn` with the row marked busy; a second action on it meanwhile is dropped. */
 	async function withBusy(row: NeedsRow, fn: () => Promise<void>) {
 		const k = keyOf(row);
@@ -267,35 +275,11 @@
 		);
 
 	// ── Not mine (TASK-4643) ────────────────────────────────────────────────
-	// The marker goes back exactly as the server built it for the row
-	// (seen_at, collection and the caller's own assignee id included); the
-	// client adds nothing, and `source` is the server's to set.
+	// The flows live in notMineActions (shared with Home, TASK-4686); this page
+	// keeps its own busy guard and list bookkeeping around them.
 
-	/** What a give-to changed, so Undo can put back only those columns. */
-	interface Gave {
-		kind: GiveTarget['kind'];
-		prev: Item;
-		patched: Item;
-	}
-
-	// Roles and members per workspace, loaded once per page visit. A plain Map:
-	// nothing renders from it.
-	const targetCache = new Map<string, Promise<GiveTargets>>();
-	function loadTargets(ws: string): Promise<GiveTargets> {
-		let p = targetCache.get(ws);
-		if (!p) {
-			p = loadGiveTargets(ws);
-			targetCache.set(ws, p);
-			// A load with a failed half is not kept; the next open tries again.
-			p.then(
-				(t) => {
-					if (t.rolesError || t.peopleError) targetCache.delete(ws);
-				},
-				() => targetCache.delete(ws)
-			);
-		}
-		return p;
-	}
+	// Roles and members per workspace, loaded once per page visit.
+	const loadTargets = createGiveTargetCache();
 
 	function offerUndo(row: NeedsRow, message: string, gave?: Gave) {
 		toastStore.show(message, 'success', undefined, undefined, {
@@ -305,83 +289,36 @@
 	}
 
 	const notMine = (row: NeedsRow) =>
-		act(row, () => api.needs.notMine(row.workspace.slug, row.item.ref, { marker: row.marker }), 'active', () =>
-			offerUndo(row, `${row.item.ref} marked not mine`)
-		);
+		act(row, () => markNotMine(row), 'active', () => offerUndo(row, markedMessage(row.item.ref)));
 
-	/**
-	 * Give the item to someone else, then mark it not mine. The reassignment
-	 * goes first and carries the row's seq, so a change made since the list was
-	 * read refuses it and nothing is written. The previous assignee is read
-	 * just before, for Undo: the row never names it.
-	 */
+	/** Give the item to someone else, then mark it not mine (see giveTo). */
 	const give = (row: NeedsRow, target: GiveTarget) =>
 		withBusy(row, async () => {
-			const ws = row.workspace.slug;
-			const ref = row.item.ref;
-			let prev: Item;
-			let patched: Item;
-			try {
-				prev = await api.items.get(ws, ref);
-				// The row's seq, not the GET's: a change since the list was read must
-				// refuse the reassignment.
-				const expected_seq = row.item.seq;
-				const body: ItemUpdate =
-					target.kind === 'role'
-						? { agent_role_id: target.id, clear_assigned_user: true, expected_seq }
-						: { assigned_user_id: target.id, expected_seq };
-				patched = await api.items.update(ws, ref, body);
-			} catch (e) {
-				actionError = isUpdateConflictError(e)
-					? 'The item changed since you loaded the list. Reload and try again.'
-					: errMsg(e);
-				return;
-			}
-			try {
-				await api.needs.notMine(ws, ref, { marker: row.marker });
-			} catch (e) {
-				// The reassignment stands. Whether the row still needs the caller is
-				// the server's call (an open mention keeps it), so ask it once.
-				actionError = `Gave ${ref} to ${target.label}, but marking it not mine failed: ${errMsg(e)}`;
-				actionsDone++;
-				requestRefetch();
+			const res = await giveTo(row, target);
+			if (!res.ok) {
+				actionError = res.message;
+				if (res.stage === 'mark') {
+					// The reassignment stands. Whether the row still needs the caller is
+					// the server's call (an open mention keeps it), so ask it once.
+					actionsDone++;
+					requestRefetch();
+				}
 				return;
 			}
 			landed(row, 'active');
-			offerUndo(row, `${ref} given to ${target.label} and marked not mine`, { kind: target.kind, prev, patched });
+			offerUndo(row, gaveMessage(row.item.ref, target.label), res.gave);
 		});
 
-	/**
-	 * Undo: delete the mark, then put back the columns a give-to changed,
-	 * guarded by the seq the give's PATCH returned. If the item changed after
-	 * that, the reassignment is kept and the person is told so.
-	 */
+	/** Undo: delete the mark and put back what a give-to changed (see undoNotMine). */
 	const undoNotMine = (row: NeedsRow, gave?: Gave) =>
 		withBusy(row, async () => {
-			const ws = row.workspace.slug;
-			const ref = row.item.ref;
 			const k = keyOf(row);
-			try {
-				await api.needs.undoNotMine(ws, ref);
-			} catch (e) {
-				toastStore.show(`Could not undo ${ref}: ${errMsg(e)}`, 'error');
+			const res = await undoNotMineFlow(row, gave);
+			if (!res.ok) {
+				toastStore.show(res.message, 'error');
 				return;
 			}
-			if (gave) {
-				const body: ItemUpdate = { expected_seq: gave.patched.seq };
-				if (gave.kind === 'role') {
-					if (gave.prev.agent_role_id) body.agent_role_id = gave.prev.agent_role_id;
-					else body.clear_agent_role = true;
-				}
-				if (gave.prev.assigned_user_id) body.assigned_user_id = gave.prev.assigned_user_id;
-				else body.clear_assigned_user = true;
-				try {
-					await api.items.update(ws, ref, body);
-				} catch (e) {
-					if (isUpdateConflictError(e)) toastStore.show('The item changed since; the reassignment was kept.', 'info');
-					else toastStore.show(`${ref} is no longer marked not mine, but the reassignment was kept: ${errMsg(e)}`, 'error');
-				}
-			}
+			if (res.notice) toastStore.show(res.notice.message, res.notice.type);
 			// As a Restore from the hidden view: the row is back in active, and
 			// the server says where it now stands.
 			acted.hidden.set(k, ++actionsDone);
