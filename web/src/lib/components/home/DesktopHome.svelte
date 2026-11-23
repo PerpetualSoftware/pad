@@ -14,6 +14,9 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import NeedsRowView from '$lib/components/needs/NeedsRow.svelte';
+	import type { GiveTarget } from '$lib/components/needs/NotMinePicker.svelte';
+	import { createGiveTargetCache, gaveMessage, giveTo, markedMessage, markNotMine, undoNotMine, type Gave } from '$lib/components/needs/notMineActions';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import AgendaWeekStrip from '$lib/components/calendar/AgendaWeekStrip.svelte';
 	import AudienceToggle from '$lib/components/calendar/AudienceToggle.svelte';
 	import AgendaRow from '$lib/components/calendar/AgendaRow.svelte';
@@ -129,6 +132,42 @@
 		} catch { if (sameIdentity()) actionError = 'Could not update this item. Try again.'; }
 		finally { if (sameIdentity()) busy = { ...busy, [key]: false }; }
 	}
+	// Not mine and give to (TASK-4686): the /needs flows, under Home's busy guard and identity fence.
+	const MORE = '#more';
+	const loadTargets = createGiveTargetCache();
+	async function needsAction(row: NeedsRow, fn: (sameIdentity: () => boolean) => Promise<void>) {
+		const key = needKey(row); if (busy[key]) return;
+		const sameIdentity = authStore.identityFence(); busy = { ...busy, [key]: true }; actionError = '';
+		try { await fn(sameIdentity); }
+		finally { if (sameIdentity()) busy = { ...busy, [key]: false }; }
+	}
+	const offerUndo = (row: NeedsRow, message: string, gave?: Gave) =>
+		toastStore.show(message, 'success', undefined, undefined, { label: 'Undo', onAction: () => void undo(row, gave) });
+	const notMine = (row: NeedsRow) => needsAction(row, async sameIdentity => {
+		try { await markNotMine(row); } catch { if (sameIdentity()) actionError = 'Could not update this item. Try again.'; return; }
+		if (!sameIdentity()) return;
+		offerUndo(row, markedMessage(row.item.ref));
+		await homeOverview.load('/', true);
+	});
+	const give = (row: NeedsRow, target: GiveTarget) => needsAction(row, async sameIdentity => {
+		const res = await giveTo(row, target);
+		if (!sameIdentity()) return;
+		if (!res.ok) {
+			actionError = res.message;
+			// The reassignment stands; the server decides whether the row still needs this person.
+			if (res.stage === 'mark') await homeOverview.load('/', true);
+			return;
+		}
+		offerUndo(row, gaveMessage(row.item.ref, target.label), res.gave);
+		await homeOverview.load('/', true);
+	});
+	const undo = (row: NeedsRow, gave?: Gave) => needsAction(row, async sameIdentity => {
+		const res = await undoNotMine(row, gave);
+		if (!sameIdentity()) return;
+		if (!res.ok) { toastStore.show(res.message, 'error'); return; }
+		if (res.notice) toastStore.show(res.notice.message, res.notice.type);
+		await homeOverview.load('/', true);
+	});
 	function openAgenda() {
 		void goto('/agenda');
 	}
@@ -169,7 +208,7 @@
 		<section class="panel needs-panel" aria-label="Needs you">
 			<header><h2>Needs you <span class="badge">{homeOverview.needs?.total ?? '…'}</span></h2><span class="sort">Oldest waiting</span></header>
 			<ul>{#each homeOverview.needs?.rows.slice(0, needsLimit) ?? [] as row (needKey(row))}
-				<NeedsRowView compact={viewport.isMobile} {row} showWorkspace view="active" busy={!!busy[needKey(row)]} menuOpen={menu === needKey(row)} onmenu={open => menu = open ? needKey(row) : ''} ondismiss={row => snooze(row, { kind: 'dismiss' })} ondefer={(row, defer_until) => snooze(row, { kind: 'defer', defer_until })} onrestore={() => {}} />
+				<NeedsRowView compact={viewport.isMobile} {row} showWorkspace view="active" busy={!!busy[needKey(row)]} menuOpen={menu === needKey(row)} onmenu={open => menu = open ? needKey(row) : menu === needKey(row) ? '' : menu} moreOpen={menu === needKey(row) + MORE} onmore={open => menu = open ? needKey(row) + MORE : menu === needKey(row) + MORE ? '' : menu} ondismiss={row => snooze(row, { kind: 'dismiss' })} ondefer={(row, defer_until) => snooze(row, { kind: 'defer', defer_until })} onrestore={() => {}} onnotmine={notMine} ongive={give} loadtargets={loadTargets} />
 			{/each}</ul>
 			{#if !homeOverview.loading && homeOverview.needs?.total === 0}<p class="empty">Nothing needs you right now.</p>{/if}
 			<footer><span>{Math.max(0, (homeOverview.needs?.total ?? 0) - Math.min(needsLimit, homeOverview.needs?.rows.length ?? 0))} more<span class="workspace-count">, across {homeOverview.needs?.workspaces.length ?? 0} workspaces</span></span><a href="/needs">See all {homeOverview.needs?.total ?? 0} →</a></footer>
