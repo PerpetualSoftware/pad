@@ -419,6 +419,7 @@ func (s *Store) claimAccountTx(tx *sql.Tx, userID string, unusable []byte, ts, c
 		{"delete reset tokens", `DELETE FROM password_reset_tokens WHERE user_id = ?`, []any{userID}},
 		{"delete step-up codes", `DELETE FROM step_up_codes WHERE user_id = ?`, []any{userID}},
 		{"delete verification tokens", `DELETE FROM email_verification_tokens WHERE user_id = ?`, []any{userID}},
+		{"delete pending provider links", `DELETE FROM oauth_pending_links WHERE user_id = ?`, []any{userID}},
 		{"delete grants elsewhere (collections)", `DELETE FROM collection_grants WHERE user_id = ? AND workspace_id IN ` + notOwned, []any{userID, userID}},
 		{"delete grants elsewhere (items)", `DELETE FROM item_grants WHERE user_id = ? AND workspace_id IN ` + notOwned, []any{userID, userID}},
 		{"delete watches elsewhere", `DELETE FROM watches WHERE user_id = ? AND workspace_id IN ` + notOwned, []any{userID, userID}},

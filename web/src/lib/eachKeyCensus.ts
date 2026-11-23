@@ -24,6 +24,7 @@ export type EachKeyReason = keyof typeof EACH_KEY_REASONS;
 
 export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: string }> = {
 	"lib/components/home/DesktopHome.svelte :: each homeOverview.needs?.rows.slice(0, needsLimit) ?? [] as row (needKey(row))": { reason: 'db-primary-key', note: 'One Needs response has one row per workspace and item reference; slicing preserves uniqueness.' },
+	"routes/login/+page.svelte :: each pendingLinkProviders as p (p)": { reason: 'deduped', note: 'pendingLinkProviders passes the provider names through a Set (TASK-4745).' },
 	"lib/components/home/DesktopHome.svelte :: each attention as entry (entryKey(entry))": { reason: 'deduped', note: 'attentionEntries builds a Map; additional overdue entries are appended only when entryKey is absent.' },
 	"lib/components/home/DesktopHome.svelte :: each todayRows as entry (entryKey(entry))": { reason: 'db-primary-key', note: 'One agenda response filtered by day and audience; entryKey includes workspace, item, schedule or field and instant.' },
 	"lib/components/home/DesktopHome.svelte :: each workspaceStore.workspaces as ws (ws.id)": { reason: 'db-primary-key', note: 'The workspace store holds one workspace per database primary key.' },

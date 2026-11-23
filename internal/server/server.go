@@ -1965,6 +1965,9 @@ func (s *Server) setupRouter() {
 				r.With(s.requireCloudMode).Post("/oauth-login", s.handleOAuthLogin)
 				r.With(s.requireCloudMode).Post("/oauth-link", s.handleOAuthLink)
 				r.With(s.requireCloudMode).Post("/oauth-unlink", s.handleOAuthUnlink)
+				// TASK-4745: what the login page needs to offer a pending
+				// provider link held behind this browser's cookie.
+				r.With(s.requireCloudMode).Get("/pending-link", s.handlePendingLink)
 
 				// CLI browser-based auth flow
 				r.Post("/cli/sessions", s.handleCreateCLIAuthSession)

@@ -132,6 +132,13 @@ func TestCloudContract(t *testing.T) {
 			"provider": "github", "email": "oauth@example.com", "name": "OAuth", "email_verified": true,
 			"subject": "gh-contract", "cloud_secret": cloudContractSecret,
 		}),
+		// TASK-4745: an existing verified account without the provider
+		// linked. Asked for (pending_link), the refusal carries the token
+		// pad-cloud sets as the browser's pending-link cookie.
+		"auth_oauth_login_not_linked": callCode(http.StatusForbidden, "POST", "/api/v1/auth/oauth-login", map[string]any{
+			"provider": "google", "email": "buyer@example.com", "name": "Buyer", "email_verified": true,
+			"subject": "g-contract", "pending_link": true, "cloud_secret": cloudContractSecret,
+		}),
 	}
 	processed := shapes["admin_stripe_event_processed"]
 	unmarkAt, _ := processed["processed_at"].(string)

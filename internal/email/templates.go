@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"html"
 	"strings"
+	"time"
 )
 
 // SendInvitation sends a workspace invitation email.
@@ -236,6 +237,41 @@ func (s *Sender) SendAccountClaimed(ctx context.Context, to, name, provider stri
 	htmlBody := buildHTMLShell(bodyHTML.String(), footer, cloudMode)
 	plainBody := buildPlainShell(bodyPlain.String(), footer, cloudMode)
 	return s.Send(ctx, to, name, subject, htmlBody, plainBody)
+}
+
+// SendProviderLinked tells the account's owner that a sign-in provider was
+// linked to their account (TASK-4745): which one, when, and what to do if it
+// was not them. A link adds a way in, so the owner hears of every one.
+func (s *Sender) SendProviderLinked(ctx context.Context, to, name, provider string, at time.Time) error {
+	label := providerLabel(provider)
+	subject := label + " was linked to your Pad account"
+	cloudMode := s.CloudMode()
+
+	intro := fmt.Sprintf("Hi %s, %s was linked to your Pad account on %s. You can now sign in with it.",
+		name, label, at.UTC().Format("January 2, 2006 at 15:04 UTC"))
+	warning := fmt.Sprintf("If this wasn't you, unlink %s from your account settings and change your password.", label)
+
+	bodyHTML := `  <p style="font-size: 16px; line-height: 1.5;">` + html.EscapeString(intro) + "</p>\n" +
+		`  <p style="font-size: 15px; line-height: 1.5;">` + html.EscapeString(warning) + "</p>\n"
+	bodyPlain := intro + "\n\n" + warning
+
+	footer := "You received this because a sign-in method was added to your Pad account."
+	htmlBody := buildHTMLShell(bodyHTML, footer, cloudMode)
+	plainBody := buildPlainShell(bodyPlain, footer, cloudMode)
+	return s.Send(ctx, to, name, subject, htmlBody, plainBody)
+}
+
+// providerLabel is a provider's display name.
+func providerLabel(provider string) string {
+	switch provider {
+	case "github":
+		return "GitHub"
+	case "google":
+		return "Google"
+	case "apple":
+		return "Apple"
+	}
+	return provider
 }
 
 // SendPaymentFailed notifies a user that a Stripe invoice attempt failed.

@@ -1,8 +1,9 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
 	import { page } from '$app/state';
-	import { api, PadApiError } from '$lib/api/client';
+	import { api, PadApiError, type PendingLinkResult, type PendingLinkState } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
+	import { toastStore } from '$lib/stores/toast.svelte';
 	import SetupRequiredNotice from '$lib/components/auth/SetupRequiredNotice.svelte';
 	import AuthHeader from '$lib/components/auth/AuthHeader.svelte';
 	import AuthFooter from '$lib/components/auth/AuthFooter.svelte';
@@ -43,6 +44,13 @@
 		| { kind: 'generic'; message: string; tone: 'error' | 'info' }
 		| null
 	>(null);
+
+	// A provider sign-in that matched this account without that provider
+	// linked (TASK-4745). The server holds it behind an HttpOnly cookie; the
+	// page only learns what to offer. linkPending is the user's consent, sent
+	// with the sign-in, on by default.
+	let pendingLink = $state<Extract<PendingLinkState, { pending: true }> | null>(null);
+	let linkPending = $state(true);
 
 	// Last-used auth method (TASK-923) — reads from localStorage on mount,
 	// drives a soft "you used X last time" banner and a visual lift on the
@@ -161,6 +169,49 @@
 		oauthBanner = null;
 	}
 
+	function providerLabel(provider: string | null | undefined): string {
+		if (provider === 'github') return 'GitHub';
+		if (provider === 'google') return 'Google';
+		if (provider === 'apple') return 'Apple';
+		return 'your sign-in provider';
+	}
+
+	// The providers the page can send the user through to finish the link.
+	const pendingLinkProviders = $derived([
+		...new Set((pendingLink?.providers ?? []).filter((p): p is 'github' | 'google' => p === 'github' || p === 'google'))
+	]);
+
+	// Consent rides with the sign-in only when a link is on offer; absent, the
+	// server links nothing.
+	function linkConsent(): boolean | undefined {
+		return pendingLink ? linkPending : undefined;
+	}
+
+	// After authStore.load(): a changed identity clears every toast, so one
+	// shown before it would vanish.
+	function announcePendingLink(result: PendingLinkResult | undefined) {
+		if (!result) return;
+		if (result.linked) {
+			toastStore.show(`${providerLabel(result.provider)} is now linked. Next time, you can sign in with it.`, 'success');
+		} else if (result.code !== 'pending_link_not_requested') {
+			toastStore.show(
+				`${providerLabel(pendingLink?.provider)} couldn't be linked. You can link it from account settings.`,
+				'error'
+			);
+		}
+	}
+
+	async function loadPendingLink() {
+		try {
+			const state = await api.auth.pendingLink();
+			if (!state.pending) return;
+			pendingLink = state;
+			if (!email) email = state.email;
+		} catch {
+			// No offer; the sign-in works as before.
+		}
+	}
+
 	onMount(async () => {
 		readOAuthErrorFromQuery();
 		readNoticeFromQuery();
@@ -191,6 +242,7 @@
 				await navigateToRedirectTarget(redirectTarget);
 				return;
 			}
+			if (cloudMode) await loadPendingLink();
 		} catch {}
 	});
 
@@ -207,7 +259,7 @@
 
 		loading = true;
 		try {
-			const response = await api.auth.login(email, password);
+			const response = await api.auth.login(email, password, linkConsent());
 
 			if (response.requires_2fa && response.challenge_token) {
 				challengeToken = response.challenge_token;
@@ -218,6 +270,7 @@
 
 			recordAuthMethod('password');
 			await authStore.load();
+			announcePendingLink(response.pending_link);
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
 			// A disabled account's sign-in is refused; say so with the
@@ -248,14 +301,13 @@
 		try {
 			const isTotp = /^\d{6}$/.test(code);
 
-			if (isTotp) {
-				await api.auth.verify2FA(challengeToken, code, undefined);
-			} else {
-				await api.auth.verify2FA(challengeToken, undefined, code);
-			}
+			const response = isTotp
+				? await api.auth.verify2FA(challengeToken, code, undefined, linkConsent())
+				: await api.auth.verify2FA(challengeToken, undefined, code, linkConsent());
 
 			if (!challengeFromOAuth) recordAuthMethod('password');
 			await authStore.load();
+			announcePendingLink(response.pending_link);
 			await navigateToRedirectTarget(redirectTarget);
 		} catch (err: unknown) {
 			if (err instanceof PadApiError && err.code === 'account_disabled') {
@@ -305,7 +357,8 @@
 			</div>
 		{/if}
 
-		{#if oauthBanner}
+		<!-- A pending link says it better, with the account's own options. -->
+		{#if oauthBanner && !(oauthBanner.kind === 'not_linked' && pendingLink)}
 			<div
 				class="oauth-banner"
 				class:error-tone={oauthBanner.kind === 'not_linked' || (oauthBanner.kind === 'generic' && oauthBanner.tone === 'error')}
@@ -315,14 +368,7 @@
 				<button type="button" class="oauth-banner-close" onclick={dismissOAuthBanner} aria-label="Dismiss">&times;</button>
 				{#if oauthBanner.kind === 'not_linked'}
 					<p class="oauth-banner-msg">
-						{#if oauthBanner.provider === 'github'}
-							That GitHub account isn't linked to a Pad account.
-						{:else if oauthBanner.provider === 'google'}
-							That Google account isn't linked to a Pad account.
-						{:else}
-							That OAuth account isn't linked to a Pad account.
-						{/if}
-						Sign in with your password below, or retry with a different account.
+						An account with this email already exists. Sign in below, then link {oauthBanner.provider ? providerLabel(oauthBanner.provider) : 'the provider'} from account settings.
 					</p>
 					<div class="oauth-banner-actions">
 						{#if oauthBanner.provider === 'github' || oauthBanner.provider === null}
@@ -350,7 +396,29 @@
 			</div>
 		{/if}
 
-		{#if !setupRequired && step !== '2fa' && lastMethod && !oauthBanner}
+		{#if pendingLink && !setupRequired}
+			<div class="oauth-banner" role="status" aria-live="polite" data-testid="pending-link-banner">
+				<p class="oauth-banner-msg">
+					You already have a Pad account with this email. Sign in to link {providerLabel(pendingLink.provider)}.
+				</p>
+				{#if !pendingLink.password}
+					<p class="oauth-banner-msg">
+						This account has no password yet. Use <a href="/forgot-password">Forgot password</a> to set one{pendingLinkProviders.length > 0 ? ', or sign in with a provider below' : ''}.
+					</p>
+				{/if}
+				{#if pendingLinkProviders.length > 0 && step !== '2fa'}
+					<div class="oauth-banner-actions">
+						{#each pendingLinkProviders as p (p)}
+							<a href="/auth/{p}?pending_link=1{oauthRedirectAmpQuery}" data-sveltekit-reload class="oauth-banner-btn">
+								Sign in with {providerLabel(p)}
+							</a>
+						{/each}
+					</div>
+				{/if}
+			</div>
+		{/if}
+
+		{#if !setupRequired && step !== '2fa' && lastMethod && !oauthBanner && !pendingLink}
 			<div class="last-used-banner" role="status" aria-live="polite">
 				<span class="last-used-emoji" aria-hidden="true">👋</span>
 				<span class="last-used-text">
@@ -389,6 +457,13 @@
 					aria-describedby="login-totp-hint"
 					use:autofocus
 				/>
+
+				{#if pendingLink}
+					<label class="link-pending">
+						<input type="checkbox" name="link_pending" bind:checked={linkPending} disabled={loading} />
+						Link {providerLabel(pendingLink.provider)} to this account
+					</label>
+				{/if}
 
 				{#if error}
 					<p class="error" role="alert">{error}</p>
@@ -433,6 +508,13 @@
 					disabled={loading}
 					autocomplete="current-password"
 				/>
+
+				{#if pendingLink}
+					<label class="link-pending">
+						<input type="checkbox" name="link_pending" bind:checked={linkPending} disabled={loading} />
+						Link {providerLabel(pendingLink.provider)} to this account
+					</label>
+				{/if}
 
 				{#if error}
 					<p class="error" role="alert">{error}</p>
@@ -551,6 +633,22 @@
 
 	input:disabled {
 		opacity: 0.6;
+	}
+
+	.link-pending {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		font-size: 0.88rem;
+		color: var(--text-secondary);
+		text-align: left;
+		cursor: pointer;
+	}
+
+	.link-pending input {
+		width: auto;
+		padding: 0;
+		margin: 0;
 	}
 
 	.error {

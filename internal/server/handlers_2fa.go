@@ -284,6 +284,8 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		// CodeVerifier completes a challenge bound to a PKCE S256 challenge
 		// (oauth-login's two_factor_pkce_challenge, TASK-4137).
 		CodeVerifier *secret.Secret `json:"code_verifier"`
+		// LinkPending: as on login (TASK-4745).
+		LinkPending bool `json:"link_pending"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -366,10 +368,14 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 
 	s.logAuditEventForUser(models.ActionLogin, r, user.ID, auditMeta(map[string]string{"email": user.Email, "2fa": "verified"}))
 
-	writeJSON(w, http.StatusOK, map[string]interface{}{
+	resp := map[string]interface{}{
 		"user":  sessionUserPayload(user),
 		"token": token,
-	})
+	}
+	if pl := s.completePendingLinkFromCookie(w, r, user, input.LinkPending); pl != nil {
+		resp["pending_link"] = pl
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // checkSecondFactor verifies a TOTP code, or failing that a recovery code,

@@ -105,6 +105,9 @@ func (s *Server) runTokenReaperTick() {
 	if err := s.store.CleanExpiredPasswordResets(); err != nil {
 		slog.Warn("token reaper: clean expired password resets failed", "error", err)
 	}
+	if err := s.store.CleanExpiredOAuthPendingLinks(); err != nil {
+		slog.Warn("token reaper: clean expired pending provider links failed", "error", err)
+	}
 	if err := s.store.CleanExpiredSessions(); err != nil {
 		slog.Warn("token reaper: clean expired sessions failed", "error", err)
 	}
