@@ -28,8 +28,12 @@
 	</div>
 {/if}
 <style>
+	/* Phone: fill the viewport below the in-flow You bar (border-box, so its border is inside
+	   its min-height), and give back the bottom-bar reserve that pads <main>, so a short page
+	   fills the screen without scrolling. */
+	.console-layout { min-height: calc(100dvh - var(--topbar-height) - env(safe-area-inset-top, 0px)); background: var(--bg-primary); }
+	:global(body.has-bottom-nav) .console-layout:not(.desktop) { min-height: calc(100dvh - var(--topbar-height) - env(safe-area-inset-top, 0px) - var(--bottom-nav-height) - env(safe-area-inset-bottom, 0px)); }
 	.console-layout.desktop { min-height: 0; }
-	.console-layout { min-height: 100vh; background: var(--bg-primary); }
 	.console-main { max-width: 960px; margin: 0 auto; padding: var(--space-8) var(--space-6); }
 	.console-main.wide { max-width: 1240px; }
 	@media (max-width: 768px) { .console-main { padding: var(--space-5) var(--space-3); } }
