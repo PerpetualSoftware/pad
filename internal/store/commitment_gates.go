@@ -640,7 +640,7 @@ type gateEvaluation struct {
 // evaluateGatesQ evaluates every gate without a reader filter or any writes.
 func (s *Store) evaluateGatesQ(q Queryer, workspaceID, itemID string) (*gateEvaluation, error) {
 	rows, err := q.Query(s.q(`SELECT g.id,g.blocker_item_id,g.blocker_schedule_id,g.blocker_occurrence_key,g.opened_at,g.created_at FROM schedule_gates g
- WHERE g.blocked_item_id=? AND g.workspace_id=? ORDER BY g.id`), itemID, workspaceID)
+ WHERE g.blocked_item_id=? AND g.workspace_id=? ORDER BY g.created_at, g.id`), itemID, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("read schedule gates: %w", err)
 	}
@@ -723,7 +723,7 @@ func (s *Store) ScheduleGateDependents(workspaceID, itemID string, access models
 		return nil, ErrScheduleNotFound
 	}
 	rows, err := s.db.Query(s.q(`SELECT g.id,g.blocked_item_id,g.blocker_schedule_id,g.blocker_occurrence_key,g.opened_at,g.created_at FROM schedule_gates g
- WHERE g.blocker_item_id=? AND g.workspace_id=? ORDER BY g.id`), itemID, workspaceID)
+ WHERE g.blocker_item_id=? AND g.workspace_id=? ORDER BY g.created_at, g.id`), itemID, workspaceID)
 	if err != nil {
 		return nil, fmt.Errorf("read schedule gate dependents: %w", err)
 	}
