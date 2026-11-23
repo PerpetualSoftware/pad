@@ -825,7 +825,7 @@ func (s *Store) ListUserActivity(userID string, params models.ActivityListParams
 		return nil, fmt.Errorf("list user activity: %w", err)
 	}
 	defer rows.Close()
-	return scanActivitiesWithUser(rows)
+	return s.scanActivitiesWithNames(rows)
 }
 
 func (s *Store) ListWorkspaceActivity(workspaceID string, params models.ActivityListParams) ([]models.Activity, error) {
@@ -886,7 +886,7 @@ func (s *Store) ListWorkspaceActivity(workspaceID string, params models.Activity
 	}
 	defer rows.Close()
 
-	return scanActivitiesWithUser(rows)
+	return s.scanActivitiesWithNames(rows)
 }
 
 // activityVisibilityClause is ActivityVisibility as SQL (BUG-3687). It is the
@@ -966,7 +966,7 @@ func (s *Store) ListDocumentActivity(documentID string, params models.ActivityLi
 	}
 	defer rows.Close()
 
-	return scanActivitiesWithUser(rows)
+	return s.scanActivitiesWithNames(rows)
 }
 
 // ListDocumentActivityBeforeTime returns activities for a document created before the given time,
@@ -1031,7 +1031,7 @@ func (s *Store) ListDocumentActivityBeforeTime(documentID string, before time.Ti
 	}
 	defer rows.Close()
 
-	return scanActivitiesWithUser(rows)
+	return s.scanActivitiesWithNames(rows)
 }
 
 // activityKeysetClause is the keyset predicate the paginated activity feeds
@@ -1084,6 +1084,83 @@ func scanActivitiesWithUser(rows interface {
 		activities = append(activities, a)
 	}
 	return activities, rows.Err()
+}
+
+// scanActivitiesWithNames is scanActivitiesWithUser plus the read-time
+// names a row needs beyond its own actor: today, OriginalActorName on a
+// schedule_reopened row (TASK-4580). Every activity lister returns through it,
+// so the field is the same on every read. It closes rows before its own
+// lookup, so the second query never waits on a connection the first holds.
+func (s *Store) scanActivitiesWithNames(rows *sql.Rows) ([]models.Activity, error) {
+	activities, err := scanActivitiesWithUser(rows)
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.resolveOriginalActorNames(activities); err != nil {
+		return nil, err
+	}
+	return activities, nil
+}
+
+// reopenOriginalUserID is the user id whose name a schedule_reopened row may
+// carry, or "" when it may carry none: another action, metadata that does not
+// parse as an object, an original_actor other than "user", or an id that is
+// not a non-empty string. An "agent" original names nobody, because its user
+// id is the human the agent authenticated as, not the resolver. Metadata is
+// parsed here rather than in SQL because the JSON accessors differ between
+// SQLite and Postgres.
+func reopenOriginalUserID(a models.Activity) string {
+	if a.Action != "schedule_reopened" || a.Metadata == "" {
+		return ""
+	}
+	var m map[string]any
+	if json.Unmarshal([]byte(a.Metadata), &m) != nil {
+		return ""
+	}
+	if kind, _ := m["original_actor"].(string); kind != "user" {
+		return ""
+	}
+	id, _ := m["original_actor_user_id"].(string)
+	return id
+}
+
+// resolveOriginalActorNames sets OriginalActorName on each schedule_reopened
+// row whose original resolver was a user that still exists. One batched
+// lookup for the whole list, deduplicated, and no query at all when no row
+// qualifies. It reads users.name only, the column the lists already join for
+// ActorName, so it shows nothing a reader of the list could not already see.
+func (s *Store) resolveOriginalActorNames(activities []models.Activity) error {
+	wanted := map[string][]int{}
+	var ids []interface{}
+	for i := range activities {
+		id := reopenOriginalUserID(activities[i])
+		if id == "" {
+			continue
+		}
+		if _, seen := wanted[id]; !seen {
+			ids = append(ids, id)
+		}
+		wanted[id] = append(wanted[id], i)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	rows, err := s.db.Query(s.q(`SELECT id, COALESCE(name, '') FROM users WHERE id IN (`+placeholders(len(ids))+`)`), ids...)
+	if err != nil {
+		return fmt.Errorf("resolve original actor names: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return fmt.Errorf("resolve original actor names: %w", err)
+		}
+		for _, i := range wanted[id] {
+			activities[i].OriginalActorName = name
+		}
+	}
+	return rows.Err()
 }
 
 func nilIfEmpty(s string) interface{} {
@@ -1145,5 +1222,5 @@ func (s *Store) ListAuditLog(params models.AuditLogParams) ([]models.Activity, e
 	}
 	defer rows.Close()
 
-	return scanActivitiesWithUser(rows)
+	return s.scanActivitiesWithNames(rows)
 }

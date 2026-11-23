@@ -756,6 +756,10 @@ Reopen appends journal lineage and a transactional `schedule_reopened` activity,
 with the reversing actor and original actor metadata, then publishes one item
 refresh. Supporting corrections remain in history with `reversed_by` identifying
 the reopening journal row. No reversal reminder or comment notification is sent.
+Activity reads (the item timeline, item and workspace activity, the admin
+user and audit feeds) add `original_actor_name` to a `schedule_reopened` row:
+the original resolving user's display name, set only when `original_actor` is
+`user` and that user still exists. It is never set for an `agent` original.
 
 A `done` on a lapsed history row (`state: "history_done"`, TASK-4579) reopens
 too. Its stored history row returns to `lapsed`, actor `system`, with no

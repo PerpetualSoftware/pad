@@ -920,3 +920,155 @@ func TestReopenHistoryDoneIgnoresScheduleError(t *testing.T) {
 		t.Fatal("reopen rewrote the schedule error")
 	}
 }
+
+// TASK-4580. A schedule_reopened row names the user whose resolution it undid,
+// on every activity read, and names nobody when the original was an agent,
+// the user is gone, or the metadata does not say so.
+func TestReopenActivityOriginalActorName(t *testing.T) {
+	f := newSchedFixture(t)
+	ann := createTestUser(t, f.s, "ann@example.com", "Ann", "password123")
+	bob := createTestUser(t, f.s, "bob@example.com", "Bob", "password123")
+	reopenBy := func(t *testing.T, item *models.Item, sc *models.ItemSchedule, actor string, at string) {
+		t.Helper()
+		f.mustResolve(t, item, ResolveInput{OccurrenceAt: rt(*sc.NextAt), State: "done", Actor: actor, ActorUserID: ann.ID}, at)
+		view, err := f.s.GetCommitment(f.ws.ID, item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := f.s.reopenOccurrenceAt(f.ws.ID, item.ID, ReopenInput{ResolutionID: view.LastResolution.ResolutionID, Actor: "user", ActorUserID: bob.ID}, rt(at).Add(time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	reopened := func(t *testing.T, list []models.Activity, docID string) []models.Activity {
+		t.Helper()
+		var out []models.Activity
+		for _, a := range list {
+			if a.Action == "schedule_reopened" && a.DocumentID == docID {
+				out = append(out, a)
+			}
+		}
+		return out
+	}
+	far := time.Now().Add(24 * 365 * time.Hour)
+	// readAll returns the item's schedule_reopened rows from every lister.
+	readAll := func(t *testing.T, docID string) map[string][]models.Activity {
+		t.Helper()
+		out := map[string][]models.Activity{}
+		doc, err := f.s.ListDocumentActivity(docID, models.ActivityListParams{Limit: 100})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out["document"] = reopened(t, doc, docID)
+		before, err := f.s.ListDocumentActivityBeforeTime(docID, far, "", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		out["document_before"] = reopened(t, before, docID)
+		ws, err := f.s.ListWorkspaceActivity(f.ws.ID, models.ActivityListParams{Limit: 100, Action: "schedule_reopened"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out["workspace"] = reopened(t, ws, docID)
+		user, err := f.s.ListUserActivity(bob.ID, models.ActivityListParams{Limit: 100, Action: "schedule_reopened"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out["user"] = reopened(t, user, docID)
+		audit, err := f.s.ListAuditLog(models.AuditLogParams{Limit: 100, Action: "schedule_reopened"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out["audit"] = reopened(t, audit, docID)
+		return out
+	}
+	expect := func(t *testing.T, docID, want string) {
+		t.Helper()
+		for lister, rows := range readAll(t, docID) {
+			if len(rows) != 1 {
+				t.Fatalf("%s: %d schedule_reopened rows, want 1", lister, len(rows))
+			}
+			if rows[0].OriginalActorName != want {
+				t.Errorf("%s: original_actor_name = %q, want %q", lister, rows[0].OriginalActorName, want)
+			}
+		}
+	}
+
+	t.Run("user resolved, another user reopened", func(t *testing.T) {
+		item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
+		reopenBy(t, item, sc, "user", "2026-10-30T10:00:00Z")
+		expect(t, item.ID, "Ann")
+		rows := readAll(t, item.ID)["document_before"]
+		if rows[0].ActorName != "Bob" {
+			t.Errorf("actor_name = %q, want the undoer Bob", rows[0].ActorName)
+		}
+	})
+	t.Run("agent resolved on a user credential", func(t *testing.T) {
+		item, sc := f.mk(t, dailyUTC, "2026-10-29T00:00:00Z")
+		reopenBy(t, item, sc, "agent", "2026-10-30T10:00:00Z")
+		expect(t, item.ID, "")
+	})
+
+	crafted := func(t *testing.T, action, metadata string) *models.Item {
+		t.Helper()
+		item := f.another(t, "crafted "+newID())
+		if _, err := f.s.CreateActivity(models.Activity{WorkspaceID: f.ws.ID, DocumentID: item.ID, Action: action, Actor: "user", Source: "api", UserID: bob.ID, Metadata: metadata}); err != nil {
+			t.Fatal(err)
+		}
+		return item
+	}
+	t.Run("unknown user id", func(t *testing.T) {
+		item := crafted(t, "schedule_reopened", `{"original_actor":"user","original_actor_user_id":"no-such-user"}`)
+		expect(t, item.ID, "")
+	})
+	t.Run("non-reopen activity with the key", func(t *testing.T) {
+		item := crafted(t, "schedule_resolved", `{"original_actor":"user","original_actor_user_id":"`+ann.ID+`"}`)
+		doc, err := f.s.ListDocumentActivity(item.ID, models.ActivityListParams{Limit: 100})
+		if err != nil || len(doc) != 1 {
+			t.Fatalf("list: %v %d", err, len(doc))
+		}
+		if doc[0].OriginalActorName != "" {
+			t.Errorf("non-reopen row got original_actor_name %q", doc[0].OriginalActorName)
+		}
+	})
+	for name, meta := range map[string]string{
+		"numeric user id":  `{"original_actor":"user","original_actor_user_id":42}`,
+		"empty user id":    `{"original_actor":"user","original_actor_user_id":""}`,
+		"no actor kind":    `{"original_actor_user_id":"` + ann.ID + `"}`,
+		"array metadata":   `[1,2]`,
+		"string metadata":  `"x"`,
+		"null user id":     `{"original_actor":"user","original_actor_user_id":null}`,
+		"object actor key": `{"original_actor":{"k":"user"},"original_actor_user_id":"` + ann.ID + `"}`,
+	} {
+		t.Run("malformed "+name, func(t *testing.T) {
+			item := crafted(t, "schedule_reopened", meta)
+			expect(t, item.ID, "")
+		})
+	}
+	if f.s.dialect.Driver() == DriverSQLite {
+		// Postgres stores metadata as JSONB and refuses unparseable text at
+		// insert; SQLite keeps it, so only SQLite can hold this row.
+		t.Run("unparseable metadata", func(t *testing.T) {
+			item := crafted(t, "schedule_reopened", `{"original_actor":"user","original_actor_user_id":"`+ann.ID+`"`)
+			expect(t, item.ID, "")
+		})
+	}
+	// A list mixing a named row with others resolves each row on its own.
+	t.Run("mixed list", func(t *testing.T) {
+		ws, err := f.s.ListWorkspaceActivity(f.ws.ID, models.ActivityListParams{Limit: 100, Action: "schedule_reopened"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		named := 0
+		for _, a := range ws {
+			if a.OriginalActorName != "" {
+				named++
+				if a.OriginalActorName != "Ann" {
+					t.Errorf("row %s named %q", a.ID, a.OriginalActorName)
+				}
+			}
+		}
+		if named != 1 {
+			t.Errorf("%d named rows in the workspace feed, want 1", named)
+		}
+	})
+}
