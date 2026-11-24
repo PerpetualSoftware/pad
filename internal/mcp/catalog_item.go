@@ -203,7 +203,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "collection", Type: "string", Description: "Collection slug (e.g. \"tasks\", \"ideas\"). Required: create. Optional filter for: list."},
 	{Name: "title", Type: "string", Description: "Item title. Required: create. Optional rename for: update."},
 	{Name: "content", Type: "string", Description: "Markdown body. For: create, update."},
-	{Name: "agent", Type: "bool", Description: "For action=get, return the full item body and meaningful work metadata as compact JSON while omitting internal UUIDs and duplicate join fields. Prefer this for Cursor and Codex reads."},
+	{Name: "agent", Type: "bool", Description: "get: compact JSON with full body and work metadata, omitting internal UUIDs and duplicate joins."},
 
 	// ── Artifact export / import ── (Phase 5)
 	// `artifact`: the full portable artifact text (YAML frontmatter +
@@ -213,7 +213,7 @@ var padItemSchemaParams = []ParamDef{
 	// the item's collection + typed fields. `export` returns this same
 	// text as its tool result.
 	// ── Reminders ── (IDEA-2641)
-	{Name: "remind_at", Type: "string", Description: "RFC3339 INSTANT a reminder fires (2026-08-01T09:00:00Z or with an offset), or a bare date YYYY-MM-DD, which lands at the CALLER's day start (09:00 unset) in the caller's account zone; the answer's remind_at is the instant, marked resolved_from=day_start. Bare dates are refused with no account zone and on agent-audience commitments. Required: one-shot commitment (no wall-time parameters)."},
+	{Name: "remind_at", Type: "string", Description: "RFC3339 instant or bare YYYY-MM-DD (caller's day start, 09:00 unset, in account zone; answered as resolved_from=day_start; refused with no zone or agent audience). Required: one-shot commitment."},
 	// PR metadata for action=link-pr (TASK-3611), sent as given.
 	{Name: "pr_number", Type: "number", Description: "The pull request's number (> 0). Required: link-pr."},
 	{Name: "pr_url", Type: "string", Description: "The pull request's absolute http(s) URL. Required: link-pr."},
@@ -232,12 +232,12 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "deadline", Type: "string", Description: "hard makes a deadline; soft or omit for no deadline. schedule-edit: soft and none clear it and keep any window. Not with window. schedule-renegotiate: the new deadline, an RFC3339 instant."},
 	{Name: "window", Type: "string", Description: "Duration (90m, 2h, 3d) from start or end wall (2026-11-09T17:00). Excludes deadline."},
 	{Name: "anchor", Type: "string", Description: "calendar (default) | completion (next interval starts when done)."},
-	{Name: "audience", Type: "string", Description: "human | agent | both (default)."},
+	{Name: "audience", Type: "string", Description: "remind/schedule-edit: human|agent|both (default). agenda: human|agent|all (human = what the user sees in the web UI; default agent)."},
 	{Name: "tz", Type: "string", Description: "IANA wall/display zone (default: account zone). Excludes floating."},
 	{Name: "floating", Type: "bool", Description: "Use recipient wall zone. Excludes tz."},
-	{Name: "day_start", Type: "bool", Description: "With a bare-date start: place it at the caller's day start (09:00 unset), fixed at write; a hard deadline then falls at that time. Not with window or an agent audience. For: remind (schedule), schedule-edit."},
+	{Name: "day_start", Type: "bool", Description: "With bare-date start: place at caller's day start (09:00 unset), fixed at write (hard deadline falls there). Not with window or agent audience. For: remind (schedule), schedule-edit."},
 	{Name: "state", Type: "string", Description: "schedule-resolve: done | skip | snooze | move | ack (fired only; still owed, no comment)."},
-	{Name: "until", Type: "string", Description: "Required snooze/move RFC3339 re-fire/target instant, or a bare date YYYY-MM-DD at the CALLER's day start (09:00 unset) in the caller's zone; answer marks resolution.until, resolved_from=day_start."},
+	{Name: "until", Type: "string", Description: "Required snooze/move RFC3339 instant, or bare YYYY-MM-DD at caller's day start (09:00 unset) in account zone (answered as resolution.until, resolved_from=day_start)."},
 	{Name: "resolution_id", Type: "string", Description: "Exact last_resolution ID; required for schedule-reopen."},
 	{Name: "occurrence_at", Type: "string", Description: "Required schedule-resolve RFC3339 next_occurrence.at from schedule."},
 	{Name: "actual_done_at", Type: "string", Description: "Actual completion (RFC3339). schedule-resolve done only."},
@@ -255,6 +255,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "to", Type: "string", Description: "Required RFC3339 agenda end (<=92 days after from; excludes stale) or schedule-move destination (role target/earliest: also a bare date at the caller's day start)."},
 	{Name: "stale", Type: "bool", Description: "agenda: yours unresolved over 14 days, not a window."},
 	{Name: "recipient", Type: "string", Description: "agenda: me (default), all (workspace scope; no_date not listed), or a user ID."},
+	{Name: "all_workspaces", Type: "bool", Description: "agenda: all admitted workspaces (/me/agenda); refuses workspace, non-me recipient, stale."},
 
 	{Name: "child", Type: "string", Description: "Child ref for schedule-link creation or schedule-child; ref is the parent."},
 	{Name: "child_action", Type: "string", Description: "schedule-child: select, waive (a reason; counts as delivered) or remove.", Enum: []string{"select", "waive", "remove"}},
@@ -273,7 +274,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "worker_id", Type: "string", Description: "Your lease worker id, as a claim answers it. For: claim, release; pass it to resume your leases from a new connection."},
 	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"): default 15m, max 24h, minimum 1s (fractions truncate)."},
 
-	{Name: "artifact", Type: "string", Description: "Full portable artifact text (YAML frontmatter + Markdown body). Required: import. NOT the same as `content` (which is just the item's Markdown body)."},
+	{Name: "artifact", Type: "string", Description: "Full portable artifact (YAML frontmatter + Markdown body). Required: import (not plain content)."},
 
 	// ── Status / priority / scheduling ──
 	{Name: "status", Type: "string", Description: "Item status (collection-specific enum). For: create, update, list filter, bulk-update."},
@@ -346,12 +347,12 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "SCHEMA-DECLARED custom fields as [\"key=value\"] (e.g. [\"due_date=2026-06-01\",\"effort=l\"]). Use dedicated status/priority/category/parent/role/assign/tags params. For create/update/list filter/move. create/update also accept fields OBJECT. create/update/move refuse implementation_notes (use note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library activation only)."},
+	{Name: "field", Type: "array<string>", Description: "SCHEMA-DECLARED custom fields [\"key=value\"] (prefer dedicated params for status/priority/category/parent/role/assign/tags). For create/update/list/move. Refuses implementation_notes (note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library)."},
 	// `fields`: the OBJECT alias for the write path (#1066). Reads
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
 	// dropped. See catalog_item_fields.go for the merge contract.
-	{Name: "fields", Type: "object", Description: "Field OBJECT matching reads, e.g. {\"status\":\"done\",\"effort\":\"l\"}. create/update only. Merges like field/dedicated params; conflicting values for a key across placements refuse. JSON types stay intact; objects/arrays write as-is to multi_select/json. null refuses (omit unchanged keys); parent/plan must be string refs."},
+	{Name: "fields", Type: "object", Description: "Field OBJECT matching reads, e.g. {\"status\":\"done\"}. create/update only. Merges with field/dedicated params; conflicts refuse. JSON types stay intact; null refuses; parent/plan must be string refs."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. For: list, starred."},
@@ -378,14 +379,14 @@ var padItemSchemaParams = []ParamDef{
 	// force=true skips the guard and still records the transition.
 	// The same flag exists on `pad item update --force` so the CLI
 	// and MCP escape hatches are identical.
-	{Name: "force", Type: "bool", Description: "Override open_children (update, bulk-update, move) or schedule_active (update, bulk-update). Resolve children or set force=true. Closing pauses recurrence until reopening; details.next_at names the next occurrence."},
+	{Name: "force", Type: "bool", Description: "Override open_children (update/bulk-update/move) or schedule_active (update/bulk-update). Closing pauses recurrence until reopened (details.next_at)."},
 
 	// ── Optimistic concurrency ── (TASK-2022)
 	// update only. Round-trip the `updated_at` a prior get returned; the
 	// server rejects the update with code=update_conflict (409) if the item
 	// changed since, so a coordinating agent can detect a lost-update race
 	// and re-read instead of silently clobbering another writer.
-	{Name: "expected_updated_at", Type: "string", Description: "Weaker guard for action=update than expected_seq: the RFC3339 updated_at you last read; rejected with code=update_conflict if the item changed since. Optional."},
+	{Name: "expected_updated_at", Type: "string", Description: "update: weaker guard than expected_seq (RFC3339 updated_at last read; stale returns update_conflict)."},
 	// BUG-3037: the STRONG token, and the one an agent should reach for.
 	// `updated_at` has one-second resolution, so two writes inside one second
 	// both match it and NEITHER conflicts — an agent that reads, decides and
@@ -403,7 +404,7 @@ var padItemSchemaParams = []ParamDef{
 		},
 		"required": []any{"old", "new"},
 	}, Description: "patch: the edits, applied in order, all or nothing. Required: patch."},
-	{Name: "op_key", Type: "string", Description: "patch/create/comment/note/decide: caller-chosen idempotency key (e.g. UUID). Retry SAME request/key for its first answer without another write after unclear outcomes. Different request with reused key refuses: idempotency_key_reused."},
+	{Name: "op_key", Type: "string", Description: "patch/create/comment/note/decide: caller idempotency key (e.g. UUID). Retry same request+key for its first answer; reused key with different request refuses (idempotency_key_reused)."},
 	{Name: "undo", Type: "string", Description: "patch: invert an earlier patch by its patch_id (instead of edits). Refused, writing nothing (patch_anchor_missing), when the text it changed has changed since."},
 	{Name: "lines", Type: "string", Description: "get: return only these body lines, numbered (\"A-B\", \"A-\" or \"A\"; 1-based), with seq and content_state, for targeting a patch."},
 	// PLAN-3555: the deliberate-overwrite opt-out. Phase 1 changes no outcome;
@@ -493,7 +494,7 @@ Actions:
     With gate_id and no blocker: remove gate. Cancellation/lapse/skip requires a decision.
   schedule-dismiss — Clear an ended schedule from Outstanding. ref required.
   schedule-delete — Irreversibly delete schedule/rule/history/managed reminder; stops pending firing. ref required. Keeps item/comments.
-  agenda — Occurrences/dated items: from, to (RFC3339, <=92 days); tz optional.
+  agenda — Occurrences/dated items: from, to (RFC3339, <=92 days); tz, audience (default agent; human = web UI), all_workspaces optional.
     Plus priority_list, waiting_on, no_date for recipient (default me; all: workspace).
     no_date_scope:personal_only means undated work is not listed, never empty.
   ack-reminder — Acknowledge by reminder_id OR ref, never both; leaves next/ready.

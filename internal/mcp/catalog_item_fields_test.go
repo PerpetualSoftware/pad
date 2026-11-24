@@ -1718,6 +1718,7 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		"every": true, "start": true, "deadline": true, "window": true, "anchor": true,
 		"audience": true, "tz": true, "floating": true, "day_start": true,
 		"state": true, "until": true, "occurrence_at": true, "from": true, "to": true,
+		"all_workspaces": true,
 
 		// schedule-resolve's actual_done_at and schedule-renegotiate (TASK-4356):
 		// schedule rows, never item fields.
