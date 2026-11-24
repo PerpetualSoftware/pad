@@ -529,7 +529,11 @@
 		// isn't an index-aware operation on the local path — it walks
 		// the parsed `fields` blob after materialization — so a tight
 		// per-ws cap could drop valid lower-ranked matches.
-		const perWsLimit = filterStatus
+		// "Recent" widens it the same way: the index returns its top hits
+		// by SCORE, and sorting only those by date would hide a newer match
+		// ranked below the cut. Past the wider cut, `localCapped` still
+		// marks the list incomplete.
+		const perWsLimit = filterStatus || sortMode === 'updated_at'
 			? LOCAL_PER_WS_LIMIT * 5
 			: LOCAL_PER_WS_LIMIT;
 		const merged: AugmentedSearchResult[] = [];

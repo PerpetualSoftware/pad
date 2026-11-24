@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
 	localHits: [] as { id: string; score: number }[],
 	localItems: {} as Record<string, Record<string, unknown>>,
 	collections: [] as Collection[],
+	searchLimits: [] as number[],
 }));
 
 vi.mock('$lib/api/client', () => ({ api: { search: vi.fn() } }));
@@ -39,7 +40,10 @@ vi.mock('$lib/stores/localIndex.svelte', () => ({
 }));
 vi.mock('$lib/stores/localSearch.svelte', async (importOriginal) => {
 	const real = await importOriginal<typeof import('$lib/stores/localSearch.svelte')>();
-	return { ...real, localSearch: { ...real.localSearch, search: () => state.localHits, epoch: () => 0 } };
+	return { ...real, localSearch: { ...real.localSearch, search: (_ws: string, _q: string, opts?: { limit?: number }) => {
+		state.searchLimits.push(opts?.limit ?? -1);
+		return state.localHits;
+	}, epoch: () => 0 } };
 });
 vi.mock('$lib/stores/ui.svelte', () => ({
 	uiStore: { searchOpen: true, isMobile: false, closeSearch: vi.fn() },
@@ -105,6 +109,7 @@ describe('CommandPalette flat ranked all-workspaces search (TASK-4805)', () => {
 		state.localHits = [];
 		state.localItems = {};
 		state.collections = [];
+		state.searchLimits = [];
 	});
 
 	afterEach(() => {
@@ -303,5 +308,25 @@ describe('CommandPalette flat ranked all-workspaces search (TASK-4805)', () => {
 
 		const titles = view.getAllByRole('option').map((o) => o.querySelector('.result-title')?.textContent);
 		expect(titles).toEqual(['Open Item', 'Done Item']);
+	});
+
+	it('8. Recent on the local path widens the per-workspace pull before sorting by date', async () => {
+		state.ready = true;
+		state.localItems = {
+			'open-1': { id: 'open-1', slug: 'open-item', title: 'Open Item', collection_slug: 'tasks', fields: '{}', updated_at: '2026-10-01T00:00:00Z' },
+		};
+		state.localHits = [{ id: 'open-1', score: 10 }];
+		vi.mocked(api.search).mockResolvedValue({ results: [], total: 0, limit: 20, offset: 0 } as never);
+
+		const view = render(CommandPalette);
+		await fireEvent.input(view.getByRole('combobox'), { target: { value: 'item' } });
+		await vi.advanceTimersByTimeAsync(500);
+		const relevanceLimit = state.searchLimits.at(-1)!;
+		await fireEvent.click(view.getByRole('button', { name: 'Recent' }));
+		await vi.advanceTimersByTimeAsync(500);
+		const recentLimit = state.searchLimits.at(-1)!;
+
+		expect(relevanceLimit).toBe(20);
+		expect(recentLimit).toBe(100);
 	});
 });
