@@ -476,7 +476,7 @@ Actions:
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-reopen — Undo one resolution. Required: ref, resolution_id. Keeps its comment.
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
-    snooze and move also need until (RFC3339, or a bare date at your day start). Optional: comment, actual_done_at, end_schedule, confirm_past_deadline (move only).
+    snooze and move also need until (RFC3339, or a bare date at your day start). Optional: comment, actual_done_at, end_schedule, dismiss_ended, confirm_past_deadline (move only).
   schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
   schedule-child — Milestone child: ref, child, child_action select|waive|remove; reason for waive only.
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);
