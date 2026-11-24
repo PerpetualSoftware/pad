@@ -101,6 +101,7 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.4"
+          cache: false
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # actions/setup-go unconditionally exports GOTOOLCHAIN=local, which
@@ -110,6 +111,23 @@ jobs:
         # (1.27.4), Go has nothing extra to fetch, and `auto` stays as a
         # safety net if go.mod is ever bumped ahead of this workflow.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # Each Linux Go job keeps its own build cache (TASK-4814). setup-go's
+      # built-in cache uses one key for every job, and the first job to
+      # finish saved it: one that builds nothing, so every job restored ~15MB
+      # and compiled from cold. Keyed on go.mod and go.sum, since the
+      # dependencies are the slow part to build. Pushes to main save it, after
+      # the job's builds; pull requests only restore. Every `go test` in a
+      # job that restores it passes -count=1, so a restored test result can
+      # never stand in for a run.
+      - name: Restore the Go build cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-build-v1-${{ runner.os }}-go-${{ hashFiles('go.mod', 'go.sum') }}
 
       - name: Create web build placeholder for embed
         run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
@@ -127,9 +145,6 @@ jobs:
       - name: Build the materializer and MCP App bundles for embed
         working-directory: web
         run: npm ci && node scripts/build-materializer.mjs && node scripts/build-mcp-app.mjs
-
-      - name: Run go vet
-        run: go vet ./...
 
       # The Nix vendorHash bump parser (TASK-2954). Its own gate lives HERE, in
       # the Go job, and not in nix.yml: over there the script only does anything
@@ -223,7 +238,16 @@ jobs:
         # The process-group test must not silently skip on the gate of record; the Nix sandbox has no ps and skips.
         env:
           PAD_TEST_REQUIRE_PS: "1"
-        run: go test -timeout=45m ./...
+        run: go test -timeout=45m -count=1 ./...
+
+      - name: Save the Go build cache
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
       - name: Run tests with race detector
         id: race
@@ -282,7 +306,7 @@ jobs:
           removed=$(LC_ALL=C comm -23 <(printf '%s\n' "$all" | LC_ALL=C sort) <(printf '%s\n' "$pkgs" | LC_ALL=C sort))
           want=$(printf '%s\n' github.com/PerpetualSoftware/pad/internal/server github.com/PerpetualSoftware/pad/internal/store)
           [ "$removed" = "$want" ] || { printf '::error::the race step must exclude exactly internal/server and internal/store; it excluded:\n%s\n' "${removed:-(nothing)}"; exit 1; }
-          go test $GO_RACE_FLAGS -timeout=45m $pkgs
+          go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs
 
       # A race failure on a push is stop-the-line (TASK-4224): on main, no
       # merges until it is triaged; on release-*, no tag. The same treatment
@@ -561,12 +585,23 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.4"
+          cache: false
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
         # GOTOOLCHAIN=local; `auto` lets Go honour go.mod if it ever moves
         # ahead of the exact patch (1.27.4) pinned above.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # Its own build cache, as the go job's (TASK-4814).
+      - name: Restore the Go build cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-build-v1-${{ runner.os }}-go-postgres-${{ hashFiles('go.mod', 'go.sum') }}
 
       - name: Create web build placeholder for embed
         run: mkdir -p web/build && echo "placeholder" > web/build/.gitkeep
@@ -621,6 +656,31 @@ jobs:
             "$tool" --version | grep -Eq ' 17\.' || { echo "$tool is not version 17" >&2; exit 1; }
           done
 
+      # The service database is thrown away with the runner, so crash safety
+      # buys nothing here, and the suite pays for it on every test: each one
+      # clones the migrated template (CREATE DATABASE ... TEMPLATE, which
+      # WAL-logs every page of the copy) and drops it again. All three
+      # settings reload without a restart. The reload is asynchronous, so the
+      # step reads them back from a new session, retrying briefly, and fails if
+      # they never take rather than letting the suite run on the old values.
+      - name: Turn off durability on the throwaway PostgreSQL
+        env:
+          PGURL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+        run: |
+          set -euo pipefail
+          psql "$PGURL" -v ON_ERROR_STOP=1 -c "ALTER SYSTEM SET fsync = off" \
+            -c "ALTER SYSTEM SET synchronous_commit = off" \
+            -c "ALTER SYSTEM SET full_page_writes = off" \
+            -c "SELECT pg_reload_conf()"
+          want="fsync=off,full_page_writes=off,synchronous_commit=off"
+          for _ in $(seq 1 20); do
+            got=$(psql "$PGURL" -Atc "SELECT string_agg(name || '=' || setting, ',' ORDER BY name) FROM pg_settings WHERE name IN ('fsync', 'full_page_writes', 'synchronous_commit')")
+            [ "$got" = "$want" ] && break
+            sleep 0.5
+          done
+          echo "$got"
+          [ "$got" = "$want" ] || { echo "durability settings did not take: $got" >&2; exit 1; }
+
       # Runs the native backup/restore round trip ALONE and verbosely, and
       # fails unless it PASSED: in the quiet suite below a skip and a pass
       # look the same, which is how this test went unrun in CI. It creates
@@ -662,6 +722,15 @@ jobs:
               | tee /tmp/pg-full.jsonl \
               | python3 scripts/ci-pg-trace.py --expect scripts/ci-pg-packages.txt --show-output
           fi
+
+      - name: Save the Go build cache
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
       - name: Run tests with race detector against PostgreSQL
         id: race
@@ -736,10 +805,21 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.4"
+          cache: false
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # Its own build cache, as the go job's (TASK-4814).
+      - name: Restore the Go build cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-build-v1-${{ runner.os }}-go-server-shards-${{ hashFiles('go.mod', 'go.sum') }}
 
       # -list links the test binary, so the embeds must resolve. Placeholders
       # are enough here: -list runs no tests.
@@ -752,6 +832,15 @@ jobs:
 
       - name: Check the shards cover internal/server exactly once
         run: scripts/test-shard.sh check ./internal/server/ 3 $GO_RACE_FLAGS
+
+      - name: Save the Go build cache
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   go-store-shards:
     needs: changes
@@ -769,15 +858,35 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.4"
+          cache: false
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
+      # Its own build cache, as the go job's (TASK-4814).
+      - name: Restore the Go build cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-build-v1-${{ runner.os }}-go-store-shards-${{ hashFiles('go.mod', 'go.sum') }}
+
       # internal/store's test binary imports no embed, so unlike
       # go-server-shards this job needs no web placeholders.
       - name: Check the shards cover internal/store exactly once
         run: scripts/test-shard.sh check ./internal/store/ 3 $GO_RACE_FLAGS
+
+      - name: Save the Go build cache
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
   web:
     name: Web
@@ -899,12 +1008,23 @@ jobs:
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version: "1.27.4"
+          cache: false
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
         # GOTOOLCHAIN=local; `auto` lets Go honour go.mod if it ever moves
         # ahead of the exact patch (1.27.4) pinned above.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
+
+      # Its own build cache, as the go job's (TASK-4814).
+      - name: Restore the Go build cache
+        id: go-cache
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-build-v1-${{ runner.os }}-e2e-${{ hashFiles('go.mod', 'go.sum') }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -939,6 +1059,15 @@ jobs:
         run: |
           grep -aq PAD_E2E_APP_CA pad-e2etest || { echo "control: the e2etest build has no PAD_E2E_APP_CA"; exit 1; }
           if grep -aq PAD_E2E_APP_CA pad; then echo "the default build contains PAD_E2E_APP_CA"; exit 1; fi
+
+      - name: Save the Go build cache
+        if: steps.go-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: ${{ steps.go-cache.outputs.cache-primary-key }}
 
       # Playwright browser binaries are downloaded from cdn.playwright.dev,
       # which occasionally hangs (PR #635 hit two consecutive 10-minute

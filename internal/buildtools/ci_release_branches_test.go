@@ -334,7 +334,7 @@ var shardChecks = map[string]string{
 }
 
 // raceExclusion is every line of ci.yml's two race steps but the last (the go
-// test line, which differs only in -count=1), whole.
+// test line), whole.
 const raceExclusion = `all=$(go list ./...)
 pkgs=$(printf '%s\n' "$all" | grep -Ev '^github.com/PerpetualSoftware/pad/internal/(server|store)$')
 test -n "$pkgs"
@@ -349,7 +349,7 @@ want=$(printf '%s\n' github.com/PerpetualSoftware/pad/internal/server github.com
 func TestCIWorkflow_RaceStepsExcludeExactlyTheShardedPackages(t *testing.T) {
 	ci := readWorkflow(t, "ci.yml")
 	wantTest := map[string]string{
-		"go":          "go test $GO_RACE_FLAGS -timeout=45m $pkgs",
+		"go":          "go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs",
 		"go-postgres": "go test $GO_RACE_FLAGS -timeout=45m -count=1 $pkgs",
 	}
 	for name, test := range wantTest {
