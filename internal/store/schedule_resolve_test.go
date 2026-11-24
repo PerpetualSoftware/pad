@@ -1,9 +1,11 @@
 package store
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -13,6 +15,18 @@ import (
 
 // TASK-4103 C2b: resolving the outstanding occurrence. Runs on SQLite in make
 // test and on Postgres in make test-pg.
+
+func fieldsMap(t *testing.T, raw string) map[string]any {
+	t.Helper()
+	m := map[string]any{}
+	if raw == "" {
+		return m
+	}
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		t.Fatalf("parse fields %q: %v", raw, err)
+	}
+	return m
+}
 
 func rt(s string) time.Time {
 	t, err := time.Parse(time.RFC3339, s)
@@ -826,8 +840,9 @@ func TestResolveDismissEndedOnLastOccurrence(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetItem: %v", err)
 	}
-	if got.Fields != "" && got.Fields != "{}" && got.Fields != `{"status":"open"}` {
-		t.Fatalf("item fields changed unexpectedly: %q", got.Fields)
+	// Compare parsed, not as text: Postgres JSONB re-serialises the column.
+	if before, after := fieldsMap(t, item.Fields), fieldsMap(t, got.Fields); !reflect.DeepEqual(before, after) {
+		t.Fatalf("item fields changed unexpectedly: %q -> %q", item.Fields, got.Fields)
 	}
 	var reason string
 	if err := f.s.db.QueryRow(f.s.q(`SELECT reason FROM schedule_changes WHERE schedule_id=? AND change_type='done' ORDER BY recorded_at DESC LIMIT 1`), sc.ID).Scan(&reason); err != nil {
