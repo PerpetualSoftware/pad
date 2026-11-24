@@ -16,12 +16,12 @@
 	import { getPrimaryDestinations, getActiveKey } from '$lib/nav/destinations';
 	import WorkspaceSwitcher from './WorkspaceSwitcher.svelte';
 	import DockedSheet from '$lib/components/layout/DockedSheet.svelte';
+	import { workspacePrefix } from '$lib/utils/workspace-route';
 
 	let { open, onclose }: { open: boolean; onclose: () => void } = $props();
 
-	let wsSlug = $derived(workspaceStore.current?.slug);
-	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
-	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
+	// '' when no link can be built (BUG-4802): no tiles or collections render then.
+	let wsPrefix = $derived(workspacePrefix(workspaceStore.current, page.params));
 	let isGuest = $derived(workspaceStore.current?.is_guest ?? false);
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 
@@ -56,6 +56,7 @@
 <DockedSheet {open} {onclose} label="Workspace">
 	<div class="ws">
 		<WorkspaceSwitcher mobile card />
+		{#if wsPrefix}
 		<!-- Navigate -->
 		<div class="ws-label">Navigate</div>
 		<div class="ws-grid">
@@ -99,6 +100,7 @@
 					</button>
 				{/each}
 			</div>
+		{/if}
 		{/if}
 	</div>
 </DockedSheet>

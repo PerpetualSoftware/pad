@@ -38,6 +38,32 @@ export function workspaceHomePath(ws: {
 }
 
 /**
+ * The prefix for links inside a workspace, `/<owner>/<slug>`, or '' when none
+ * can be built.
+ *
+ * Uses `workspaceHomePath` first. With no owner path (owner_username '' and no
+ * fallback to the signed-in user), it uses the route the user is already on
+ * when that route is this workspace: the `[username]/[workspace]` route does
+ * not check the username segment, and `workspaceStore.setCurrent` resolves by
+ * slug alone, so any link under the current URL's prefix resolves to the same
+ * workspace. Otherwise it returns '', which means "build no workspace links":
+ * callers must not render or follow a link from an empty prefix, which would
+ * be an app-root path such as `/settings`.
+ */
+export function workspacePrefix(
+	ws: { slug: string; owner_username?: string; owner_id?: string; is_guest?: boolean } | null | undefined,
+	route: { username?: string; workspace?: string }
+): string {
+	if (!ws) return '';
+	const home = workspaceHomePath(ws);
+	if (home) return home;
+	if (route.workspace === ws.slug && route.username) {
+		return `/${encodeURIComponent(route.username)}/${ws.slug}`;
+	}
+	return '';
+}
+
+/**
  * Compute the URL to navigate to when "switching to" a workspace —
  * the user's last-visited route in that workspace if we have one,
  * falling back to the dashboard otherwise.

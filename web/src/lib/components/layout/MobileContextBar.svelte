@@ -26,6 +26,7 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import AccountButton from './AccountButton.svelte';
 	import WorkspaceSwitcher from '$lib/components/layout/WorkspaceSwitcher.svelte';
+	import { workspacePrefix } from '$lib/utils/workspace-route';
 
 	// Count in-app navigations so goBack() knows whether history.back() stays
 	// inside Pad. history.length is unreliable — a deep link opened from
@@ -47,9 +48,8 @@
 		return s.replace(/[-_]/g, ' ');
 	}
 
-	let wsSlug = $derived(workspaceStore.current?.slug);
-	let wsUsername = $derived(workspaceStore.current?.owner_username ?? '');
-	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
+	// '' when no link can be built (BUG-4802), which reads as "no workspace".
+	let wsPrefix = $derived(workspacePrefix(workspaceStore.current, page.params));
 
 	// Segments past the workspace prefix. Empty ⇒ the workspace home/root.
 	let segments = $derived.by(() => {

@@ -25,7 +25,7 @@ vi.mock('$lib/api/client', () => ({
 }));
 vi.mock('$app/navigation', () => ({ goto: vi.fn() }));
 vi.mock('$lib/stores/workspace.svelte', () => ({
-	workspaceStore: { canEditCollection: () => true, workspaces: [{id:'ws',slug:'ws',name:'First',owner_username:'u'},{id:'other',slug:'other',name:'Last',owner_username:'v'}], current: null },
+	workspaceStore: { canEditCollection: () => true, workspaces: [{id:'ws',slug:'ws',name:'First',owner_username:'u'},{id:'other',slug:'other',name:'Last',owner_username:'v'},{id:'orphan',slug:'orphan',name:'Orphan',owner_username:'',owner_id:'u-other'}], current: null },
 }));
 vi.mock('$lib/stores/collections.svelte', async () => await import('./sidebarQuickAdd.fixture.svelte'));
 
@@ -80,4 +80,22 @@ it('shows no empty-state message while the workspace collections load (TASK-4545
 	expect(screen.getByRole('status').textContent).toContain('Loading collections');
 	expect(document.querySelector('.capture-empty')).toBeNull();
 	release([]);
+});
+
+// BUG-4802: a workspace with no owner name gets no link to the new item (the
+// old prefix was `//orphan`, a link to another host).
+it('captures into a workspace with no owner name without building a link', async () => {
+	render(QuickCaptureSheet, { open: true, onclose: vi.fn(), wsSlug: undefined, wsPrefix: '' }); await settle();
+	await fireEvent.change(screen.getByRole('combobox', { name: 'Workspace' }), { target: { value: 'orphan' } }); await settle();
+	await fireEvent.input(title(), { target: { value: 'Orphan task' } });
+	await fireEvent.click(screen.getByRole('button', { name: 'Add' })); await settle();
+	expect(vi.mocked(api.items.create).mock.calls[0][0]).toBe('orphan');
+	const toast = toastStore.toasts.at(-1);
+	expect(toast?.message).toBe('Added TASK-1');
+	expect(toast?.link).toBeFalsy();
+	expect(toast?.action).toBeFalsy();
+	await fireEvent.input(title(), { target: { value: 'Orphan task two' } });
+	await fireEvent.keyDown(title(), { key: 'Enter', metaKey: true }); await settle();
+	expect(api.items.create).toHaveBeenCalledTimes(2);
+	expect(goto).not.toHaveBeenCalled();
 });

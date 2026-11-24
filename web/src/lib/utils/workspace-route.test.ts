@@ -26,7 +26,7 @@ vi.mock('$lib/stores/tabs.svelte', () => ({
 	tabsStore: { routeFor: (slug: string) => h.state.routes[slug] }
 }));
 
-import { workspaceHomePath, workspaceRestoreTarget } from './workspace-route';
+import { workspaceHomePath, workspacePrefix, workspaceRestoreTarget } from './workspace-route';
 
 beforeEach(() => {
 	h.state.userId = 'u-me';
@@ -112,5 +112,36 @@ describe('workspaceHomePath / workspaceRestoreTarget', () => {
 	it('rejects a saved route outside the workspace', () => {
 		h.state.routes.w = '/bob/w/tasks';
 		expect(workspaceRestoreTarget({ slug: 'w', owner_username: 'alice' })).toBe('/alice/w');
+	});
+});
+
+// BUG-4802: nav links in a workspace are built from workspacePrefix. With no
+// owner name, the route the user is on stands in when it is this workspace.
+describe('workspacePrefix', () => {
+	it('uses owner_username when present', () => {
+		const ws = { slug: 'w', owner_username: 'alice', owner_id: 'u-alice' };
+		expect(workspacePrefix(ws, { username: 'other', workspace: 'w' })).toBe('/alice/w');
+	});
+
+	it('uses the current route when the owner is missing and the route is this workspace', () => {
+		const ws = { slug: 'w', owner_username: '', owner_id: 'u-other' };
+		expect(workspacePrefix(ws, { username: 'a b', workspace: 'w' })).toBe('/a%20b/w');
+	});
+
+	it('builds no prefix when the owner is missing and the route is another workspace', () => {
+		const ws = { slug: 'w', owner_username: '', owner_id: 'u-other' };
+		expect(workspacePrefix(ws, { username: 'bob', workspace: 'x' })).toBe('');
+		expect(workspacePrefix(ws, {})).toBe('');
+		expect(workspacePrefix(ws, { username: '', workspace: 'w' })).toBe('');
+	});
+
+	it('builds no prefix for no workspace', () => {
+		expect(workspacePrefix(null, { username: 'bob', workspace: 'w' })).toBe('');
+		expect(workspacePrefix(undefined, {})).toBe('');
+	});
+
+	it("prefers the signed-in user's home path over the route for a workspace they own", () => {
+		const ws = { slug: 'w', owner_username: '', owner_id: 'u-me' };
+		expect(workspacePrefix(ws, { username: 'bob', workspace: 'w' })).toBe('/me/w');
 	});
 });

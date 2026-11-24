@@ -30,7 +30,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
-	import { announceCaptured } from '$lib/items/quickCapture';
+	import { announceCaptured, capturedLabel } from '$lib/items/quickCapture';
+	import { workspaceHomePath } from '$lib/utils/workspace-route';
 	import PlanLimitPrompt from '$lib/components/billing/PlanLimitPrompt.svelte';
 	import { parseSettings, itemUrlId, isAgentCollection } from '$lib/types';
 	import { createDefaultFields } from '$lib/collections/createDefaults';
@@ -60,7 +61,8 @@
 	let workspaceError = $state('');
 	const selectedWorkspace = $derived(workspaceStore.workspaces?.find(w => w.slug === chosenWorkspace) ?? pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs));
 	const targetSlug = $derived(wsSlug || selectedWorkspace?.slug);
-	const targetPrefix = $derived(wsSlug ? wsPrefix : selectedWorkspace ? `/${selectedWorkspace.owner_username}/${selectedWorkspace.slug}` : '');
+	// '' when no link can be built (BUG-4802): the capture is confirmed without one.
+	const targetPrefix = $derived(wsSlug ? wsPrefix : selectedWorkspace ? (workspaceHomePath(selectedWorkspace) ?? '') : '');
 	const collections = $derived((wsSlug ? collectionStore.collections : targetCollections).filter(c => !isAgentCollection(c) && (wsSlug ? workspaceStore.canEditCollection(c.id) : canEditCollection(targetMembership, c.id))));
 	let request = 0;
 	async function loadTarget(slug: string) {
@@ -132,9 +134,10 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			const url = `${prefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
-			if (!openAfter) {
-				announceCaptured(item, url);
+			const url = prefix ? `${prefix}/${coll.slug}/${itemUrlId(item)}?new=1` : '';
+			if (!openAfter || !url) {
+				if (url) announceCaptured(item, url);
+				else toastStore.show(`Added ${capturedLabel(item)}`, 'success');
 				// Clear only what was sent: text typed while the request was
 				// in flight is the next capture, not this one.
 				if (inputVersion === sentVersion) title = '';

@@ -139,14 +139,19 @@
 				{#each visible as ws (ws.workspace_id)}
 					<tr>
 						<td>
-							<a
-								class="ws-link"
-								href={'/' + ws.owner_username + '/' + ws.workspace_slug}
-								target="_blank"
-								rel="noopener"
-							>
-								{ws.workspace_name}
-							</a>
+							{#if ws.owner_username}
+								<a
+									class="ws-link"
+									href={'/' + ws.owner_username + '/' + ws.workspace_slug}
+									target="_blank"
+									rel="noopener"
+								>
+									{ws.workspace_name}
+								</a>
+							{:else}
+								<!-- No owner name, no link to build (BUG-4802). -->
+								<span class="ws-name">{ws.workspace_name}</span>
+							{/if}
 							<div class="ws-slug">{ws.workspace_slug}</div>
 						</td>
 						<td>
