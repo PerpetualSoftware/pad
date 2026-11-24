@@ -116,8 +116,9 @@ jobs:
       # built-in cache uses one key for every job, and the first job to
       # finish saved it: one that builds nothing, so every job restored ~15MB
       # and compiled from cold. Keyed on go.mod and go.sum, since the
-      # dependencies are the slow part to build. Pushes to main save it, after
-      # the job's builds; pull requests only restore. Every `go test` in a
+      # dependencies are the slow part to build. Pushes save it, after the
+      # job's builds (every push, not main only: a release-* push runs what a
+      # main push does); pull requests only restore. Every `go test` in a
       # job that restores it passes -count=1, so a restored test result can
       # never stand in for a run.
       - name: Restore the Go build cache
@@ -241,7 +242,7 @@ jobs:
         run: go test -timeout=45m -count=1 ./...
 
       - name: Save the Go build cache
-        if: steps.go-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -724,7 +725,7 @@ jobs:
           fi
 
       - name: Save the Go build cache
-        if: steps.go-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -834,7 +835,7 @@ jobs:
         run: scripts/test-shard.sh check ./internal/server/ 3 $GO_RACE_FLAGS
 
       - name: Save the Go build cache
-        if: steps.go-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -880,7 +881,7 @@ jobs:
         run: scripts/test-shard.sh check ./internal/store/ 3 $GO_RACE_FLAGS
 
       - name: Save the Go build cache
-        if: steps.go-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -1061,7 +1062,7 @@ jobs:
           if grep -aq PAD_E2E_APP_CA pad; then echo "the default build contains PAD_E2E_APP_CA"; exit 1; fi
 
       - name: Save the Go build cache
-        if: steps.go-cache.outputs.cache-hit != 'true'
+        if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

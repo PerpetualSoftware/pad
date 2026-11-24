@@ -25,12 +25,11 @@ linters:
   # the safety net back; for now we rely on govet + staticcheck SA
   # for real-bug coverage.
   settings:
-    govet:
-      # This is CI's only vet run, so it must cover everything `go vet`
-      # does. Its default set is go vet's minus loopclosure (plus inline);
-      # name loopclosure so nothing go vet checks is lost.
-      enable:
-        - loopclosure
+    # govet is CI's only vet run, so it must cover everything `go vet` does.
+    # Its default set is go vet's, plus inline, minus loopclosure. Both tools
+    # apply loopclosure only to files below Go 1.22, and this module has none
+    # (golangci-lint drops it outright for a go >= 1.22 module), so nothing
+    # go vet checks is lost.
     staticcheck:
       # Restrict staticcheck to its bug-finding (SA*) check family.
       # ST*/QF*/S* are stylistic / quick-fix suggestions that we don't
