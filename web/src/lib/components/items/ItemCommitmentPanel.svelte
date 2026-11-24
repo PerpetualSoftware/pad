@@ -224,7 +224,7 @@
    <p role="status">Date unavailable</p><button onclick={() => load()}>Retry</button>
   {/if}
   {#if actions.actionError && !dialogOpen}<p role="alert">{actions.actionError}</p>
-  {:else if dismissError}<p role="alert">{dismissError}</p>{/if}
+  {:else if dismissError && dismissable}<p role="alert">{dismissError}</p>{/if}
  </section>
 {/if}{#if editable}
  <ItemCommitmentDateDialog open={addDateOpen} {wsSlug} {itemSlug} itemRef={formatItemRef(item) ?? ''} itemTitle={item.title} {mobile} onclose={() => onAddDateClose?.()} oncreated={() => void created()} />

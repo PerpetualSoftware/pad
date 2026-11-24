@@ -276,6 +276,16 @@ it.each([
  expect(h.get).toHaveBeenCalledTimes(1);
  expect((screen.getByRole('button', { name: dismissName }) as HTMLButtonElement).disabled).toBe(false);
 });
+it('drops a dismiss failure once a refresh shows the schedule dismissed elsewhere', async () => {
+ h.get.mockResolvedValue(view(ended)); h.dismiss.mockRejectedValue({ code: 'internal_error' });
+ render(ItemCommitmentPanel, props());
+ await fireEvent.click(await screen.findByRole('button', { name: dismissName }));
+ await screen.findByRole('alert');
+ h.get.mockResolvedValue(view({ ...ended, ended_dismissed_at: '2031-03-10T12:00:00Z' }));
+ h.subscribe.mock.calls[0][0]({ type: 'item_updated', item_id: item.id });
+ await waitFor(() => expect(screen.queryByRole('button', { name: dismissName })).toBeNull());
+ expect(screen.queryByRole('alert')).toBeNull();
+});
 it('makes one dismiss call for a double click while it is pending', async () => {
  h.get.mockResolvedValue(view(ended));
  let resolve!: (value: { commitment: ItemCommitmentView }) => void;
