@@ -184,9 +184,9 @@ func dispatchChildEnv() []string {
 // (BUG-985 bug 3).
 //
 // Item-shaped objects also get their `fields` and `tags` properties
-// parsed from JSON-encoded strings into native objects/arrays
-// (BUG-991, path A). Server / web / CLI keep their existing
-// stringified contract; the MCP boundary normalizes for agents.
+// normalized — parsing JSON-encoded strings into native objects/arrays
+// and stripping duplicated keys from both string-encoded and already-
+// native `fields` objects (BUG-991, BUG-992, BUG-4812).
 //
 // Shared between ExecDispatcher and HTTPHandlerDispatcher's
 // packageHTTPResponse so both transports produce the same wire
@@ -213,19 +213,20 @@ func packageJSONResult(out string) *CallToolResult {
 }
 
 // normalizeStringEncodedJSONFields recursively walks a parsed JSON
-// value, finds string-typed `fields` and `tags` properties, parses
-// them as embedded JSON, and substitutes the native object/array.
-// Additionally drops `implementation_notes` and `decision_log` from
-// the parsed fields object — those entries are duplicates of the
-// top-level arrays the server hydrates onto each item (BUG-992).
+// value and normalizes `fields` and `tags` properties in both shapes:
+// JSON-encoded strings (from the REST API / `models.Item`) and already-
+// native JSON objects/arrays (from `pad item show --format json`,
+// BUG-4812). String-encoded values are parsed and substituted; for both
+// shapes, `implementation_notes` and `decision_log` are dropped from a
+// `fields` object because those entries duplicate the top-level arrays
+// the server hydrates onto each item (BUG-992). Neither shape recurses
+// into a `fields` object or `tags` array.
 //
 // Why: the server-side `models.Item` carries `Fields` and `Tags` as
 // JSON-string columns (a SQLite-era choice that propagated through
-// the API contract). For agents going through MCP this means a
-// double-encode every read — the agent has to JSON.parse the field
-// before doing anything useful. Normalizing at the MCP boundary
-// gives agents clean JSON without coordinating a server / web / CLI
-// migration (which is the bigger BUG-991 path B).
+// the API contract), while `pad item show --format json` emits them
+// natively. Accepting both shapes at the MCP boundary keeps both
+// transports producing the same wire output.
 //
 // The walk handles every common item shape:
 //   - Single-item responses (top-level item object).
@@ -238,13 +239,25 @@ func normalizeStringEncodedJSONFields(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		for k, val := range x {
-			if s, ok := val.(string); ok && (k == "fields" || k == "tags") {
-				if parsed, ok := tryParseEmbeddedJSON(s); ok {
-					if k == "fields" {
-						parsed = stripDuplicatedFieldsKeys(parsed)
+			if k == "fields" || k == "tags" {
+				switch typed := val.(type) {
+				case string:
+					if parsed, ok := tryParseEmbeddedJSON(typed); ok {
+						if k == "fields" {
+							parsed = stripDuplicatedFieldsKeys(parsed)
+						}
+						x[k] = parsed
+						continue
 					}
-					x[k] = parsed
-					continue
+				case map[string]any:
+					if k == "fields" {
+						x[k] = stripDuplicatedFieldsKeys(typed)
+						continue
+					}
+				case []any:
+					if k == "tags" {
+						continue
+					}
 				}
 			}
 			x[k] = normalizeStringEncodedJSONFields(val)

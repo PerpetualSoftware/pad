@@ -859,18 +859,23 @@ on stderr instead. --format json carries it as the content_state field.`,
 			backlinksTop, _ := client.GetBacklinks(ws, item.Slug, 5, 0)
 
 			if formatFlag == "json" {
-				// Wrap with the inline `backlinks_top` field per the
-				// task spec. Additive: existing fields on `item` are
-				// unchanged; any consumer that didn't know about
-				// backlinks_top simply ignores it. JSON output of
-				// `pad item show` was already a single-object shape,
-				// so the wrapper keeps the same top-level shape with
-				// one extra optional key.
+				// Wrap with the inline `backlinks_top` field and shadow
+				// models.Item's JSON-string Fields/Tags with native JSON
+				// (BUG-4812). Every other key on `item` stays byte-for-byte
+				// as before, including full fields without stripping
+				// implementation_notes or decision_log.
 				type wrappedItem struct {
 					*models.Item
+					Fields       json.RawMessage   `json:"fields"`
+					Tags         json.RawMessage   `json:"tags"`
 					BacklinksTop []models.Backlink `json:"backlinks_top,omitempty"`
 				}
-				return cli.PrintJSON(wrappedItem{Item: item, BacklinksTop: backlinksTop})
+				return cli.PrintJSON(wrappedItem{
+					Item:         item,
+					Fields:       cli.NativeJSONOr(item.Fields, "{}"),
+					Tags:         cli.NativeJSONOr(item.Tags, "[]"),
+					BacklinksTop: backlinksTop,
+				})
 			}
 
 			if formatFlag == "markdown" {

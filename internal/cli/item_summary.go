@@ -149,6 +149,25 @@ func rawJSONOrNil(s string) json.RawMessage {
 	return json.RawMessage(t)
 }
 
+// NativeJSONOr returns s as json.RawMessage when its trimmed text is valid
+// JSON, preserving number literals verbatim. Empty or whitespace-only input
+// yields json.RawMessage(empty) (for example "{}" or "[]"). A non-empty value
+// that is not valid JSON is emitted as a JSON string of the raw value so the
+// enclosing document stays valid and never errors on marshal.
+func NativeJSONOr(s string, empty string) json.RawMessage {
+	t := strings.TrimSpace(s)
+	if t == "" {
+		return json.RawMessage(empty)
+	}
+	if !json.Valid([]byte(t)) {
+		if b, err := json.Marshal(s); err == nil {
+			return json.RawMessage(b)
+		}
+		return json.RawMessage(empty)
+	}
+	return json.RawMessage(t)
+}
+
 // ToItemSummary projects a single models.Item into the summary shape.
 func ToItemSummary(item models.Item) ItemSummary {
 	return ItemSummary{
