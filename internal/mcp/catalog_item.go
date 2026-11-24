@@ -347,12 +347,12 @@ var padItemSchemaParams = []ParamDef{
 	// or just guessed shapes when other input shapes errored. The
 	// expanded description names the dedicated top-level params so
 	// agents don't fall back to `field` for them.
-	{Name: "field", Type: "array<string>", Description: "SCHEMA-DECLARED custom fields [\"key=value\"] (prefer dedicated params for status/priority/category/parent/role/assign/tags). For create/update/list/move. Refuses implementation_notes (note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library)."},
+	{Name: "field", Type: "array<string>", Description: "SCHEMA-DECLARED custom fields [\"key=value\"] (prefer dedicated params for status/priority/category/parent/role/assign/tags). For create/update/list/move; writes refuse implementation_notes (note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library)."},
 	// `fields`: the OBJECT alias for the write path (#1066). Reads
 	// return `fields` as a native object, so writing that same shape
 	// back is what agents naturally do — it used to be silently
 	// dropped. See catalog_item_fields.go for the merge contract.
-	{Name: "fields", Type: "object", Description: "Field OBJECT matching reads, e.g. {\"status\":\"done\"}. create/update only. Merges with field/dedicated params; conflicts refuse. JSON types stay intact; null refuses; parent/plan must be string refs."},
+	{Name: "fields", Type: "object", Description: "Field OBJECT matching reads, e.g. {\"status\":\"done\"}. create/update only. Merges with field/dedicated params; conflicts refuse. JSON types stay intact; null refuses (omit unchanged keys); parent/plan must be string refs."},
 
 	// ── List / starred ──
 	{Name: "all", Type: "bool", Description: "Include archived/done items in list responses. For: list, starred."},

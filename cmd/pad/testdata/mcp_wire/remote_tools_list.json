@@ -539,14 +539,14 @@
             "type": "string"
           },
           "field": {
-            "description": "SCHEMA-DECLARED custom fields [\"key=value\"] (prefer dedicated params for status/priority/category/parent/role/assign/tags). For create/update/list/move. Refuses implementation_notes (note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library).",
+            "description": "SCHEMA-DECLARED custom fields [\"key=value\"] (prefer dedicated params for status/priority/category/parent/role/assign/tags). For create/update/list/move; writes refuse implementation_notes (note), decision_log (decide), github_pr (link-pr/unlink-pr), convention (library).",
             "items": {
               "type": "string"
             },
             "type": "array"
           },
           "fields": {
-            "description": "Field OBJECT matching reads, e.g. {\"status\":\"done\"}. create/update only. Merges with field/dedicated params; conflicts refuse. JSON types stay intact; null refuses; parent/plan must be string refs.",
+            "description": "Field OBJECT matching reads, e.g. {\"status\":\"done\"}. create/update only. Merges with field/dedicated params; conflicts refuse. JSON types stay intact; null refuses (omit unchanged keys); parent/plan must be string refs.",
             "properties": {},
             "type": "object"
           },
