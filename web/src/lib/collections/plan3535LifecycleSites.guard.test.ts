@@ -62,6 +62,8 @@ const SITES: Record<string, [number, string]> = {
 
 	// Keep.
 	'src/lib/components/collections/BoardView.svelte::doneFieldTerminalOptions': [1, "keep: the board's terminal-lane display cap, a collection's own view"],
+	'src/lib/components/search/groupResults.ts::doneFieldTerminalOptions': [1, 'keep: local search relevance multiplier demotes terminal items, including reference items; no progress count'],
+	'src/lib/components/search/groupResults.ts::getAbandonedOptions': [1, 'keep: local search relevance multiplier demotes abandoned items more than completed ones; no progress count'],
 	'src/lib/items/localLists.ts::childState': [1, "keep: tags and starred pages filter an item's own open state; a reference doc can be open"]
 };
 

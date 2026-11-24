@@ -48,6 +48,15 @@ describe('snippetSegments', () => {
 	it('a stray closing mark is dropped', () => {
 		expect(snippetSegments('foo </mark>bar')).toEqual([{ text: 'foo bar', hit: false }]);
 	});
+
+	it('strips script tags while keeping closed and unclosed mark hits', () => {
+		const segs = snippetSegments('before <script>alert(1)</script> <mark>hit</mark> after <mark>stray');
+		for (const s of segs) {
+			expect(s.text).not.toContain('<script');
+		}
+		expect(segs.some((s) => s.hit && s.text === 'hit')).toBe(true);
+		expect(segs.some((s) => s.hit && s.text === 'stray')).toBe(true);
+	});
 });
 
 describe('windowSnippet', () => {
