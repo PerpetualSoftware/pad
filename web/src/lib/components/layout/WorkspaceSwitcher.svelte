@@ -15,7 +15,8 @@
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import BottomSheet from '$lib/components/common/BottomSheet.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
-	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
+	import { workspacePrefix, workspaceRestoreTarget } from '$lib/utils/workspace-route';
+	import { page } from '$app/state';
 	import RecentlyDeletedWorkspaces from '$lib/components/layout/RecentlyDeletedWorkspaces.svelte';
 	import type { Workspace } from '$lib/types';
 
@@ -101,16 +102,15 @@
 		// Click on the *current* workspace overrides the last-route
 		// restore — gives the user a path back to the workspace
 		// dashboard from any deep route. Mirrors TopBar.handleWsClick.
-		// Use workspaceStore.current (rather than ws.owner_username,
-		// which is typed optional) for the dashboard URL — when isCurrent
-		// is true we know `current` is non-null and shares this slug, so
-		// its `owner_username` is guaranteed present. Avoids producing
-		// `//slug` (scheme-relative URL) if a caller passes a workspace
-		// shape without owner_username.
+		// owner_username can be '' (a LEFT JOIN on users: no owner, or the
+		// owner is gone; BUG-4802), so the dashboard URL is not built from it
+		// directly, which would give `//slug` (another host). workspacePrefix
+		// falls back to the route the workspace is open at, which resolves by
+		// slug; with neither, go Home.
 		const current = workspaceStore.current;
 		const isCurrent = !!current && ws.slug === current.slug;
 		const target = isCurrent
-			? `/${current.owner_username}/${current.slug}`
+			? workspacePrefix(current, page.params) || '/'
 			: workspaceRestoreTarget(ws);
 		goto(target);
 	}

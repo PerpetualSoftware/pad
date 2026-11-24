@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, cleanup } from '@testing-library/svelte';
 import { tick } from 'svelte';
 
-const ws = vi.hoisted(() => ({ current: { slug: 'ws', owner_username: 'u', is_guest: false } }));
+const ws = vi.hoisted(() => ({ current: { slug: 'ws', owner_username: 'u', is_guest: false } as { slug: string; owner_username: string; owner_id?: string; is_guest: boolean } }));
 
 vi.mock('$lib/api/client', () => ({
 	api: {
@@ -46,5 +46,22 @@ describe('Sidebar library link (TASK-2258)', () => {
 		render(Sidebar);
 		await tick();
 		expect(document.querySelector('a[href="/u/ws/library"]')).toBeNull();
+	});
+});
+
+// BUG-4802: owner_username can be ''. With no prefix to build, the workspace nav
+// is not rendered, rather than linking `/library`, `/settings` and so on.
+describe('Sidebar with no owner name', () => {
+	beforeEach(() => cleanup());
+
+	it('renders no workspace link from an empty prefix', async () => {
+		ws.current = { slug: 'ws', owner_username: '', owner_id: 'u-other', is_guest: false };
+		render(Sidebar);
+		await tick();
+		expect(document.querySelector('.collection-nav')).toBeNull();
+		for (const path of ['/insights', '/graph', '/activity', '/library', '/settings']) {
+			expect(document.querySelector(`a[href="${path}"]`), path).toBeNull();
+		}
+		expect(document.querySelector('a.settings-btn')).toBeNull();
 	});
 });

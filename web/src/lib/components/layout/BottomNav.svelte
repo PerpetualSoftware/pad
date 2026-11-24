@@ -38,13 +38,14 @@
 	import ChatSlot from '$lib/components/layout/ChatSlot.svelte';
 	import QuickCaptureSheet from '$lib/components/layout/QuickCaptureSheet.svelte';
 	import WorkspaceSheet from '$lib/components/layout/WorkspaceSheet.svelte';
+	import { workspacePrefix } from '$lib/utils/workspace-route';
 
 
 	let workspace = $derived(workspaceStore.current ?? pickShellWorkspace(workspaceStore.workspaces, lastWorkspace.current, tabsStore.tabs));
-	let inWorkspace = $derived(!!workspace && (page.url.pathname === `/${workspace.owner_username}/${workspace.slug}` || page.url.pathname.startsWith(`/${workspace.owner_username}/${workspace.slug}/`)));
 	let wsSlug = $derived(workspace?.slug);
-	let wsUsername = $derived(workspace?.owner_username ?? '');
-	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
+	// '' when no link can be built (BUG-4802).
+	let wsPrefix = $derived(workspacePrefix(workspace, page.params));
+	let inWorkspace = $derived(!!wsPrefix && (page.url.pathname === wsPrefix || page.url.pathname.startsWith(wsPrefix + '/')));
 	let wsName = $derived(workspace?.name ?? 'Workspace');
 	let activeKey = $derived(getActiveKey(page.url.pathname, wsPrefix));
 

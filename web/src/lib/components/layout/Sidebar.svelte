@@ -29,13 +29,14 @@
 	import { getActiveKey } from '$lib/nav/destinations';
 	import type { Collection } from '$lib/types';
 	import { toastStore } from '$lib/stores/toast.svelte';
-	import { announceCaptured } from '$lib/items/quickCapture';
+	import { announceCaptured, capturedLabel } from '$lib/items/quickCapture';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import NotificationPanel from '$lib/components/common/NotificationPanel.svelte';
 	import CreateCollectionModal from '$lib/components/collections/CreateCollectionModal.svelte';
 	import { isBlockedByModal } from '$lib/a11y/viewerBackdrop';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import { coveredPage } from '$lib/stores/coveredPage.svelte';
+	import { workspacePrefix } from '$lib/utils/workspace-route';
 
 	let notificationPanelOpen = $state(false);
 	let showCreateCollection = $state(false);
@@ -60,8 +61,8 @@
 		: workspaceStore.current);
 	let captureOpen = $state(false);
 	let wsSlug = $derived(shellWorkspace?.slug);
-	let wsUsername = $derived(shellWorkspace?.owner_username ?? '');
-	let wsPrefix = $derived(wsUsername && wsSlug ? `/${wsUsername}/${wsSlug}` : '');
+	// '' when no link can be built (BUG-4802): no workspace link renders then.
+	let wsPrefix = $derived(workspacePrefix(shellWorkspace, page.params));
 	let isGuest = $derived(shellWorkspace?.is_guest ?? false);
 	// Active-state derives from the shared nav source so the Sidebar and the
 	// mobile BottomNav/More sheet can't drift (PLAN-1694 DR-1).
@@ -254,9 +255,11 @@
 				fields: JSON.stringify(defaultFields),
 				source: 'web'
 			});
-			const url = `${prefix}/${coll.slug}/${itemUrlId(item)}?new=1`;
-			if (!open) {
-				announceCaptured(item, url);
+			// With no prefix (BUG-4802) there is no link to build: confirm and stay.
+			const url = prefix ? `${prefix}/${coll.slug}/${itemUrlId(item)}?new=1` : '';
+			if (!open || !url) {
+				if (url) announceCaptured(item, url);
+				else toastStore.show(`Added ${capturedLabel(item)}`, 'success');
 				// Only the dialog this submission came from is readied for the
 				// next capture: one dismissed or reopened since is the user's.
 				if (quickAddSession === session) {
@@ -576,7 +579,7 @@
 >
 	<div class="sidebar-inner">
 	{#if !uiStore.isMobile}<YouNav /><WorkspaceSwitcher current={shellWorkspace} />{/if}
-		{#if wsSlug}
+		{#if wsPrefix}
 			<!--
 				`data-membership` says whether the caller's membership has settled
 				(BUG-3267). Every create/edit affordance reads it through the
@@ -799,7 +802,7 @@
 				🔍 Search <kbd>{modKeyLabel('K')}</kbd>
 			</button>
 			<div class="footer-row">
-				{#if wsSlug && !isGuest}
+				{#if wsPrefix && !isGuest}
 					<a href="{wsPrefix}/settings" class="settings-btn" onclick={() => uiStore.onNavigate()}>
 						⚙ {uiStore.isMobile ? 'Settings' : 'Workspace settings'}
 					</a>

@@ -45,6 +45,7 @@ vi.mock('$lib/stores/chatSetting.svelte', () => ({
 
 import BottomNav from './BottomNav.svelte';
 import { page } from '$app/state';
+import { workspaceStore } from '$lib/stores/workspace.svelte';
 import { api } from '$lib/api/client';
 import { homeOverview } from '$lib/stores/homeOverview.svelte';
 import { chatStore } from '$lib/stores/chat.svelte';
@@ -60,6 +61,8 @@ beforeEach(() => {
 	h.resets.forEach(reset => reset());
 	vi.clearAllMocks();
 	page.url = new URL('http://localhost/u/ws');
+	page.params = {};
+	(workspaceStore as { current: unknown }).current = { slug: 'ws', owner_username: 'u', name: 'WS' };
 	cs.open = false;
 	parked.length = 0;
 	chatSurfaceMock.open.mockClear();
@@ -239,4 +242,22 @@ it('leaves agenda arrival to the page, then refreshes once on each needs arrival
  await go('/needs');
  expect(api.getMyAgenda).toHaveBeenCalledTimes(2);
  expect(api.needs.list).toHaveBeenCalledTimes(2);
+});
+
+// BUG-4802: owner_username can be ''. On the workspace's own route the bar uses
+// that route's prefix; elsewhere it builds none (no `//ws` or `/undefined/ws`).
+describe('BottomNav with no owner name', () => {
+ it('lights Workspace on the route the workspace is open at', async () => {
+  (workspaceStore as { current: unknown }).current = { slug: 'ws', owner_username: '', owner_id: 'u-other', name: 'WS' };
+  page.url = new URL('http://localhost/x/ws/activity');
+  page.params = { username: 'x', workspace: 'ws' };
+  render(BottomNav); await tick();
+  expect(slot('Workspace').classList.contains('active')).toBe(true);
+ });
+ it('is not in the workspace on an app-root path', async () => {
+  (workspaceStore as { current: unknown }).current = { slug: 'ws', owner_username: '', owner_id: 'u-other', name: 'WS' };
+  page.url = new URL('http://localhost/activity');
+  render(BottomNav); await tick();
+  expect(slot('Workspace').classList.contains('active')).toBe(false);
+ });
 });
