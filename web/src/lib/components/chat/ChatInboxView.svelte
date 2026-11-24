@@ -107,8 +107,9 @@
 
 <style>
 	.pane {
-		flex: 1;
-		min-height: 0;
+		/* Grow to fill ChatHost's scrolling .chat-body but never shrink below the
+		   content, or a long list overflows the pane and its bottom padding is lost. */
+		flex: 1 0 auto;
 		display: flex;
 		flex-direction: column;
 		padding: var(--space-4);

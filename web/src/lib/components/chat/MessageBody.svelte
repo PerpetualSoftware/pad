@@ -145,6 +145,16 @@
 		overflow-x: auto;
 		border-collapse: collapse;
 	}
+	/* Cells wrap at word boundaries only: the anywhere/break-word rules above
+	   (kept for long URLs in prose) let a narrow cell split "Year" into "Yea r".
+	   A table too wide for the row scrolls inside its own box instead. */
+	.md :global(th),
+	.md :global(td),
+	.md :global(th a),
+	.md :global(td a) {
+		overflow-wrap: normal;
+		word-break: normal;
+	}
 	.md :global(th),
 	.md :global(td) {
 		padding: var(--space-1) var(--space-2);

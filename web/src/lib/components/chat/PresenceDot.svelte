@@ -52,11 +52,21 @@
 {/if}
 
 <style>
+	/* Centring the dot on the label's line box left it 1-2px below the text's
+	   optical middle. Instead the dot sits on the label's baseline and drops by
+	   half its height less half the label's x-height, which centres it on the
+	   lowercase letters whatever the font. */
 	.presence-wrap {
 		display: inline-flex;
-		align-items: center;
+		align-items: baseline;
 		gap: var(--space-2);
 		min-width: 0;
+	}
+	.presence-wrap .presence-dot {
+		position: relative;
+		/* ex must be the label's, so match .presence-label's font-size (the dot is sized in rem). */
+		font-size: 0.8rem;
+		top: calc(0.325rem - 0.5ex);
 	}
 	.presence-label {
 		color: var(--text-secondary);
