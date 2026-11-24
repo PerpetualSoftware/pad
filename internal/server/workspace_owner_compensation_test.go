@@ -655,9 +655,12 @@ func TestCreateWorkspace_SeedFails_RefusesAndLeavesNoWorkspace(t *testing.T) {
 	logs := captureLogs(t)
 	before := workspaceCount(t, srv)
 
-	// An unknown template is the seed step's own refusal, so this drives the
-	// real failure path rather than a simulated one.
-	body := map[string]string{"name": "Unseedable", "template": "no-such-template-exists"}
+	// The seed step fails by hook. An unknown template used to drive this
+	// path, but it is refused with a 400 before the mint since BUG-4811, so
+	// it no longer reaches the seed step at all.
+	restore := srv.store.SetSeedCollectionsFailureHookForTesting(func(string, string) error { return errSimSeedFailure })
+	t.Cleanup(restore)
+	body := map[string]string{"name": "Unseedable", "template": "startup"}
 	rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", body, token)
 
 	if rr.Code < 500 {
@@ -717,11 +720,15 @@ func TestCreateWorkspace_OwnerAddCompensation_FreesTheSlugForARetry(t *testing.T
 func TestCreateWorkspace_SeedFailureCompensation_FreesTheSlugForARetry(t *testing.T) {
 	srv, token := compensationServer(t)
 
-	// The seed arm, driven by its own real refusal rather than a simulated one.
-	bad := map[string]string{"name": "Seed Reclaim", "template": "no-such-template-exists"}
+	// The seed arm, failed by hook (an unknown template is a 400 before the
+	// mint since BUG-4811).
+	restore := srv.store.SetSeedCollectionsFailureHookForTesting(func(string, string) error { return errSimSeedFailure })
+	bad := map[string]string{"name": "Seed Reclaim", "template": "startup"}
 	if rr := doRequestWithCookie(srv, "POST", "/api/v1/workspaces", bad, token); rr.Code < 500 {
+		restore()
 		t.Fatalf("status %d, want 5xx: the precondition is a COMPENSATED seed failure", rr.Code)
 	}
+	restore() // the retry must be allowed to succeed
 
 	rr := createWorkspaceAs(t, srv, token, "Seed Reclaim")
 	if rr.Code != http.StatusCreated {

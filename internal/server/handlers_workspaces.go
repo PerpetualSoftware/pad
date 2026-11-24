@@ -185,6 +185,26 @@ func (s *Server) handleHealthReady(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// validateWorkspaceTemplate refuses a template name the seed step would
+// refuse, so the create door can answer 400 before minting anything. The
+// empty name is valid: it seeds the default collections with no starter
+// pack. Any name collections.GetTemplate resolves is accepted, hidden ones
+// included, because that is exactly what SeedCollectionsFromTemplate
+// accepts; the message lists only the pickable ones. The wording carries
+// "invalid" and "must be one of" so the stdio MCP classifier maps the CLI's
+// copy of it to validation_failed, the code the HTTP 400 maps to.
+func validateWorkspaceTemplate(name string) error {
+	if name == "" || collections.GetTemplate(name) != nil {
+		return nil
+	}
+	visible := collections.ListTemplates()
+	names := make([]string, 0, len(visible))
+	for _, t := range visible {
+		names = append(names, t.Name)
+	}
+	return fmt.Errorf("invalid template %q: must be one of %s", name, strings.Join(names, ", "))
+}
+
 func (s *Server) handleListTemplates(w http.ResponseWriter, r *http.Request) {
 	type templateInfo struct {
 		Name        string   `json:"name"`
@@ -463,6 +483,13 @@ func (s *Server) handleCreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// stays here rather than in the shared step. Settings are already
 	// normalized above, which is what this call would otherwise redo.
 	if err := normalizeWorkspaceInput(&input); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	// The template name is input, so it is checked here, before the row
+	// exists. Left to the seed step, a typo created the workspace, removed it
+	// again and answered 500 as if the server had failed (BUG-4811).
+	if err := validateWorkspaceTemplate(input.Template); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
