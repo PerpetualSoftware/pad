@@ -2445,12 +2445,13 @@ export interface SearchResult {
 	snippet: string;
 	rank: number;
 	/** The workspace the item is in, from the server's access check (TASK-3604). */
-	workspace?: { slug: string; owner_username: string };
+	workspace?: { slug: string; name?: string; owner_username: string };
 }
 
 export interface SearchFacets {
 	collections: Record<string, number>;
 	statuses: Record<string, number>;
+	workspaces?: Record<string, number>;
 }
 
 export interface SearchResponse {

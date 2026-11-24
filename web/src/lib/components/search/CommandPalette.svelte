@@ -12,11 +12,14 @@
 	import { localSearch, parseSearchQuery, parseGoToTarget, withoutScopeTokens } from '$lib/stores/localSearch.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
 	import {
-		groupResultsByCollection,
-		inRenderedOrder,
 		reselectAfterAppend,
 		resultAnnouncement,
 		matchMarker,
+		workspaceLabel,
+		workspaceChipLabel,
+		collectionChipLabel,
+		localStatusFactor,
+		sortLocalResults,
 		type PaletteResult
 	} from './groupResults';
 	import type {
@@ -59,7 +62,7 @@
 	// `workspaceStore.current`. For local results, the workspace is
 	// resolved from `workspaceStore.workspaces`.
 	interface AugmentedSearchResult extends PaletteResult {
-		workspace?: { slug: string; owner_username: string };
+		workspace?: { slug: string; name?: string; owner_username: string };
 	}
 
 	let query = $state('');
@@ -123,32 +126,33 @@
 		dragY = 0;
 	}
 
-	// Filters
+	// Filters and sort
+	let filterWorkspace = $state<string | null>(null);
 	let filterCollection = $state<string | null>(null);
 	let filterStatus = $state<string | null>(null);
+	let sortMode = $state<'relevance' | 'updated_at'>('relevance');
 
 	// Recent searches
 	let recentSearches = $state<string[]>(loadRecentSearches());
 
 	// Derived: whether any filter is active
-	let hasFilters = $derived(filterCollection !== null || filterStatus !== null);
+	let hasFilters = $derived(
+		filterWorkspace !== null || filterCollection !== null || filterStatus !== null
+	);
 
-	// Derived: group results by collection when not filtering by collection
-	let groupedResults = $derived.by(() => {
-		if (filterCollection || results.length === 0) return null;
-		// Keyed by a user-chosen slug, so a null-prototype map (BUG-3054).
-		return groupResultsByCollection(results, collectionStore.collections);
-	});
+	// Derived: whether server facets have any visible chip group to render
+	let hasFacetChips = $derived(
+		!!facets &&
+			((searchAllWorkspaces && !!facets.workspaces && Object.keys(facets.workspaces).length > 0) ||
+				(!!facets.collections && Object.keys(facets.collections).length > 0) ||
+				(!!facets.statuses && Object.keys(facets.statuses).length > 0))
+	);
+	let showChipRow = $derived(!!query.trim() && (hasFacetChips || hasFilters));
 
-	// Derived: flat index list for keyboard navigation. Content matches
-	// are appended after the local results so Arrow/Enter can reach them
-	// (their index is `results.length + i`). TASK-2008.
-	// Grouped, they walk in the RENDERED order (TASK-2234): ranked
-	// A1, B1, A2 renders A1, A2, B1, and the arrows follow what is on screen.
-	let flatResults = $derived([
-		...(groupedResults ? inRenderedOrder(groupedResults) : results),
-		...contentResults
-	]);
+	// Derived: flat index list for keyboard navigation. Server rows are never
+	// reordered client-side; content matches are appended after the main
+	// results so Arrow/Enter can reach them (`results.length + i`). TASK-2008.
+	let flatResults = $derived([...results, ...contentResults]);
 
 	// ARIA COMBOBOX (TASK-2234, audit C8/C45), mirroring GraphToolbar's: the
 	// input controls the listbox(es) on screen and points at the selected
@@ -249,8 +253,10 @@
 			total = 0;
 			facets = undefined;
 			selectedIdx = -1;
+			filterWorkspace = null;
 			filterCollection = null;
 			filterStatus = null;
+			sortMode = 'relevance';
 			loading = false;
 			// Clear content-search state with UNCONDITIONAL writes only —
 			// this runs inside a $effect, so reading `contentResults` here
@@ -292,10 +298,12 @@
 	// whatever the input holds when this runs (BUG-3709).
 	function buildFilters(typed: string, offset = 0, wsSlug?: string): SearchFilters {
 		const filters: SearchFilters = {
-			// "All workspaces" names none: the server then searches every
-			// workspace the caller may see, loaded here or not (TASK-3604).
-			// An explicit wsSlug (the content search) still scopes to it.
-			workspace: wsSlug ?? (searchAllWorkspaces ? undefined : workspaceStore.current?.slug),
+			// "All workspaces" names none unless a workspace chip narrowed it:
+			// the server then searches every workspace the caller may see,
+			// loaded here or not (TASK-3604 / TASK-4805). An explicit wsSlug
+			// (the content search) still scopes to it.
+			workspace:
+				wsSlug ?? filterWorkspace ?? (searchAllWorkspaces ? undefined : workspaceStore.current?.slug),
 			limit: PAGE_SIZE,
 			offset
 		};
@@ -308,6 +316,7 @@
 		if (collection) filters.collection = collection;
 		if (filterStatus) filters.status = filterStatus;
 		if (parsed.archived) filters.includeArchived = true;
+		if (sortMode === 'updated_at') filters.sort = 'updated_at';
 		return filters;
 	}
 
@@ -320,6 +329,7 @@
 	 */
 	function materializeLocalHits(
 		wsSlug: string,
+		wsName: string | undefined,
 		ownerUsername: string,
 		hits: { id: string; score: number }[],
 	): AugmentedSearchResult[] {
@@ -336,8 +346,8 @@
 			out.push({
 				item,
 				snippet: '',
-				rank: h.score,
-				workspace: { slug: wsSlug, owner_username: ownerUsername },
+				rank: h.score * localStatusFactor(item, collectionStore.collections),
+				workspace: { slug: wsSlug, name: wsName, owner_username: ownerUsername },
 			});
 		}
 		return out;
@@ -354,17 +364,17 @@
 	 * search palette would be surprising. They fall back to server
 	 * search via the alternate path.
 	 */
-	function readyWorkspaces(): { slug: string; owner_username: string }[] {
-		const out: { slug: string; owner_username: string }[] = [];
+	function readyWorkspaces(): { slug: string; name?: string; owner_username: string }[] {
+		const out: { slug: string; name?: string; owner_username: string }[] = [];
 		const current = workspaceStore.current;
 		if (current && localIndex.bootstrapStateFor(current.slug) === 'ready') {
-			out.push({ slug: current.slug, owner_username: current.owner_username ?? '' });
+			out.push({ slug: current.slug, name: current.name, owner_username: current.owner_username ?? '' });
 		}
 		if (!searchAllWorkspaces) return out;
 		for (const ws of workspaceStore.workspaces) {
 			if (current && ws.slug === current.slug) continue;
 			if (localIndex.bootstrapStateFor(ws.slug) !== 'ready') continue;
-			out.push({ slug: ws.slug, owner_username: ws.owner_username ?? '' });
+			out.push({ slug: ws.slug, name: ws.name, owner_username: ws.owner_username ?? '' });
 		}
 		return out;
 	}
@@ -429,14 +439,18 @@
 			const snapshotQuery = trimmed;
 			const snapshotAllWs = searchAllWorkspaces;
 			const snapshotBody = parsed.body;
+			const snapshotFilterWorkspace = filterWorkspace;
 			const snapshotFilterCollection = filterCollection;
 			const snapshotFilterStatus = filterStatus;
+			const snapshotSortMode = sortMode;
 			const snapshotWsSlug = currentSlug;
 			const isSameDispatch = () => {
 				if (query.trim() !== snapshotQuery) return false;
 				if (searchAllWorkspaces !== snapshotAllWs) return false;
+				if (filterWorkspace !== snapshotFilterWorkspace) return false;
 				if (filterCollection !== snapshotFilterCollection) return false;
 				if (filterStatus !== snapshotFilterStatus) return false;
+				if (sortMode !== snapshotSortMode) return false;
 				if (workspaceStore.current?.slug !== snapshotWsSlug) return false;
 				// Body queries grep content the local index doesn't
 				// hold, so they're authoritative regardless of
@@ -515,7 +529,11 @@
 		// isn't an index-aware operation on the local path — it walks
 		// the parsed `fields` blob after materialization — so a tight
 		// per-ws cap could drop valid lower-ranked matches.
-		const perWsLimit = filterStatus
+		// "Recent" widens it the same way: the index returns its top hits
+		// by SCORE, and sorting only those by date would hide a newer match
+		// ranked below the cut. Past the wider cut, `localCapped` still
+		// marks the list incomplete.
+		const perWsLimit = filterStatus || sortMode === 'updated_at'
 			? LOCAL_PER_WS_LIMIT * 5
 			: LOCAL_PER_WS_LIMIT;
 		const merged: AugmentedSearchResult[] = [];
@@ -526,22 +544,15 @@
 				limit: perWsLimit,
 			});
 			if (hits.length >= perWsLimit) perWsCapped = true;
-			merged.push(...materializeLocalHits(ws.slug, ws.owner_username, hits));
+			merged.push(...materializeLocalHits(ws.slug, ws.name, ws.owner_username, hits));
 		}
-		merged.sort((a, b) => {
-			if (b.rank !== a.rank) return b.rank - a.rank;
-			// Stable tie-break by updated_at DESC then id ASC.
-			const aU = a.item.updated_at ?? '';
-			const bU = b.item.updated_at ?? '';
-			if (aU !== bU) return aU < bU ? 1 : -1;
-			return a.item.id < b.item.id ? -1 : 1;
-		});
+		const sorted = sortLocalResults(merged, sortMode);
 
 		// Apply the status filter chip if active. (Collection filter is
 		// passed through to localSearch.search above.)
 		const filtered = filterStatus
-			? merged.filter((r) => fieldMatches(getFieldValue(r.item, 'status'), filterStatus))
-			: merged;
+			? sorted.filter((r) => fieldMatches(getFieldValue(r.item, 'status'), filterStatus))
+			: sorted;
 
 		// Truncate the rendered list to PAGE_SIZE * 2 so cross-workspace
 		// power users still see a representative top slice. CRITICAL:
@@ -671,8 +682,10 @@
 		if (!uiStore.searchOpen) return;
 		void query;
 		void searchAllWorkspaces;
+		void filterWorkspace;
 		void filterCollection;
 		void filterStatus;
+		void sortMode;
 		// Track the current workspace slug unconditionally. Before
 		// untrack()ing doSearch(), the slug was a tracked dep by virtue
 		// of doSearch's own read inside the effect — switching workspaces
@@ -704,6 +717,9 @@
 
 	function toggleAllWorkspaces() {
 		searchAllWorkspaces = !searchAllWorkspaces;
+		if (!searchAllWorkspaces) {
+			filterWorkspace = null;
+		}
 		try {
 			localStorage.setItem(
 				'pad-search-all-workspaces',
@@ -728,8 +744,10 @@
 		loadingMore = true;
 		const snapshotQuery = query;
 		const snapshotAllWs = searchAllWorkspaces;
+		const snapshotWorkspace = filterWorkspace;
 		const snapshotCollection = filterCollection;
 		const snapshotStatus = filterStatus;
+		const snapshotSortMode = sortMode;
 		const snapshotWsSlug = workspaceStore.current?.slug;
 		// Parse once and use the stripped query for the API call so
 		// `body:foo` → page 2 sends `foo`, not the literal `body:foo`.
@@ -746,8 +764,10 @@
 		const scopeMoved = () =>
 			query !== snapshotQuery ||
 			searchAllWorkspaces !== snapshotAllWs ||
+			filterWorkspace !== snapshotWorkspace ||
 			filterCollection !== snapshotCollection ||
 			filterStatus !== snapshotStatus ||
+			sortMode !== snapshotSortMode ||
 			workspaceStore.current?.slug !== snapshotWsSlug;
 		try {
 			const resp = await api.search(serverQuery, buildFilters(snapshotQuery, results.length));
@@ -778,10 +798,12 @@
 		}
 	}
 
-	function applyFilter(type: 'collection' | 'status', value: string) {
-		// The reactive search effect re-runs on filterCollection /
-		// filterStatus changes, so no explicit doSearch() needed.
-		if (type === 'collection') {
+	function applyFilter(type: 'workspace' | 'collection' | 'status', value: string) {
+		// The reactive search effect re-runs on filterWorkspace /
+		// filterCollection / filterStatus changes, so no explicit doSearch() needed.
+		if (type === 'workspace') {
+			filterWorkspace = filterWorkspace === value ? null : value;
+		} else if (type === 'collection') {
 			filterCollection = filterCollection === value ? null : value;
 		} else {
 			filterStatus = filterStatus === value ? null : value;
@@ -789,8 +811,19 @@
 	}
 
 	function clearFilters() {
+		filterWorkspace = null;
 		filterCollection = null;
 		filterStatus = null;
+	}
+
+	function collectionChipIcon(slug: string): string {
+		const fromResult = results.find((r) => r.item.collection_slug === slug && r.item.collection_icon)?.item.collection_icon;
+		if (fromResult) return fromResult;
+		if (!searchAllWorkspaces) {
+			const coll = collectionStore.collections.find((c) => c.slug === slug);
+			if (coll?.icon) return coll.icon;
+		}
+		return '📦';
 	}
 
 	function scrollSelectedIntoView() {
@@ -1014,6 +1047,29 @@
 	</div>
 {/snippet}
 
+{#snippet sortToggle()}
+	<div class="sort-toggle" role="group" aria-label="Sort results">
+		<button
+			type="button"
+			class="filter-chip sort-chip"
+			class:active={sortMode === 'relevance'}
+			aria-pressed={sortMode === 'relevance'}
+			onclick={() => { sortMode = 'relevance'; }}
+		>
+			Best match
+		</button>
+		<button
+			type="button"
+			class="filter-chip sort-chip"
+			class:active={sortMode === 'updated_at'}
+			aria-pressed={sortMode === 'updated_at'}
+			onclick={() => { sortMode = 'updated_at'; }}
+		>
+			Recent
+		</button>
+	</div>
+{/snippet}
+
 {#if uiStore.searchOpen}
 	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
@@ -1123,28 +1179,45 @@
 			{/if}
 
 			<!--
-				Filter chips. Surface in three cases:
+				Filter chips + sort toggle (TASK-4805). Surface in two cases:
 				  1. Server search returned facets (full chip vocabulary).
-				  2. Local path with an active filter — show the active
-				     chip(s) alone so the user can see + clear them.
-				     Without this branch, switching from server → local
-				     with a filter chip selected would hide the chip but
-				     keep filtering, leaving the user no clear way to
-				     remove it (TASK-1365).
+				  2. Local path or scoped response with an active filter —
+				     show the active chip(s) alone so the user can see + clear them.
 			-->
-			{#if facets && query.trim()}
+			{#if facets && hasFacetChips && query.trim()}
 				<div class="filters-row">
 					<div class="filter-chips">
+						{#if searchAllWorkspaces && facets.workspaces && Object.keys(facets.workspaces).length > 0}
+							{#each Object.entries(facets.workspaces) as [slug, count] (slug)}
+								<button
+									type="button"
+									class="filter-chip workspace-chip"
+									class:active={filterWorkspace === slug}
+									onclick={() => applyFilter('workspace', slug)}
+								>
+									<span class="chip-label workspace-chip-label">{workspaceChipLabel(slug, results)}</span>
+									<span class="chip-count">{count}</span>
+								</button>
+							{/each}
+						{:else if searchAllWorkspaces && filterWorkspace}
+							<button
+								type="button"
+								class="filter-chip workspace-chip active"
+								onclick={() => applyFilter('workspace', filterWorkspace!)}
+							>
+								<span class="chip-label workspace-chip-label">{workspaceChipLabel(filterWorkspace, results)}</span>
+							</button>
+						{/if}
 						{#if facets.collections && Object.keys(facets.collections).length > 0}
 							{#each Object.entries(facets.collections) as [slug, count] (slug)}
-								{@const coll = collectionStore.collections.find((c) => c.slug === slug)}
 								<button
+									type="button"
 									class="filter-chip"
 									class:active={filterCollection === slug}
 									onclick={() => applyFilter('collection', slug)}
 								>
-									<span class="chip-icon">{coll?.icon || '📦'}</span>
-									<span class="chip-label">{coll?.name || slug}</span>
+									<span class="chip-icon">{collectionChipIcon(slug)}</span>
+									<span class="chip-label">{collectionChipLabel(slug, results)}</span>
 									<span class="chip-count">{count}</span>
 								</button>
 							{/each}
@@ -1152,6 +1225,7 @@
 						{#if facets.statuses && Object.keys(facets.statuses).length > 0}
 							{#each Object.entries(facets.statuses) as [status, count] (status)}
 								<button
+									type="button"
 									class="filter-chip status-chip"
 									class:active={filterStatus === status}
 									onclick={() => applyFilter('status', status)}
@@ -1166,25 +1240,38 @@
 							{/each}
 						{/if}
 					</div>
-					{#if hasFilters}
-						<button class="clear-filters" onclick={clearFilters}>Clear filters</button>
-					{/if}
+					<div class="filters-actions">
+						{#if hasFilters}
+							<button type="button" class="clear-filters" onclick={clearFilters}>Clear filters</button>
+						{/if}
+						{@render sortToggle()}
+					</div>
 				</div>
 			{:else if hasFilters && query.trim()}
 				<div class="filters-row">
 					<div class="filter-chips">
-						{#if filterCollection}
-							{@const coll = collectionStore.collections.find((c) => c.slug === filterCollection)}
+						{#if searchAllWorkspaces && filterWorkspace}
 							<button
+								type="button"
+								class="filter-chip workspace-chip active"
+								onclick={() => applyFilter('workspace', filterWorkspace!)}
+							>
+								<span class="chip-label workspace-chip-label">{workspaceChipLabel(filterWorkspace, results)}</span>
+							</button>
+						{/if}
+						{#if filterCollection}
+							<button
+								type="button"
 								class="filter-chip active"
 								onclick={() => applyFilter('collection', filterCollection!)}
 							>
-								<span class="chip-icon">{coll?.icon || '📦'}</span>
-								<span class="chip-label">{coll?.name || filterCollection}</span>
+								<span class="chip-icon">{collectionChipIcon(filterCollection)}</span>
+								<span class="chip-label">{collectionChipLabel(filterCollection, results)}</span>
 							</button>
 						{/if}
 						{#if filterStatus}
 							<button
+								type="button"
 								class="filter-chip status-chip active"
 								onclick={() => applyFilter('status', filterStatus!)}
 							>
@@ -1196,15 +1283,25 @@
 							</button>
 						{/if}
 					</div>
-					<button class="clear-filters" onclick={clearFilters}>Clear filters</button>
+					<div class="filters-actions">
+						<button type="button" class="clear-filters" onclick={clearFilters}>Clear filters</button>
+						{@render sortToggle()}
+					</div>
 				</div>
 			{/if}
 
-			<!-- Result count -->
+			<!-- Result count (and sort toggle header when chip row is hidden) -->
 			<div class="sr-only" aria-live="polite">{announcement}</div>
-			{#if results.length > 0 && query.trim()}
-				<div class="result-count" aria-hidden="true">
-					{total} result{total === 1 ? '' : 's'}
+			{#if query.trim() && (results.length > 0 || (!showChipRow && !searchFailed))}
+				<div class="result-count">
+					{#if results.length > 0}
+						<span aria-hidden="true">{total} result{total === 1 ? '' : 's'}</span>
+					{:else}
+						<span></span>
+					{/if}
+					{#if !showChipRow}
+						{@render sortToggle()}
+					{/if}
 				</div>
 			{/if}
 
@@ -1213,68 +1310,10 @@
 				<div class="results">
 					{#if results.length > 0}
 					<div role="listbox" id={LISTBOX_ID} aria-label="Search results">
-					{#if groupedResults && !filterCollection}
-						<!-- Grouped by collection -->
-						{#each Object.entries(groupedResults) as [slug, group] (slug)}
-							<div class="result-group" role="group" aria-label={group.name}>
-								<div class="group-header" aria-hidden="true">
-									<span class="group-icon">{group.icon}</span>
-									<span class="group-name">{group.name}</span>
-									<span class="group-count">{group.results.length}</span>
-								</div>
-								{#each group.results as r (r.item.id || r.item.slug)}
-									{@const idx = flatResults.indexOf(r)}
-									{@const meta = renderResultCard(r, idx)}
-									<button
-										class="result"
-										class:selected={idx === selectedIdx}
-										role="option"
-										id="cp-opt-{idx}"
-										aria-selected={idx === selectedIdx}
-										tabindex="-1"
-										onclick={() => selectResult(r)}
-									>
-										<div class="result-main">
-											<span class="result-icon"
-												>{r.item.collection_icon || '📦'}</span
-											>
-											{#if meta.ref}
-												<span class="result-ref">{meta.ref}</span>
-											{/if}
-											<span class="result-title">{r.item.title}</span>
-											{#if meta.priority}
-												{@const dot = priorityDot(meta.priority)}
-												{#if dot}
-													<span class="result-priority" title={meta.priority}
-														>{dot}</span
-													>
-												{/if}
-											{/if}
-											{#if meta.status}
-												<span
-													class="result-status"
-													style="background: color-mix(in srgb, {statusColor(meta.status)} 15%, transparent); color: color-mix(in srgb, {statusColor(meta.status)} 55%, var(--text-primary));"
-												>
-													{meta.status.replace(/_/g, ' ')}
-												</span>
-											{/if}
-											{#if r.item.updated_at}
-												<span class="result-date"
-													>{relativeTime(r.item.updated_at)}</span
-												>
-											{/if}
-										</div>
-										{#if r.snippet}
-											{@render snippetLine(r)}
-										{/if}
-									</button>
-								{/each}
-							</div>
-						{/each}
-					{:else}
-						<!-- Flat list (filtered by collection or no grouping) -->
 						{#each results as r, i (r.item.id || r.item.slug)}
 							{@const meta = renderResultCard(r, i)}
+							{@const collLabel = r.item.collection_name || r.item.collection_slug}
+							{@const wsLabel = workspaceLabel(r, workspaceStore.current?.slug, searchAllWorkspaces)}
 							<button
 								class="result"
 								class:selected={i === selectedIdx}
@@ -1314,12 +1353,24 @@
 										>
 									{/if}
 								</div>
+								{#if collLabel || wsLabel}
+									<div class="result-meta">
+										{#if collLabel}
+											<span class="result-collection">{collLabel}</span>
+										{/if}
+										{#if wsLabel}
+											<span
+												class="result-workspace"
+												title={r.workspace ? `${r.workspace.owner_username}/${r.workspace.slug}` : undefined}
+											>{wsLabel}</span>
+										{/if}
+									</div>
+								{/if}
 								{#if r.snippet}
 									{@render snippetLine(r)}
 								{/if}
 							</button>
 						{/each}
-					{/if}
 					</div>
 					{/if}
 
@@ -1599,8 +1650,11 @@
 		background: var(--bg-hover);
 		color: var(--text-secondary);
 	}
+	/* Active text is the accent mixed with the theme's text colour, as the
+	   status pills do: plain accent on its own tint misses 4.5:1 at this
+	   size in both themes. */
 	.scope-toggle.active {
-		color: var(--accent-blue);
+		color: color-mix(in srgb, var(--accent-blue) 55%, var(--text-primary));
 		border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
 		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 	}
@@ -1640,13 +1694,20 @@
 	.filter-chip.active {
 		background: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 		border-color: var(--accent-blue);
-		color: var(--accent-blue);
+		color: color-mix(in srgb, var(--accent-blue) 55%, var(--text-primary));
 	}
 	.chip-icon {
 		font-size: 1em;
 	}
 	.chip-label {
 		text-transform: capitalize;
+	}
+	.workspace-chip-label {
+		text-transform: none;
+		max-width: 160px;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
 	}
 	.chip-count {
 		color: var(--text-muted);
@@ -1657,6 +1718,23 @@
 		height: 6px;
 		border-radius: 50%;
 		flex-shrink: 0;
+	}
+	.filters-actions {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-left: auto;
+		flex-shrink: 0;
+	}
+	.sort-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: var(--space-1);
+		flex-shrink: 0;
+	}
+	.sort-chip {
+		font-size: 0.72em;
+		padding: 2px 7px;
 	}
 	.clear-filters {
 		font-size: 0.72em;
@@ -1675,6 +1753,10 @@
 
 	/* Result count */
 	.result-count {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: var(--space-2);
 		padding: var(--space-1) var(--space-4);
 		font-size: 0.75em;
 		color: var(--text-muted);
@@ -1790,6 +1872,37 @@
 		color: var(--text-muted);
 		flex-shrink: 0;
 		white-space: nowrap;
+	}
+	.result-meta {
+		display: flex;
+		align-items: center;
+		gap: var(--space-2);
+		margin-top: 2px;
+		margin-left: 24px;
+		font-size: 0.72em;
+		line-height: 1.3;
+		color: var(--text-muted);
+		min-width: 0;
+	}
+	.result-collection {
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+	}
+	.result-workspace {
+		display: inline-block;
+		max-width: min(220px, 100%);
+		padding: 0 6px;
+		border-radius: 999px;
+		background: var(--bg-tertiary);
+		border: 1px solid var(--border);
+		color: var(--text-secondary);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		min-width: 0;
+		flex-shrink: 1;
 	}
 	.result-snippet {
 		font-size: 0.85em;
@@ -2108,6 +2221,12 @@
 			min-height: 0;
 			overscroll-behavior: contain;
 			-webkit-overflow-scrolling: touch;
+		}
+		.result-meta {
+			flex-wrap: wrap;
+		}
+		.result-workspace {
+			max-width: 100%;
 		}
 	}
 	.sr-only {
