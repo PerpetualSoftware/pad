@@ -10,11 +10,12 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// itemStillOpenMessage names both ways forward, so a client that prints only
+// itemStillOpenMessage names every way forward, so a client that prints only
 // the server's message still tells its user what to do.
 const itemStillOpenMessage = "This is the schedule's last occurrence and the item is still open. " +
 	"Close the item first and then resolve again, or confirm ending the schedule and keeping the item open " +
-	"by retrying with end_schedule (--end-schedule in the pad CLI, or choose it in the web app)."
+	"by retrying with end_schedule (--end-schedule in the pad CLI, or choose it in the web app), " +
+	"or with dismiss_ended to also take it off Outstanding (--dismiss in the pad CLI)."
 
 // writeItemStillOpen answers a done or skip refused because it would end the
 // schedule of an open item: 409 item_still_open with what the caller needs to

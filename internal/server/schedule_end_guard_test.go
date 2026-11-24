@@ -43,7 +43,7 @@ func TestCommitmentResolveItemStillOpen(t *testing.T) {
 		rr := f.resolve(map[string]any{"occurrence_at": resolveX, "state": state, "comment": "finished"})
 		d := f.expectErr(rr, http.StatusConflict, "item_still_open", "")
 		e, _ := schedMap(t, rr)["error"].(map[string]any)
-		if e["message"] != itemStillOpenMessage || !strings.Contains(itemStillOpenMessage, "Close the item first") || !strings.Contains(itemStillOpenMessage, "end_schedule") {
+		if e["message"] != itemStillOpenMessage || !strings.Contains(itemStillOpenMessage, "Close the item first") || !strings.Contains(itemStillOpenMessage, "end_schedule") || !strings.Contains(itemStillOpenMessage, "dismiss_ended") {
 			t.Fatalf("message = %v", e["message"])
 		}
 		opts, _ := d["close_options"].([]any)
