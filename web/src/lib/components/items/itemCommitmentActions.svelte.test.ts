@@ -146,8 +146,15 @@ it('commits a reviewed series move with the same scope', async () => {
  c.action(entryOf(), 'move'); c.submitDialog('2031-03-12T00:00:00.000Z', undefined, 'series'); await flush();
  expect(c.review?.preview.revision).toBe('series-r1');
  h.move.mockResolvedValueOnce({ revision: 'r2', changes: [root()] });
- await c.commitReview('because');
- expect(h.move).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-12T00:00:00.000Z', revision: 'series-r1', reason: 'because', scope: 'series' });
+	await c.commitReview('because');
+	expect(h.move).toHaveBeenCalledWith('work', 'TASK-1', { role: 'target', to: '2031-03-12T00:00:00.000Z', revision: 'series-r1', reason: 'because', scope: 'series' });
+});
+it('sends dismiss_ended when resolve receives end: { dismiss: true }', async () => {
+	const c = make();
+	h.resolve.mockResolvedValueOnce(resolved({ item_still_open: true, ended_dismissed: true }));
+	await c.resolve(entryOf(), 'done', undefined, undefined, { dismiss: true });
+	expect(h.resolve).toHaveBeenLastCalledWith('work', 'TASK-1', { occurrence_at: '2031-03-09T10:30:00Z', state: 'done', dismiss_ended: true });
+	expect(c.announcement).toBe('Occurrence marked done; the schedule has ended and the item is dismissed from Outstanding.');
 });
 it('explains a series target after the hard deadline', async () => {
  const c = make();

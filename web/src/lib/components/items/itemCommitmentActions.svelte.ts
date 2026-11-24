@@ -103,8 +103,8 @@ export class ItemCommitmentActions {
 		if (sameIdentity() && refreshed) this.refreshFailed = false;
 	};
 
-	// end: the caller confirmed ending the schedule of an open item. closeAs then closes the item with that value.
-	resolve = async (entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string, end?: { closeAs?: string }): Promise<boolean> => {
+	// end: the caller confirmed ending the schedule of an open item. closeAs then closes the item with that value; dismiss ends and dismisses it from Outstanding in one write.
+	resolve = async (entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string, end?: { closeAs?: string; dismiss?: boolean }): Promise<boolean> => {
 		const key = entryKey(entry);
 		if (this.pending[key] || this.saved[key] || !canResolve(entry)) return false;
 		const sameIdentity = this.#fence();
@@ -126,7 +126,7 @@ export class ItemCommitmentActions {
 				occurrence_at: occurrenceAt, state,
 				...(until !== undefined ? { until } : {}),
 				...(comment !== undefined ? { comment } : {}),
-				...(end ? { end_schedule: true } : {})
+				...(end?.dismiss ? { dismiss_ended: true } : end ? { end_schedule: true } : {})
 			});
 			if (!sameIdentity()) return false;
 			this.saved = { ...this.saved, [key]: true };
@@ -159,7 +159,8 @@ export class ItemCommitmentActions {
 				// or its collection can no longer close it.
 				this.#succeed(`${verb}; the schedule has ended.`);
 			} else if (end) {
-				this.#succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
+				const dismissed = resolved?.resolution?.ended_dismissed === true;
+				this.#succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : dismissed ? `${verb}; the schedule has ended and the item is dismissed from Outstanding.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
 			} else {
 				this.#succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
 			}

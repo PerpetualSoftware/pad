@@ -227,4 +227,7 @@ type CommitmentResolve struct {
 	// EndSchedule consents to a done or skip that ends the schedule while the
 	// item stays open (TASK-4537); sent only when true.
 	EndSchedule bool `json:"end_schedule,omitempty"`
+	// DismissEnded consents to ending an open item's schedule on its last
+	// occurrence and dismisses it from Outstanding (TASK-4806); sent only when true.
+	DismissEnded bool `json:"dismiss_ended,omitempty"`
 }

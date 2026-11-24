@@ -799,3 +799,141 @@ func TestResolveWaitsOnTheScheduleBeforeTheReminder(t *testing.T) {
 		t.Errorf("comments after release = %d", n)
 	}
 }
+
+func TestResolveDismissEndedOnLastOccurrence(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	oneShot := models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"}
+	item, sc := f.mk(t, oneShot, "2026-10-29T12:00:00Z")
+
+	res := f.mustResolve(t, item, ResolveInput{
+		OccurrenceAt: rt("2026-10-30T09:00:00Z"),
+		State:        "done",
+		Actor:        "user",
+		DismissEnded: true,
+	}, "2026-10-30T09:05:00Z")
+
+	if !res.EndedItemOpen || !res.EndedDismissed {
+		t.Fatalf("result flags: EndedItemOpen=%v EndedDismissed=%v, want both true", res.EndedItemOpen, res.EndedDismissed)
+	}
+	if res.Schedule.EndedAt == nil || res.Schedule.EndedDismissedAt == nil {
+		t.Fatalf("schedule ended_at=%v ended_dismissed_at=%v, want both set", res.Schedule.EndedAt, res.Schedule.EndedDismissedAt)
+	}
+	if *res.Schedule.EndedDismissedAt != *res.Schedule.EndedAt {
+		t.Fatalf("ended_dismissed_at=%q != ended_at=%q", *res.Schedule.EndedDismissedAt, *res.Schedule.EndedAt)
+	}
+	got, err := f.s.GetItem(item.ID)
+	if err != nil {
+		t.Fatalf("GetItem: %v", err)
+	}
+	if got.Fields != "" && got.Fields != "{}" && got.Fields != `{"status":"open"}` {
+		t.Fatalf("item fields changed unexpectedly: %q", got.Fields)
+	}
+	var reason string
+	if err := f.s.db.QueryRow(f.s.q(`SELECT reason FROM schedule_changes WHERE schedule_id=? AND change_type='done' ORDER BY recorded_at DESC LIMIT 1`), sc.ID).Scan(&reason); err != nil {
+		t.Fatalf("journal reason: %v", err)
+	}
+	if reason != "ended_item_open" {
+		t.Fatalf("journal reason = %q, want ended_item_open", reason)
+	}
+}
+
+func TestResolveDismissEndedNoEffectWithNextOccurrence(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	item, _ := f.mk(t, dailyUTC, "2026-10-29T12:00:00Z")
+
+	res := f.mustResolve(t, item, ResolveInput{
+		OccurrenceAt: rt("2026-10-30T09:00:00Z"),
+		State:        "done",
+		Actor:        "user",
+		DismissEnded: true,
+	}, "2026-10-30T09:05:00Z")
+
+	if res.EndedItemOpen || res.EndedDismissed {
+		t.Fatalf("recurring resolve flags: EndedItemOpen=%v EndedDismissed=%v, want both false", res.EndedItemOpen, res.EndedDismissed)
+	}
+	if res.Schedule.EndedAt != nil || res.Schedule.EndedDismissedAt != nil || res.Schedule.NextAt == nil {
+		t.Fatalf("recurring schedule not live: %+v", res.Schedule)
+	}
+}
+
+func TestResolveDismissEndedClosedItemNotDismissed(t *testing.T) {
+	t.Parallel()
+	oneShot := models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"}
+
+	t.Run("already closed", func(t *testing.T) {
+		t.Parallel()
+		f := newSchedFixture(t)
+		item, _ := f.mk(t, oneShot, "2026-10-29T12:00:00Z")
+		f.closeItem(t, item, "done")
+
+		res := f.mustResolve(t, item, ResolveInput{
+			OccurrenceAt: rt("2026-10-30T09:00:00Z"),
+			State:        "done",
+			Actor:        "user",
+			DismissEnded: true,
+		}, "2026-10-30T09:05:00Z")
+
+		if res.EndedItemOpen || res.EndedDismissed {
+			t.Fatalf("closed item flags: EndedItemOpen=%v EndedDismissed=%v, want both false", res.EndedItemOpen, res.EndedDismissed)
+		}
+		if res.Schedule.EndedAt == nil || res.Schedule.EndedDismissedAt != nil {
+			t.Fatalf("closed item schedule: ended_at=%v ended_dismissed_at=%v", res.Schedule.EndedAt, res.Schedule.EndedDismissedAt)
+		}
+	})
+
+	t.Run("closed concurrently before pin", func(t *testing.T) {
+		t.Parallel()
+		f := newSchedFixture(t)
+		item, _ := f.mk(t, oneShot, "2026-10-29T12:00:00Z")
+		restore := f.s.SetBeforeCommitmentPinHookForTesting(func() { f.closeItem(t, item, "done") })
+		defer restore()
+
+		res := f.mustResolve(t, item, ResolveInput{
+			OccurrenceAt: rt("2026-10-30T09:00:00Z"),
+			State:        "done",
+			Actor:        "user",
+			DismissEnded: true,
+		}, "2026-10-30T09:05:00Z")
+
+		if res.EndedItemOpen || res.EndedDismissed {
+			t.Fatalf("concurrently closed flags: EndedItemOpen=%v EndedDismissed=%v, want both false", res.EndedItemOpen, res.EndedDismissed)
+		}
+		if res.Schedule.EndedAt == nil || res.Schedule.EndedDismissedAt != nil {
+			t.Fatalf("concurrently closed schedule: ended_at=%v ended_dismissed_at=%v", res.Schedule.EndedAt, res.Schedule.EndedDismissedAt)
+		}
+	})
+}
+
+func TestResolveDismissEndedUndoRestores(t *testing.T) {
+	t.Parallel()
+	f := newSchedFixture(t)
+	oneShot := models.ScheduleCreate{Kind: "check", Dtstart: "2026-10-30T09:00", Tz: "UTC"}
+	item, sc := f.mk(t, oneShot, "2026-10-29T12:00:00Z")
+	rid := *sc.ReminderID
+
+	res := f.resolveForReopenTest(t, item, ResolveInput{
+		OccurrenceAt: rt("2026-10-30T09:00:00Z"),
+		State:        "done",
+		Actor:        "user",
+		DismissEnded: true,
+	}, "2026-10-30T09:05:00Z")
+	if !res.EndedDismissed || res.Schedule.EndedAt == nil || res.Schedule.EndedDismissedAt == nil {
+		t.Fatalf("setup resolve did not dismiss: %+v", res)
+	}
+	if res.ResolutionID == "" {
+		t.Fatal("missing resolution ID for undo")
+	}
+
+	if _, err := f.s.reopenOccurrenceAt(f.ws.ID, item.ID, ReopenInput{ResolutionID: res.ResolutionID, Actor: "user"}, rt("2026-10-30T09:06:00Z")); err != nil {
+		t.Fatalf("reopenOccurrenceAt: %v", err)
+	}
+	restored := f.reload(t, item.ID)
+	if restored.EndedAt != nil || restored.EndedDismissedAt != nil {
+		t.Fatalf("undo did not clear ended columns: ended_at=%v ended_dismissed_at=%v", restored.EndedAt, restored.EndedDismissedAt)
+	}
+	if restored.ReminderID == nil || *restored.ReminderID != rid {
+		t.Fatalf("undo did not restore reminder: %+v", restored)
+	}
+}

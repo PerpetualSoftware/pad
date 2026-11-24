@@ -438,6 +438,10 @@
             "description": "Long-form note body. For: note.",
             "type": "string"
           },
+          "dismiss_ended": {
+            "description": "done/skip: end an open item's schedule and dismiss from Outstanding (implies end_schedule).",
+            "type": "boolean"
+          },
           "edits": {
             "description": "patch: the edits, applied in order, all or nothing. Required: patch.",
             "items": {

@@ -30,6 +30,13 @@ func (s *Server) writeItemStillOpen(w http.ResponseWriter, r *http.Request, item
 	})
 }
 
+// recordScheduleEndDismissedActivity logs the schedule_end_dismissed activity
+// entry shared by POST .../commitment/dismiss-ended and resolve with
+// dismiss_ended.
+func (s *Server) recordScheduleEndDismissedActivity(r *http.Request, workspaceID string, item *models.Item, kind string) {
+	s.logActivityWithMeta(workspaceID, item.ID, "schedule_end_dismissed", r, scheduleActivityMeta(kind, nil))
+}
+
 // handleDismissEndedCommitment is POST .../commitment/dismiss-ended: an editor
 // takes an ended schedule out of Outstanding while the item stays open. The
 // dismissal is shared, like an acknowledgement.
@@ -78,7 +85,8 @@ func (s *Server) handleDismissEndedCommitment(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if changed {
-		s.recordScheduleWrite(r, workspaceID, item, "schedule_end_dismissed", scheduleActivityMeta(sc.Kind, nil))
+		s.recordScheduleEndDismissedActivity(r, workspaceID, item, sc.Kind)
+		s.publishItemVerified(workspaceID, item, r)
 	}
 	v, err := s.buildCommitmentView(r, workspaceID, item, sc, "")
 	if err != nil {

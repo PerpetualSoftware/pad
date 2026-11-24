@@ -243,6 +243,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "actual_done_at", Type: "string", Description: "Actual completion (RFC3339). schedule-resolve done only."},
 	{Name: "confirm_past_deadline", Type: "bool", Description: "Confirm a move that puts the target after its hard deadline."},
 	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
+	{Name: "dismiss_ended", Type: "bool", Description: "done/skip: end an open item's schedule and dismiss from Outstanding (implies end_schedule)."},
 	{Name: "reason", Type: "string", Description: "Why dates change; required for renegotiation or graph hard-deadline changes. schedule-child: required for waive only."},
 	{Name: "scope", Type: "string", Description: "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. Every occurrence's reminder follows its target (target minus the lead)."},
 	{Name: "deadline_days", Type: "number", Description: "schedule-renegotiate: series day offset."},

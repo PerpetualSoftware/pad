@@ -155,7 +155,7 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 			details, _ := json.Marshal(map[string]string{"field": field, "code": code})
 			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: message, Details: details}), nil
 		}
-		for _, k := range []string{"until", "actual_done_at", "comment", "end_schedule"} {
+		for _, k := range []string{"until", "actual_done_at", "comment", "end_schedule", "dismiss_ended"} {
 			if _, present := input[k]; present {
 				return fieldError(k, "combination", k+" cannot be set with ack")
 			}
@@ -218,6 +218,7 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	// occurrence (TASK-4537): a boolean, for done and skip only, as the route
 	// refuses it.
 	endSchedule := false
+	endScheduleSet := false
 	if v, present := input["end_schedule"]; present && v != nil {
 		b, ok := v.(bool)
 		if !ok {
@@ -228,6 +229,23 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: "end_schedule is for done and skip", Details: details}), nil
 		}
 		endSchedule = b
+		endScheduleSet = true
+	}
+	dismissEnded := false
+	if v, present := input["dismiss_ended"]; present && v != nil {
+		b, ok := v.(bool)
+		if !ok {
+			return NewErrorResult(ErrorPayload{Code: ErrInvalidBody, Message: "dismiss_ended must be a boolean"}), nil
+		}
+		if needsUntil {
+			details, _ := json.Marshal(map[string]string{"field": "dismiss_ended", "code": "combination"})
+			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: "dismiss_ended is for done and skip", Details: details}), nil
+		}
+		if b && endScheduleSet && !endSchedule {
+			details, _ := json.Marshal(map[string]string{"field": "dismiss_ended", "code": "combination"})
+			return NewErrorResult(ErrorPayload{Code: ErrValidationError, Message: "dismiss_ended cannot be combined with end_schedule: false", Details: details}), nil
+		}
+		dismissEnded = b
 	}
 	confirmPastDeadline := false
 	if v, present := input["confirm_past_deadline"]; present && v != nil {
@@ -276,6 +294,9 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	}
 	if endSchedule {
 		out["end_schedule"] = true
+	}
+	if dismissEnded {
+		out["dismiss_ended"], out["dismiss"] = true, true
 	}
 	return env.Dispatch(ctx, []string{"item", "remind", state}, out)
 }

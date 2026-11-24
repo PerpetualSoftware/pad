@@ -178,15 +178,24 @@ func TestRemindItemStillOpenHints(t *testing.T) {
 					if err == nil || len(calls) != 1 {
 						t.Fatalf("err=%v calls=%+v", err, calls)
 					}
-					if !strings.Contains(err.Error(), "--end-schedule to keep it open") || strings.Contains(err.Error(), "pad remind ack") != ack {
-						t.Errorf("hint=%v", err)
+					msg := err.Error()
+					dismissIdx := strings.Index(msg, "--dismiss")
+					endIdx := strings.Index(msg, "--end-schedule to keep it open")
+					if dismissIdx < 0 || endIdx < 0 || dismissIdx > endIdx {
+						t.Errorf("hint should list --dismiss before --end-schedule: %v", err)
+					}
+					if strings.Contains(msg, "to silence the reminder (it stays outstanding)") != ack {
+						t.Errorf("ack clause mismatch (ack=%v): %v", ack, err)
 					}
 					if tc.closeHint == "" || state == "skip" {
-						if strings.Contains(err.Error(), "--close-item") {
+						if strings.Contains(msg, "--close-item") {
 							t.Errorf("unavailable close suggested: %v", err)
 						}
-					} else if !strings.Contains(err.Error(), tc.closeHint) {
-						t.Errorf("hint=%v, want %q", err, tc.closeHint)
+					} else {
+						closeIdx := strings.Index(msg, tc.closeHint)
+						if closeIdx < 0 || closeIdx < endIdx {
+							t.Errorf("hint=%v, want %q after --end-schedule", err, tc.closeHint)
+						}
 					}
 					var marker strings.Builder
 					writeRootStructuredError(&marker, err)
@@ -196,6 +205,36 @@ func TestRemindItemStillOpenHints(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestRemindDoneDismissFlag(t *testing.T) {
+	dismissedReply := strings.Replace(endedResolved(true), `"item_still_open":true`, `"item_still_open":true,"ended_dismissed":true`, 1)
+	dismissedReply = strings.Replace(dismissedReply, `"ended_at":`, `"ended_dismissed_at":"2026-11-09T15:00:00Z","ended_at":`, 1)
+	for _, verb := range []string{"done", "skip"} {
+		out, _, err, calls := runSched(t, okReply(dismissedReply), "", "remind", verb, "TASK-5", "--occurrence", "2026-11-09T14:00:00Z", "--dismiss")
+		if err != nil || len(calls) != 1 {
+			t.Fatalf("%s err=%v calls=%+v", verb, err, calls)
+		}
+		if b := resolveBody(t, calls[0]); b["dismiss_ended"] != true || b["end_schedule"] != nil {
+			t.Fatalf("%s body = %v", verb, b)
+		}
+		if !strings.Contains(out, "; the schedule has ended and TASK-5 stays open (dismissed from Outstanding).") {
+			t.Fatalf("%s out=%q", verb, out)
+		}
+	}
+	for _, args := range [][]string{{"snooze", "--until", "2h", "--dismiss"}, {"move", "--until", "2026-11-10T09:00", "--dismiss"}, {"ack", "--dismiss"}} {
+		_, _, err, calls := runSched(t, okReply(resolved), "", append([]string{"remind", args[0], "TASK-5"}, args[1:]...)...)
+		if err == nil || len(calls) != 0 {
+			t.Fatalf("%v err=%v calls=%v", args, err, calls)
+		}
+	}
+}
+
+func TestRemindDoneDismissCloseItemConflict(t *testing.T) {
+	_, _, err, calls := runSched(t, okReply(resolved), "", "remind", "done", "TASK-5", "--dismiss", "--close-item")
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") || len(calls) != 0 {
+		t.Fatalf("both flags err=%v calls=%v", err, calls)
 	}
 }
 
