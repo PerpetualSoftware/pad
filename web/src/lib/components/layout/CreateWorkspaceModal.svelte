@@ -36,6 +36,7 @@
 	import MoveToCloudLink from '$lib/components/workspaces/MoveToCloudLink.svelte';
 	import type { Workspace, WorkspaceTemplate } from '$lib/types';
 	import { groupTemplatesByCategory } from '$lib/utils/templates';
+	import { workspaceHomePath } from '$lib/utils/workspace-route';
 	import Modal from '$lib/components/common/Modal.svelte';
 	import Button from '$lib/components/common/Button.svelte';
 	import { ImportTransportError } from '$lib/api/importUpload';
@@ -270,7 +271,7 @@
 			// for side effects — navigation stays our responsibility.
 			onWorkspaceCreated?.(ws);
 			close();
-			goto(`/${ws.owner_username}/${ws.slug}`);
+			goto(workspaceHomePath(ws) ?? '/');
 		} catch (err: unknown) {
 			// Same fence on the failure path as on the success path.
 			// A create that rejects after the signed-in user changed
@@ -393,7 +394,7 @@
 			// person may need to restore by hand.
 			const drops = describeImportDrops(ws.dropped_unique_values);
 			if (drops) toastStore.show(drops, 'info', ERROR_DURATION);
-			goto(`/${ws.owner_username}/${ws.slug}`);
+			goto(workspaceHomePath(ws) ?? '/');
 		} catch (err) {
 			// The FAILURE path needs the same fence. An import
 			// that rejects after the signed-in user changed reported A's error

@@ -19,7 +19,7 @@
 	import ConnectWorkspaceModal from '$lib/components/ConnectWorkspaceModal.svelte';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
-	import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
+	import { workspaceHomePath, workspaceRestoreTarget } from '$lib/utils/workspace-route';
 	import { tabLanding } from '$lib/utils/tabLanding';
 	import AccountButton from './AccountButton.svelte';
 	import ChatLink from '$lib/components/chat/ChatLink.svelte';
@@ -466,7 +466,7 @@
 		if (e.detail > 1) return;
 		const target =
 			ws.slug === currentSlug
-				? `/${ws.owner_username}/${ws.slug}`
+				? (workspaceHomePath(ws) ?? '/')
 				: workspaceRestoreTarget(ws);
 		goto(target);
 	}
@@ -674,7 +674,7 @@
 						onauxclick={(e) => handleTabAuxClick(e, tab)}
 					>
 						<a
-							href="/{tab.owner_username}/{tab.slug}"
+							href={workspaceHomePath(tab)}
 							class="workspace-item"
 							class:active={tab.slug === currentSlug}
 							title={tab.is_guest ? `${tab.name} (shared with you)` : tab.name}
