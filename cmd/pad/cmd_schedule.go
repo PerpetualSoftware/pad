@@ -873,6 +873,9 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 				if cmd.Flags().Changed("recipient") {
 					return errors.New("--stale lists your own occurrences; drop --recipient")
 				}
+				if cmd.Flags().Changed("audience") {
+					return errors.New("--stale lists every unresolved occurrence of yours; drop --audience")
+				}
 				return runStaleAgenda(cmd, from, to, cmd.Flags().Changed("days"), tz, loc)
 			}
 			audienceChanged := cmd.Flags().Changed("audience")

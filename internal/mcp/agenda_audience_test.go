@@ -116,3 +116,16 @@ func TestMCPAgendaAllWorkspacesRefusals(t *testing.T) {
 		})
 	}
 }
+
+func TestMCPAgendaStaleRefusesAudience(t *testing.T) {
+	in := map[string]any{"stale": true, "audience": "human"}
+	sres, disp := stdioCall(t, "agenda", copyInput(in))
+	rres, seen := remoteCall(t, "agenda", copyInput(in))
+	if !sres.IsError || !rres.IsError || len(disp.gotPath) != 0 || len(seen) != 0 {
+		t.Fatalf("both must refuse before dispatch; stdio=%v/%v remote=%v/%v", sres.IsError, disp.gotPath, rres.IsError, seen)
+	}
+	sc, rc := errorCodeOf(t, sres), errorCodeOf(t, rres)
+	if sc == "" || sc != rc || textOf(sres) != textOf(rres) || !strings.Contains(textOf(sres), "drop audience") {
+		t.Fatalf("unexpected refusal: stdio=%q %s remote=%q %s", sc, textOf(sres), rc, textOf(rres))
+	}
+}

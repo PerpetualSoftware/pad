@@ -237,11 +237,9 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			writeInternalError(w, err)
 			return
 		}
-		if audience != "agent" {
-			if err := s.appendAgendaItemEvents(run, ws.ID, scope, include); err != nil {
-				writeInternalError(w, err)
-				return
-			}
+		if err := s.appendAgendaItemEvents(run, ws.ID, scope, include); err != nil {
+			writeInternalError(w, err)
+			return
 		}
 		owner := ws.OwnerUsername
 		if owner == "" && ws.OwnerID != "" {

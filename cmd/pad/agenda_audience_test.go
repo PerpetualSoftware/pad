@@ -173,3 +173,18 @@ func TestRemindAgendaResumeHintCarriesFlags(t *testing.T) {
 		t.Fatalf("resume hint missing --all-workspaces --audience human:\n%s", out)
 	}
 }
+
+func TestRemindAgendaStaleRefusesAudience(t *testing.T) {
+	t.Setenv("PAD_AGENT", "")
+	t.Setenv("CLAUDECODE", "")
+	h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, agendaEmptyWindow + `}` })
+	_, _, err := runAgendaCLI(t, h, "--stale", "--audience", "bogus")
+	if err == nil || !strings.Contains(err.Error(), "drop --audience") {
+		t.Fatalf("expected --stale --audience refusal, got err=%v", err)
+	}
+	for _, c := range calls() {
+		if strings.Contains(c.path, "agenda") {
+			t.Fatalf("refusal reached server: %+v", calls())
+		}
+	}
+}

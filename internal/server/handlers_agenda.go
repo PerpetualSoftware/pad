@@ -211,8 +211,10 @@ func applyAgendaAudience(run *agendaRead, a string) {
 		run.audience = "human"
 		run.response.Audience = "human"
 	case "agent":
-		run.scheduleAudiences = []string{"agent"}
-		run.skipDated = true
+		// both is addressed to agents too, and dated items stay, so an agent
+		// reading its own agenda loses only the human-only schedules. The work
+		// groups (ListAgendaWork) read the same agent-or-both set.
+		run.scheduleAudiences = []string{"agent", "both"}
 		run.audience = "agent"
 		run.response.Audience = "agent"
 	case "all":

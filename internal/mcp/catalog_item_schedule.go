@@ -339,6 +339,11 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 				return errStructured("pad_item.agenda", fmt.Errorf("stale lists your own occurrences; drop recipient")), nil
 			}
 		}
+		if v, present := input["audience"]; present && v != nil {
+			if s, isString := v.(string); !isString || strings.TrimSpace(s) != "" {
+				return errStructured("pad_item.agenda", fmt.Errorf("stale lists every unresolved occurrence of yours; drop audience")), nil
+			}
+		}
 		in := copyInputMap(input)
 		delete(in, "to")
 		delete(in, "recipient")

@@ -116,8 +116,16 @@ func TestMeAgendaAudienceAgentLayer(t *testing.T) {
 	if m["audience"] != "agent" {
 		t.Fatalf("audience = %v, want agent", m["audience"])
 	}
-	if got := seen(m); got != "schedule:Agent Work" {
-		t.Fatalf("agent layer entries = %s, want schedule:Agent Work", got)
+	// The agent layer keeps agent and both schedules and dated items; only the
+	// human-only schedule leaves.
+	got := "," + seen(m) + ","
+	for _, want := range []string{"schedule:Agent Work", "schedule:Both Work", "date:Dated Work"} {
+		if !strings.Contains(got, ","+want+",") {
+			t.Fatalf("agent layer entries = %s, want %s among them", got, want)
+		}
+	}
+	if strings.Contains(got, "schedule:Human Work") {
+		t.Fatalf("agent layer entries = %s, want no human-only schedule", got)
 	}
 
 	fm := meAgendaOK(t, w, w.owner, forecastApril+"&audience=agent")
@@ -275,8 +283,9 @@ func TestWorkspaceAgendaAudience(t *testing.T) {
 		if m["audience"] != "agent" {
 			t.Fatalf("audience = %v, want agent", m["audience"])
 		}
-		if got := seen(m); got != "schedule:WS Agent" {
-			t.Fatalf("entries = %s, want schedule:WS Agent", got)
+		want := "date:WS Dated,schedule:WS Agent,schedule:WS Both"
+		if got := seen(m); got != want {
+			t.Fatalf("entries = %s, want %s", got, want)
 		}
 		fm := w.ok(t, w.owner, forecastApril+"&audience=agent")
 		forecasts, _ := fm["forecasts"].([]any)
