@@ -253,6 +253,7 @@ pad attachment view <id> [-o PATH] [--variant thumb-md]   # writes bytes to file
 pad attachment upload <item-ref|-> <path> [--filename "..."]
 pad attachment attach <id> <item-ref>                    # bind a "-" upload to an item; shares show only images the item owns
 pad attachment download <id> <out-path>
+pad attachment delete <id> [<id>...] [-y]                  # shows filename + size, confirms unless -y; tries every id
 ```
 
 `view <id>` composes cleanly: `IMG=$(pad attachment view <uuid>)`, then open it with whatever's available on the platform (`open "$IMG"` on macOS, `xdg-open "$IMG"` on Linux) or just read/describe the file directly.
