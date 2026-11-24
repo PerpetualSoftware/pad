@@ -32,9 +32,12 @@
 # TestMain runs once per shard as it does for an unsharded run. Subtests ride
 # with their top-level test (the regex has no '/').
 #
-# `check` asks Go, not this script, which tests each regex selects: it runs
-# `go test -list <shard regex>`, so a regex that Go reads differently from
-# how it was written is caught too.
+# `check` asks Go, not this script, which tests each regex selects: the test
+# binary lists them with -test.list <shard regex>, the matcher `go test -list`
+# uses, so a regex that Go reads differently from how it was written is caught
+# too. The binary is built once per run with the given flags and run in the
+# package directory, as `go test` runs it; a `go test -list` per listing
+# relinked it every time (TASK-4814).
 
 set -euo pipefail
 
@@ -47,12 +50,31 @@ die() {
 # before it rather than let exec fail with E2BIG mid-run.
 max_regex_bytes=120000
 
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+bin=$work/pkg.test
+bin_pkg=""
+bin_dir=""
+
+# build_bin <pkg> [flags...]: build the package's test binary, once. A package
+# with no test files builds none, and lists no tests.
+build_bin() {
+	local pkg=$1
+	shift
+	[[ -z $bin_pkg ]] || { [[ $bin_pkg == "$pkg" ]] || die "one package per run"; return 0; }
+	go test "$@" -c -o "$bin" "$pkg" >/dev/null || die "go test -c failed for $pkg"
+	bin_dir=$(go list -f '{{.Dir}}' "$pkg") || die "go list failed for $pkg"
+	bin_pkg=$pkg
+}
+
 # list_tests <pkg> <regex> [flags...]: the top-level tests the regex selects.
 list_tests() {
 	local pkg=$1 regex=$2
 	shift 2
 	local out
-	out=$(go test "$@" -list "$regex" "$pkg") || die "go test -list failed for $pkg"
+	build_bin "$pkg" "$@"
+	[[ -f $bin ]] || return 0
+	out=$(cd "$bin_dir" && "$bin" -test.list "$regex") || die "listing tests failed for $pkg"
 	printf '%s\n' "$out" | grep -E '^(Test|Fuzz|Example)' | LC_ALL=C sort || true
 }
 
@@ -115,6 +137,9 @@ regex)
 	shift 3
 	check_n "$n"
 	[[ $k =~ ^[1-9][0-9]*$ ]] && ((k <= n)) || die "k must be in 1..$n, got '$k'"
+	# Built here, not inside a substitution: a subshell's build is lost to
+	# the next one.
+	build_bin "$pkg" "$@"
 	shard_regex "$pkg" "$n" "$k" "$@"
 	;;
 check)
@@ -122,35 +147,34 @@ check)
 	pkg=$1 n=$2
 	shift 2
 	check_n "$n"
-	tmp=$(mktemp -d)
-	trap 'rm -rf "$tmp"' EXIT
-	list_tests "$pkg" '.' "$@" >"$tmp/all"
-	total=$(wc -l <"$tmp/all")
+	build_bin "$pkg" "$@"
+	list_tests "$pkg" '.' "$@" >"$work/all"
+	total=$(wc -l <"$work/all")
 	((total > 0)) || die "$pkg lists no tests"
-	: >"$tmp/union"
+	: >"$work/union"
 	for ((k = 1; k <= n; k++)); do
 		# Its own assignment, not an argument: set -e ignores a die inside a
 		# substitution used as an argument, and -list "" then selects nothing,
 		# so an empty shard read as 0 tests and the guard passed.
 		re=$(shard_regex "$pkg" "$n" "$k" "$@")
-		list_tests "$pkg" "$re" "$@" >"$tmp/shard$k"
-		echo "shard $k/$n: $(wc -l <"$tmp/shard$k") tests"
-		cat "$tmp/shard$k" >>"$tmp/union"
+		list_tests "$pkg" "$re" "$@" >"$work/shard$k"
+		echo "shard $k/$n: $(wc -l <"$work/shard$k") tests"
+		cat "$work/shard$k" >>"$work/union"
 	done
 	fail=0
-	dups=$(LC_ALL=C sort "$tmp/union" | uniq -d)
+	dups=$(LC_ALL=C sort "$work/union" | uniq -d)
 	if [[ -n $dups ]]; then
 		echo "test-shard: tests selected by MORE THAN ONE shard:" >&2
 		printf '%s\n' "$dups" >&2
 		fail=1
 	fi
-	missing=$(LC_ALL=C sort -u "$tmp/union" | LC_ALL=C comm -23 "$tmp/all" -)
+	missing=$(LC_ALL=C sort -u "$work/union" | LC_ALL=C comm -23 "$work/all" -)
 	if [[ -n $missing ]]; then
 		echo "test-shard: tests selected by NO shard:" >&2
 		printf '%s\n' "$missing" >&2
 		fail=1
 	fi
-	extra=$(LC_ALL=C sort -u "$tmp/union" | LC_ALL=C comm -13 "$tmp/all" -)
+	extra=$(LC_ALL=C sort -u "$work/union" | LC_ALL=C comm -13 "$work/all" -)
 	if [[ -n $extra ]]; then
 		echo "test-shard: shards select tests the full list does not have:" >&2
 		printf '%s\n' "$extra" >&2

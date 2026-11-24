@@ -22,9 +22,14 @@ linters:
   # intentionally discarded (logging best-effort writes, defensive
   # parses with zero-valued fallbacks, etc.). Auditing each one is its
   # own project. Track that work as a separate task if/when we want
-  # the safety net back; for now we rely on go vet + staticcheck SA
+  # the safety net back; for now we rely on govet + staticcheck SA
   # for real-bug coverage.
   settings:
+    # govet is CI's only vet run, so it must cover everything `go vet` does.
+    # Its default set is go vet's, plus inline, minus loopclosure. Both tools
+    # apply loopclosure only to files below Go 1.22, and this module has none
+    # (golangci-lint drops it outright for a go >= 1.22 module), so nothing
+    # go vet checks is lost.
     staticcheck:
       # Restrict staticcheck to its bug-finding (SA*) check family.
       # ST*/QF*/S* are stylistic / quick-fix suggestions that we don't
@@ -32,6 +37,9 @@ linters:
       checks:
         - SA*
   exclusions:
+    # Lint generated files too, as `go vet` does: the default ("lax") skips
+    # them.
+    generated: disable
     # Paths use regex matching; anchor to directory roots to avoid
     # accidentally skipping unrelated Go files whose path contains these
     # substrings (e.g. "internal/websocket" would match a bare "web").
