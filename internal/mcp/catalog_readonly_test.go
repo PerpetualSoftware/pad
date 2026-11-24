@@ -1109,8 +1109,10 @@ func graphFixtureFlags(f map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
 	return f
 }
 
-// withEndSchedule adds the boolean --end-schedule of done and skip (TASK-4537).
+// withEndSchedule adds the booleans --end-schedule (TASK-4537) and --dismiss
+// (TASK-4806) of done and skip.
 func withEndSchedule(f map[string]cmdhelp.Flag) map[string]cmdhelp.Flag {
 	f["end-schedule"] = cmdhelp.Flag{Type: "bool"}
+	f["dismiss"] = cmdhelp.Flag{Type: "bool"}
 	return f
 }

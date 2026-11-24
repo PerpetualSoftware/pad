@@ -43,7 +43,7 @@ func TestCommitmentResolveItemStillOpen(t *testing.T) {
 		rr := f.resolve(map[string]any{"occurrence_at": resolveX, "state": state, "comment": "finished"})
 		d := f.expectErr(rr, http.StatusConflict, "item_still_open", "")
 		e, _ := schedMap(t, rr)["error"].(map[string]any)
-		if e["message"] != itemStillOpenMessage || !strings.Contains(itemStillOpenMessage, "Close the item first") || !strings.Contains(itemStillOpenMessage, "end_schedule") {
+		if e["message"] != itemStillOpenMessage || !strings.Contains(itemStillOpenMessage, "Close the item first") || !strings.Contains(itemStillOpenMessage, "end_schedule") || !strings.Contains(itemStillOpenMessage, "dismiss_ended") {
 			t.Fatalf("message = %v", e["message"])
 		}
 		opts, _ := d["close_options"].([]any)
@@ -349,5 +349,121 @@ func TestCommitmentResolveDoneFilterCloseOptions(t *testing.T) {
 				t.Fatal("refusal wrote an occurrence")
 			}
 		})
+	}
+}
+
+func TestResolveDismissEndedLeavesPriorityList(t *testing.T) {
+	t.Parallel()
+	w := newBootAgendaWorld(t, "2031-03-13T12:00:00Z")
+	it := w.sched(t, w.owner, "one-shot dismiss", "2031-03-10T09:00", "both")
+
+	ownerTok, err := w.srv.store.CreateAPIToken(w.owner.ID, models.APITokenCreate{Name: "dismiss-owner"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/workspaces/" + w.ws.Slug + "/items/" + it.Ref + "/commitment/resolve"
+	rr := doRequestWithHeaders(w.srv, "POST", path, map[string]any{
+		"occurrence_at": "2031-03-10T09:00:00Z",
+		"state":         "done",
+		"dismiss_ended": true,
+	}, map[string]string{"Authorization": "Bearer " + ownerTok.Token})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("resolve dismiss_ended = %d %s", rr.Code, rr.Body.String())
+	}
+	m := schedMap(t, rr)
+	res, _ := m["resolution"].(map[string]any)
+	view, _ := m["commitment"].(map[string]any)
+	if res["ended_dismissed"] != true || res["item_still_open"] != true || view["ended_at"] == nil || view["ended_dismissed_at"] == nil {
+		t.Fatalf("unexpected response = %s", rr.Body.String())
+	}
+
+	wsAgenda := w.ok(t, w.owner, agendaWindow)
+	if rows := agendaRowsFor(wsAgenda, "priority_list", it.Ref); len(rows) != 0 {
+		t.Fatalf("workspace priority_list still has dismissed item: %v", rows)
+	}
+	meAgenda := meAgendaOK(t, w.agendaWorld, w.owner, agendaWindow)
+	if rows := agendaRowsFor(meAgenda, "priority_list", it.Ref); len(rows) != 0 {
+		t.Fatalf("me priority_list still has dismissed item: %v", rows)
+	}
+	noDate := agendaRowsFor(meAgenda, "no_date", it.Ref)
+	if len(noDate) != 1 || noDate[0]["reason"] != "unplaced" {
+		t.Fatalf("me no_date missing dismissed item: %v", meAgenda["no_date"])
+	}
+
+	var resolvedCount, dismissedCount int
+	if err := w.srv.store.DB().QueryRow(w.srv.store.D().Rebind(`SELECT COUNT(*) FROM activities WHERE document_id=? AND action='schedule_resolved'`), it.ID).Scan(&resolvedCount); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.srv.store.DB().QueryRow(w.srv.store.D().Rebind(`SELECT COUNT(*) FROM activities WHERE document_id=? AND action='schedule_end_dismissed'`), it.ID).Scan(&dismissedCount); err != nil {
+		t.Fatal(err)
+	}
+	if resolvedCount != 1 || dismissedCount != 1 {
+		t.Fatalf("activities: schedule_resolved=%d schedule_end_dismissed=%d, want 1 and 1", resolvedCount, dismissedCount)
+	}
+}
+
+func TestResolveDismissEndedCombinations(t *testing.T) {
+	t.Parallel()
+	f := endGuardHTTP(t)
+	until := time.Now().Add(48 * time.Hour).UTC().Format(time.RFC3339)
+
+	for _, state := range []string{"snooze", "move"} {
+		d := f.expectErr(f.resolve(map[string]any{"occurrence_at": resolveX, "state": state, "until": until, "dismiss_ended": true}), http.StatusBadRequest, "validation_error", "combination")
+		if d["field"] != "dismiss_ended" {
+			t.Fatalf("%s details = %v", state, d)
+		}
+	}
+	for _, v := range []any{true, false, nil} {
+		d := f.expectErr(f.resolve(map[string]any{"occurrence_at": resolveX, "state": "ack", "dismiss_ended": v}), http.StatusBadRequest, "validation_error", "combination")
+		if d["field"] != "dismiss_ended" {
+			t.Fatalf("ack(%v) details = %v", v, d)
+		}
+	}
+	d := f.expectErr(f.resolve(map[string]any{"occurrence_at": resolveX, "state": "done", "dismiss_ended": true, "end_schedule": false}), http.StatusBadRequest, "validation_error", "combination")
+	if d["field"] != "dismiss_ended" {
+		t.Fatalf("end_schedule=false details = %v", d)
+	}
+	f.expectErr(f.resolve(`{"occurrence_at":"`+resolveX+`","state":"done","dismiss_ended":"yes"}`), http.StatusBadRequest, "invalid_body", "")
+}
+
+func TestResolveDismissEndedViewerForbidden(t *testing.T) {
+	t.Parallel()
+	w := newBootAgendaWorld(t, "2031-03-13T12:00:00Z")
+	it := w.sched(t, w.owner, "viewer cannot dismiss", "2031-03-10T09:00", "both")
+	viewer := mustUser(t, w.srv, "dismiss-res-viewer@example.com", "dismissresviewer", "")
+	if err := w.srv.store.AddWorkspaceMember(w.ws.ID, viewer.ID, "viewer"); err != nil {
+		t.Fatal(err)
+	}
+	vtok, err := w.srv.store.CreateAPIToken(viewer.ID, models.APITokenCreate{Name: "dismiss-viewer"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := "/api/v1/workspaces/" + w.ws.Slug + "/items/" + it.Ref + "/commitment/resolve"
+	headers := map[string]string{"Authorization": "Bearer " + vtok.Token}
+
+	plain := doRequestWithHeaders(w.srv, "POST", path, map[string]any{
+		"occurrence_at": "2031-03-10T09:00:00Z",
+		"state":         "done",
+	}, headers)
+	dismiss := doRequestWithHeaders(w.srv, "POST", path, map[string]any{
+		"occurrence_at": "2031-03-10T09:00:00Z",
+		"state":         "done",
+		"dismiss_ended": true,
+	}, headers)
+	plainCode, _ := schedErrDetails(t, plain)
+	if plain.Code != http.StatusForbidden || plainCode == "csrf_error" || dismiss.Code != plain.Code || dismiss.Body.String() != plain.Body.String() {
+		t.Fatalf("viewer plain=%d %s; dismiss=%d %s", plain.Code, plain.Body.String(), dismiss.Code, dismiss.Body.String())
+	}
+
+	sc, err := w.srv.store.GetSchedule(w.ws.ID, it.ID)
+	if err != nil || sc == nil {
+		t.Fatalf("GetSchedule: %v %+v", err, sc)
+	}
+	if sc.EndedAt != nil || sc.EndedDismissedAt != nil {
+		t.Fatalf("viewer mutated schedule: ended_at=%v ended_dismissed_at=%v", sc.EndedAt, sc.EndedDismissedAt)
+	}
+	ownerAgenda := meAgendaOK(t, w.agendaWorld, w.owner, agendaWindow)
+	if rows := agendaRowsFor(ownerAgenda, "priority_list", it.Ref); len(rows) != 1 {
+		t.Fatalf("item missing from owner's priority_list: %v", ownerAgenda["priority_list"])
 	}
 }

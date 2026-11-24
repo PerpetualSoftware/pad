@@ -4,11 +4,12 @@
 	yet. The choices are the ones the server's details allow:
 	- close the item too (done only, when the done field has a delivering close);
 	- end the schedule and keep the item open (it stays in Outstanding);
+	- end the schedule and dismiss it: the item stays open and leaves Outstanding (TASK-4806);
 	- acknowledge the occurrence instead (fired and not yet acknowledged);
 	- cancel, which writes nothing.
 -->
 <script lang="ts" module>
-	export type ScheduleEndChoice = { kind: 'close'; value: string } | { kind: 'end' } | { kind: 'ack' };
+	export type ScheduleEndChoice = { kind: 'close'; value: string } | { kind: 'end' } | { kind: 'dismiss' } | { kind: 'ack' };
 </script>
 
 <script lang="ts">
@@ -30,7 +31,7 @@
 	const options = $derived(details?.close_options ?? []);
 	const title = 'Last occurrence: the item is still open';
 	const verb = $derived(details?.state === 'skip' ? 'Skipping' : 'Marking done');
-	const primary = $derived(kind === 'close' ? 'Close item' : kind === 'ack' ? 'Acknowledge' : 'End schedule');
+	const primary = $derived(kind === 'close' ? 'Close item' : kind === 'ack' ? 'Acknowledge' : kind === 'dismiss' ? 'End and dismiss' : 'End schedule');
 
 	$effect(() => {
 		const visible = open, d = details;
@@ -46,7 +47,7 @@
 		if (pending || !details) return;
 		if (kind === 'close') { if (closable && value) onchoose({ kind, value }); return; }
 		if (kind === 'ack' && !details.ack_available) return;
-		onchoose(kind === 'ack' ? { kind } : { kind: 'end' });
+		onchoose(kind === 'ack' || kind === 'dismiss' ? { kind } : { kind: 'end' });
 	}
 </script>
 
@@ -72,6 +73,10 @@
 			<label class="choice" data-choice="end">
 				<input type="radio" name={`${id}-choice`} value="end" bind:group={kind} />
 				<span><span class="name">End schedule, keep item open</span><span class="hint">It stays in Outstanding until it is closed or dismissed.</span></span>
+			</label>
+			<label class="choice" data-choice="dismiss">
+				<input type="radio" name={`${id}-choice`} value="dismiss" bind:group={kind} />
+				<span><span class="name">End schedule and dismiss</span><span class="hint">The item stays open and leaves Outstanding for everyone.</span></span>
 			</label>
 			{#if details?.ack_available}
 				<label class="choice" data-choice="ack">

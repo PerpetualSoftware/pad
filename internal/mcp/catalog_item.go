@@ -243,6 +243,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "actual_done_at", Type: "string", Description: "Actual completion (RFC3339). schedule-resolve done only."},
 	{Name: "confirm_past_deadline", Type: "bool", Description: "Confirm a move that puts the target after its hard deadline."},
 	{Name: "end_schedule", Type: "bool", Description: "done/skip: end an open item's schedule (item_still_open)."},
+	{Name: "dismiss_ended", Type: "bool", Description: "done/skip: end an open item's schedule and dismiss from Outstanding (implies end_schedule)."},
 	{Name: "reason", Type: "string", Description: "Why dates change; required for renegotiation or graph hard-deadline changes. schedule-child: required for waive only."},
 	{Name: "scope", Type: "string", Description: "schedule-renegotiate, schedule-move (role target): occurrence (default) | series. Every occurrence's reminder follows its target (target minus the lead)."},
 	{Name: "deadline_days", Type: "number", Description: "schedule-renegotiate: series day offset."},
@@ -475,7 +476,7 @@ Actions:
   schedule-edit — Patch only given schedule parameters; ref required. deadline soft/none clears it, keeping any window.
   schedule-reopen — Undo one resolution. Required: ref, resolution_id. Keeps its comment.
   schedule-resolve — Resolve the outstanding occurrence. Required: ref, state, occurrence_at.
-    snooze and move also need until (RFC3339, or a bare date at your day start). Optional: comment, actual_done_at, end_schedule, confirm_past_deadline (move only).
+    snooze and move also need until (RFC3339, or a bare date at your day start). Optional: comment, actual_done_at, end_schedule, dismiss_ended, confirm_past_deadline (move only).
   schedule-forecast — Hand-set estimate: ref, forecast OR clear_forecast:true; forecast_source optional on set. Arms nothing; never a missed deadline.
   schedule-child — Milestone child: ref, child, child_action select|waive|remove; reason for waive only.
   schedule-renegotiate — Change a deadline. Required: ref, reason. scope occurrence: deadline (RFC3339);

@@ -4035,6 +4035,8 @@ export interface CommitmentResolveRequest {
 	until?: string;
 	/** done/skip: end the schedule on its last occurrence while the item stays open (TASK-4537). */
 	end_schedule?: boolean;
+	/** done/skip: end the schedule on its last occurrence while the item stays open and dismiss it from Outstanding (TASK-4806). */
+	dismiss_ended?: boolean;
 }
 
 /** details of a 409 item_still_open: the done or skip would end an open item's schedule (TASK-4537). */
@@ -4194,7 +4196,7 @@ export interface CommitmentChange {
 
 export interface CommitmentResolveResult {
 	commitment: Omit<ItemCommitmentView, 'last_resolution'>;
-	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline'; item_still_open?: boolean };
+	resolution: { occurrence_at: string; state: ScheduleResolveState; comment_id?: string; missed_recorded: number; warning?: 'target_after_deadline'; item_still_open?: boolean; ended_dismissed?: boolean };
 }
 
 export interface ItemCopySchedule {

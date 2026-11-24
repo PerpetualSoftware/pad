@@ -2380,7 +2380,11 @@ const CmdhelpVersion = "0.1"
 // all admitted workspaces with include= and counts=omit, refusing an explicit
 // workspace, a non-me recipient, and stale). New parameter all_workspaces;
 // audience gains agenda semantics in its description.
-const ToolSurfaceVersion = "0.128"
+// v0.129 — TASK-4806: additive pad_item schedule-resolve boolean dismiss_ended
+// (done/skip only; implies end_schedule; refused as combination with snooze,
+// move, ack, or explicit end_schedule=false) ends an open item's schedule on
+// its last occurrence and dismisses it from Outstanding in one transaction.
+const ToolSurfaceVersion = "0.129"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

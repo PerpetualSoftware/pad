@@ -112,6 +112,10 @@ type ResolveInput struct {
 	// ErrScheduleWouldEnd; it has no effect when a next occurrence exists or the
 	// item is closed.
 	EndSchedule bool
+	// DismissEnded consents to ending an open item's schedule on its last
+	// occurrence and dismisses the ending from Outstanding in the same
+	// transaction (TASK-4806).
+	DismissEnded bool
 }
 
 // ResolveResult is the committed resolution.
@@ -126,6 +130,9 @@ type ResolveResult struct {
 	// EndedItemOpen is set when the resolution ended the schedule, with the
 	// caller's consent, while the item stayed open.
 	EndedItemOpen bool
+	// EndedDismissed is set when the resolution ended the schedule with the item
+	// open and dismissed it from Outstanding in the same transaction.
+	EndedDismissed bool
 }
 
 // ErrScheduleWouldEnd refuses a done or skip of the last occurrence of an open
@@ -519,6 +526,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 	}
 	res.MissedRecorded += closed.MissedRecorded
 	res.EndedItemOpen = closed.EndedItemOpen
+	res.EndedDismissed = closed.EndedDismissed
 	if in.State == "skip" {
 		// A skip cancels the occurrence: a link under the cancel policy marks its
 		// paired child occurrence No longer needed, in this transaction.
@@ -654,6 +662,7 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 		return nil, err
 	}
 	endedItemOpen := false
+	endedDismissed := false
 	var dismissedAt any
 	if !found && (in.State == "done" || in.State == "skip") {
 		// The last occurrence: ending the schedule of an open item drops it from
@@ -673,10 +682,14 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 			if err != nil {
 				return nil, err
 			}
-			if open && !in.EndSchedule {
+			if open && !in.EndSchedule && !in.DismissEnded {
 				return nil, &ErrScheduleWouldEnd{Fired: sc.ReminderFired, Acknowledged: sc.ReminderAckedAt != nil, DoneField: filter.doneKey, CloseOptions: filter.closeOptions()}
 			}
 			endedItemOpen = open
+			if open && in.DismissEnded {
+				dismissedAt = ts
+				endedDismissed = true
+			}
 		}
 	}
 	if in.State != "lapsed" {
@@ -771,6 +784,7 @@ func (s *Store) closeOccurrenceTx(tx *sql.Tx, sc *models.ItemSchedule, in Resolv
 			return nil, err
 		}
 		res.EndedItemOpen = true
+		res.EndedDismissed = endedDismissed
 		return res, nil
 	}
 	after, err := s.scheduleSnapshotTx(tx, sc.ID)

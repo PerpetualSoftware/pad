@@ -1933,7 +1933,7 @@ func commitmentValidationDetails(raw json.RawMessage) bool {
 		return false
 	}
 	switch d.Field {
-	case "resolution_id", "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule", "confirm_past_deadline", "scope", "day_start":
+	case "resolution_id", "reason", "revision", "role", "to", "cancel_policy", "offset", "parent_role", "child_role", "child", "blocker", "state", "occurrence_at", "until", "actual_done_at", "comment", "end_schedule", "dismiss_ended", "confirm_past_deadline", "scope", "day_start":
 		return true
 	}
 	return false

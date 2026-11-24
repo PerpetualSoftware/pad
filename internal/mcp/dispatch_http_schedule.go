@@ -182,6 +182,9 @@ func mapScheduleResolve(state string) RouteMapper {
 		if e, _ := input["end_schedule"].(bool); e && (state == "done" || state == "skip") {
 			body.EndSchedule = true
 		}
+		if d, _ := input["dismiss_ended"].(bool); d && (state == "done" || state == "skip") {
+			body.DismissEnded = true
+		}
 		if confirm, _ := input["confirm_past_deadline"].(bool); confirm && state == "move" {
 			body.ConfirmPastDeadline = true
 		}

@@ -398,6 +398,10 @@ type scheduleResolveBody struct {
 	// EndSchedule consents to a done or skip that ends the schedule while the
 	// item stays open (TASK-4537).
 	EndSchedule *bool `json:"end_schedule"`
+	// DismissEnded consents to ending an open item's schedule on its last
+	// occurrence and dismisses it from Outstanding in the same transaction
+	// (TASK-4806).
+	DismissEnded *bool `json:"dismiss_ended"`
 }
 
 func writeResolveField(w http.ResponseWriter, field, code, msg string) {
@@ -540,8 +544,8 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 		// counts as present too.
 		var members map[string]json.RawMessage
 		_ = json.Unmarshal(raw, &members)
-		decoded := map[string]bool{"until": body.Until != nil, "actual_done_at": actualDoneAt != nil, "comment": body.Comment != nil, "end_schedule": body.EndSchedule != nil}
-		for _, name := range []string{"until", "actual_done_at", "comment", "end_schedule"} {
+		decoded := map[string]bool{"until": body.Until != nil, "actual_done_at": actualDoneAt != nil, "comment": body.Comment != nil, "end_schedule": body.EndSchedule != nil, "dismiss_ended": body.DismissEnded != nil}
+		for _, name := range []string{"until", "actual_done_at", "comment", "end_schedule", "dismiss_ended"} {
 			present := decoded[name]
 			for key := range members {
 				if strings.EqualFold(key, name) {
@@ -567,6 +571,17 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		in.EndSchedule = *body.EndSchedule
+	}
+	if body.DismissEnded != nil {
+		if in.State == "snooze" || in.State == "move" {
+			writeResolveField(w, "dismiss_ended", "combination", "dismiss_ended is for done and skip")
+			return
+		}
+		if *body.DismissEnded && body.EndSchedule != nil && !*body.EndSchedule {
+			writeResolveField(w, "dismiss_ended", "combination", "dismiss_ended cannot be combined with end_schedule: false")
+			return
+		}
+		in.DismissEnded = *body.DismissEnded
 	}
 	untilPlaced := false
 	if body.Until != nil {
@@ -679,6 +694,10 @@ func (s *Server) resolveItemSchedule(w http.ResponseWriter, r *http.Request) {
 	}
 	if res.EndedItemOpen {
 		resolution["item_still_open"] = true
+	}
+	if res.EndedDismissed {
+		resolution["ended_dismissed"] = true
+		s.recordScheduleEndDismissedActivity(r, workspaceID, item, res.Schedule.Kind)
 	}
 	if untilPlaced {
 		resolution["until"] = in.Until.UTC().Format(time.RFC3339)

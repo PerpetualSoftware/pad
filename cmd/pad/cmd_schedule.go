@@ -288,7 +288,7 @@ const commentHelp = "comment recorded on the item; optional"
 
 func remindResolveCmd(v resolveVerb) *cobra.Command {
 	var comment, occurrence, until, at, role, to, closeItem, scope string
-	var endSchedule, pastDeadline bool
+	var endSchedule, dismissEnded, pastDeadline bool
 	var linked linkedWriteFlags
 	needsUntil := v.state == "snooze" || v.state == "move"
 	use := v.use + " <ref>"
@@ -301,11 +301,12 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	case "done", "skip":
 		long += "\n\nA recurring schedule arms its next occurrence; a one-shot ends."
 		long += "\n\nOn the schedule's last occurrence of an item that is still open the server refuses and nothing is written: " +
+			"--dismiss ends the schedule, keeps the item open, and takes it off Outstanding for everyone, " +
 			"--end-schedule ends the schedule and keeps the item open (it stays in Outstanding until it is closed or 'pad remind dismiss' is run)"
 		if v.state == "done" {
 			long += ", and --close-item[=VALUE] ends it and then closes the item with VALUE, or with the collection's only delivering close when VALUE is omitted"
 		}
-		long += ". Without either flag, close the item first and run this again."
+		long += ". Without one of these flags, close the item first and run this again."
 		if v.state == "done" {
 			long += "\n\n--at records when the work was really finished, if that was not now: an RFC3339 instant or a wall time read in your zone (2026-11-08T17:30); a bare date is refused. It cannot be in the future or before the schedule was created; the server says so unchanged."
 		}
@@ -339,10 +340,13 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 					}
 				}
 			}
-			req := schedule.CommitmentResolve{State: v.state, Comment: comment, EndSchedule: endSchedule, ConfirmPastDeadline: pastDeadline}
+			req := schedule.CommitmentResolve{State: v.state, Comment: comment, EndSchedule: endSchedule, DismissEnded: dismissEnded, ConfirmPastDeadline: pastDeadline}
 			wantClose := v.state == "done" && cmd.Flags().Changed("close-item")
 			if wantClose && endSchedule {
 				return fmt.Errorf("--close-item and --end-schedule cannot be combined: --close-item ends the schedule and closes the item, --end-schedule keeps the item open")
+			}
+			if wantClose && dismissEnded {
+				return fmt.Errorf("--close-item and --dismiss cannot be combined: --close-item ends the schedule and closes the item, --dismiss keeps the item open")
 			}
 			if v.state != "ack" && cmd.Flags().Changed("at") {
 				if v.state != "done" {
@@ -422,9 +426,10 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			var resp struct {
 				Commitment scheduleView `json:"commitment"`
 				Resolution struct {
-					ItemStillOpen bool   `json:"item_still_open"`
-					Until         string `json:"until"`
-					ResolvedFrom  string `json:"resolved_from"`
+					ItemStillOpen  bool   `json:"item_still_open"`
+					EndedDismissed bool   `json:"ended_dismissed"`
+					Until          string `json:"until"`
+					ResolvedFrom   string `json:"resolved_from"`
 				} `json:"resolution"`
 			}
 			_ = json.Unmarshal(raw, &resp)
@@ -456,6 +461,8 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 			switch {
 			case closedWith != "":
 				line += fmt.Sprintf("; closed %s (%s)", args[0], closedWith)
+			case resp.Resolution.EndedDismissed:
+				line += fmt.Sprintf(" and %s stays open (dismissed from Outstanding).", args[0])
 			case resp.Resolution.ItemStillOpen:
 				line += fmt.Sprintf(". %s stays open in Outstanding until it is closed or dismissed (pad remind dismiss %s).", args[0], args[0])
 			}
@@ -465,6 +472,7 @@ func remindResolveCmd(v resolveVerb) *cobra.Command {
 	}
 	if v.state == "done" || v.state == "skip" {
 		c.Flags().BoolVar(&endSchedule, "end-schedule", false, "on the last occurrence of an open item: end the schedule and keep the item open")
+		c.Flags().BoolVar(&dismissEnded, "dismiss", false, "on the last occurrence of an open item: end the schedule, keep the item open, and take it off Outstanding for everyone")
 	}
 	if v.state == "done" {
 		c.Flags().StringVar(&closeItem, "close-item", "", "on the last occurrence of an open item: end the schedule, then close the item with this value (omit the value to use the only delivering close)")

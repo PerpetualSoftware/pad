@@ -55,6 +55,8 @@ func itemStillOpenHint(err error, ref, state string, d itemStillOpenDetails) err
 		status = "not set"
 	}
 	var ways []string
+	ways = append(ways, "--dismiss to end the schedule, keep it open, and take it off Outstanding")
+	ways = append(ways, "--end-schedule to keep it open (it stays in Outstanding)")
 	if state == "done" {
 		switch len(d.CloseOptions) {
 		case 0:
@@ -64,9 +66,8 @@ func itemStillOpenHint(err error, ref, state string, d itemStillOpenDetails) err
 			ways = append(ways, "--close-item=VALUE to close it too (choose one of: "+strings.Join(d.CloseOptions, ", ")+")")
 		}
 	}
-	ways = append(ways, "--end-schedule to keep it open (it stays in Outstanding)")
 	if d.AckAvailable {
-		ways = append(ways, "'pad remind ack "+ref+"' to acknowledge the occurrence instead")
+		ways = append(ways, "'pad remind ack "+ref+"' to silence the reminder (it stays outstanding)")
 	}
 	last := ways[len(ways)-1]
 	list := last

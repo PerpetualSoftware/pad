@@ -10,11 +10,12 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// itemStillOpenMessage names both ways forward, so a client that prints only
+// itemStillOpenMessage names every way forward, so a client that prints only
 // the server's message still tells its user what to do.
 const itemStillOpenMessage = "This is the schedule's last occurrence and the item is still open. " +
 	"Close the item first and then resolve again, or confirm ending the schedule and keeping the item open " +
-	"by retrying with end_schedule (--end-schedule in the pad CLI, or choose it in the web app)."
+	"by retrying with end_schedule (--end-schedule in the pad CLI, or choose it in the web app), " +
+	"or with dismiss_ended to also take it off Outstanding (--dismiss in the pad CLI)."
 
 // writeItemStillOpen answers a done or skip refused because it would end the
 // schedule of an open item: 409 item_still_open with what the caller needs to
@@ -28,6 +29,13 @@ func (s *Server) writeItemStillOpen(w http.ResponseWriter, r *http.Request, item
 		"close_options": end.CloseOptions,
 		"ack_available": end.Fired && !end.Acknowledged,
 	})
+}
+
+// recordScheduleEndDismissedActivity logs the schedule_end_dismissed activity
+// entry shared by POST .../commitment/dismiss-ended and resolve with
+// dismiss_ended.
+func (s *Server) recordScheduleEndDismissedActivity(r *http.Request, workspaceID string, item *models.Item, kind string) {
+	s.logActivityWithMeta(workspaceID, item.ID, "schedule_end_dismissed", r, scheduleActivityMeta(kind, nil))
 }
 
 // handleDismissEndedCommitment is POST .../commitment/dismiss-ended: an editor
@@ -78,7 +86,8 @@ func (s *Server) handleDismissEndedCommitment(w http.ResponseWriter, r *http.Req
 		return
 	}
 	if changed {
-		s.recordScheduleWrite(r, workspaceID, item, "schedule_end_dismissed", scheduleActivityMeta(sc.Kind, nil))
+		s.recordScheduleEndDismissedActivity(r, workspaceID, item, sc.Kind)
+		s.publishItemVerified(workspaceID, item, r)
 	}
 	v, err := s.buildCommitmentView(r, workspaceID, item, sc, "")
 	if err != nil {
