@@ -122,7 +122,7 @@ func state(dump string, m member) ([]byte, bool, error) {
 	}
 	var item models.Item
 	var comments []models.Comment
-	if err := readJSON(filepath.Join(dump, "items", m.Ref+".json"), &item); err != nil {
+	if err := readItemJSON(filepath.Join(dump, "items", m.Ref+".json"), &item); err != nil {
 		return nil, false, err
 	}
 	if err := readJSON(filepath.Join(dump, "items", m.Ref+".comments.json"), &comments); err != nil {
@@ -328,6 +328,38 @@ func readJSON(path string, v any) error {
 		return err
 	}
 	return json.Unmarshal(b, v)
+}
+
+// readItemJSON decodes a `pad item show --format json` dump into models.Item,
+// accepting both legacy string-encoded and native JSON fields/tags (BUG-4812).
+func readItemJSON(path string, item *models.Item) error {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var raw struct {
+		*models.Item
+		Fields json.RawMessage `json:"fields"`
+		Tags   json.RawMessage `json:"tags"`
+	}
+	raw.Item = item
+	if err := json.Unmarshal(b, &raw); err != nil {
+		return err
+	}
+	item.Fields = rawJSONFieldToString(raw.Fields)
+	item.Tags = rawJSONFieldToString(raw.Tags)
+	return nil
+}
+
+func rawJSONFieldToString(raw json.RawMessage) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		return s
+	}
+	return string(raw)
 }
 
 func mustRead(path string, v any) {

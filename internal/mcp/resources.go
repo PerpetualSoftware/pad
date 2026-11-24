@@ -361,7 +361,7 @@ func (r *resources) readItem(ctx context.Context, req mcp.ReadResourceRequest) (
 // Map-key iteration is sorted so the output is stable for tests.
 func formatItemAsMarkdown(jsonBlob string) (string, error) {
 	var item map[string]any
-	if err := json.Unmarshal([]byte(jsonBlob), &item); err != nil {
+	if err := models.DecodeJSONKeepingNumbers([]byte(jsonBlob), &item); err != nil {
 		return "", fmt.Errorf("parse item JSON: %w", err)
 	}
 	var b strings.Builder
@@ -388,23 +388,30 @@ func formatItemAsMarkdown(jsonBlob string) (string, error) {
 		}
 	}
 
-	// Structured metadata fields. The `fields` payload is a JSON
-	// string-encoded object on the wire — unmarshal a second time.
-	if fieldsStr, ok := item["fields"].(string); ok && fieldsStr != "" && fieldsStr != "{}" {
-		var fields map[string]any
-		// Numbers keep their digits and structured values print as JSON
-		// (BUG-3448), as `pad item show` does.
-		if models.DecodeJSONKeepingNumbers([]byte(fieldsStr), &fields) == nil && len(fields) > 0 {
-			keys := make([]string, 0, len(fields))
-			for k := range fields {
-				keys = append(keys, k)
-			}
-			sort.Strings(keys)
-			for _, k := range keys {
-				fmt.Fprintf(&b, "- **%s:** %s\n", k, cli.FormatFieldValue(fields[k]))
-			}
-			b.WriteString("\n")
+	// Structured metadata fields. On the wire `fields` arrives either as a
+	// native JSON object (from `pad item show --format json`, BUG-4812) or
+	// as a JSON string-encoded object (from the raw REST API / remote
+	// fetcher). Numbers keep their digits and structured values print as
+	// JSON (BUG-3448), as `pad item show` does.
+	var fields map[string]any
+	switch raw := item["fields"].(type) {
+	case map[string]any:
+		fields = raw
+	case string:
+		if raw != "" && raw != "{}" {
+			_ = models.DecodeJSONKeepingNumbers([]byte(raw), &fields)
 		}
+	}
+	if len(fields) > 0 {
+		keys := make([]string, 0, len(fields))
+		for k := range fields {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			fmt.Fprintf(&b, "- **%s:** %s\n", k, cli.FormatFieldValue(fields[k]))
+		}
+		b.WriteString("\n")
 	}
 
 	// Staleness marker (BUG-3033). `item show --format json` carries
