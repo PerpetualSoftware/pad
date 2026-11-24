@@ -211,7 +211,7 @@
     </div>
    {:else if dismissable}
     <div class="occurrence-actions">
-     <Button size="sm" disabled={dismissing} aria-describedby="{uid}-dismiss-hint" onclick={() => void dismissEnded()}>Dismiss from Outstanding</Button>
+     <Button size="sm" class="dismiss" disabled={dismissing} aria-describedby="{uid}-dismiss-hint" onclick={() => void dismissEnded()}>Dismiss from Outstanding</Button>
      <span id="{uid}-dismiss-hint" class="hint">The item stays open.</span>
     </div>
    {/if}
@@ -258,7 +258,7 @@
  button, summary { min-height: 44px; cursor: pointer; }
  .commitment-panel:focus { outline: none; }
  .occurrence-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-2) 0; }
- @media (pointer: coarse) { .occurrence-actions :global(.btn.edit) { min-height: 44px; } }
+ @media (pointer: coarse) { .occurrence-actions :global(.btn.edit), .occurrence-actions :global(.btn.dismiss) { min-height: 44px; } }
  .hint { color: var(--text-secondary); }
  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
  summary { align-content: center; }
