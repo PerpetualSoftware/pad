@@ -3093,6 +3093,32 @@ func (c *Client) HeadAttachment(wsSlug, attachmentID, variant string) (*Attachme
 	return meta, nil
 }
 
+// AttachmentNotFound rewrites a 404 from an attachment-by-id route into an
+// APIError naming the attachment and workspace. HEAD answers with no body, so
+// the bare error would read "API error: 404 " otherwise. Any other error (or
+// nil) passes through unchanged.
+func AttachmentNotFound(err error, attachmentID, wsSlug string) error {
+	if HTTPStatus(err) != http.StatusNotFound {
+		return err
+	}
+	return &APIError{
+		Code:    "not_found",
+		Message: fmt.Sprintf("attachment %s not found in workspace %s", attachmentID, wsSlug),
+		Status:  http.StatusNotFound,
+	}
+}
+
+// DeleteAttachment soft-deletes an attachment through
+// DELETE /api/v1/workspaces/{slug}/attachments/{id}. The server authorizes
+// per attachment and answers 404 for an unknown or cross-workspace id.
+func (c *Client) DeleteAttachment(wsSlug, attachmentID string) error {
+	p, err := attachmentIDPathSegment(attachmentID)
+	if err != nil {
+		return err
+	}
+	return AttachmentNotFound(c.delete("/workspaces/"+url.PathEscape(wsSlug)+"/attachments/"+p), attachmentID, wsSlug)
+}
+
 // AttachmentListParams encodes the query-string filters the
 // `GET /api/v1/workspaces/{slug}/attachments` endpoint accepts. Zero
 // values are skipped — the server falls back to its built-in defaults.
