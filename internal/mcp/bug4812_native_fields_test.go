@@ -8,7 +8,8 @@ import (
 
 func TestBUG4812NormalizeNativeFieldsAndTags(t *testing.T) {
 	in := map[string]any{
-		"ref": "TASK-5",
+		"ref":          "TASK-5",
+		"workspace_id": "ws-1",
 		"fields": map[string]any{
 			"status":               "open",
 			"implementation_notes": []any{map[string]any{"summary": "note"}},
@@ -45,14 +46,16 @@ func TestBUG4812NormalizeNativeFieldsAndTags(t *testing.T) {
 
 func TestBUG4812NormalizeStringAndNativeEqual(t *testing.T) {
 	strItem := map[string]any{
-		"ref":    "TASK-5",
-		"title":  "Parity",
-		"fields": `{"status":"open","implementation_notes":[{"summary":"note"}],"decision_log":[{"decision":"dec"}],"fields":"{\"x\":1}"}`,
-		"tags":   `["a","b"]`,
+		"ref":          "TASK-5",
+		"workspace_id": "ws-1",
+		"title":        "Parity",
+		"fields":       `{"status":"open","implementation_notes":[{"summary":"note"}],"decision_log":[{"decision":"dec"}],"fields":"{\"x\":1}"}`,
+		"tags":         `["a","b"]`,
 	}
 	nativeItem := map[string]any{
-		"ref":   "TASK-5",
-		"title": "Parity",
+		"ref":          "TASK-5",
+		"workspace_id": "ws-1",
+		"title":        "Parity",
 		"fields": map[string]any{
 			"status":               "open",
 			"implementation_notes": []any{map[string]any{"summary": "note"}},
@@ -66,6 +69,28 @@ func TestBUG4812NormalizeStringAndNativeEqual(t *testing.T) {
 	gotNative := normalizeStringEncodedJSONFields(nativeItem)
 	if !reflect.DeepEqual(gotStr, gotNative) {
 		t.Errorf("string and native shapes normalized differently:\nstring: %#v\nnative: %#v", gotStr, gotNative)
+	}
+}
+
+// The list summary shape already carried a native fields object before
+// BUG-4812, with no top-level implementation_notes or decision_log: those
+// keys are the only copy there, so the walk must keep them (and keep
+// walking the object as it always has).
+func TestBUG4812NormalizeSummaryShapeKeepsNotes(t *testing.T) {
+	in := map[string]any{
+		"ref": "TASK-5",
+		"fields": map[string]any{
+			"status":               "open",
+			"implementation_notes": []any{map[string]any{"summary": "note"}},
+			"decision_log":         []any{map[string]any{"decision": "dec"}},
+		},
+	}
+	got := normalizeStringEncodedJSONFields(in).(map[string]any)
+	fields := got["fields"].(map[string]any)
+	for _, k := range []string{"implementation_notes", "decision_log"} {
+		if _, has := fields[k]; !has {
+			t.Errorf("summary shape lost fields.%s: %v", k, fields)
+		}
 	}
 }
 

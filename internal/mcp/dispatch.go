@@ -216,11 +216,14 @@ func packageJSONResult(out string) *CallToolResult {
 // value and normalizes `fields` and `tags` properties in both shapes:
 // JSON-encoded strings (from the REST API / `models.Item`) and already-
 // native JSON objects/arrays (from `pad item show --format json`,
-// BUG-4812). String-encoded values are parsed and substituted; for both
-// shapes, `implementation_notes` and `decision_log` are dropped from a
+// BUG-4812). String-encoded values are parsed and substituted, and
+// `implementation_notes` and `decision_log` are dropped from the parsed
 // `fields` object because those entries duplicate the top-level arrays
-// the server hydrates onto each item (BUG-992). Neither shape recurses
-// into a `fields` object or `tags` array.
+// the server hydrates onto each full item (BUG-992); a full item's
+// native `fields` object gets the same treatment. Neither recurses into
+// that `fields` object. A native `fields` object on any other shape
+// (the list summary carries no top-level copies) is walked as before
+// and keeps both keys.
 //
 // Why: the server-side `models.Item` carries `Fields` and `Tags` as
 // JSON-string columns (a SQLite-era choice that propagated through
@@ -250,12 +253,15 @@ func normalizeStringEncodedJSONFields(v any) any {
 						continue
 					}
 				case map[string]any:
-					if k == "fields" {
+					// A full models.Item (it carries workspace_id) always
+					// arrived with string-encoded fields until BUG-4812 made
+					// `item show --format json` send them native: treat it
+					// exactly like the parsed string. Any other native fields
+					// map (the list summary shape, which has no top-level
+					// implementation_notes or decision_log to duplicate)
+					// keeps its old path below.
+					if _, full := x["workspace_id"]; full && k == "fields" {
 						x[k] = stripDuplicatedFieldsKeys(typed)
-						continue
-					}
-				case []any:
-					if k == "tags" {
 						continue
 					}
 				}
