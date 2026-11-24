@@ -1162,7 +1162,7 @@
         "idempotentHint": true,
         "openWorldHint": false
       },
-      "description": "Full-text search across items.\n\nActions:\n  query  — FTS search across items. Required: workspace, query.\n    Optional filters: collection, status, priority, sort, limit, offset.\n\nFor a known ref (TASK-5), use pad_item.action=get.",
+      "description": "Full-text search across items.\n\nActions:\n  query  — FTS search across items. Required: query. Workspace: the session's unless all_workspaces=true (every readable workspace; refuses workspace).\n    Optional filters: collection, status, priority, sort, limit, offset.\n\nFor a known ref (TASK-5), use pad_item.action=get.",
       "inputSchema": {
         "properties": {
           "action": {
@@ -1171,6 +1171,10 @@
               "query"
             ],
             "type": "string"
+          },
+          "all_workspaces": {
+            "description": "Search every workspace the caller can read; refuses an explicit workspace. Optional.",
+            "type": "boolean"
           },
           "collection": {
             "description": "Restrict results to items in this collection slug (e.g. \"tasks\"). Optional.",

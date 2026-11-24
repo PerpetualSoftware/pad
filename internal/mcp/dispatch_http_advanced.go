@@ -790,6 +790,9 @@ func (d *HTTPHandlerDispatcher) maybeInjectWorkspace(
 	if d.Lister == nil {
 		return input
 	}
+	if aw, _ := input["all_workspaces"].(bool); aw {
+		return input
+	}
 	if existing, ok := input["workspace"].(string); ok && existing != "" {
 		return input
 	}

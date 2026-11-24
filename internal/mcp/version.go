@@ -2384,7 +2384,11 @@ const CmdhelpVersion = "0.1"
 // (done/skip only; implies end_schedule; refused as combination with snooze,
 // move, ack, or explicit end_schedule=false) ends an open item's schedule on
 // its last occurrence and dismisses it from Outstanding in one transaction.
-const ToolSurfaceVersion = "0.129"
+// v0.130 — TASK-4808: additive pad_search all_workspaces boolean searches every
+// workspace the caller can read via unscoped /api/v1/search (which applies the
+// caller's read access, OAuth allow-list and token pin) and refuses an explicit
+// workspace on both transports.
+const ToolSurfaceVersion = "0.130"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a
