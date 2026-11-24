@@ -317,6 +317,12 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		}
 		return s.commitResolve(tx, workspaceID, itemID, res)
 	}
+	// Every write below stores the recipient's reading; the caller's zone only
+	// gated acceptance. A snooze or move that kept the caller's reading would
+	// pin next_at, and its history row, to the caller's instant (TASK-4446).
+	if !xRec.IsZero() {
+		x = xRec
+	}
 	if moveRoles != nil && moveRoles.DeadlineDays != nil {
 		// Move policy speaks only for an occurrence the caller really named.
 		if moveRoles.Origin != "native" {
@@ -380,11 +386,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 			return nil, ErrCommitmentChanged
 		}
 	}
-	captureAt := x
-	if (in.State == "done" || in.State == "skip") && !xRec.IsZero() {
-		captureAt = xRec
-	}
-	undo, err := s.captureResolutionUndoTx(tx, sc, in.State, in.Actor, in.ActorUserID, captureAt, nowT)
+	undo, err := s.captureResolutionUndoTx(tx, sc, in.State, in.Actor, in.ActorUserID, x, nowT)
 	if err != nil {
 		return nil, err
 	}
@@ -435,8 +437,7 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 				return nil, err
 			}
 			if commentID != "" {
-				// The recipient's instant, the row the cascade wrote; xAt may be the
-				// caller's reading of a floating occurrence.
+				// The row the cascade wrote, at the recipient's instant.
 				at := linked.nodes[linked.root].x.Format(time.RFC3339)
 				if err := s.upsertOccurrenceTx(tx, sc.ID, at, xWall, "moved", commentID, in.Actor, ts); err != nil {
 					return nil, err
@@ -512,10 +513,6 @@ func (s *Store) resolveOccurrenceAt(workspaceID, itemID string, in ResolveInput,
 		return s.commitResolve(tx, workspaceID, itemID, res)
 	}
 
-	// Store the recipient reading; the caller zone only gated acceptance.
-	if !xRec.IsZero() {
-		x = xRec
-	}
 	closed, err := s.closeOccurrenceTx(tx, sc, in, rec, x, nowT, actual, actualSource, commentID, before)
 	if err != nil {
 		return nil, err
