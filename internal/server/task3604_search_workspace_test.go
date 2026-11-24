@@ -95,4 +95,31 @@ func TestTask3604_CrossWorkspaceSearchLabelsOnlyAdmittedWorkspaces(t *testing.T)
 			}
 		})
 	}
+
+	t.Run("unknown, non-admitted, and zero-admitted searches are byte-identical with no workspaces key", func(t *testing.T) {
+		unknown := e.asCookie("outsider")("/api/v1/search?" + url.Values{"q": {"zebra"}, "workspace": {"no-such-workspace-xyz"}}.Encode())
+		nonAdmitted := e.asCookie("outsider")("/api/v1/search?" + url.Values{"q": {"zebra"}, "workspace": {e.wsSlug}}.Encode())
+		zeroAdmitted := e.asCookie("outsider")("/api/v1/search?" + url.Values{"q": {"zebra"}}.Encode())
+		for name, res := range map[string]*bug3331Result{
+			"unknown":       unknown,
+			"non-admitted":  nonAdmitted,
+			"zero-admitted": zeroAdmitted,
+		} {
+			if res.code != http.StatusOK {
+				t.Fatalf("%s: status %d %s", name, res.code, res.body)
+			}
+			if strings.Contains(res.body, `"workspaces"`) {
+				t.Errorf("%s contains workspaces key: %s", name, res.body)
+			}
+			if strings.Contains(res.body, `"facets"`) {
+				t.Errorf("%s contains facets key: %s", name, res.body)
+			}
+		}
+		if unknown.body != nonAdmitted.body {
+			t.Errorf("unknown (%q) != non-admitted (%q)", unknown.body, nonAdmitted.body)
+		}
+		if unknown.body != zeroAdmitted.body {
+			t.Errorf("unknown (%q) != zero-admitted (%q)", unknown.body, zeroAdmitted.body)
+		}
+	})
 }

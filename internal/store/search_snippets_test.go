@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -14,10 +15,16 @@ func TestSearchMatchRelationHasNoSnippets(t *testing.T) {
 	for _, dialect := range []Dialect{&sqliteDialect{}, &postgresDialect{}} {
 		t.Run(string(dialect.Driver()), func(t *testing.T) {
 			s := &Store{dialect: dialect}
-			query, _ := s.searchMatches(SearchParams{Query: "nebula", Unrestricted: true}, []string{"direct-hit"})
+			countQuery, _ := s.searchMatchIDs(SearchParams{Query: "nebula", Unrestricted: true}, []string{"direct-hit"})
+			for _, expression := range []string{"snippet(", "ts_headline(", "bm25(", "ts_rank("} {
+				if strings.Contains(countQuery, expression) {
+					t.Errorf("count/facet match relation contains %s", expression)
+				}
+			}
+			query, _ := s.searchMatches(SearchParams{Query: "nebula", Unrestricted: true}, []string{"direct-hit"}, nil, time.Time{})
 			for _, expression := range []string{"snippet(", "ts_headline("} {
 				if strings.Contains(query, expression) {
-					t.Errorf("count/facet match relation contains %s", expression)
+					t.Errorf("scored match relation contains %s", expression)
 				}
 			}
 		})

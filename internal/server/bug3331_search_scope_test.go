@@ -292,6 +292,18 @@ func TestBUG3331_UnscopedSearchStaysInsideAccess(t *testing.T) {
 	if got := e.search(t, e.asBearer(e.legacyWorkspaceToken), "zebra", e.legacyWorkspaceTokenWS); !equalRefs(got, sortedRefs("Zebra other")) {
 		t.Errorf("user-less workspace token, own workspace: got %v, want [Zebra other]", got)
 	}
+
+	// Empty-answer paths (unknown workspace, non-admitted workspace, zero-admitted
+	// unscoped search) stay byte-identical and carry no "workspaces" key.
+	unknown := e.asCookie("outsider")("/api/v1/search?" + url.Values{"q": {"zebra"}, "workspace": {"unknown-ws-bug3331"}}.Encode())
+	nonAdmitted := e.asCookie("outsider")("/api/v1/search?" + url.Values{"q": {"zebra"}, "workspace": {e.wsSlug}}.Encode())
+	zeroAdmitted := e.asCookie("outsider")("/api/v1/search?" + url.Values{"q": {"zebra"}}.Encode())
+	if unknown.body != nonAdmitted.body || unknown.body != zeroAdmitted.body {
+		t.Errorf("empty-answer bodies differ: unknown=%q nonAdmitted=%q zeroAdmitted=%q", unknown.body, nonAdmitted.body, zeroAdmitted.body)
+	}
+	if strings.Contains(unknown.body, `"workspaces"`) || strings.Contains(unknown.body, `"facets"`) {
+		t.Errorf("empty-answer body carries workspaces/facets key: %s", unknown.body)
+	}
 }
 
 func jsonUnmarshalString(s string, v any) error { return json.Unmarshal([]byte(s), v) }

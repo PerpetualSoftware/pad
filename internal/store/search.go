@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -14,11 +15,12 @@ import (
 var validFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
 type SearchResult struct {
-	Item      models.Item `json:"item"`
-	Snippet   string      `json:"snippet"`
-	Rank      float64     `json:"rank"`
-	MatchedIn string      `json:"matched_in"`
-	CommentID string      `json:"comment_id,omitempty"`
+	Item    models.Item `json:"item"`
+	Snippet string      `json:"snippet"`
+	// Rank is an opaque relevance score; higher is better on both dialects.
+	Rank      float64 `json:"rank"`
+	MatchedIn string  `json:"matched_in"`
+	CommentID string  `json:"comment_id,omitempty"`
 	// EntryID is set on a `note` or `decision` match (TASK-4491): the stored
 	// id of the matching implementation note or decision-log entry, the same
 	// value `item show` and the append echo carry. Not its index, which
@@ -34,12 +36,15 @@ type SearchResult struct {
 // SearchResultWorkspace is the route a result lives under: /{owner}/{slug}.
 type SearchResultWorkspace struct {
 	Slug          string `json:"slug"`
+	Name          string `json:"name"`
 	OwnerUsername string `json:"owner_username"`
 }
 
 type SearchFacets struct {
-	Collections map[string]int `json:"collections"` // collection slug → count
-	Statuses    map[string]int `json:"statuses"`    // status value → count
+	Collections     map[string]int `json:"collections"`          // collection slug → count
+	Statuses        map[string]int `json:"statuses"`             // status value → count
+	WorkspaceCounts map[string]int `json:"-"`                    // workspace ID → count (unscoped searches only)
+	Workspaces      map[string]int `json:"workspaces,omitempty"` // workspace slug → count (filled by handler)
 }
 
 type SearchResponse struct {
@@ -96,6 +101,96 @@ type SearchParams struct {
 	// Sorting: "relevance" (default), "created_at", "updated_at", "title"
 	Sort  string // sort field
 	Order string // "asc" or "desc" (default depends on sort field)
+
+	// Now overrides the reference timestamp for recency scoring (zero means
+	// time.Now()). Recency cutoffs are quantised to UTC midnight, so two pages
+	// fetched either side of a UTC midnight may disagree; this is a known,
+	// accepted limit.
+	Now time.Time
+}
+
+func (s *Store) searchStatusFilters(params SearchParams) []collectionDoneFilter {
+	if params.CollectionFilterIDs != nil && len(params.CollectionFilterIDs) == 0 {
+		return nil
+	}
+	var query string
+	var args []interface{}
+	switch {
+	case params.Workspace != "":
+		query = `SELECT id, schema, settings FROM collections WHERE deleted_at IS NULL AND workspace_id IN (SELECT w.id FROM workspaces w JOIN workspace_slug_claims c ON c.workspace_id = w.id WHERE c.slug = ? AND w.deleted_at IS NULL)`
+		args = append(args, params.Workspace)
+	case len(params.WorkspaceIDs) > 0:
+		query = `SELECT id, schema, settings FROM collections WHERE deleted_at IS NULL AND workspace_id IN (` + placeholders(len(params.WorkspaceIDs)) + `)`
+		for _, id := range params.WorkspaceIDs {
+			args = append(args, id)
+		}
+	default:
+		return nil
+	}
+	if params.CollectionFilterIDs != nil {
+		query += ` AND id IN (` + placeholders(len(params.CollectionFilterIDs)) + `)`
+		for _, id := range params.CollectionFilterIDs {
+			args = append(args, id)
+		}
+	}
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	return scanCollectionDoneFilters(rows)
+}
+
+func (s *Store) searchScoreExpr(params SearchParams, filters []collectionDoneFilter, now time.Time) (string, []interface{}) {
+	if now.IsZero() {
+		now = time.Now()
+	}
+	trimmed := strings.TrimSpace(params.Query)
+	var factors []string
+	var args []interface{}
+
+	if s.dialect.Driver() == DriverPostgres {
+		// The array is ordered {D,C,B,A}; the trigger sets title A, content B,
+		// tags C, so this is title 1.0, tags 0.5, content 0.4, matching SQLite's
+		// title 2.5, tags 1.25, content 1.0. Do not reorder.
+		tsquery, baseArgs := postgresFTSQuery(params.Query)
+		factors = append(factors, fmt.Sprintf("ts_rank('{0.1,0.5,0.4,1.0}'::float4[], i.search_vector, %s)", tsquery))
+		args = append(args, baseArgs...)
+	} else {
+		factors = append(factors, "(-bm25(items_fts, 2.5, 1.0, 1.25))")
+	}
+
+	likePattern := "%" + escapeLikePattern(trimmed) + "%"
+	factors = append(factors, `(CASE WHEN LOWER(TRIM(i.title)) = LOWER(?) THEN 3.0 WHEN LOWER(i.title) LIKE LOWER(?) ESCAPE '\' THEN 1.8 ELSE 1.0 END)`)
+	args = append(args, trimmed, likePattern)
+
+	if len(strings.Fields(trimmed)) >= 2 {
+		factors = append(factors, `(CASE WHEN LOWER(i.content) LIKE LOWER(?) ESCAPE '\' THEN 1.3 ELSE 1.0 END)`)
+		args = append(args, likePattern)
+	}
+
+	if len(filters) == 0 {
+		factors = append(factors, "1.0")
+	} else {
+		abandonedExpr, abandonedArgs, terminalExpr, terminalArgs := s.buildSearchStatusExprs(filters, "i")
+		factors = append(factors, fmt.Sprintf("(CASE WHEN %s THEN 0.35 WHEN %s THEN 0.6 ELSE 1.0 END)", abandonedExpr, terminalExpr))
+		args = append(args, abandonedArgs...)
+		args = append(args, terminalArgs...)
+	}
+
+	if params.IncludeArchived {
+		factors = append(factors, "(CASE WHEN i.deleted_at IS NOT NULL THEN 0.5 ELSE 1.0 END)")
+	}
+
+	utc := now.UTC()
+	midnight := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	cutoff7 := midnight.AddDate(0, 0, -7).Format(time.RFC3339)
+	cutoff30 := midnight.AddDate(0, 0, -30).Format(time.RFC3339)
+	cutoff180 := midnight.AddDate(0, 0, -180).Format(time.RFC3339)
+	factors = append(factors, "(CASE WHEN i.updated_at >= ? THEN 1.25 WHEN i.updated_at >= ? THEN 1.12 WHEN i.updated_at >= ? THEN 1.0 ELSE 0.9 END)")
+	args = append(args, cutoff7, cutoff30, cutoff180)
+
+	return "(" + strings.Join(factors, " * ") + ")", args
 }
 
 // Normalize sets pagination and sorting defaults on SearchParams.
@@ -173,16 +268,24 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 			return nil, err
 		}
 	}
-	matches, args := s.searchMatches(params, directHitIDs)
+	countMatches, countArgs := s.searchMatchIDs(params, directHitIDs)
 	var total int
-	if err := s.db.QueryRow(s.q(matches+" SELECT COUNT(*) FROM search_matches"), args...).Scan(&total); err != nil {
+	if err := s.db.QueryRow(s.q(countMatches+" SELECT COUNT(*) FROM search_matches"), countArgs...).Scan(&total); err != nil {
 		return nil, fmt.Errorf("search count: %w", err)
 	}
-	facets := s.searchFacetsForMatches(matches, args)
+	facets := s.searchFacetsForMatches(params, countMatches, countArgs)
 
-	// Keep the ranks of the two indexes separate. Explicit item sorting still
-	// applies within each leg, with the existing item id tie-breaker.
-	order := " ORDER BY m.match_leg, CASE WHEN m.match_leg = 0 THEN i.workspace_id ELSE '' END, CASE WHEN m.match_leg = 0 THEN i.id ELSE '' END, " + strings.TrimPrefix(s.searchOrderClause(params), " ORDER BY ")
+	refNow := params.Now
+	if refNow.IsZero() {
+		refNow = time.Now()
+	}
+	statusFilters := s.searchStatusFilters(params)
+	matches, args := s.searchMatches(params, directHitIDs, statusFilters, refNow)
+
+	// Keep the ranks of the two indexes separate. Direct hits (leg 0) order by
+	// updated_at DESC, id; explicit item sorting applies within each FTS leg,
+	// with the existing item id tie-breaker.
+	order := " ORDER BY m.match_leg, CASE WHEN m.match_leg = 0 THEN i.updated_at ELSE '' END DESC, CASE WHEN m.match_leg = 0 THEN i.id ELSE '' END, " + strings.TrimPrefix(s.searchOrderClause(params), " ORDER BY ")
 	page, args := s.searchPage(params, matches, args, order)
 	query := page + `
 		SELECT i.id, i.workspace_id, i.collection_id, i.title, i.slug, i.content, ` + contentStateSQL + `, i.fields, i.tags,
@@ -280,12 +383,76 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset, Facets: facets}, nil
 }
 
-// searchMatches builds one row per item before sorting, paging, counting or
-// faceting, without computing snippets. Materialization keeps SQLite ranks in
-// their MATCH context before the window function picks the best side match:
-// a comment, or a note or decision (TASK-4491), which share one band (leg 2).
-// entry_row is the item_entries row of an entry match, 0 otherwise.
-func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, []interface{}) {
+// searchMatchIDs builds the distinct matching item IDs for count and facet
+// queries without evaluating ranking scores.
+func (s *Store) searchMatchIDs(params SearchParams, directIDs []string) (string, []interface{}) {
+	itemTable, commentTable := "items_fts", "comments_fts"
+	itemFrom := "items_fts JOIN items i ON i.rowid = items_fts.rowid"
+	commentFrom := "comments_fts JOIN comments cm ON cm.rowid = comments_fts.rowid JOIN items i ON i.id = cm.item_id"
+	entryTable := "item_entries_fts"
+	entryFrom := "item_entries_fts JOIN item_entries e ON e.id = item_entries_fts.rowid JOIN items i ON i.id = e.item_id"
+	if s.dialect.Driver() == DriverPostgres {
+		itemTable, commentTable, entryTable = "i", "cm", "e"
+		itemFrom = "items i"
+		commentFrom = "comments cm JOIN items i ON i.id = cm.item_id"
+		entryFrom = "item_entries e JOIN items i ON i.id = e.item_id"
+	}
+
+	itemMatch, args := s.dialect.FTSMatch(itemTable, "search_vector", params.Query)
+	itemQuery := fmt.Sprintf(`SELECT i.id FROM %s JOIN collections c ON c.id = i.collection_id WHERE %s`, itemFrom, itemMatch)
+	itemQuery, args = s.appendSearchFilters(itemQuery, args, params)
+	if len(directIDs) > 0 {
+		itemQuery += " AND i.id NOT IN (" + placeholders(len(directIDs)) + ")"
+		for _, id := range directIDs {
+			args = append(args, id)
+		}
+	}
+
+	commentMatch, commentArgs := s.dialect.FTSMatch(commentTable, "search_vector", params.Query)
+	commentQuery := fmt.Sprintf(`SELECT i.id FROM %s JOIN collections c ON c.id = i.collection_id WHERE %s AND cm.deleted_at IS NULL`, commentFrom, commentMatch)
+	commentQuery, commentArgs = s.appendSearchFilters(commentQuery, commentArgs, params)
+	commentQuery += " AND i.id NOT IN (SELECT id FROM item_matches)"
+	if len(directIDs) > 0 {
+		commentQuery += " AND i.id NOT IN (" + placeholders(len(directIDs)) + ")"
+		for _, id := range directIDs {
+			commentArgs = append(commentArgs, id)
+		}
+	}
+	args = append(args, commentArgs...)
+
+	entryMatch, entryArgs := s.dialect.FTSMatch(entryTable, "search_vector", params.Query)
+	entryQuery := fmt.Sprintf(`SELECT i.id FROM %s JOIN collections c ON c.id = i.collection_id WHERE %s`, entryFrom, entryMatch)
+	entryQuery, entryArgs = s.appendSearchFilters(entryQuery, entryArgs, params)
+	entryQuery += " AND i.id NOT IN (SELECT id FROM item_matches)"
+	if len(directIDs) > 0 {
+		entryQuery += " AND i.id NOT IN (" + placeholders(len(directIDs)) + ")"
+		for _, id := range directIDs {
+			entryArgs = append(entryArgs, id)
+		}
+	}
+	args = append(args, entryArgs...)
+
+	query := "WITH item_matches AS MATERIALIZED (" + itemQuery + "), side_matches AS (" + commentQuery + " UNION " + entryQuery + `),
+		search_matches AS (
+			SELECT id FROM item_matches
+			UNION ALL
+			SELECT id FROM side_matches`
+	if len(directIDs) > 0 {
+		query += ` UNION ALL SELECT i.id FROM items i WHERE i.id IN (` + placeholders(len(directIDs)) + ")"
+		for _, id := range directIDs {
+			args = append(args, id)
+		}
+	}
+	return query + ") ", args
+}
+
+// searchMatches builds one row per item before sorting and paging, without
+// computing snippets. Materialization keeps SQLite ranks in their MATCH
+// context before the window function picks the best side match: a comment, or
+// a note or decision (TASK-4491), which share one band (leg 2). entry_row is
+// the item_entries row of an entry match, 0 otherwise. Rank scores are opaque
+// values where higher is better on both dialects.
+func (s *Store) searchMatches(params SearchParams, directIDs []string, filters []collectionDoneFilter, now time.Time) (string, []interface{}) {
 	itemTable, commentTable := "items_fts", "comments_fts"
 	itemFrom := "items_fts JOIN items i ON i.rowid = items_fts.rowid"
 	commentFrom := "comments_fts JOIN comments cm ON cm.rowid = comments_fts.rowid JOIN items i ON i.id = cm.item_id"
@@ -294,7 +461,7 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 		itemFrom = "items i"
 		commentFrom = "comments cm JOIN items i ON i.id = cm.item_id"
 	}
-	itemRank, itemRankArgs := s.dialect.FTSRank(itemTable, "search_vector", params.Query)
+	itemRank, itemRankArgs := s.searchScoreExpr(params, filters, now)
 	itemMatch, itemMatchArgs := s.dialect.FTSMatch(itemTable, "search_vector", params.Query)
 	itemQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, '' AS comment_id, 0 AS entry_row, 1 AS match_leg
 		FROM %s JOIN collections c ON c.id = i.collection_id WHERE %s`,
@@ -308,7 +475,13 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 		}
 	}
 
-	commentRank, rankArgs := s.dialect.FTSRank(commentTable, "search_vector", params.Query)
+	var commentRank string
+	var rankArgs []interface{}
+	if s.dialect.Driver() == DriverPostgres {
+		commentRank, rankArgs = s.dialect.FTSRank(commentTable, "search_vector", params.Query)
+	} else {
+		commentRank = "(-rank)"
+	}
 	commentMatch, matchArgs := s.dialect.FTSMatch(commentTable, "search_vector", params.Query)
 	commentQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, cm.id AS comment_id, 0 AS entry_row, 2 AS match_leg
 		FROM %s JOIN collections c ON c.id = i.collection_id
@@ -330,7 +503,13 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 		entryTable = "e"
 		entryFrom = "item_entries e JOIN items i ON i.id = e.item_id"
 	}
-	entryRank, entryRankArgs := s.dialect.FTSRank(entryTable, "search_vector", params.Query)
+	var entryRank string
+	var entryRankArgs []interface{}
+	if s.dialect.Driver() == DriverPostgres {
+		entryRank, entryRankArgs = s.dialect.FTSRank(entryTable, "search_vector", params.Query)
+	} else {
+		entryRank = "(-rank)"
+	}
 	entryMatch, entryMatchArgs := s.dialect.FTSMatch(entryTable, "search_vector", params.Query)
 	entryQuery := fmt.Sprintf(`SELECT i.id, %s AS rank_score, '' AS comment_id, e.id AS entry_row, 2 AS match_leg
 		FROM %s JOIN collections c ON c.id = i.collection_id
@@ -346,14 +525,10 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 	}
 	args = append(args, entryArgs...)
 
-	direction := "ASC"
-	if s.dialect.Driver() == DriverPostgres {
-		direction = "DESC"
-	}
 	// A rank tie goes to the comment, then the lowest comment id or entry row.
 	query := "WITH item_matches AS MATERIALIZED (" + itemQuery + "), side_candidates AS MATERIALIZED (" + commentQuery + " UNION ALL " + entryQuery + `),
 		best_sides AS (
-			SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY rank_score ` + direction + `, CASE WHEN comment_id <> '' THEN 0 ELSE 1 END, comment_id, entry_row) AS side_position
+			SELECT *, ROW_NUMBER() OVER (PARTITION BY id ORDER BY rank_score DESC, CASE WHEN comment_id <> '' THEN 0 ELSE 1 END, comment_id, entry_row) AS side_position
 			FROM side_candidates
 		), search_matches AS (
 			SELECT * FROM item_matches
@@ -361,7 +536,8 @@ func (s *Store) searchMatches(params SearchParams, directIDs []string) (string, 
 			SELECT id, rank_score, comment_id, entry_row, match_leg
 			FROM best_sides WHERE side_position = 1`
 	if len(directIDs) > 0 {
-		query += ` UNION ALL SELECT i.id, -1000, '', 0, 0 FROM items i WHERE i.id IN (` + placeholders(len(directIDs)) + ")"
+		// Direct ref/number hits receive a fixed high opaque rank (1e6); higher is better.
+		query += ` UNION ALL SELECT i.id, 1000000, '', 0, 0 FROM items i WHERE i.id IN (` + placeholders(len(directIDs)) + ")"
 		for _, id := range directIDs {
 			args = append(args, id)
 		}
@@ -484,22 +660,18 @@ func (s *Store) searchOrderClause(params SearchParams) string {
 	case "title":
 		return fmt.Sprintf(" ORDER BY i.title %s, i.id", params.Order)
 	default: // "relevance"
-		// SQLite bm25() returns negative values (more negative = more relevant) → ASC.
-		// PostgreSQL ts_rank() returns positive values (higher = more relevant) → DESC.
-		if s.dialect.Driver() == DriverPostgres {
-			return " ORDER BY rank_score DESC, i.id"
-		}
-		return " ORDER BY rank_score, i.id"
+		// rank_score is higher-is-better on both SQLite and PostgreSQL.
+		return " ORDER BY rank_score DESC, i.id"
 	}
 }
 
-// searchFacets counts the full, unpaginated FTS result set.
+// searchFacets counts the full, unpaginated FTS result set without computing scores.
 func (s *Store) searchFacets(params SearchParams) *SearchFacets {
-	matches, args := s.searchMatches(params, nil)
-	return s.searchFacetsForMatches(matches, args)
+	matches, args := s.searchMatchIDs(params, nil)
+	return s.searchFacetsForMatches(params, matches, args)
 }
 
-func (s *Store) searchFacetsForMatches(matches string, args []interface{}) *SearchFacets {
+func (s *Store) searchFacetsForMatches(params SearchParams, matches string, args []interface{}) *SearchFacets {
 	statusExtract := s.dialect.JSONFieldText("i.fields", "status")
 	baseQuery := ` FROM search_matches m JOIN items i ON i.id = m.id JOIN collections c ON c.id = i.collection_id `
 	facets := &SearchFacets{Collections: make(map[string]int), Statuses: make(map[string]int)}
@@ -526,11 +698,11 @@ func (s *Store) searchFacetsForMatches(matches string, args []interface{}) *Sear
 	if err != nil {
 		return nil
 	}
-	defer statusRows.Close()
 	for statusRows.Next() {
 		var status string
 		var count int
 		if err := statusRows.Scan(&status, &count); err != nil {
+			statusRows.Close()
 			return nil
 		}
 		if status != "" {
@@ -538,9 +710,41 @@ func (s *Store) searchFacetsForMatches(matches string, args []interface{}) *Sear
 		}
 	}
 	if err := statusRows.Err(); err != nil {
+		statusRows.Close()
 		return nil
 	}
+	statusRows.Close()
+	if params.Workspace == "" {
+		// A failed workspace count omits only that facet; the collection and
+		// status facets above stand.
+		facets.WorkspaceCounts = s.searchWorkspaceCounts(matches+"SELECT i.workspace_id, COUNT(*)"+baseQuery+"GROUP BY i.workspace_id", args)
+	}
 	return facets
+}
+
+// searchWorkspaceCounts maps workspace ID to its count of matches, nil on any
+// error. Zero counts are never present.
+func (s *Store) searchWorkspaceCounts(query string, args []interface{}) map[string]int {
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		return nil
+	}
+	defer rows.Close()
+	counts := make(map[string]int)
+	for rows.Next() {
+		var wsID string
+		var count int
+		if err := rows.Scan(&wsID, &count); err != nil {
+			return nil
+		}
+		if wsID != "" && count > 0 {
+			counts[wsID] = count
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil
+	}
+	return counts
 }
 
 // sanitizeFTSQuery wraps each token in double quotes so FTS5 treats

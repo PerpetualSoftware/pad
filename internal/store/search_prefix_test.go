@@ -151,7 +151,7 @@ func TestSearchPrefixDirectLookup(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(res.Results) != 1 || res.Results[0].Item.ID != item.ID || res.Total != 1 || res.Results[0].Rank != -1000 {
+			if len(res.Results) != 1 || res.Results[0].Item.ID != item.ID || res.Total != 1 || res.Results[0].Rank != 1e6 {
 				t.Errorf("direct lookup = %+v", res)
 			}
 		})
@@ -210,7 +210,7 @@ func TestSearchPrefixDirectLookupTwoDigits(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(res.Results) == 0 || res.Results[0].Item.ID != item.ID || res.Results[0].Rank != -1000 {
+			if len(res.Results) == 0 || res.Results[0].Item.ID != item.ID || res.Results[0].Rank != 1e6 {
 				t.Errorf("direct lookup = %+v", res)
 			}
 		})
