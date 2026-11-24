@@ -56,7 +56,7 @@ skills/pad/SKILL.md    agent skill
 - No `web/build-mcp-app`: `embed.go` embeds `all:web/build-mcp-app`, so `go build`/`make test` fail with "pattern all:web/build-mcp-app: no matching files found". Run `node scripts/build-mcp-app.mjs` in `web/` (`npm run build` runs it after the materializer). A placeholder lets Go compile, but cannot validate the bundle: the bundle test skips on a placeholder.
 - `make test-pg` is safe across worktrees (each gets its own compose project and Docker-assigned port) but NOT twice at once in one worktree: both resolve to the same project and the first to finish runs `down -v` under the other. The failure then looks like `connection refused` against the code. It refuses to run (`NO TESTS EXECUTED`) when the database is unreachable. Reap a stack from a deleted worktree with `docker ps --filter name=padtest-` then `docker compose -p <project> down -v`; from inside a worktree, `make test-pg-down`.
 - Refreshing an installed binary: use `scripts/install-refresh.sh`. `make install` runs `npm ci`, which rewrites `web/node_modules` and breaks any other process building from the same checkout.
-- Keep Go build caches off a tmpfs `/tmp` (it is RAM-backed on many dev machines); point `GOCACHE`/`GOTMPDIR` at a disk path.
+- Keep Go build caches off a tmpfs `/tmp` (it is RAM-backed on many dev machines): use the environment's `GOCACHE` (or Go's default) and never create a per-task Go cache directory; point `GOTMPDIR` at a disk path.
 
 ## API and MCP
 
