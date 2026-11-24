@@ -506,8 +506,10 @@ func TestCIWorkflow_PostgresLegs(t *testing.T) {
 	if !ok || fold(leg) != fold(wantLeg) {
 		t.Errorf("go-postgres strategy.matrix.leg = %#v, want %q", job.Strategy.Matrix["leg"], wantLeg)
 	}
-	if !strings.Contains(job.Name, "${{ matrix.leg }}") {
-		t.Errorf("go-postgres name = %q; must contain ${{ matrix.leg }}", job.Name)
+	// Exactly the plain name: GitHub appends the leg to each run, and a skipped
+	// job reports this name, which merge tooling matches byte for byte.
+	if job.Name != "Go (PostgreSQL)" {
+		t.Errorf("go-postgres name = %q, want exactly %q", job.Name, "Go (PostgreSQL)")
 	}
 
 	const roundTripName = "Native backup/restore round trip against PostgreSQL"

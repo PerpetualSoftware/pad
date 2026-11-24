@@ -545,6 +545,9 @@ jobs:
   # (./internal/store) and `rest` (every other package in
   # scripts/ci-pg-packages.txt) — and a single `full` leg on pushes (main and
   # release-*), keeping the same job id so ci-result reads one combined result.
+  # The name carries no matrix expression: GitHub appends the leg to each run
+  # ("Go (PostgreSQL) (store)"), and a skipped job keeps the plain name, which
+  # tooling outside this file matches byte for byte.
   go-postgres:
     needs: changes
     if: needs.changes.outputs.go == 'true'
@@ -564,7 +567,7 @@ jobs:
     # internal/store sharded out (TASK-4648) the race step is back at 45m
     # and this is back at 100.
     timeout-minutes: 100
-    name: Go (PostgreSQL ${{ matrix.leg }})
+    name: Go (PostgreSQL)
     runs-on: ubuntu-latest
     services:
       postgres:
