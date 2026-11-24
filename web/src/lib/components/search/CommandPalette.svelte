@@ -1646,8 +1646,11 @@
 		background: var(--bg-hover);
 		color: var(--text-secondary);
 	}
+	/* Active text is the accent mixed with the theme's text colour, as the
+	   status pills do: plain accent on its own tint misses 4.5:1 at this
+	   size in both themes. */
 	.scope-toggle.active {
-		color: var(--accent-blue);
+		color: color-mix(in srgb, var(--accent-blue) 55%, var(--text-primary));
 		border-color: color-mix(in srgb, var(--accent-blue) 30%, transparent);
 		background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
 	}
@@ -1687,7 +1690,7 @@
 	.filter-chip.active {
 		background: color-mix(in srgb, var(--accent-blue) 20%, transparent);
 		border-color: var(--accent-blue);
-		color: var(--accent-blue);
+		color: color-mix(in srgb, var(--accent-blue) 55%, var(--text-primary));
 	}
 	.chip-icon {
 		font-size: 1em;
