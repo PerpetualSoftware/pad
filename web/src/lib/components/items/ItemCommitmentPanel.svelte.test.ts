@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/svelte';
 import { flushSync } from 'svelte';
-const h = vi.hoisted(() => ({ get: vi.fn(), gates: vi.fn(), resolve: vi.fn(), create: vi.fn(), update: vi.fn(), subscribe: vi.fn(), auth: { identityEpoch: 0, user: { timezone: 'UTC' } } }));
-vi.mock('$lib/api/client', () => ({ api: { getCommitment: h.get, getCommitmentGates: h.gates, resolveCommitment: h.resolve, createCommitment: h.create, updateCommitment: h.update } }));
+const h = vi.hoisted(() => ({ get: vi.fn(), gates: vi.fn(), resolve: vi.fn(), create: vi.fn(), update: vi.fn(), dismiss: vi.fn(), subscribe: vi.fn(), auth: { identityEpoch: 0, user: { timezone: 'UTC' } } }));
+vi.mock('$lib/api/client', () => ({ api: { getCommitment: h.get, getCommitmentGates: h.gates, resolveCommitment: h.resolve, createCommitment: h.create, updateCommitment: h.update, dismissEndedCommitment: h.dismiss } }));
 vi.mock('$lib/stores/auth.svelte', () => ({ authStore: { get identityEpoch() { return h.auth.identityEpoch; }, get user() { return h.auth.user; }, identityFence() { const epoch = h.auth.identityEpoch; return () => epoch === h.auth.identityEpoch; } } }));
 vi.mock('$lib/services/sse.svelte', () => ({ sseService: { onItemEvent: h.subscribe } }));
 import ItemCommitmentPanel from './ItemCommitmentPanel.svelte';
@@ -230,4 +230,74 @@ it.each([
  const dialog = screen.getByRole('dialog', { name: 'Move target' });
  expect(!!dialog.querySelector('fieldset')).toBe(shown);
  expect(screen.queryAllByRole('radio')).toHaveLength(shown ? 2 : 0);
+});
+const ended = { editable: true, ended_at: '2031-03-09', next_occurrence: undefined };
+const dismissName = 'Dismiss from Outstanding';
+it('dismisses an ended schedule on an open item, re-reads it and announces that the item stays open', async () => {
+ h.get.mockResolvedValue(view(ended)); h.dismiss.mockResolvedValue({ commitment: view() });
+ render(ItemCommitmentPanel, props());
+ const button = await screen.findByRole('button', { name: dismissName });
+ expect(screen.getByText(/item stays open/i)).toBeTruthy();
+ h.get.mockResolvedValue(view({ ...ended, ended_dismissed_at: '2031-03-10T12:00:00Z' }));
+ await fireEvent.click(button);
+ await screen.findByText('Dismissed. The item stays open.');
+ expect(h.dismiss).toHaveBeenCalledTimes(1); expect(h.dismiss).toHaveBeenCalledWith('work', 'TASK-1');
+ expect(h.get).toHaveBeenCalledTimes(2);
+ await waitFor(() => expect(screen.queryByRole('button', { name: dismissName })).toBeNull());
+ expect(screen.queryByRole('alert')).toBeNull();
+});
+it.each([
+ ['already dismissed', { ...ended, ended_dismissed_at: '2031-03-10T12:00:00Z' }, {}, {}],
+ ['a closed item', ended, { fields: '{"status":"shipped"}' }, {}],
+ ['a reader', { ...ended, editable: false }, {}, {}],
+ ['a read-only host', ended, {}, { readOnly: true }],
+ ['a live schedule', { editable: true }, {}, {}]
+])('offers no Dismiss for %s', async (_name, extra, itemExtra, propExtra) => {
+ h.get.mockResolvedValue(view(extra)); render(ItemCommitmentPanel, { ...props(), item: { ...item, ...itemExtra }, ...propExtra });
+ await screen.findByRole('heading', { name: 'When' });
+ expect(screen.queryByRole('button', { name: dismissName })).toBeNull();
+});
+it.each([['not_ended'], ['not_found']])('re-reads without an error when the dismiss answers %s', async code => {
+ h.get.mockResolvedValue(view(ended)); h.dismiss.mockRejectedValue({ code });
+ render(ItemCommitmentPanel, props());
+ await fireEvent.click(await screen.findByRole('button', { name: dismissName }));
+ await waitFor(() => expect(h.get).toHaveBeenCalledTimes(2));
+ expect(screen.queryByRole('alert')).toBeNull();
+});
+it.each([
+ ['forbidden', 'You can no longer change this item.'],
+ ['permission_denied', 'You can no longer change this item.'],
+ ['internal_error', 'Could not dismiss this. Try again.']
+])('shows the dismiss failure for %s', async (code, copy) => {
+ h.get.mockResolvedValue(view(ended)); h.dismiss.mockRejectedValue({ code });
+ render(ItemCommitmentPanel, props());
+ await fireEvent.click(await screen.findByRole('button', { name: dismissName }));
+ expect((await screen.findByRole('alert')).textContent).toBe(copy);
+ expect(h.get).toHaveBeenCalledTimes(1);
+ expect((screen.getByRole('button', { name: dismissName }) as HTMLButtonElement).disabled).toBe(false);
+});
+it('makes one dismiss call for a double click while it is pending', async () => {
+ h.get.mockResolvedValue(view(ended));
+ let resolve!: (value: { commitment: ItemCommitmentView }) => void;
+ h.dismiss.mockReturnValue(new Promise(r => { resolve = r; }));
+ render(ItemCommitmentPanel, props());
+ const button = await screen.findByRole('button', { name: dismissName });
+ await fireEvent.click(button); await fireEvent.click(button);
+ expect(h.dismiss).toHaveBeenCalledTimes(1); expect((button as HTMLButtonElement).disabled).toBe(true);
+ resolve({ commitment: view() });
+ await screen.findByText('Dismissed. The item stays open.');
+ expect(h.dismiss).toHaveBeenCalledTimes(1);
+});
+it('drops a late dismiss failure once the panel has switched items', async () => {
+ h.get.mockResolvedValue(view(ended));
+ let reject!: (error: unknown) => void;
+ h.dismiss.mockReturnValue(new Promise((_, r) => { reject = r; }));
+ const p = props(); const { rerender } = render(ItemCommitmentPanel, p);
+ await fireEvent.click(await screen.findByRole('button', { name: dismissName }));
+ const next = { ...item, id: 'new-item', item_number: 2 };
+ h.get.mockResolvedValue(view({ ...ended, item_id: next.id, rrule: 'FREQ=DAILY' }));
+ await rerender({ ...p, item: next, itemSlug: 'TASK-2' }); await screen.findByText('every day');
+ reject({ code: 'internal_error' }); await Promise.resolve(); await Promise.resolve(); flushSync();
+ expect(screen.queryByRole('alert')).toBeNull();
+ expect((screen.getByRole('button', { name: dismissName }) as HTMLButtonElement).disabled).toBe(false);
 });

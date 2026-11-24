@@ -34,6 +34,7 @@
  }
  let { wsSlug, itemSlug, item, collection, onSnapshot, addDateOpen = false, onAddDateClose, readOnly = false }: Props = $props();
  const itemId = $derived(item.id);
+ const uid = $props.id();
  const zone = $derived(authStore.user?.timezone || browserZone() || 'UTC');
  let snapshot = $state.raw<ItemCommitmentSnapshot | null>(null);
  let failed = $state(false);
@@ -46,6 +47,8 @@
  let mobile = $state(false);
  let added = $state('');
  let editOpen = $state(false);
+ let dismissing = $state(false);
+ let dismissError = $state('');
  let section = $state<HTMLElement>();
  const actions = createItemCommitmentActions({
   identity: () => ({ wsSlug, itemSlug, itemId: item.id }),
@@ -67,6 +70,8 @@
  const entry = $derived(view && editable && !itemClosed ? commitmentAgendaEntry(view, { wsSlug, item, collection, zone }) : null);
  // The move dialog offers "This and future occurrences" only on a native recurring schedule.
  const recurring = $derived(!!view?.rrule?.trim() && view.roles.roles_origin === 'native');
+ // An ended schedule on an open item stays in Outstanding until an editor dismisses it.
+ const dismissable = $derived(!!view && editable && !itemClosed && !!view.ended_at && !view.ended_dismissed_at);
  const dialogOpen = $derived(!!(actions.dialogEntry || actions.review || actions.endChoice || actions.forecastEntry || addDateOpen || editOpen));
 
  async function load() {
@@ -126,11 +131,35 @@
   if (sameIdentity() && announced === addSerial && !disposed) added = 'Date updated.';
  }
 
+ async function dismissEnded() {
+  if (dismissing) return;
+  const sameIdentity = authStore.identityFence();
+  const announced = ++addSerial;
+  dismissing = true;
+  dismissError = '';
+  added = '';
+  try {
+   await api.dismissEndedCommitment(wsSlug, itemSlug);
+   // addSerial is bumped by an item or account switch: a late answer leaves the new item alone.
+   if (!sameIdentity() || announced !== addSerial || disposed) return;
+   await load();
+   if (sameIdentity() && announced === addSerial && !disposed) added = 'Dismissed. The item stays open.';
+  } catch (error) {
+   if (!sameIdentity() || announced !== addSerial || disposed) return;
+   const code = (error as { code?: string })?.code;
+   // It is live again (a timing edit revived it) or gone: show it as it is now.
+   if (code === 'not_ended' || code === 'not_found') await load();
+   else dismissError = code === 'forbidden' || code === 'permission_denied' ? permissionCopy : 'Could not dismiss this. Try again.';
+  } finally {
+   if (sameIdentity() && announced === addSerial && !disposed) dismissing = false;
+  }
+ }
+
  $effect(() => {
   const identity = JSON.stringify([wsSlug, itemId, itemSlug, authStore.identityEpoch, zone]);
   if (identity === requestedIdentity) return;
   requestedIdentity = identity;
-  untrack(() => { actions.reset(); editOpen = false; if (addDateOpen) onAddDateClose?.(); added = ''; addSerial++; void load(); });
+  untrack(() => { actions.reset(); editOpen = false; dismissing = false; dismissError = ''; if (addDateOpen) onAddDateClose?.(); added = ''; addSerial++; void load(); });
  });
  onMount(() => {
   const query = window.matchMedia('(max-width: 768px)');
@@ -180,6 +209,11 @@
      <OccurrenceActions {entry} {zone} pending={!!actions.pending[entryKey(entry)]} disabled={!!actions.saved[entryKey(entry)]} onaction={actions.action} />
      {#if view.role_offsets}<Button size="sm" class="edit" onclick={() => { editOpen = true; }}>Edit</Button>{/if}
     </div>
+   {:else if dismissable}
+    <div class="occurrence-actions">
+     <Button size="sm" disabled={dismissing} aria-describedby="{uid}-dismiss-hint" onclick={() => void dismissEnded()}>Dismiss from Outstanding</Button>
+     <span id="{uid}-dismiss-hint" class="hint">The item stays open.</span>
+    </div>
    {/if}
    {#each display.annotations as annotation}<p>{annotation}</p>{/each}
    {#if display.acknowledgedAt || display.acknowledgedBy}<p>{acknowledgedText(display.acknowledgedAt, display.acknowledgedBy, zone, now)}</p>{/if}
@@ -189,7 +223,8 @@
   {:else}
    <p role="status">Date unavailable</p><button onclick={() => load()}>Retry</button>
   {/if}
-  {#if actions.actionError && !dialogOpen}<p role="alert">{actions.actionError}</p>{/if}
+  {#if actions.actionError && !dialogOpen}<p role="alert">{actions.actionError}</p>
+  {:else if dismissError}<p role="alert">{dismissError}</p>{/if}
  </section>
 {/if}{#if editable}
  <ItemCommitmentDateDialog open={addDateOpen} {wsSlug} {itemSlug} itemRef={formatItemRef(item) ?? ''} itemTitle={item.title} {mobile} onclose={() => onAddDateClose?.()} oncreated={() => void created()} />
@@ -224,6 +259,7 @@
  .commitment-panel:focus { outline: none; }
  .occurrence-actions { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-2) 0; }
  @media (pointer: coarse) { .occurrence-actions :global(.btn.edit) { min-height: 44px; } }
+ .hint { color: var(--text-secondary); }
  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
  summary { align-content: center; }
  button { color: var(--text-primary); background: var(--bg-secondary); border: 1px solid var(--border); border-radius: var(--radius-sm); padding: var(--space-2) var(--space-3); }
