@@ -204,6 +204,22 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	if resp != nil && resp.Facets != nil && len(resp.Facets.WorkspaceCounts) > 0 {
+		wsFacets := make(map[string]int)
+		for wsID, count := range resp.Facets.WorkspaceCounts {
+			if count <= 0 {
+				continue
+			}
+			ws := admitted[wsID]
+			if ws == nil || ws.Slug == "" {
+				continue
+			}
+			wsFacets[ws.Slug] = count
+		}
+		if len(wsFacets) > 0 {
+			resp.Facets.Workspaces = wsFacets
+		}
+	}
 	if resp != nil && len(resp.Results) > 0 {
 		resp.Results = s.labelSearchResults(resp.Results, admitted)
 	}
@@ -425,7 +441,7 @@ func (s *Server) labelSearchResults(results []store.SearchResult, admitted map[s
 			}
 			owners[ws.ID] = owner
 		}
-		r.Workspace = &store.SearchResultWorkspace{Slug: ws.Slug, OwnerUsername: owner}
+		r.Workspace = &store.SearchResultWorkspace{Slug: ws.Slug, Name: ws.Name, OwnerUsername: owner}
 		out = append(out, r)
 	}
 	return out

@@ -5387,6 +5387,52 @@ func (s *Store) buildChildrenDoneExpr(filters []collectionDoneFilter, itemAlias 
 	return "(" + strings.Join(clauses, " OR ") + ")", args
 }
 
+// buildSearchStatusExprs compiles per-collection done filters into separate
+// abandoned and terminal SQL boolean expressions plus ordered args for search
+// ranking. An empty clause set yields "1=0".
+func (s *Store) buildSearchStatusExprs(filters []collectionDoneFilter, alias string) (abandoned string, abandonedArgs []interface{}, terminal string, terminalArgs []interface{}) {
+	var abandonedClauses []string
+	var terminalClauses []string
+	for _, f := range filters {
+		fieldExpr := s.dialect.JSONFieldText(alias+".fields", f.doneKey)
+		if len(f.abandoned) > 0 {
+			ph := make([]string, len(f.abandoned))
+			abandonedArgs = append(abandonedArgs, f.collectionID)
+			for i, v := range f.abandoned {
+				ph[i] = "?"
+				abandonedArgs = append(abandonedArgs, strings.ToLower(v))
+			}
+			abandonedClauses = append(abandonedClauses, fmt.Sprintf(
+				"(%s.collection_id = ? AND LOWER(COALESCE(%s, '')) IN (%s))",
+				alias, fieldExpr, strings.Join(ph, ","),
+			))
+		}
+		if len(f.values) > 0 {
+			ph := make([]string, len(f.values))
+			terminalArgs = append(terminalArgs, f.collectionID)
+			for i, v := range f.values {
+				ph[i] = "?"
+				terminalArgs = append(terminalArgs, strings.ToLower(v))
+			}
+			terminalClauses = append(terminalClauses, fmt.Sprintf(
+				"(%s.collection_id = ? AND LOWER(COALESCE(%s, '')) IN (%s))",
+				alias, fieldExpr, strings.Join(ph, ","),
+			))
+		}
+	}
+	if len(abandonedClauses) == 0 {
+		abandoned = "1=0"
+	} else {
+		abandoned = "(" + strings.Join(abandonedClauses, " OR ") + ")"
+	}
+	if len(terminalClauses) == 0 {
+		terminal = "1=0"
+	} else {
+		terminal = "(" + strings.Join(terminalClauses, " OR ") + ")"
+	}
+	return abandoned, abandonedArgs, terminal, terminalArgs
+}
+
 // buildChildrenUncountedExpr is TRUE for a child that progress leaves out of
 // BOTH counts: one whose done-field value closes it without delivering
 // (abandoned, BUG-3195), or any item of a reference collection (PLAN-3535),

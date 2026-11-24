@@ -3883,19 +3883,23 @@ func searchCmd() *cobra.Command {
 	var sort string
 	var limit int
 	var offset int
+	var allWorkspaces bool
 
 	cmd := &cobra.Command{
-		Use:     "search <query>",
-		Short:   "Full-text search across all items",
-		Example: `  pad item search "oauth redirect" --collection tasks`,
-		Args:    cobra.MinimumNArgs(1),
+		Use:   "search <query>",
+		Short: "Full-text search across items",
+		Example: `  pad item search "oauth redirect" --collection tasks
+  pad item search "oauth redirect" --all-workspaces`,
+		Args: cobra.MinimumNArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
-			ws := getWorkspace()
 
 			params := url.Values{}
 			params.Set("q", strings.Join(args, " "))
-			params.Set("workspace", ws)
+			if !allWorkspaces {
+				ws := getWorkspace()
+				params.Set("workspace", ws)
+			}
 			if collection != "" {
 				// A server that resolves the filter itself gets the name as
 				// typed, so an exact collection beats its alias (BUG-2659).
@@ -3938,6 +3942,11 @@ func searchCmd() *cobra.Command {
 					Item      models.Item `json:"item"`
 					Snippet   string      `json:"snippet"`
 					MatchedIn string      `json:"matched_in"`
+					Workspace *struct {
+						Slug          string `json:"slug"`
+						Name          string `json:"name"`
+						OwnerUsername string `json:"owner_username"`
+					} `json:"workspace"`
 				} `json:"results"`
 				Total  int `json:"total"`
 				Limit  int `json:"limit"`
@@ -3945,6 +3954,7 @@ func searchCmd() *cobra.Command {
 				Facets *struct {
 					Collections map[string]int `json:"collections"`
 					Statuses    map[string]int `json:"statuses"`
+					Workspaces  map[string]int `json:"workspaces"`
 				} `json:"facets"`
 			}
 
@@ -3965,7 +3975,11 @@ func searchCmd() *cobra.Command {
 				if icon == "" {
 					icon = "📦"
 				}
-				fmt.Printf("%s %s (%s)\n", icon, r.Item.Title, r.Item.CollectionName)
+				if allWorkspaces && r.Workspace != nil && r.Workspace.Slug != "" {
+					fmt.Printf("%s %s (%s · %s)\n", icon, r.Item.Title, r.Item.CollectionName, r.Workspace.Slug)
+				} else {
+					fmt.Printf("%s %s (%s)\n", icon, r.Item.Title, r.Item.CollectionName)
+				}
 				if r.Snippet != "" {
 					marker := ""
 					switch r.MatchedIn {
@@ -4030,6 +4044,7 @@ func searchCmd() *cobra.Command {
 	cmd.Flags().StringVar(&sort, "sort", "", "sort by: relevance (default), created_at, updated_at, title")
 	cmd.Flags().IntVar(&limit, "limit", 0, "max results to return (default 50, max 200)")
 	cmd.Flags().IntVar(&offset, "offset", 0, "skip this many results (for pagination)")
+	cmd.Flags().BoolVar(&allWorkspaces, "all-workspaces", false, "search across all accessible workspaces")
 
 	return cmd
 }
