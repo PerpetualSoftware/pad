@@ -52,8 +52,7 @@ func TestSearch_ExcludesSoftDeletedCollections(t *testing.T) {
 	if resp.Total != len(resp.Results) {
 		t.Errorf("total %d disagrees with %d results", resp.Total, len(resp.Results))
 	}
-	// The facet query swallows its own errors into empty maps, so the live
-	// collection's count is asserted too: an empty map cannot pass.
+	// Assert the live collection's count too, so an empty facet map cannot pass.
 	if resp.Facets == nil || resp.Facets.Collections[w.liveColl.Slug] != 1 {
 		t.Errorf("facets lost the live collection: %+v", resp.Facets)
 	} else if resp.Facets.Collections[w.doomColl.Slug] != 0 {

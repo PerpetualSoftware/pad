@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"fmt"
 	"regexp"
 	"strings"
@@ -269,11 +270,10 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 		}
 	}
 	countMatches, countArgs := s.searchMatchIDs(params, directHitIDs)
-	var total int
-	if err := s.db.QueryRow(s.q(countMatches+" SELECT COUNT(*) FROM search_matches"), countArgs...).Scan(&total); err != nil {
+	total, facets, err := s.searchTotalAndFacets(params, countMatches, countArgs)
+	if err != nil {
 		return nil, fmt.Errorf("search count: %w", err)
 	}
-	facets := s.searchFacetsForMatches(params, countMatches, countArgs)
 
 	refNow := params.Now
 	if refNow.IsZero() {
@@ -383,8 +383,8 @@ func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	return &SearchResponse{Results: results, Total: total, Limit: params.Limit, Offset: params.Offset, Facets: facets}, nil
 }
 
-// searchMatchIDs builds the distinct matching item IDs for count and facet
-// queries without evaluating ranking scores.
+// searchMatchIDs builds the distinct matching item IDs for the combined count
+// and facet query without evaluating ranking scores.
 func (s *Store) searchMatchIDs(params SearchParams, directIDs []string) (string, []interface{}) {
 	itemTable, commentTable := "items_fts", "comments_fts"
 	itemFrom := "items_fts JOIN items i ON i.rowid = items_fts.rowid"
@@ -665,86 +665,72 @@ func (s *Store) searchOrderClause(params SearchParams) string {
 	}
 }
 
-// searchFacets counts the full, unpaginated FTS result set without computing scores.
+// searchFacets counts the full, unpaginated FTS result set without computing
+// scores, returning nil on error.
 func (s *Store) searchFacets(params SearchParams) *SearchFacets {
 	matches, args := s.searchMatchIDs(params, nil)
-	return s.searchFacetsForMatches(params, matches, args)
-}
-
-func (s *Store) searchFacetsForMatches(params SearchParams, matches string, args []interface{}) *SearchFacets {
-	statusExtract := s.dialect.JSONFieldText("i.fields", "status")
-	baseQuery := ` FROM search_matches m JOIN items i ON i.id = m.id JOIN collections c ON c.id = i.collection_id `
-	facets := &SearchFacets{Collections: make(map[string]int), Statuses: make(map[string]int)}
-	collRows, err := s.db.Query(s.q(matches+"SELECT c.slug, COUNT(*)"+baseQuery+"GROUP BY c.slug"), args...)
+	_, facets, err := s.searchTotalAndFacets(params, matches, args)
 	if err != nil {
 		return nil
-	}
-	for collRows.Next() {
-		var slug string
-		var count int
-		if err := collRows.Scan(&slug, &count); err != nil {
-			collRows.Close()
-			return nil
-		}
-		facets.Collections[slug] = count
-	}
-	if err := collRows.Err(); err != nil {
-		collRows.Close()
-		return nil
-	}
-	collRows.Close()
-	statusQuery := fmt.Sprintf("SELECT %s, COUNT(*) %s WHERE %s IS NOT NULL GROUP BY %s", statusExtract, baseQuery, statusExtract, statusExtract)
-	statusRows, err := s.db.Query(s.q(matches+statusQuery), args...)
-	if err != nil {
-		return nil
-	}
-	for statusRows.Next() {
-		var status string
-		var count int
-		if err := statusRows.Scan(&status, &count); err != nil {
-			statusRows.Close()
-			return nil
-		}
-		if status != "" {
-			facets.Statuses[status] = count
-		}
-	}
-	if err := statusRows.Err(); err != nil {
-		statusRows.Close()
-		return nil
-	}
-	statusRows.Close()
-	if params.Workspace == "" {
-		// A failed workspace count omits only that facet; the collection and
-		// status facets above stand.
-		facets.WorkspaceCounts = s.searchWorkspaceCounts(matches+"SELECT i.workspace_id, COUNT(*)"+baseQuery+"GROUP BY i.workspace_id", args)
 	}
 	return facets
 }
 
-// searchWorkspaceCounts maps workspace ID to its count of matches, nil on any
-// error. Zero counts are never present.
-func (s *Store) searchWorkspaceCounts(query string, args []interface{}) map[string]int {
+// searchTotalAndFacets computes the match total and all search facets
+// (collections, statuses, and—for unscoped searches—workspace counts) in a
+// single query over search_matches. Any query, scan, or rows error is returned;
+// there is no separate facet-only failure path that silently drops facets.
+func (s *Store) searchTotalAndFacets(params SearchParams, matches string, args []interface{}) (int, *SearchFacets, error) {
+	statusExtract := s.dialect.JSONFieldText("i.fields", "status")
+	query := matches + fmt.Sprintf(`SELECT g.ws, g.slug, g.status, COUNT(*) FROM (
+		SELECT i.workspace_id AS ws, c.slug AS slug, %s AS status
+		FROM search_matches m
+		JOIN items i ON i.id = m.id
+		JOIN collections c ON c.id = i.collection_id
+	) g GROUP BY g.ws, g.slug, g.status`, statusExtract)
+
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
-		return nil
+		return 0, nil, err
 	}
 	defer rows.Close()
-	counts := make(map[string]int)
+
+	facets := &SearchFacets{
+		Collections: make(map[string]int),
+		Statuses:    make(map[string]int),
+	}
+	if params.Workspace == "" {
+		facets.WorkspaceCounts = make(map[string]int)
+	}
+
+	var total int
 	for rows.Next() {
-		var wsID string
+		var ws, slug string
+		var status sql.NullString
 		var count int
-		if err := rows.Scan(&wsID, &count); err != nil {
-			return nil
+		if err := rows.Scan(&ws, &slug, &status, &count); err != nil {
+			return 0, nil, err
 		}
-		if wsID != "" && count > 0 {
-			counts[wsID] = count
+		total += count
+		facets.Collections[slug] += count
+		if status.Valid && status.String != "" {
+			facets.Statuses[status.String] += count
+		}
+		if params.Workspace == "" && ws != "" {
+			facets.WorkspaceCounts[ws] += count
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return nil
+		return 0, nil, err
 	}
-	return counts
+	if params.Workspace == "" {
+		for ws, count := range facets.WorkspaceCounts {
+			if count <= 0 {
+				delete(facets.WorkspaceCounts, ws)
+			}
+		}
+	}
+	return total, facets, nil
 }
 
 // sanitizeFTSQuery wraps each token in double quotes so FTS5 treats
@@ -821,7 +807,7 @@ func sanitizePGFTSQuery(q string) string {
 // slug is the literal match callers inside the store still use.
 // appendSearchPermissionFilter adds the permission predicate every search
 // query path shares: the ref lookup, the number lookup, the FTS query, and the
-// count and facet queries (BUG-3331). An item matches if its collection is
+// combined count-and-facet query (BUG-3331). An item matches if its collection is
 // visible or it is granted individually. With neither set and Unrestricted
 // unset it adds a predicate that matches nothing, so a zero-visibility caller
 // can never read as unfiltered, even on a path that skipped Search's early
