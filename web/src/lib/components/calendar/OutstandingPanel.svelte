@@ -6,7 +6,7 @@
 	import RolePill from './RolePill.svelte';
 	import RowMenu from './RowMenu.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
-	import { ACKNOWLEDGE_HELP, snoozeLabel, acknowledgedText, canAcknowledge, canMove, endedKey, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
+	import { ACKNOWLEDGE_HELP, snoozeLabel, acknowledgedText, canAcknowledge, canMove, canResolve, endedKey, entryHref, entryKey, forecastText, roleDay, roleText, shortDay, shortRoleDate, todayIn, workOccurrence, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaEntry, AgendaResponse, AgendaWorkEntry } from '$lib/types';
 
 	interface Props {
@@ -69,7 +69,7 @@
 			{@const snooze = snoozeLabel(row, zone, now)}
 			{@const owed = row.reason === 'deadline_still_owed'}
 			{@const ended = row.reason === 'schedule_ended'}
-			{@const live = row.reason === 'outstanding' || row.reason === 'target_passed' /* a waiting or undated row is not resolved from here */}
+			{@const live = !!entry && canResolve(entry) && (row.reason === 'outstanding' || row.reason === 'target_passed' || owed) /* a waiting, ended or undated row is not resolved from here */}
 			{@const deadline = row.roles?.deadline}
 			<li data-work={row.item_ref}>
 				<div class="text">

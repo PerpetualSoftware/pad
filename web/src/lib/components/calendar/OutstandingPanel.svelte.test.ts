@@ -181,8 +181,12 @@ describe('OutstandingPanel row menu', () => {
 		}
 		expect(onaction).toHaveBeenCalledTimes(3);
 	});
-	it('offers Done and Skip on a live row, outstanding or past its target, and sends each to the page with the occurrence', async () => {
-		const rows = [work(), work({ reason: 'target_passed', roles: { ...roles, target: '2026-11-03T09:00:00Z' } })];
+	it('offers Done and Skip on a live row, outstanding, past its target or past a deadline still owed, and sends each to the page with the occurrence', async () => {
+		const rows = [
+			work(),
+			work({ reason: 'target_passed', roles: { ...roles, target: '2026-11-03T09:00:00Z' } }),
+			work({ reason: 'deadline_still_owed', roles: { ...roles, target: '2026-11-03T09:00:00Z', deadline: '2026-11-04T10:00:00Z', deadline_behavior: 'stays_owed' } })
+		];
 		const { onaction } = mount({ priority_list: rows });
 		for (const row of rows) {
 			for (const action of ['done', 'skip'] as const) {
@@ -192,7 +196,7 @@ describe('OutstandingPanel row menu', () => {
 				expect(onaction).toHaveBeenLastCalledWith(workOccurrence(row, zone), action);
 			}
 		}
-		expect(onaction).toHaveBeenCalledTimes(4);
+		expect(onaction).toHaveBeenCalledTimes(6);
 	});
 	it('offers no move when the occurrence cannot move', async () => {
 		mount({ priority_list: [work({ roles: { ...roles, deadline: '2026-11-09T10:00:00Z' }, roles_origin: 'legacy_backfill' })] });

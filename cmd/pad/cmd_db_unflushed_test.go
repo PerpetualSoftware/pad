@@ -17,14 +17,14 @@ import (
 
 func gateFixture() ([]models.Workspace, map[string][]store.PendingFlushItem) {
 	return []models.Workspace{
-		{Name: "Alpha", Slug: "alpha"},
-		{Name: "Beta", Slug: "beta"},
-	}, map[string][]store.PendingFlushItem{
-		"beta": {
-			{Ref: "TASK-7", Title: "half-typed body"},
-			{Ref: "TASK-9", Title: "another one"},
-		},
-	}
+			{Name: "Alpha", Slug: "alpha"},
+			{Name: "Beta", Slug: "beta"},
+		}, map[string][]store.PendingFlushItem{
+			"beta": {
+				{Ref: "TASK-7", Title: "half-typed body"},
+				{Ref: "TASK-9", Title: "another one"},
+			},
+		}
 }
 
 func TestGateUnflushedEditsPassesACleanMigrationSilently(t *testing.T) {
