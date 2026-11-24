@@ -381,7 +381,7 @@ Run with --help-collections to see available collections and their status values
 			warnUnroutedAsk(item)
 
 			if formatFlag == "json" {
-				return cli.PrintJSON(item)
+				return cli.PrintJSON(cli.NativeItem(item))
 			}
 
 			icon := item.CollectionIcon
@@ -635,10 +635,11 @@ in that collection are shown. Items with status "done" are hidden by default.`,
 
 			if formatFlag == "json" {
 				// Default to the token-light summary shape (drops the rich
-				// `content` body + UUID plumbing). --full restores the raw
-				// models.Item shape for callers that need everything.
+				// `content` body + UUID plumbing). --full restores the full
+				// models.Item shape (with native fields/tags) for callers that
+				// need everything.
 				if fullOutput {
-					return cli.PrintJSON(items)
+					return cli.PrintJSON(cli.NativeItems(items))
 				}
 				return cli.PrintJSON(cli.ToItemSummaries(items))
 			}
@@ -1595,7 +1596,7 @@ A body write with neither prints a warning, and a future release refuses it
 			warnUnroutedAsk(updated)
 
 			if formatFlag == "json" {
-				return cli.PrintJSON(updated)
+				return cli.PrintJSON(cli.NativeItem(updated))
 			}
 
 			ref := cli.ItemRef(*updated)
@@ -2304,7 +2305,7 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 			if opts.Format == "json" && len(rawRes) > 0 {
 				// Whatever bytes did arrive are still the server's, and
 				// a script may be able to use them.
-				_ = cli.PrintRawJSON(stdout, rawRes)
+				_ = cli.PrintRawJSON(stdout, cli.RewriteRawItemJSON(rawRes, "item"))
 			}
 			// This branch is a SUCCESS — it returns nil — so it owes the
 			// same advisory as the reported one. The
@@ -2364,7 +2365,7 @@ func runItemCopy(opts itemCopyOptions, deps itemCopyDeps, stdout, stderr io.Writ
 	// honest answer to "did the copy succeed?".
 	var writeErr error
 	if opts.Format == "json" {
-		writeErr = cli.PrintRawJSON(stdout, rawRes)
+		writeErr = cli.PrintRawJSON(stdout, cli.RewriteRawItemJSON(rawRes, "item"))
 	} else {
 		writeErr = renderItemCopyResult(stdout, res)
 	}
@@ -3938,7 +3939,7 @@ func searchCmd() *cobra.Command {
 			}
 
 			if formatFlag == "json" {
-				return cli.PrintJSON(result)
+				return cli.PrintRawJSON(os.Stdout, cli.RewriteRawItemJSON(result, "results", "*", "item"))
 			}
 
 			// Parse and display results
@@ -4571,7 +4572,7 @@ func starredCmd() *cobra.Command {
 			}
 
 			if formatFlag == "json" {
-				return cli.PrintJSON(items)
+				return cli.PrintJSON(cli.NativeItems(items))
 			}
 
 			// Checked before the markdown branch so both formats give the
