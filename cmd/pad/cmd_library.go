@@ -350,7 +350,7 @@ in the appropriate collection (conventions or playbooks) with all fields set.`,
 				}
 				warnOptionsAdded(item)
 				if formatFlag == "json" {
-					return cli.PrintJSON(item)
+					return cli.PrintJSON(cli.NativeItem(item))
 				}
 				kind := "playbook"
 				if verifyConventionLanded(item) == nil {
@@ -421,7 +421,7 @@ in the appropriate collection (conventions or playbooks) with all fields set.`,
 				warnOptionsAdded(item)
 
 				if formatFlag == "json" {
-					return cli.PrintJSON(item)
+					return cli.PrintJSON(cli.NativeItem(item))
 				}
 
 				fmt.Printf("Activated convention: %s (%s)\n", item.Title, item.Slug)
@@ -490,7 +490,7 @@ in the appropriate collection (conventions or playbooks) with all fields set.`,
 				warnOptionsAdded(item)
 
 				if formatFlag == "json" {
-					return cli.PrintJSON(item)
+					return cli.PrintJSON(cli.NativeItem(item))
 				}
 
 				fmt.Printf("Activated playbook: %s (%s)\n", item.Title, item.Slug)
@@ -694,7 +694,7 @@ in between, it is refused rather than applied over the change.`,
 			// declare the settings the library writes.
 			warnUndeclaredFields(item)
 			if formatFlag == "json" {
-				return cli.PrintJSON(item)
+				return cli.PrintJSON(cli.NativeItem(item))
 			}
 			fmt.Printf("Updated %s to Pad's current %s text (%s).\n", ref, st.Key, item.Title)
 			return nil

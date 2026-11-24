@@ -262,7 +262,7 @@ For example, branch "fix/TASK-5-oauth-bug" would auto-link to TASK-5.`,
 			// --format json answers with the item, as the remote MCP door does
 			// (TASK-3611).
 			if formatFlag == "json" {
-				outputJSON(updated)
+				outputJSON(cli.NativeItem(updated))
 				return nil
 			}
 			ref := cli.ItemRef(*item)
@@ -409,7 +409,7 @@ func githubUnlinkCmd() *cobra.Command {
 
 			green := color.New(color.FgGreen, color.Bold)
 			if formatFlag == "json" {
-				outputJSON(updated)
+				outputJSON(cli.NativeItem(updated))
 				return nil
 			}
 			green.Printf("✓ Removed PR link from %s %q\n", cli.ItemRef(*item), item.Title)
