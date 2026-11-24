@@ -541,9 +541,17 @@ jobs:
           PAD_MATERIALIZE_TEST_NO_SKIP: "1"
         run: go test ./internal/materialize/ -run '^(TestSupervisor.*|TestParseMemLimit|TestConfigFromEnv|TestParsePSRSS|TestPSRSSLive|TestParseStatVsize|TestStderrOOMMarkers|TestDeepNestFrameShallow)$' -count=1 -timeout 20m -v
 
+  # Runs as two parallel matrix legs on pull requests (TASK-4820) — `store`
+  # (./internal/store) and `rest` (every other package in
+  # scripts/ci-pg-packages.txt) — and a single `full` leg on pushes (main and
+  # release-*), keeping the same job id so ci-result reads one combined result.
   go-postgres:
     needs: changes
     if: needs.changes.outputs.go == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        leg: ${{ fromJSON(github.event_name == 'pull_request' && '["store","rest"]' || '["full"]') }}
     # Backstop only. A hung TEST is caught by -timeout=45m on the steps
     # below, which fails fast AND prints the goroutine dump that tells
     # you which test hung; this cap exists because a job with no
@@ -556,7 +564,7 @@ jobs:
     # internal/store sharded out (TASK-4648) the race step is back at 45m
     # and this is back at 100.
     timeout-minutes: 100
-    name: Go (PostgreSQL)
+    name: Go (PostgreSQL ${{ matrix.leg }})
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -686,8 +694,10 @@ jobs:
       # fails unless it PASSED: in the quiet suite below a skip and a pass
       # look the same, which is how this test went unrun in CI. It creates
       # and drops its own uuid-named databases, so it needs the superuser the
-      # service starts with, not the suite's shared database.
+      # service starts with, not the suite's shared database. Skipped on the
+      # PR `store` leg because ./cmd/pad runs in `rest` (and `full` on pushes).
       - name: Native backup/restore round trip against PostgreSQL
+        if: matrix.leg != 'store'
         env:
           PAD_TEST_POSTGRES_TOOLS_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
         run: |
@@ -699,6 +709,7 @@ jobs:
         env:
           PAD_TEST_POSTGRES_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
           PAD_TEST_POSTGRES_TOOLS_URL: "postgres://pad:pad@localhost:5432/pad?sslmode=disable"
+          PG_LEG: ${{ matrix.leg }}
         # Explicit -timeout: see the SQLite "Run tests" step. This is the
         # binary that actually blew the 10m default — internal/store creates a
         # fresh database AND replays the full migration chain per test
@@ -710,19 +721,34 @@ jobs:
         # version of this comment said "~2x slower, which put store over
         # 10m" — 280s x 2 is 9m20s, so that explained nothing.)
         #
-        # A PR runs the listed packages only. A push, on main or release-*,
-        # runs the whole traced suite and checks it against that list.
+        # A PR runs the listed packages split across two legs (`store` runs
+        # ./internal/store; `rest` runs every other listed package). A push, on
+        # main or release-*, runs the single `full` leg: the whole traced suite
+        # checked against that list.
         run: |
           set -euo pipefail
-          if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-            mapfile -t packages < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' scripts/ci-pg-packages.txt)
-            test "${#packages[@]}" -gt 0
-            go test -timeout=45m -count=1 "${packages[@]}"
-          else
-            PAD_TEST_PG_TRACE=1 go test -json -timeout=45m -count=1 ./... \
-              | tee /tmp/pg-full.jsonl \
-              | python3 scripts/ci-pg-trace.py --expect scripts/ci-pg-packages.txt --show-output
-          fi
+          mapfile -t listed < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' scripts/ci-pg-packages.txt)
+          test "${#listed[@]}" -gt 0
+          case "$GITHUB_EVENT_NAME:$PG_LEG" in
+            pull_request:store|pull_request:rest)
+              printf '%s\n' "${listed[@]}" | grep -qx './internal/store' || { echo "::error::scripts/ci-pg-packages.txt must list ./internal/store" >&2; exit 1; }
+              packages=()
+              for p in "${listed[@]}"; do
+                if [ "$PG_LEG" = store ]; then [ "$p" = ./internal/store ] && packages+=("$p"); else [ "$p" = ./internal/store ] || packages+=("$p"); fi
+              done
+              test "${#packages[@]}" -gt 0
+              go test -timeout=45m -count=1 "${packages[@]}"
+              ;;
+            pull_request:*)
+              echo "::error::unknown PostgreSQL leg on a pull request: $PG_LEG" >&2; exit 1 ;;
+            *:full)
+              PAD_TEST_PG_TRACE=1 go test -json -timeout=45m -count=1 ./... \
+                | tee /tmp/pg-full.jsonl \
+                | python3 scripts/ci-pg-trace.py --expect scripts/ci-pg-packages.txt --show-output
+              ;;
+            *)
+              echo "::error::leg $PG_LEG does not run on $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+          esac
 
       - name: Save the Go build cache
         if: github.event_name == 'push' && steps.go-cache.outputs.cache-hit != 'true'

@@ -22,15 +22,23 @@ import (
 // runs where, and the one job that must never run off main.
 
 type workflowStep struct {
-	ID              string `yaml:"id"`
-	Name            string `yaml:"name"`
-	If              string `yaml:"if"`
-	Run             string `yaml:"run"`
-	ContinueOnError any    `yaml:"continue-on-error"`
+	ID              string            `yaml:"id"`
+	Name            string            `yaml:"name"`
+	If              string            `yaml:"if"`
+	Env             map[string]string `yaml:"env"`
+	Run             string            `yaml:"run"`
+	ContinueOnError any               `yaml:"continue-on-error"`
+}
+
+type workflowStrategy struct {
+	FailFast *bool          `yaml:"fail-fast"`
+	Matrix   map[string]any `yaml:"matrix"`
 }
 
 type workflowJob struct {
+	Name        string            `yaml:"name"`
 	If          string            `yaml:"if"`
+	Strategy    *workflowStrategy `yaml:"strategy"`
 	Permissions map[string]string `yaml:"permissions"`
 	Steps       []workflowStep    `yaml:"steps"`
 }
@@ -454,16 +462,99 @@ func TestCIWorkflow_EveryShardedPackageHasARequiredCoverageCheck(t *testing.T) {
 
 // pgRun is go-postgres's "Run tests against PostgreSQL" step, whole.
 const pgRun = `set -euo pipefail
-if [ "$GITHUB_EVENT_NAME" = pull_request ]; then
-  mapfile -t packages < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' scripts/ci-pg-packages.txt)
-  test "${#packages[@]}" -gt 0
-  go test -timeout=45m -count=1 "${packages[@]}"
-else
-  PAD_TEST_PG_TRACE=1 go test -json -timeout=45m -count=1 ./... \
-    | tee /tmp/pg-full.jsonl \
-    | python3 scripts/ci-pg-trace.py --expect scripts/ci-pg-packages.txt --show-output
-fi
+mapfile -t listed < <(sed '/^[[:space:]]*#/d; /^[[:space:]]*$/d' scripts/ci-pg-packages.txt)
+test "${#listed[@]}" -gt 0
+case "$GITHUB_EVENT_NAME:$PG_LEG" in
+  pull_request:store|pull_request:rest)
+    printf '%s\n' "${listed[@]}" | grep -qx './internal/store' || { echo "::error::scripts/ci-pg-packages.txt must list ./internal/store" >&2; exit 1; }
+    packages=()
+    for p in "${listed[@]}"; do
+      if [ "$PG_LEG" = store ]; then [ "$p" = ./internal/store ] && packages+=("$p"); else [ "$p" = ./internal/store ] || packages+=("$p"); fi
+    done
+    test "${#packages[@]}" -gt 0
+    go test -timeout=45m -count=1 "${packages[@]}"
+    ;;
+  pull_request:*)
+    echo "::error::unknown PostgreSQL leg on a pull request: $PG_LEG" >&2; exit 1 ;;
+  *:full)
+    PAD_TEST_PG_TRACE=1 go test -json -timeout=45m -count=1 ./... \
+      | tee /tmp/pg-full.jsonl \
+      | python3 scripts/ci-pg-trace.py --expect scripts/ci-pg-packages.txt --show-output
+    ;;
+  *)
+    echo "::error::leg $PG_LEG does not run on $GITHUB_EVENT_NAME" >&2; exit 1 ;;
+esac
 `
+
+// TASK-4820: go-postgres splits pull-request runs into two parallel matrix
+// legs (store and rest) while pushes run a single full leg, all inside the
+// same job id so ci-result keeps reading one needs.go-postgres.result.
+func TestCIWorkflow_PostgresLegs(t *testing.T) {
+	ci := readWorkflow(t, "ci.yml")
+	job, ok := ci.Jobs["go-postgres"]
+	if !ok {
+		t.Fatal("ci.yml has no go-postgres job")
+	}
+	if job.Strategy == nil {
+		t.Fatal("go-postgres has no strategy")
+	}
+	if job.Strategy.FailFast == nil || *job.Strategy.FailFast {
+		t.Errorf("go-postgres strategy.fail-fast = %v, want false", job.Strategy.FailFast)
+	}
+	const wantLeg = `${{ fromJSON(github.event_name == 'pull_request' && '["store","rest"]' || '["full"]') }}`
+	leg, ok := job.Strategy.Matrix["leg"].(string)
+	if !ok || fold(leg) != fold(wantLeg) {
+		t.Errorf("go-postgres strategy.matrix.leg = %#v, want %q", job.Strategy.Matrix["leg"], wantLeg)
+	}
+	if !strings.Contains(job.Name, "${{ matrix.leg }}") {
+		t.Errorf("go-postgres name = %q; must contain ${{ matrix.leg }}", job.Name)
+	}
+
+	const roundTripName = "Native backup/restore round trip against PostgreSQL"
+	const roundTripIf = "matrix.leg != 'store'"
+	var roundTrip, runTests bool
+	for _, s := range job.Steps {
+		if s.Name == roundTripName {
+			roundTrip = true
+			if fold(s.If) != roundTripIf {
+				t.Errorf("go-postgres %q if = %q, want exactly %q", s.Name, s.If, roundTripIf)
+			}
+			continue
+		}
+		if strings.Contains(s.If, "matrix.leg") {
+			t.Errorf("go-postgres step %q if = %q; only %q may mention matrix.leg in if", s.Name, s.If, roundTripName)
+		}
+		if s.Name == "Run tests against PostgreSQL" {
+			runTests = true
+			if s.Env["PG_LEG"] != "${{ matrix.leg }}" {
+				t.Errorf("go-postgres %q env PG_LEG = %q, want %q", s.Name, s.Env["PG_LEG"], "${{ matrix.leg }}")
+			}
+		}
+	}
+	if !roundTrip {
+		t.Errorf("ci.yml go-postgres has no %q step", roundTripName)
+	}
+	if !runTests {
+		t.Errorf("ci.yml go-postgres has no %q step", "Run tests against PostgreSQL")
+	}
+
+	for id := range ci.Jobs {
+		if strings.HasPrefix(id, "go-postgres-") {
+			t.Errorf("ci.yml defines job %q; PostgreSQL legs must stay inside go-postgres", id)
+		}
+	}
+	raw := readRawWorkflow(t, "ci.yml")
+	jobs, _ := raw["jobs"].(map[string]any)
+	result, _ := jobs["ci-result"].(map[string]any)
+	list, _ := result["needs"].([]any)
+	var needs []string
+	for _, n := range list {
+		needs = append(needs, fmt.Sprint(n))
+	}
+	if !slices.Contains(needs, "go-postgres") {
+		t.Errorf("ci.yml ci-result needs = %v; it must include go-postgres", needs)
+	}
+}
 
 // The exact strings allowed to name the branch, and where. Everything else
 // that names it is a gate. Exact strings rather than names or a blanket
