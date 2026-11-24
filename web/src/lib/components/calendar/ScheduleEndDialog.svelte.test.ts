@@ -17,11 +17,11 @@ function mount(d: ItemStillOpenDetails, extra: Record<string, unknown> = {}) {
 
 describe('ScheduleEndDialog', () => {
 	it('offers the choices the details allow', () => {
-		expect(mount(details()).choices()).toEqual(['close', 'end']); cleanup();
-		expect(mount(details({ ack_available: true })).choices()).toEqual(['close', 'end', 'ack']); cleanup();
+		expect(mount(details()).choices()).toEqual(['close', 'end', 'dismiss']); cleanup();
+		expect(mount(details({ ack_available: true })).choices()).toEqual(['close', 'end', 'dismiss', 'ack']); cleanup();
 		// A skip never closes the item; a field with no delivering close has nothing to close with.
-		expect(mount(details({ state: 'skip', ack_available: true })).choices()).toEqual(['end', 'ack']); cleanup();
-		expect(mount(details({ close_options: [] })).choices()).toEqual(['end']);
+		expect(mount(details({ state: 'skip', ack_available: true })).choices()).toEqual(['end', 'dismiss', 'ack']); cleanup();
+		expect(mount(details({ close_options: [] })).choices()).toEqual(['end', 'dismiss']);
 	});
 	it('names the item and its status, and says nothing is saved yet', () => {
 		const { dialog } = mount(details({ item_status: 'in-progress' }));
@@ -50,6 +50,19 @@ describe('ScheduleEndDialog', () => {
 		expect(onchoose).toHaveBeenLastCalledWith({ kind: 'ack' });
 		await fireEvent.click(within(dialog).getByRole('button', { name: 'Cancel' }));
 		expect(onclose).toHaveBeenCalledTimes(1); expect(onchoose).toHaveBeenCalledTimes(2);
+	});
+	it('offers ending and dismissing in one step, without changing the default choice', async () => {
+		for (const [extra, preset] of [[{}, 'close'], [{ state: 'skip' as const }, 'end'], [{ close_options: [] }, 'end']] as const) {
+			const { dialog, onchoose } = mount(details(extra));
+			const dismiss = within(dialog).getByLabelText(/End schedule and dismiss/) as HTMLInputElement;
+			expect(dismiss.closest('[data-choice]')).toHaveTextContent('The item stays open and leaves Outstanding for everyone.');
+			expect(dismiss.checked).toBe(false);
+			expect((dialog.querySelector<HTMLInputElement>(`[data-choice="${preset}"] input`))!.checked).toBe(true);
+			await fireEvent.click(dismiss);
+			await fireEvent.click(within(dialog).getByRole('button', { name: 'End and dismiss' }));
+			expect(onchoose).toHaveBeenLastCalledWith({ kind: 'dismiss' });
+			cleanup();
+		}
 	});
 	it('shows an error inside and disables its buttons while pending', () => {
 		const { dialog } = mount(details(), { pending: true, error: 'Could not update this occurrence. Try again.' });

@@ -661,8 +661,8 @@
 			recurrence = { key, recurring: !!view.rrule?.trim() && view.roles?.roles_origin === 'native' };
 		} catch { /* Unknown recurrence offers only this occurrence. */ }
 	}
-	// end: the caller confirmed ending the schedule of an open item. closeAs then closes the item with that value.
-	async function resolve(entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string, end?: { closeAs?: string }): Promise<boolean> {
+	// end: the caller confirmed ending the schedule of an open item. closeAs then closes the item with that value; dismiss ends and dismisses it from Outstanding in one write.
+	async function resolve(entry: AgendaEntry, state: Exclude<ScheduleResolveState, 'move'>, until?: string, comment?: string, end?: { closeAs?: string; dismiss?: boolean }): Promise<boolean> {
 		const key = entryKey(entry);
 		const history = lapsed(entry) && state === 'done';
 		if (pending[key] || saved[key] || !(canResolve(entry) || history)) return false;
@@ -690,7 +690,7 @@
 				occurrence_at: occurrenceAt, state,
 				...(until !== undefined ? { until } : {}),
 				...(comment !== undefined ? { comment } : {}),
-				...(end ? { end_schedule: true } : {})
+				...(end?.dismiss ? { dismiss_ended: true } : end ? { end_schedule: true } : {})
 			});
 			if (!sameIdentity()) return false;
 			saved = { ...saved, [key]: true };
@@ -729,7 +729,8 @@
 				success(`${state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done'}; the schedule has ended.`);
 			} else if (end) {
 				const verb = state === 'skip' ? 'Occurrence skipped' : 'Occurrence marked done';
-				success(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
+				const dismissed = resolved?.resolution?.ended_dismissed === true;
+				success(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : dismissed ? `${verb}; the schedule has ended and was dismissed. The item stays open.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
 			} else {
 				success({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
 			}
@@ -765,7 +766,7 @@
 		endError = '';
 		const done = choice.kind === 'ack'
 			? await resolve(entry, 'ack')
-			: await resolve(entry, details.state, undefined, comment, choice.kind === 'close' ? { closeAs: choice.value } : {});
+			: await resolve(entry, details.state, undefined, comment, choice.kind === 'close' ? { closeAs: choice.value } : choice.kind === 'dismiss' ? { dismiss: true } : {});
 		if (endChoice !== asked) return;
 		if (done || actionError === staleCopy) endChoice = null;
 		else { endError = actionError || genericCopy; actionError = ''; }

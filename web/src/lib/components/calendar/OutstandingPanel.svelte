@@ -69,6 +69,7 @@
 			{@const snooze = snoozeLabel(row, zone, now)}
 			{@const owed = row.reason === 'deadline_still_owed'}
 			{@const ended = row.reason === 'schedule_ended'}
+			{@const live = row.reason === 'outstanding' || row.reason === 'target_passed' /* a waiting or undated row is not resolved from here */}
 			{@const deadline = row.roles?.deadline}
 			<li data-work={row.item_ref}>
 				<div class="text">
@@ -110,6 +111,10 @@
 					<RowMenu label={`Actions for ${row.item_ref}`} title={row.item_title} disabled={busy}>
 						{#snippet children(pick)}
 							{#if canAcknowledge(entry)}<MenuItem title={ACKNOWLEDGE_HELP} disabled={busy} onclick={() => pick(() => onaction(entry, 'ack'))}>Acknowledge</MenuItem>{/if}
+							{#if live}
+								<MenuItem disabled={busy} onclick={() => pick(() => onaction(entry, 'done'))}>Done</MenuItem>
+								<MenuItem disabled={busy} onclick={() => pick(() => onaction(entry, 'skip'))}>Skip</MenuItem>
+							{/if}
 							<MenuItem disabled={busy} onclick={() => pick(() => onaction(entry, 'forecast'))}>Forecast…</MenuItem>
 							{#if canMove(entry)}
 								<MenuItem disabled={busy} onclick={() => pick(() => onaction(entry, 'move'))}>Move target…</MenuItem>

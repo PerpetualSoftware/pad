@@ -160,7 +160,7 @@ export class ItemCommitmentActions {
 				this.#succeed(`${verb}; the schedule has ended.`);
 			} else if (end) {
 				const dismissed = resolved?.resolution?.ended_dismissed === true;
-				this.#succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : dismissed ? `${verb}; the schedule has ended and the item is dismissed from Outstanding.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
+				this.#succeed(itemClosed ? `${verb}; the schedule has ended and the item is closed.` : dismissed ? `${verb}; the schedule has ended and was dismissed. The item stays open.` : `${verb}; the schedule has ended. The item stays open in Outstanding.`);
 			} else {
 				this.#succeed({ done: 'Occurrence marked done.', skip: 'Occurrence skipped.', snooze: 'Occurrence snoozed.', ack: 'Acknowledged. The work stays outstanding.' }[state]);
 			}
@@ -195,7 +195,7 @@ export class ItemCommitmentActions {
 		this.endError = '';
 		const done = choice.kind === 'ack'
 			? await this.resolve(entry, 'ack')
-			: await this.resolve(entry, details.state, undefined, comment, choice.kind === 'close' ? { closeAs: choice.value } : {});
+			: await this.resolve(entry, details.state, undefined, comment, choice.kind === 'close' ? { closeAs: choice.value } : choice.kind === 'dismiss' ? { dismiss: true } : {});
 		if (this.endChoice !== asked) return;
 		if (done || this.actionError === staleCopy) this.endChoice = null;
 		else { this.endError = this.actionError || genericCopy; this.actionError = ''; }

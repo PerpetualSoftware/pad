@@ -169,27 +169,40 @@ describe('OutstandingPanel rows', () => {
 });
 
 describe('OutstandingPanel row menu', () => {
-	it('holds Forecast, Move target and Bring to today, and sends each to the page with the occurrence', async () => {
+	it('holds Done, Skip, Forecast, Move target and Bring to today, and sends each to the page with the occurrence', async () => {
 		const row = work();
 		const { onaction } = mount({ priority_list: [row] });
 		const button = screen.getByRole('button', { name: 'Actions for TASK-1' });
 		for (const [name, action] of [['Forecast…', 'forecast'], ['Move target…', 'move'], ['Bring to today', 'today']] as const) {
 			await fireEvent.click(button);
-			expect(items()).toEqual(['Forecast…', 'Move target…', 'Bring to today']);
+			expect(items()).toEqual(['Done', 'Skip', 'Forecast…', 'Move target…', 'Bring to today']);
 			await fireEvent.click(screen.getByRole('menuitem', { name }));
 			expect(onaction).toHaveBeenLastCalledWith(workOccurrence(row, zone), action);
 		}
 		expect(onaction).toHaveBeenCalledTimes(3);
 	});
-	it('offers Forecast alone when the occurrence cannot move', async () => {
+	it('offers Done and Skip on a live row, outstanding or past its target, and sends each to the page with the occurrence', async () => {
+		const rows = [work(), work({ reason: 'target_passed', roles: { ...roles, target: '2026-11-03T09:00:00Z' } })];
+		const { onaction } = mount({ priority_list: rows });
+		for (const row of rows) {
+			for (const action of ['done', 'skip'] as const) {
+				await fireEvent.click(screen.getByRole('button', { name: `Actions for ${row.item_ref}` }));
+				expect(items().slice(0, 2)).toEqual(['Done', 'Skip']);
+				await fireEvent.click(screen.getByRole('menuitem', { name: action === 'done' ? 'Done' : 'Skip' }));
+				expect(onaction).toHaveBeenLastCalledWith(workOccurrence(row, zone), action);
+			}
+		}
+		expect(onaction).toHaveBeenCalledTimes(4);
+	});
+	it('offers no move when the occurrence cannot move', async () => {
 		mount({ priority_list: [work({ roles: { ...roles, deadline: '2026-11-09T10:00:00Z' }, roles_origin: 'legacy_backfill' })] });
 		await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-1' }));
-		expect(items()).toEqual(['Forecast…']);
+		expect(items()).toEqual(['Done', 'Skip', 'Forecast…']);
 	});
 	it('leaves out Bring to today when the target is today', async () => {
 		mount({ priority_list: [work({ roles: { ...roles, target: '2026-11-05T18:00:00Z' } })] });
 		await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-1' }));
-		expect(items()).toEqual(['Forecast…', 'Move target…']);
+		expect(items()).toEqual(['Done', 'Skip', 'Forecast…', 'Move target…']);
 	});
 	it('a row with no occurrence has no menu button', () => {
 		mount({ priority_list: [work({ type: 'item' }), work({ roles: { ...roles, target: null } })] });
@@ -224,7 +237,7 @@ describe('OutstandingPanel acknowledged work', () => {
 		const row = rowOf('TASK-1');
 		expect(within(row).getByText('Acknowledged by Alex (builder, agent) · Thu 5, 09:15')).toBeTruthy();
 		await fireEvent.click(within(row).getByRole('button', { name: 'Actions for TASK-1' }));
-		expect(items()).toEqual(['Forecast…', 'Move target…', 'Bring to today']);
+		expect(items()).toEqual(['Done', 'Skip', 'Forecast…', 'Move target…', 'Bring to today']);
 		await fireEvent.click(screen.getByRole('menuitem', { name: 'Move target…' }));
 		expect(onaction).toHaveBeenCalledWith(expect.objectContaining({ state: 'acknowledged' }), 'move');
 	});

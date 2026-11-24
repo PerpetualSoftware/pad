@@ -1602,6 +1602,34 @@ describe('the last occurrence of an open item (TASK-4537)', () => {
   expect(h.update).not.toHaveBeenCalled();
   await said('Occurrence marked done; the schedule has ended. The item stays open in Outstanding.', 'success');
  });
+ it('End schedule and dismiss ends the schedule and dismisses it in one write', async () => {
+  const d = await ask();
+  h.resolve.mockResolvedValueOnce({ resolution: { occurrence_at: frozenAt, state: 'done', missed_recorded: 0, item_still_open: true, ended_dismissed: true } });
+  await fireEvent.click(within(d).getByLabelText(/End schedule and dismiss/));
+  await fireEvent.click(within(d).getByRole('button', { name: 'End and dismiss' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledTimes(2));
+  expect(h.resolve).toHaveBeenLastCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'done', dismiss_ended: true });
+  expect(h.update).not.toHaveBeenCalled(); expect(h.dismiss).not.toHaveBeenCalled();
+  await said('Occurrence marked done; the schedule has ended and was dismissed. The item stays open.', 'success');
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: /Last occurrence/ })).toBeNull());
+ });
+ it('Skip on a live Outstanding row asks how to end it, and can end and dismiss', async () => {
+  localStorage.setItem('pad-agenda-mode:user-a', 'week');
+  h.agenda.mockResolvedValue(response([row()], { priority_list: [workRow({ roles: { ...row().roles!, target: row().at } })] }));
+  h.resolve.mockRejectedValueOnce(stillOpen({ state: 'skip', close_options: [] }))
+   .mockResolvedValueOnce({ resolution: { occurrence_at: frozenAt, state: 'skip', missed_recorded: 0, item_still_open: true, ended_dismissed: true } });
+  await mount();
+  const item = document.querySelector<HTMLElement>('li[data-work="EX-30"]')!;
+  await fireEvent.click(within(item).getByRole('button', { name: 'Actions for EX-30' }));
+  await fireEvent.click(screen.getByRole('menuitem', { name: 'Skip' }));
+  const d = await screen.findByRole('dialog', { name: 'Last occurrence: the item is still open' });
+  expect(h.resolve).toHaveBeenNthCalledWith(1, 'work', 'EX-30', { occurrence_at: frozenAt, state: 'skip' });
+  await fireEvent.click(within(d).getByLabelText(/End schedule and dismiss/));
+  await fireEvent.click(within(d).getByRole('button', { name: 'End and dismiss' }));
+  await waitFor(() => expect(h.resolve).toHaveBeenCalledTimes(2));
+  expect(h.resolve).toHaveBeenLastCalledWith('work', 'EX-30', { occurrence_at: frozenAt, state: 'skip', dismiss_ended: true });
+  await said('Occurrence skipped; the schedule has ended and was dismissed. The item stays open.', 'success');
+ });
  it('Acknowledge instead acknowledges and writes no ending', async () => {
   const d = await ask({ ack_available: true });
   await fireEvent.click(within(d).getByLabelText(/Acknowledge instead/));
