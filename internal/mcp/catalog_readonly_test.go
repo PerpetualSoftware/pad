@@ -703,10 +703,14 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item search": {
 				Summary: "search items",
 				Args:    mkArgs("query"),
-				Flags: mkFlags(
-					"workspace", "collection", "status", "priority",
-					"sort", "limit", "offset",
-				),
+				Flags: func() map[string]cmdhelp.Flag {
+					f := mkFlags(
+						"workspace", "collection", "status", "priority",
+						"sort", "limit", "offset",
+					)
+					f["all-workspaces"] = cmdhelp.Flag{Type: "bool"}
+					return f
+				}(),
 			},
 			// pad_item surface (TASK-981)
 			"item create": {
