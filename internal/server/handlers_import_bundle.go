@@ -671,7 +671,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	// importer, kept) and then re-panics with the same value, so the recovery
 	// middleware still answers 500. Chi's logged stack then starts at this
 	// re-panic, so the original stack is logged by the keep door instead.
-	// panic(nil) is covered too: under go 1.21+ semantics (go.mod: 1.26)
+	// panic(nil) is covered too: under go 1.21+ semantics (go.mod: 1.27)
 	// recover returns a *runtime.PanicNilError for it, never nil. A panic
 	// after this function returns (in the handler) is not covered here.
 	defer func() {

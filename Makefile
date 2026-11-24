@@ -12,7 +12,7 @@ LDFLAGS   := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.buildTi
 
 # Pin to the same golangci-lint and govulncheck versions CI runs (see
 # .github/workflows/ci.yml). Bump these and CI together when upgrading.
-GOLANGCI_LINT_VERSION ?= v2.11.4
+GOLANGCI_LINT_VERSION ?= v2.15.0
 GOLANGCI_LINT := $(shell go env GOPATH)/bin/golangci-lint
 GOVULNCHECK_VERSION  ?= v1.2.0
 GOVULNCHECK := $(shell go env GOPATH)/bin/govulncheck

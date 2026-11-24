@@ -195,7 +195,7 @@ func resolveValue(v driver.Value) (driver.Value, error) {
 			return v, nil
 		}
 		rv := reflect.ValueOf(valuer)
-		if rv.Kind() == reflect.Ptr && rv.IsNil() && rv.Type().Elem().Implements(valuerType) {
+		if rv.Kind() == reflect.Pointer && rv.IsNil() && rv.Type().Elem().Implements(valuerType) {
 			return nil, nil
 		}
 		out, err := valuer.Value()
@@ -229,7 +229,7 @@ func classify(v driver.Value) (text string, isText bool, err error) {
 	}
 
 	rv := reflect.ValueOf(v)
-	for rv.Kind() == reflect.Ptr {
+	for rv.Kind() == reflect.Pointer {
 		if rv.IsNil() {
 			return "", false, nil
 		}

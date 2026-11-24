@@ -287,7 +287,7 @@ func (s *Storage) CreateAccessTokenSession(_ context.Context, signature string, 
 // than server_error (BUG-3678).
 func mapGrantRevoked(err error) error {
 	if errors.Is(err, store.ErrOAuthGrantRevoked) {
-		return fmt.Errorf("%w: %w", fosite.ErrInactiveToken, err)
+		return fosite.ErrInactiveToken.WithWrap(err)
 	}
 	return err
 }
@@ -405,7 +405,7 @@ func (s *Storage) RotateRefreshToken(_ context.Context, requestID, signatureToRo
 		if errors.Is(err, store.ErrOAuthRefreshNotActive) {
 			// A concurrent refresh rotated it first, or a revoke landed
 			// (BUG-3678). Fosite answers invalid_request.
-			return fmt.Errorf("%w: %w", fosite.ErrSerializationFailure, err)
+			return fosite.ErrSerializationFailure.WithWrap(err)
 		}
 		return err
 	}

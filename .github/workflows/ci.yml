@@ -100,24 +100,15 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27.4"
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # actions/setup-go unconditionally exports GOTOOLCHAIN=local, which
-        # forbids Go from fetching the toolchain go.mod requires. go.mod pins
-        # `go 1.26.5`, but setup-go's "1.26" resolves to the newest patch in
-        # its manifest (1.26.4 here), so every `go` command fails with
-        # "go.mod requires go >= 1.26.5 (running go 1.26.4)". Written AFTER
-        # setup-go so it wins the $GITHUB_ENV last-write; `auto` lets Go pull
-        # what go.mod asks for on demand. Added after #896 raised the go.mod
-        # floor.
-        #
-        # Load-bearing for the govulncheck step below as of BUG-2565: go.mod
-        # also carries `toolchain go1.26.11`, which is what actually gets
-        # stamped into the scanned binary and clears 8 reachable stdlib
-        # advisories. `auto` is what honours that line — under `local` the
-        # build silently falls back to whatever patch setup-go installed and
-        # the gate goes red again.
+        # forbids Go from fetching a newer toolchain if go.mod asks for one.
+        # Written AFTER setup-go so it wins the $GITHUB_ENV last-write. Now
+        # that go.mod's `go` line and setup-go both pin the exact patch
+        # (1.27.4), Go has nothing extra to fetch, and `auto` stays as a
+        # safety net if go.mod is ever bumped ahead of this workflow.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Create web build placeholder for embed
@@ -172,7 +163,7 @@ jobs:
         # Go releases that we no longer support.
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.11.4
+          version: v2.15.0
           args: --timeout=5m
           only-new-issues: false
           # Skip the pre-lint `golangci-lint config verify`, which fetches its
@@ -341,11 +332,12 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27.4"
 
       - name: Allow Go to fetch the toolchain go.mod pins
-        # The same reason as the Go job above: setup-go exports
-        # GOTOOLCHAIN=local, and go.mod asks for a newer patch.
+        # See the identical step in the `go` job: setup-go exports
+        # GOTOOLCHAIN=local; `auto` stays as a safety net if go.mod ever moves
+        # ahead of the exact patch (1.27.4) pinned above.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Flag dependencies this PR adds that are younger than 7 days
@@ -377,23 +369,12 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
-        # No GOTOOLCHAIN=auto step here, unlike every other Go job in this
-        # file, and the reason is worth stating because the asymmetry looks
-        # like an oversight: `go-version-file` makes setup-go PARSE go.mod
-        # itself, and v7's parser prefers the `toolchain` directive over the
-        # `go` directive, so it installs go1.26.11 (BUG-2565, raised 2026-10-08) directly. The
-        # GOTOOLCHAIN=local it then exports is satisfied by that install —
-        # nothing left to fetch. The other jobs pass `go-version: "1.26"`,
-        # which never reads go.mod at all, so they genuinely need `auto` to
-        # pick the toolchain line up at build time.
-        #
-        # The one way this silently regresses: setup-go's parser falls back
-        # to the `go` directive when GOTOOLCHAIN is ALREADY `local` in the
-        # environment at parse time (installer.ts parseGoVersionFile). So if
-        # a job- or workflow-level `env: GOTOOLCHAIN: local` is ever added
-        # above this step, these smoke binaries drop to the 1.26.5 floor
-        # while everything else ships 1.26.11 — no red, just coverage that
-        # quietly stops matching the artifact.
+        # No GOTOOLCHAIN=auto step here: `go-version-file` makes setup-go
+        # parse go.mod directly and install the exact patch it pins (1.27.4,
+        # or any `toolchain` directive if one is ever added back, unless
+        # GOTOOLCHAIN=local is already set in the environment above this
+        # step). The GOTOOLCHAIN=local setup-go then exports is satisfied by
+        # that install — nothing left to fetch.
         with:
           go-version-file: go.mod
 
@@ -579,12 +560,12 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27.4"
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
-        # GOTOOLCHAIN=local, blocking the toolchain fetch go.mod requires
-        # (`go 1.26.5` floor, `toolchain go1.26.11` per BUG-2565).
+        # GOTOOLCHAIN=local; `auto` lets Go honour go.mod if it ever moves
+        # ahead of the exact patch (1.27.4) pinned above.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - name: Create web build placeholder for embed
@@ -754,7 +735,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27.4"
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job.
@@ -787,7 +768,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27.4"
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job.
@@ -917,13 +898,12 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27.4"
 
       - name: Allow Go to fetch the toolchain go.mod pins
         # See the identical step in the `go` job — setup-go pins
-        # GOTOOLCHAIN=local, blocking the toolchain fetch go.mod requires
-        # (`go 1.26.5` floor, `toolchain go1.26.11` per BUG-2565; the
-        # "Build pad binary" step below fails without this).
+        # GOTOOLCHAIN=local; `auto` lets Go honour go.mod if it ever moves
+        # ahead of the exact patch (1.27.4) pinned above.
         run: echo "GOTOOLCHAIN=auto" >> "$GITHUB_ENV"
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
@@ -1189,15 +1169,16 @@ jobs:
       # scan step below — the pad binary under test was built by Nix above.
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: "1.26"
+          go-version: "1.27.4"
 
       - name: Scan Nix-built binary with govulncheck
-        # CI's main govulncheck job scans a `go build` binary, which honours
-        # go.mod's `toolchain go1.26.11` line — but nixpkgs pins
+        # CI's main govulncheck job scans a `go build` binary built with the
+        # Go version go.mod pins (1.27.4) — while nixpkgs pins
         # GOTOOLCHAIN=local, so the Nix artifact is built with whatever Go
-        # patch the nixos-26.05 channel ships and can carry stdlib advisories
-        # the main gate can no longer see (BUG-2567). This scans the artifact
-        # that actually ships via Nix, against nix/accepted-advisories.txt:
+        # patch the pinned nixpkgs revision ships (currently go_1_27 = 1.27.4)
+        # and can diverge whenever go.mod bumps ahead of nixpkgs (BUG-2567).
+        # This scans the artifact that actually ships via Nix, against
+        # nix/accepted-advisories.txt:
         # known-accepted advisories stay green and visible, any NEW advisory
         # fails the job, and a warning fires when an accepted advisory clears
         # (the signal to prune the list and eventually close BUG-2567).

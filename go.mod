@@ -1,29 +1,9 @@
 module github.com/PerpetualSoftware/pad
 
-go 1.26.5
-
-// BUG-2565: build with go1.26.6, which fixes 8 reachable standard-library
-// advisories (GO-2026-5942 and friends — net.Resolver.LookupCNAME,
-// http.Client.Do) that turned CI's govulncheck gate red on 2026-08-13
-// without any commit causing it. A `toolchain` line, not a raise of the
-// `go` directive above, on purpose: GOTOOLCHAIN=auto (every GitHub
-// Actions job sets it) fetches 1.26.6 and stamps it into the binary,
-// while builders pinned to GOTOOLCHAIN=local ignore this line and keep
-// satisfying the 1.26.5 floor. nixpkgs nixos-26.05 still ships go 1.26.5,
-// so raising the floor would break the Nix build outright; see BUG-2567
-// for the Nix-packaged binary, which stays on 1.26.5 until nixpkgs
-// catches up.
-//
-// Raised to go1.26.9 (2026-10-08) for twelve more standard-library advisories
-// in net/http and html/template (GO-2026-6603, GO-2026-6600, GO-2026-6599 and
-// others), fixed in 1.26.9, which turned govulncheck red on every PR the same way.
-//
-// Raised to go1.26.10 (2026-10-21) for GO-2026-6809 (crypto/x509), fixed in
-// 1.26.10, which turned govulncheck red the same way again (TASK-4007).
-//
-// Raised to go1.26.11 (2026-11-11) for GO-2026-6859 (net/http), fixed in
-// 1.26.11, which turned govulncheck red the same way again (TASK-4481).
-toolchain go1.26.11
+// Exact patch every build uses (CI, release, Docker and Nix all pin 1.27.4).
+// Raise this in the same change as the Dockerfile, CI, Makefile and Nix files
+// when a stdlib advisory needs a newer patch.
+go 1.27.4
 
 require (
 	github.com/BurntSushi/toml v1.6.0
