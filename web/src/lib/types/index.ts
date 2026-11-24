@@ -4002,6 +4002,7 @@ export interface AgendaResponse {
 	from: string;
 	to: string;
 	tz: string;
+	audience?: 'human' | 'agent' | 'all';
 	timezone_note?: string;
 	entries: AgendaEntry[];
 	truncated?: boolean;

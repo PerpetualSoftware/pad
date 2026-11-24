@@ -425,8 +425,10 @@ func (s *Store) ListAgendaWork(workspaceID string, scope PendingReminderScope, r
 	if recipient != "" {
 		query += ` AND (CASE WHEN i.assigned_user_id IS NULL OR i.assigned_user_id='' THEN i.created_by_user_id ELSE i.assigned_user_id END)=?`
 		params = append(params, recipient)
-		query += ` AND (NOT EXISTS (SELECT 1 FROM item_schedules sc WHERE sc.item_id=i.id) OR EXISTS (SELECT 1 FROM item_schedules sc WHERE sc.item_id=i.id AND sc.audience IN (?, 'both')))`
-		params = append(params, audience)
+		if audience != "all" {
+			query += ` AND (NOT EXISTS (SELECT 1 FROM item_schedules sc WHERE sc.item_id=i.id) OR EXISTS (SELECT 1 FROM item_schedules sc WHERE sc.item_id=i.id AND sc.audience IN (?, 'both')))`
+			params = append(params, audience)
+		}
 	}
 	rows, err := s.db.Query(s.q(query+` ORDER BY i.id LIMIT ?`), append(params, limit+1)...)
 	if err != nil {

@@ -33,7 +33,7 @@ func TestAgendaRendersInUserZoneOnUTCBox(t *testing.T) {
 			h, calls := recordingStub(func(c recordedCall) (int, string) { return 200, agendaBody })
 			root := tzCLIWithLocal(t, h, machine)
 			out, stderr, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01")
-			if err != nil || stderr != "" {
+			if err != nil || !strings.HasPrefix(stderr, "Audience: ") || strings.Count(stderr, "\n") != 1 {
 				t.Fatalf("err=%v stderr=%q", err, stderr)
 			}
 			for _, want := range []string{"01:30 EDT", "01:30 EST", "09:00 EST", "all day", "2026-11-02", "overdue,missed"} {
@@ -86,7 +86,7 @@ func TestAgendaWithoutTimezoneSettingNotesUTC(t *testing.T) {
 		h(w, r)
 	}, time.FixedZone("Machine", 9*3600))
 	out, stderr, err := tzRun(t, root, "item", "remind", "agenda", "--from", "2026-11-01")
-	if err != nil || stderr != tzNotice {
+	if err != nil || !strings.HasPrefix(stderr, tzNotice+"Audience: ") || strings.Count(stderr, "\n") != 2 {
 		t.Fatalf("err=%v stderr=%q", err, stderr)
 	}
 	if !strings.Contains(out, "05:30 UTC") || strings.Contains(out, "Machine") {

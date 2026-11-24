@@ -28,7 +28,7 @@ func TestScheduleCommandsExposeWhatMCPSends(t *testing.T) {
 		{"item remind skip", []string{"ref"}, resolve},
 		{"item remind snooze", []string{"ref"}, append([]string{"until"}, resolve...)},
 		{"item remind move", []string{"ref"}, append([]string{"until"}, resolve...)},
-		{"item remind agenda", nil, []string{"from", "to", "tz", "stale", "recipient"}},
+		{"item remind agenda", nil, []string{"from", "to", "tz", "stale", "recipient", "audience", "all-workspaces"}},
 	} {
 		cmd, ok := doc.Commands[tc.path]
 		if !ok {

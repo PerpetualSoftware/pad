@@ -2374,7 +2374,13 @@ const CmdhelpVersion = "0.1"
 // reason for waive only), checked before dispatch with the same refusals on
 // both transports. New parameter child_action; child and reason gain the
 // action in their descriptions. ChatGPT: deferred to v2.
-const ToolSurfaceVersion = "0.127"
+// v0.128: pad_item agenda gains audience (human|agent|all; default agent on
+// both transports so an agent reads its own layer unless it asks for human to
+// match the web UI) and all_workspaces (boolean; reads /api/v1/me/agenda across
+// all admitted workspaces with include= and counts=omit, refusing an explicit
+// workspace, a non-me recipient, and stale). New parameter all_workspaces;
+// audience gains agenda semantics in its description.
+const ToolSurfaceVersion = "0.128"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

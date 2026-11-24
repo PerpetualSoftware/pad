@@ -135,6 +135,11 @@ func (c *Client) SetAgentName(name string) {
 	c.agentName = name
 }
 
+// AgentName returns the configured X-Pad-Agent value.
+func (c *Client) AgentName() string {
+	return c.agentName
+}
+
 // SetAuthToken sets the authorization token for API requests.
 func (c *Client) SetAuthToken(token string) {
 	c.authToken = secret.New(token)

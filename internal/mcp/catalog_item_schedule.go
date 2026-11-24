@@ -280,16 +280,19 @@ func actionItemScheduleResolve(ctx context.Context, input map[string]any, env Ac
 	return env.Dispatch(ctx, []string{"item", "remind", state}, out)
 }
 
+const defaultMCPAgendaAudience = "agent"
+
 // actionItemAgenda handles pad_item.action=agenda. from and to are required
 // RFC3339 instants on both transports (the CLI also takes a date and a day
 // count; the route takes neither). With stale=true the window is replaced by the
-// caller's occurrences unresolved for more than 14 days (TASK-4237): to is
-// refused, from (optional) resumes a long list, and the stale flag itself is
-// validated here, once, so stdio and /mcp read it the same way. recipient
-// (TASK-4489) chooses whose work the groups list: absent or blank is me (the
-// caller), all is the workspace scope and is sent as no recipient on either
-// transport, anything else is a user ID. stale lists the caller's own
-// occurrences and refuses a recipient.
+// caller's occurrences unresolved for more than 14 days: to is refused, from
+// (optional) resumes a long list, and the stale flag itself is validated here,
+// once, so stdio and /mcp read it the same way. recipient chooses whose work
+// the groups list: absent or blank is me (the caller), all is the workspace
+// scope and is sent as no recipient on either transport, anything else is a
+// user ID. audience defaults to agent on both transports (human matches the web
+// UI). all_workspaces reads /api/v1/me/agenda across admitted workspaces and
+// refuses an explicit workspace, a non-me recipient, and stale.
 func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
 	stale := false
 	if v, present := input["stale"]; present && v != nil {
@@ -298,6 +301,34 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 			return errStructured("pad_item.agenda", fmt.Errorf("stale must be a boolean, got %T", v)), nil
 		}
 		stale = b
+	}
+	allWorkspaces := false
+	if v, present := input["all_workspaces"]; present && v != nil {
+		b, ok := v.(bool)
+		if !ok {
+			return errStructured("pad_item.agenda", fmt.Errorf("all_workspaces must be a boolean, got %T", v)), nil
+		}
+		allWorkspaces = b
+	}
+	if allWorkspaces {
+		if stale {
+			return errStructured("pad_item.agenda", fmt.Errorf("all_workspaces cannot be combined with stale")), nil
+		}
+		if v, present := input["workspace"]; present && v != nil {
+			s, isStr := v.(string)
+			if !isStr || strings.TrimSpace(s) != "" {
+				return errStructured("pad_item.agenda", fmt.Errorf("all_workspaces cannot be combined with workspace")), nil
+			}
+		}
+		if v, present := input["recipient"]; present && v != nil {
+			s, isStr := v.(string)
+			if !isStr {
+				return errStructured("pad_item.agenda", fmt.Errorf("recipient must be a string, got %T", v)), nil
+			}
+			if s = strings.TrimSpace(s); s != "" && s != "me" {
+				return errStructured("pad_item.agenda", fmt.Errorf("all_workspaces cannot be combined with recipient other than me")), nil
+			}
+		}
 	}
 	if stale {
 		if v, present := input["to"]; present && v != nil {
@@ -308,9 +339,15 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 				return errStructured("pad_item.agenda", fmt.Errorf("stale lists your own occurrences; drop recipient")), nil
 			}
 		}
+		if v, present := input["audience"]; present && v != nil {
+			if s, isString := v.(string); !isString || strings.TrimSpace(s) != "" {
+				return errStructured("pad_item.agenda", fmt.Errorf("stale lists every unresolved occurrence of yours; drop audience")), nil
+			}
+		}
 		in := copyInputMap(input)
 		delete(in, "to")
 		delete(in, "recipient")
+		delete(in, "all_workspaces")
 		if v, present := in["from"]; present {
 			from, isString := v.(string)
 			switch {
@@ -355,6 +392,19 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 			recipient = s
 		}
 	}
+	audience := defaultMCPAgendaAudience
+	if v, present := input["audience"]; present && v != nil {
+		s, ok := v.(string)
+		if !ok {
+			return errStructured("pad_item.agenda", fmt.Errorf("audience must be a string, got %T", v)), nil
+		}
+		if s = strings.TrimSpace(s); s != "" {
+			if s != "human" && s != "agent" && s != "all" {
+				return errStructured("pad_item.agenda", fmt.Errorf("audience must be human, agent or all")), nil
+			}
+			audience = s
+		}
+	}
 	// A stale of false is not sent: stdio would pass --stale=false and the route
 	// a "false" the server rejects.
 	in := copyInputMap(input)
@@ -363,6 +413,14 @@ func actionItemAgenda(ctx context.Context, input map[string]any, env ActionEnv) 
 	// stdio needs --recipient all, and the route mapper drops it so the
 	// request carries no recipient (the workspace scope) on /mcp too.
 	in["recipient"] = recipient
+	in["audience"] = audience
+	if allWorkspaces {
+		in["all_workspaces"] = true
+		delete(in, "workspace")
+		env.Workspace = NewWorkspaceState("")
+	} else {
+		delete(in, "all_workspaces")
+	}
 	return env.Dispatch(ctx, []string{"item", "remind", "agenda"}, in)
 }
 

@@ -117,6 +117,7 @@ type agendaResponse struct {
 	From                 string              `json:"from"`
 	To                   string              `json:"to"`
 	Tz                   string              `json:"tz"`
+	Audience             string              `json:"audience,omitempty"`
 	TimezoneNote         string              `json:"timezone_note,omitempty"`
 	Entries              []agendaEntry       `json:"entries"`
 	Truncated            bool                `json:"truncated,omitempty"`
@@ -184,6 +185,45 @@ func agendaZone(w http.ResponseWriter, r *http.Request) (zone usertz.Zone, note 
 	return zone, usertz.Note(zone), true
 }
 
+// parseAgendaAudience reads the optional `audience` parameter, writing the 400
+// itself on a refusal. Absent returns ("", true) so callers keep the unfiltered
+// window and actor-derived group audience.
+func parseAgendaAudience(w http.ResponseWriter, r *http.Request) (string, bool) {
+	query := r.URL.Query()
+	if !query.Has("audience") {
+		return "", true
+	}
+	vals := query["audience"]
+	a := strings.TrimSpace(query.Get("audience"))
+	if len(vals) != 1 || (a != "human" && a != "agent" && a != "all") {
+		writeAgendaParam(w, "audience", "format", "`audience` must be human, agent or all")
+		return "", false
+	}
+	return a, true
+}
+
+// applyAgendaAudience applies an explicit audience parameter to run and echoes
+// it on the response. An empty value leaves the run untouched.
+func applyAgendaAudience(run *agendaRead, a string) {
+	switch a {
+	case "human":
+		run.scheduleAudiences = []string{"human", "both"}
+		run.audience = "human"
+		run.response.Audience = "human"
+	case "agent":
+		// both is addressed to agents too, and dated items stay, so an agent
+		// reading its own agenda loses only the human-only schedules. The work
+		// groups (ListAgendaWork) read the same agent-or-both set.
+		run.scheduleAudiences = []string{"agent", "both"}
+		run.audience = "agent"
+		run.response.Audience = "agent"
+	case "all":
+		run.scheduleAudiences = nil
+		run.audience = "all"
+		run.response.Audience = "all"
+	}
+}
+
 // handleGetAgenda serves GET /api/v1/workspaces/{ws}/agenda?from&to&tz.
 func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
@@ -199,6 +239,10 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	zone, note, ok := agendaZone(w, r)
+	if !ok {
+		return
+	}
+	audience, ok := parseAgendaAudience(w, r)
 	if !ok {
 		return
 	}
@@ -237,6 +281,7 @@ func (s *Server) handleGetAgenda(w http.ResponseWriter, r *http.Request) {
 			run.audience = "agent"
 		}
 	}
+	applyAgendaAudience(run, audience)
 	if err := s.appendWorkspaceAgenda(run, workspaceID, scope); err != nil {
 		writeInternalError(w, err)
 		return

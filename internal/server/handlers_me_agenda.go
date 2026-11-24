@@ -65,6 +65,10 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	audience, ok := parseAgendaAudience(w, r)
+	if !ok {
+		return
+	}
 	zone := usertz.Resolve(user.Timezone)
 	note := usertz.Note(zone)
 	if r.URL.Query().Has("tz") {
@@ -103,6 +107,7 @@ func (s *Server) handleMeAgenda(w http.ResponseWriter, r *http.Request) {
 	if actor, _ := actorFromRequest(r); actor == "agent" {
 		run.audience = "agent"
 	}
+	applyAgendaAudience(run, audience)
 	admitted, err := s.needsAdmittedWorkspaces(r, user)
 	if err != nil {
 		writeInternalError(w, err)

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -40,6 +41,9 @@ func (s *Server) appendWorkspaceForecasts(run *agendaRead, workspaceID string, s
 	}
 	resp := &run.response
 	for _, row := range rows {
+		if len(run.scheduleAudiences) > 0 && !slices.Contains(run.scheduleAudiences, row.Audience) {
+			continue
+		}
 		f := agendaForecastRow(row)
 		if workspace != nil {
 			f.Workspace, f.WorkspaceName, f.OwnerUsername = workspace.Slug, workspace.Name, workspace.OwnerUsername

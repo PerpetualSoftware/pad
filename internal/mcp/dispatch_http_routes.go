@@ -2303,10 +2303,29 @@ func mapItemComment(input map[string]any) (string, string, []byte, error) {
 	return http.MethodPost, urlPath, body, nil
 }
 
-// mapAgenda is the agenda route. recipient all (TASK-4489) is the workspace
-// scope, which the server reads as no recipient, so it is not sent; me and a
-// user ID pass through.
+// mapAgenda is the agenda route. all_workspaces reads /api/v1/me/agenda with
+// include= and counts=omit; otherwise recipient all is the workspace scope
+// (dropped so the server reads no recipient), and me / user ID / audience pass
+// through on /api/v1/workspaces/{workspace}/agenda.
 func mapAgenda(input map[string]any) (string, string, []byte, error) {
+	if aw, _ := input["all_workspaces"].(bool); aw {
+		q := url.Values{}
+		if v, _ := input["from"].(string); v != "" {
+			q.Set("from", v)
+		}
+		if v, _ := input["to"].(string); v != "" {
+			q.Set("to", v)
+		}
+		if v, _ := input["tz"].(string); v != "" {
+			q.Set("tz", v)
+		}
+		if v, _ := input["audience"].(string); v != "" {
+			q.Set("audience", v)
+		}
+		q.Set("include", "")
+		q.Set("counts", "omit")
+		return http.MethodGet, "/api/v1/me/agenda?" + q.Encode(), nil, nil
+	}
 	if r, _ := input["recipient"].(string); r == "all" {
 		input = copyInputMap(input)
 		delete(input, "recipient")
@@ -2314,6 +2333,6 @@ func mapAgenda(input map[string]any) (string, string, []byte, error) {
 	return routeSpec{
 		method:       http.MethodGet,
 		pathTemplate: "/api/v1/workspaces/{workspace}/agenda",
-		queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz", "stale": "stale", "recipient": "recipient"},
+		queryParams:  map[string]string{"from": "from", "to": "to", "tz": "tz", "stale": "stale", "recipient": "recipient", "audience": "audience"},
 	}.toRouteMapper()(input)
 }

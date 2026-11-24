@@ -714,6 +714,7 @@ type agendaEntry struct {
 	Overdue        bool                    `json:"overdue"`
 	MissedCount    int                     `json:"missed_count"`
 	Stale          bool                    `json:"stale"`
+	Workspace      string                  `json:"workspace"`
 }
 
 type agendaResponse struct {
@@ -754,6 +755,7 @@ type agendaGroupRow struct {
 	Roles      models.CommitmentRoles `json:"roles"`
 	ScheduleID string                 `json:"schedule_id"`
 	EndedAt    string                 `json:"ended_at"`
+	Workspace  string                 `json:"workspace"`
 }
 
 const agendaMaxDays = 92
@@ -810,20 +812,29 @@ func agendaBounds(from, to string, days int, daysSet bool, loc *time.Location, n
 }
 
 func remindAgendaCmd() *cobra.Command {
-	var from, to, tz, recipient string
+	var from, to, tz, recipient, audience string
 	var days int
-	var stale bool
+	var stale, allWorkspaces bool
 	c := &cobra.Command{
 		Use:   "agenda",
 		Short: "List scheduled occurrences and dated items",
 		Example: `  pad remind agenda
-  pad remind agenda --from 2026-11-09 --days 14`,
+  pad remind agenda --from 2026-11-09 --days 14
+  pad remind agenda --all-workspaces --audience human`,
 		Long: `List the workspace's schedule occurrences and the items dated in a window, in your
 time zone.
 
 The window starts at --from (an RFC3339 instant or a date; default the start of
 today in your zone) and runs --days days (default 7) or to --to. It is capped at
 92 days. --tz names the zone floating schedules are read in and times are shown in.
+
+--audience selects the agenda layer: human (what a person sees in the web UI),
+agent (agent schedules only), or all (every audience). When unset, it defaults to
+agent when an agent name is set, else human.
+
+--all-workspaces reads your personal agenda across every admitted workspace
+(/me/agenda) and adds a WORKSPACE column. It cannot be combined with --stale,
+--workspace, or a --recipient other than me.
 
 When the list is cut short, the last line says where to continue.
 
@@ -847,11 +858,30 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 				}
 				loc = l
 			}
+			if allWorkspaces {
+				if stale {
+					return errors.New("--all-workspaces cannot be combined with --stale")
+				}
+				if cmd.Flags().Changed("workspace") {
+					return errors.New("--all-workspaces cannot be combined with --workspace")
+				}
+				if strings.TrimSpace(recipient) != "me" {
+					return errors.New("--all-workspaces cannot be combined with --recipient other than me")
+				}
+			}
 			if stale {
 				if cmd.Flags().Changed("recipient") {
 					return errors.New("--stale lists your own occurrences; drop --recipient")
 				}
+				if cmd.Flags().Changed("audience") {
+					return errors.New("--stale lists every unresolved occurrence of yours; drop --audience")
+				}
 				return runStaleAgenda(cmd, from, to, cmd.Flags().Changed("days"), tz, loc)
+			}
+			audienceChanged := cmd.Flags().Changed("audience")
+			audience = strings.TrimSpace(audience)
+			if audienceChanged && audience != "human" && audience != "agent" && audience != "all" {
+				return fmt.Errorf("--audience %q: must be one of human, agent or all", audience)
 			}
 			recipient = strings.TrimSpace(recipient)
 			if recipient == "" {
@@ -869,14 +899,33 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 				fmt.Fprintf(os.Stderr, "note: the window was shortened to the server's 92-day limit; it ends %s\n", end.In(loc).Format("2006-01-02 15:04 MST"))
 			}
 			client, _ := getClient()
-			if recipient == "me" {
-				if sendRecipient, err = agendaCallerID(client); err != nil {
-					return err
+			if !audienceChanged {
+				if models.NormalizeAgentName(client.AgentName()) != "" {
+					audience = "agent"
+				} else {
+					audience = "human"
 				}
 			}
-			raw, err := client.GetAgenda(getWorkspace(), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), tz, sendRecipient)
-			if err != nil {
-				return err
+			var raw json.RawMessage
+			if allWorkspaces {
+				raw, err = client.GetMyAgenda(start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), tz, audience)
+				if err != nil {
+					var apiErr *cli.APIError
+					if errors.As(err, &apiErr) && apiErr.Status == http.StatusUnauthorized {
+						return fmt.Errorf("%w\nSign in first, or drop --all-workspaces to read one workspace", err)
+					}
+					return err
+				}
+			} else {
+				if recipient == "me" {
+					if sendRecipient, err = agendaCallerID(client); err != nil {
+						return err
+					}
+				}
+				raw, err = client.GetAgenda(getWorkspace(), start.UTC().Format(time.RFC3339), end.UTC().Format(time.RFC3339), tz, sendRecipient, audience)
+				if err != nil {
+					return err
+				}
 			}
 			if formatFlag == "json" {
 				return cli.PrintJSON(raw)
@@ -888,11 +937,16 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 			if resp.TimezoneNote != "" {
 				fmt.Fprintln(os.Stderr, resp.TimezoneNote)
 			}
+			if audience == "agent" {
+				fmt.Fprintln(os.Stderr, "Audience: agent (--audience human for the person's web view)")
+			} else {
+				fmt.Fprintf(os.Stderr, "Audience: %s\n", audience)
+			}
 			var showLoc *time.Location
 			if tz != "" {
 				showLoc = loc
 			}
-			renderAgenda(cmd, resp, showLoc, end, tz, recipient)
+			renderAgenda(cmd, resp, showLoc, end, tz, recipient, allWorkspaces, audience, audienceChanged)
 			return nil
 		},
 	}
@@ -901,6 +955,8 @@ occurrences unresolved for more than 14 days, oldest first. It takes no window;
 	c.Flags().StringVar(&to, "to", "", "window end: RFC3339 instant or date (exclusive with --days)")
 	c.Flags().StringVar(&tz, "tz", "", "IANA zone for floating schedules and for the times shown")
 	c.Flags().StringVar(&recipient, "recipient", "me", "whose work the groups list: me, all (workspace scope; No date not listed) or a user ID")
+	c.Flags().StringVar(&audience, "audience", "", "agenda audience: human, agent or all (default: agent when an agent name is set, else human)")
+	c.Flags().BoolVar(&allWorkspaces, "all-workspaces", false, "list your agenda across all admitted workspaces (/me/agenda)")
 	c.Flags().BoolVar(&stale, "stale", false, "list your occurrences unresolved for more than 14 days instead (no window; --from resumes)")
 	return c
 }
@@ -1009,10 +1065,10 @@ func runStaleAgenda(cmd *cobra.Command, from, to string, daysSet bool, tz string
 	return nil
 }
 
-// renderAgenda prints the list, then the actionable groups. end, tz and
-// recipient are the request's window end, the --tz the user gave (empty if
-// none) and the --recipient; the resume hint repeats them.
-func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, end time.Time, tz, recipient string) {
+// renderAgenda prints the list, then the actionable groups. end, tz, recipient,
+// allWorkspaces and audience are the request's parameters; the resume hint
+// repeats them.
+func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, end time.Time, tz, recipient string, allWorkspaces bool, audience string, audienceChanged bool) {
 	out := cmd.OutOrStdout()
 	if len(resp.Entries) == 0 {
 		if resp.WindowComplete {
@@ -1022,7 +1078,11 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 		}
 	} else {
 		w := tabwriter.NewWriter(out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(w, "DAY\tTIME\tSTATE\tREF\tTITLE\tKIND\tFLAGS")
+		if allWorkspaces {
+			fmt.Fprintln(w, "WORKSPACE\tDAY\tTIME\tSTATE\tREF\tTITLE\tKIND\tFLAGS")
+		} else {
+			fmt.Fprintln(w, "DAY\tTIME\tSTATE\tREF\tTITLE\tKIND\tFLAGS")
+		}
 		for _, e := range resp.Entries {
 			day, clock := e.Day, ""
 			allDay := e.AllDay || (e.Type == "date" && len(e.Date) == len("2006-01-02"))
@@ -1065,7 +1125,11 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 				// not widen or split the table's columns.
 				flagText = strings.TrimPrefix(flagText+"; "+acknowledgementLine(e.AcknowledgedAt, e.AcknowledgedBy, loc), "; ")
 			}
-			fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", day, clock, state, e.ItemRef, e.ItemTitle, kind, flagText)
+			if allWorkspaces {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", e.Workspace, day, clock, state, e.ItemRef, e.ItemTitle, kind, flagText)
+			} else {
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", day, clock, state, e.ItemRef, e.ItemTitle, kind, flagText)
+			}
 		}
 		_ = w.Flush()
 	}
@@ -1080,8 +1144,15 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 			if tz != "" {
 				hint += " --tz " + tz
 			}
-			if recipient != "" && recipient != "me" {
-				hint += " --recipient " + recipient
+			if allWorkspaces {
+				hint += " --all-workspaces --audience " + audience
+			} else {
+				if recipient != "" && recipient != "me" {
+					hint += " --recipient " + recipient
+				}
+				if audienceChanged {
+					hint += " --audience " + audience
+				}
 			}
 			fmt.Fprintf(out, "more after %s: %s\n", fmtInstant(resp.NextFrom, loc), hint)
 		} else {
@@ -1094,7 +1165,7 @@ func renderAgenda(cmd *cobra.Command, resp agendaResponse, loc *time.Location, e
 	for _, u := range resp.Unavailable {
 		fmt.Fprintf(out, "%s  unavailable  %s\n", u.ItemRef, u.Code)
 	}
-	renderAgendaGroups(out, resp, loc, recipient)
+	renderAgendaGroups(out, resp, loc, recipient, allWorkspaces)
 }
 
 // agendaCallerID resolves --recipient me to the caller's user ID. It is
@@ -1117,7 +1188,7 @@ func agendaCallerID(client *cli.Client) (string, error) {
 
 // renderAgendaGroups prints priority_list, waiting_on and no_date, each under
 // its own header, after a blank line.
-func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location, recipient string) {
+func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location, recipient string, allWorkspaces bool) {
 	title := func(t string) string { return strings.Join(strings.Fields(t), " ") }
 	group := func(header, columns string, rows []agendaGroupRow, complete bool, line func(agendaGroupRow) string) {
 		fmt.Fprintf(out, "\n%s (%d):\n", header, len(rows))
@@ -1139,13 +1210,27 @@ func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location, 
 			fmt.Fprintln(out, "  list incomplete: more not shown")
 		}
 	}
-	group("Priority", "RANK\tWHEN\tREF\tTITLE\tREASON", resp.PriorityList, resp.PriorityListComplete, func(r agendaGroupRow) string {
-		return strings.Join([]string{r.Rank, agendaGroupWhen(r, loc), r.ItemRef, title(r.ItemTitle), r.Reason}, "\t")
+	priorityCols := "RANK\tWHEN\tREF\tTITLE\tREASON"
+	itemCols := "REF\tTITLE\tREASON"
+	if allWorkspaces {
+		priorityCols = "WORKSPACE\t" + priorityCols
+		itemCols = "WORKSPACE\t" + itemCols
+	}
+	group("Priority", priorityCols, resp.PriorityList, resp.PriorityListComplete, func(r agendaGroupRow) string {
+		cols := []string{r.Rank, agendaGroupWhen(r, loc), r.ItemRef, title(r.ItemTitle), r.Reason}
+		if allWorkspaces {
+			cols = append([]string{r.Workspace}, cols...)
+		}
+		return strings.Join(cols, "\t")
 	})
 	item := func(r agendaGroupRow) string {
-		return strings.Join([]string{r.ItemRef, title(r.ItemTitle), r.Reason}, "\t")
+		cols := []string{r.ItemRef, title(r.ItemTitle), r.Reason}
+		if allWorkspaces {
+			cols = append([]string{r.Workspace}, cols...)
+		}
+		return strings.Join(cols, "\t")
 	}
-	group("Waiting on", "REF\tTITLE\tREASON", resp.WaitingOn, resp.WaitingOnComplete, item)
+	group("Waiting on", itemCols, resp.WaitingOn, resp.WaitingOnComplete, item)
 	if resp.NoDateScope == "personal_only" {
 		if recipient == "all" {
 			fmt.Fprintln(out, "\nNo date: not listed for the whole workspace; run with --recipient me to list your undated work.")
@@ -1156,7 +1241,7 @@ func renderAgendaGroups(out io.Writer, resp agendaResponse, loc *time.Location, 
 		}
 		return
 	}
-	group("No date", "REF\tTITLE\tREASON", resp.NoDate, resp.NoDateComplete, item)
+	group("No date", itemCols, resp.NoDate, resp.NoDateComplete, item)
 }
 
 // agendaGroupWhen is a group row's at as the main table shows it: date and

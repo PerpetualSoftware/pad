@@ -138,7 +138,7 @@ Interpret the user's intent and route to the appropriate action. Here are common
 `pad remind forecast set|clear` sets a hand-set milestone estimate; it arms nothing and is never a missed deadline.
 `pad remind child select|waive|remove <ref> <child-ref>` picks the children a milestone's result counts; `waive` needs `--reason` and counts the child as delivered.
 
-- "check this every weekday at 9" / "this is due Friday 5pm" / "what's on my agenda?" → a **schedule**: `pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays` (`--deadline hard|soft` for a due time, `--window 2h` for a span). The start is a wall time in the user's zone (no `Z`, no offset); omit `--tz` unless asked, and the server pins the account zone. Resolve an occurrence with `pad remind done|skip|snooze|move TASK-5`; list with `pad remind agenda`. There is no `pad cal`.
+- "check this every weekday at 9" / "this is due Friday 5pm" / "what's on my agenda?" → a **schedule**: `pad remind TASK-5 --start 2026-11-09T09:00 --every weekdays` (`--deadline hard|soft` for a due time, `--window 2h` for a span). The start is a wall time in the user's zone (no `Z`, no offset); omit `--tz` unless asked, and the server pins the account zone. Resolve an occurrence with `pad remind done|skip|snooze|move TASK-5`; list with `pad remind agenda`. A person's agenda as they see it in the UI is `pad remind agenda --all-workspaces --audience human`. There is no `pad cal`.
 - "what should I work on?" / "what's ready?" → `pad project ready` (actionable backlog); "what's stuck?" / "what needs attention?" → `pad project stale`
 - "show me status" / "how are we doing?" → `pad project dashboard`
 - "show me all tasks" / "list bugs" → `pad item list <collection>`
