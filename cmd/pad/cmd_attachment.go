@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,19 +20,12 @@ import (
 )
 
 // attachmentCmd is the root for `pad attachment ...` operations.
-//
-// Phase 1 ships upload + download — the endpoints TASK-871 and TASK-872
-// added. List + delete subcommands are intentionally absent because the
-// underlying endpoints don't exist yet (they ship with TASK-881 / a
-// future GC task). Adding clients that hit 404s is worse than not
-// shipping them — same logic that kept "url" out of the upload response
-// until the GET handler landed.
 func attachmentCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "attachment",
-		Short: "Upload, download, view, and list item attachments",
+		Short: "Upload, download, view, list, and delete item attachments",
 		RunE:  unknownSubcommandRun,
-		Long: `Upload, download, view, and list attachments (images, files) on items.
+		Long: `Upload, download, view, list, and delete attachments (images, files) on items.
 
 Attachments belong to a workspace and may optionally reference an item.
 Pass "-" as the item argument to upload without associating with any item.
@@ -51,7 +45,8 @@ deployments and respects workspace ACLs.`,
   pad attachment view <attachment-id> -o ./pic.png   # save to a chosen path
   pad attachment upload TASK-5 ./screenshot.png      # upload + attach to item
   pad attachment attach <attachment-id> TASK-5       # attach an unattached upload
-  pad attachment download <attachment-id> ./pic.png  # download to explicit path`,
+  pad attachment download <attachment-id> ./pic.png  # download to explicit path
+  pad attachment delete <attachment-id> [<id>...]    # delete after confirming (-y to skip)`,
 	}
 
 	cmd.AddCommand(
@@ -61,6 +56,7 @@ deployments and respects workspace ACLs.`,
 		attachmentViewCmd(),
 		attachmentShowCmd(),
 		attachmentListCmd(),
+		attachmentDeleteCmd(),
 	)
 	return cmd
 }
@@ -171,6 +167,118 @@ have uploaded the attachment or be a workspace owner.`,
 			return nil
 		},
 	}
+}
+
+// attachmentDeleteTarget is one id `attachment delete` resolved via HEAD.
+type attachmentDeleteTarget struct {
+	id       string
+	filename string
+	size     int64
+}
+
+func (t attachmentDeleteTarget) label() string {
+	return fmt.Sprintf("%s (%s)", t.filename, humanSize(t.size))
+}
+
+func attachmentDeleteCmd() *cobra.Command {
+	var yes bool
+	cmd := &cobra.Command{
+		Use:   "delete <attachment-id> [<attachment-id>...]",
+		Short: "Delete one or more attachments",
+		Long: `Delete attachments by id.
+
+Each attachment is looked up first (HEAD) so the filename and size are shown
+before anything is removed. Asks for confirmation unless --yes is given.
+
+Every id is attempted: one that fails (not found, not permitted) is reported
+on stderr and does not stop the rest, and the command exits non-zero if any
+id failed. The server decides who may delete an attachment, per attachment;
+an unknown id and one from another workspace both read as not found.`,
+		Example: `  pad attachment delete 3f2a9c1e-...
+  pad attachment delete 3f2a9c1e-... 8b1d77aa-... --yes`,
+		Aliases: []string{"rm"},
+		Args:    cobra.MinimumNArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			client, _ := getClient()
+			ws := getWorkspace()
+			errOut := cmd.ErrOrStderr()
+
+			type result struct {
+				ID       string `json:"id"`
+				Filename string `json:"filename,omitempty"`
+				Size     int64  `json:"size,omitempty"`
+				Deleted  bool   `json:"deleted"`
+				Error    string `json:"error,omitempty"`
+			}
+			var results []result
+			failed := 0
+			fail := func(id string, err error) {
+				failed++
+				results = append(results, result{ID: id, Error: err.Error()})
+				if formatFlag != "json" {
+					fmt.Fprintf(errOut, "%s: %v\n", id, err)
+				}
+			}
+
+			var targets []attachmentDeleteTarget
+			seen := map[string]bool{}
+			for _, id := range args {
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+				meta, err := client.HeadAttachment(ws, id, "")
+				if err != nil {
+					fail(id, cli.AttachmentNotFound(err, id, ws))
+					continue
+				}
+				name := parseAttachmentFilename(meta.ContentDisposition)
+				if name == "" {
+					name = id
+				}
+				targets = append(targets, attachmentDeleteTarget{id: id, filename: name, size: meta.Size})
+			}
+
+			if len(targets) > 0 && !yes {
+				for _, t := range targets {
+					fmt.Fprintf(errOut, "  %s  %s\n", t.id, t.label())
+				}
+				noun := "attachment"
+				if len(targets) != 1 {
+					noun = "attachments"
+				}
+				fmt.Fprintf(errOut, "Delete %d %s? [y/N] ", len(targets), noun)
+				line, _ := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+				if a := strings.ToLower(strings.TrimSpace(line)); a != "y" && a != "yes" {
+					fmt.Fprintln(errOut, "Cancelled.")
+					targets = nil
+				}
+			}
+
+			for _, t := range targets {
+				if err := client.DeleteAttachment(ws, t.id); err != nil {
+					fail(t.id, err)
+					continue
+				}
+				results = append(results, result{ID: t.id, Filename: t.filename, Size: t.size, Deleted: true})
+				if formatFlag != "json" {
+					fmt.Printf("Deleted %s [%s]\n", t.label(), t.id)
+				}
+			}
+
+			if formatFlag == "json" {
+				if err := cli.PrintJSON(results); err != nil {
+					return err
+				}
+			}
+			if failed > 0 {
+				return fmt.Errorf("%d of %d attachments failed to delete", failed, len(results))
+			}
+			return nil
+		},
+	}
+	cmd.Flags().BoolVarP(&yes, "yes", "y", false, "delete without asking")
+	return cmd
 }
 
 func attachmentDownloadCmd() *cobra.Command {
