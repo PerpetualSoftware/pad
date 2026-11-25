@@ -379,6 +379,32 @@ func (s *Store) nextRoleLaneArrivalSortOrderTx(tx *sql.Tx, workspaceID, roleIDOr
 		return 0, fmt.Errorf("role arrival lock role: %w", err)
 	}
 
+	// Fast path: one indexed MAX over the role's live items (terminal ones
+	// included: they never sit in the queue, so counting them only moves the
+	// arrival further down). Every item create and role change runs this under
+	// the workspace seq lock, so it must not load the lane's whole history.
+	// Only when the value would pass the limit does the slow path load the
+	// canonical lane and respace it.
+	var laneMax sql.NullInt64
+	if err := tx.QueryRow(s.q(`
+		SELECT MAX(role_sort_order)
+		FROM items
+		WHERE workspace_id = ? AND agent_role_id = ? AND deleted_at IS NULL
+	`), workspaceID, resolvedRoleID).Scan(&laneMax); err != nil {
+		return 0, fmt.Errorf("role arrival lane max: %w", err)
+	}
+	fast := int64(0)
+	if laneMax.Valid {
+		fast = laneMax.Int64
+	}
+	if parkMode == models.ParkModeLine && parkSortOrder.Valid && parkSortOrder.Int64 > fast {
+		fast = parkSortOrder.Int64
+	}
+	fast += roleSortStep
+	if fast <= roleSortRespaceLimit {
+		return int(fast), nil
+	}
+
 	nowStr := now()
 	lane, err := s.loadRoleLaneQ(tx, workspaceID, resolvedRoleID, nowStr)
 	if err != nil {
@@ -555,7 +581,7 @@ func (s *Store) SetRolePark(workspaceID, roleIDOrSlug string, spec ParkSpec, exp
 	var gotSeq int
 	if err := tx.QueryRow(s.q(`
 		SELECT r.park_mode, r.park_sort_order, r.park_set_at, r.park_set_by_user_id, r.park_seq,
-		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.email END FROM users u WHERE u.id = r.park_set_by_user_id)
+		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.username END FROM users u WHERE u.id = r.park_set_by_user_id)
 		FROM agent_roles r
 		WHERE r.id = ? AND r.workspace_id = ?
 	`), resolvedRoleID, workspaceID).Scan(&gotMode, &gotSortOrder, &gotSetAt, &gotSetByUserID, &gotSeq, &gotSetBy); err != nil {

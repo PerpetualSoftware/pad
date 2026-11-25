@@ -501,3 +501,65 @@ func TestRolePark_NowItemNeverParked(t *testing.T) {
 		t.Error("Gamma (open, no lease) must NOT be Now")
 	}
 }
+
+// TestRolePark_SetByNeverEmail pins the setter display: the name when there is
+// one, else the username, never the email. Role reads go to every member,
+// guests included, so an email there would leak an address.
+func TestRolePark_SetByNeverEmail(t *testing.T) {
+	t.Parallel()
+	s, ws, _, role, user, _ := seedRoleParkFixture(t)
+
+	park, err := s.SetRolePark(ws.ID, role.ID, ParkAtTop(), nil, user.ID)
+	if err != nil {
+		t.Fatalf("SetRolePark: %v", err)
+	}
+	if park.SetBy == nil || *park.SetBy != "Parker" {
+		t.Fatalf("set_by = %v, want Parker", park.SetBy)
+	}
+
+	if _, err := s.db.Exec(s.q(`UPDATE users SET name = '' WHERE id = ?`), user.ID); err != nil {
+		t.Fatalf("blank name: %v", err)
+	}
+	park, err = s.SetRolePark(ws.ID, role.ID, ParkAtTop(), nil, user.ID)
+	if err != nil {
+		t.Fatalf("SetRolePark again: %v", err)
+	}
+	if park.SetBy == nil || *park.SetBy != "parker" {
+		t.Fatalf("set_by with blank name = %v, want the username parker", park.SetBy)
+	}
+	got, err := s.GetAgentRole(ws.ID, role.ID)
+	if err != nil {
+		t.Fatalf("GetAgentRole: %v", err)
+	}
+	roles, err := s.ListAgentRoles(ws.ID)
+	if err != nil {
+		t.Fatalf("ListAgentRoles: %v", err)
+	}
+	for _, p := range []*models.RolePark{got.Park, roles[0].Park} {
+		if p == nil || p.SetBy == nil || *p.SetBy != "parker" {
+			t.Fatalf("role read set_by = %v, want parker", p)
+		}
+	}
+}
+
+// TestRoleArrival_FastPathBelowEveryLiveItem pins that an arrival
+// lands below every live item of the role, terminal ones included, without
+// loading the lane: the value is max(role_sort_order) + 1024.
+func TestRoleArrival_FastPathBelowEveryLiveItem(t *testing.T) {
+	t.Parallel()
+	s, ws, col, role, _, items := seedRoleParkFixture(t)
+
+	if err := s.UpdateRoleSortOrder(ws.ID, []RoleSortUpdate{{ItemID: items[0].ID, RoleSortOrder: 50000}}); err != nil {
+		t.Fatalf("UpdateRoleSortOrder: %v", err)
+	}
+	if _, err := s.UpdateItem(items[0].ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+	it, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Arrival", Fields: `{"status":"open"}`, AgentRoleID: &role.ID})
+	if err != nil {
+		t.Fatalf("CreateItem: %v", err)
+	}
+	if it.RoleSortOrder != 50000+1024 {
+		t.Fatalf("arrival role_sort_order = %d, want %d", it.RoleSortOrder, 50000+1024)
+	}
+}

@@ -48,7 +48,7 @@ func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, e
 		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.tools, r.sort_order,
 		       r.created_at, r.updated_at,
 		       r.park_mode, r.park_sort_order, r.park_set_at, r.park_set_by_user_id, r.park_seq,
-		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.email END FROM users u WHERE u.id = r.park_set_by_user_id)
+		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.username END FROM users u WHERE u.id = r.park_set_by_user_id)
 		FROM agent_roles r
 		WHERE r.workspace_id = ? AND (r.id = ? OR r.slug = ?)
 	`), workspaceID, idOrSlug, idOrSlug).Scan(
@@ -78,7 +78,7 @@ func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
 		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.tools, r.sort_order,
 		       r.created_at, r.updated_at,
 		       r.park_mode, r.park_sort_order, r.park_set_at, r.park_set_by_user_id, r.park_seq,
-		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.email END FROM users u WHERE u.id = r.park_set_by_user_id),
+		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.username END FROM users u WHERE u.id = r.park_set_by_user_id),
 		       COUNT(i.id) as item_count
 		FROM agent_roles r
 		LEFT JOIN items i ON i.agent_role_id = r.id AND i.deleted_at IS NULL
