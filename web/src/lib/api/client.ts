@@ -1768,11 +1768,14 @@ export const api = {
 		exportUrl: workspaceExportUrl,
 
 		// preflightExport requests the bundle export URL in check-only mode
-		// (`check=true`, TASK-4848): the server runs every metadata, manifest,
-		// attachment-storage and tar-entry check and answers 204 No Content
-		// with no body when all pass, so the caller can then start the real
-		// browser download (which streams the bundle once) without triggering
-		// a streaming response during preflight. Aborting the internal
+		// (`check=true`, TASK-4848): the server runs the checks the real
+		// export runs before its first byte (metadata limit, attachment
+		// storage configured, manifest limit, tar entry and header-block caps)
+		// and answers 204 No Content with no body when all pass, so the caller
+		// can then start the real browser download, which spools the export
+		// once. Blobs are not read: one that cannot be read mid-stream still
+		// breaks the download, which the server reports by leaving out the
+		// X-Bundle-Status trailer. Aborting the internal
 		// controller on any 2xx stays harmless here and also guards against an
 		// older server that ignores `check` and starts streaming. A refusal
 		// (422 export_too_large, or any other non-2xx) rejects with a

@@ -142,7 +142,8 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 	// 2. Verify the settings-page export control is wired correctly.
 	// This pins the user-visible contract of the export half: the
 	// Download button (history kept by default) preflights the
-	// bundle URL, the server accepts it, and no refusal is shown.
+	// bundle URL in check-only mode, the server accepts it with a
+	// 204, and no refusal is shown.
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/settings`);
 	await page.waitForLoadState('domcontentloaded');
 
@@ -150,10 +151,10 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 	await expect(downloadButton).toBeVisible();
 	await expect(page.getByLabel('Leave out version history')).not.toBeChecked();
 	const preflight = page.waitForResponse(
-		(r) => /\/workspaces\/[^/]+\/export\?format=tar$/.test(r.url()) && r.request().resourceType() === 'fetch'
+		(r) => /\/workspaces\/[^/]+\/export\?format=tar&check=true$/.test(r.url()) && r.request().resourceType() === 'fetch'
 	);
 	await downloadButton.click();
-	expect((await preflight).status()).toBe(200);
+	expect((await preflight).status()).toBe(204);
 	await expect(downloadButton).toBeEnabled();
 	await expect(page.locator('.field-row', { has: downloadButton }).getByRole('alert')).toHaveCount(0);
 
