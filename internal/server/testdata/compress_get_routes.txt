@@ -93,6 +93,7 @@ compress /api/v1/workspaces/{slug}/activity
 compress /api/v1/workspaces/{slug}/agenda
 compress /api/v1/workspaces/{slug}/agent-roles/
 compress /api/v1/workspaces/{slug}/agent-roles/{roleID}/
+compress /api/v1/workspaces/{slug}/agent-roles/{roleID}/queue
 compress /api/v1/workspaces/{slug}/agent/bootstrap
 compress /api/v1/workspaces/{slug}/apps
 compress /api/v1/workspaces/{slug}/apps/install/pending/{pendingID}

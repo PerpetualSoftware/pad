@@ -302,3 +302,19 @@ func TestRoleParkRoute_EmptyAnchorRefused(t *testing.T) {
 		}
 	}
 }
+
+// An empty role is refused over HTTP, as the CLI refuses --role "" on stdio.
+func TestProjectRoleParam_EmptyRefused(t *testing.T) {
+	for _, v := range []any{"", "   "} {
+		_, ok, res := projectRoleParam(map[string]any{"role": v}, "project ready")
+		if ok || res == nil || !res.IsError {
+			t.Fatalf("role %q: ok=%v res=%v, want a refusal", v, ok, res)
+		}
+		if got := decodeEnvelope(t, res).Error.Code; got != ErrValidationFailed {
+			t.Fatalf("role %q: code = %q, want validation_failed", v, got)
+		}
+	}
+	if _, ok, res := projectRoleParam(map[string]any{}, "project ready"); ok || res != nil {
+		t.Fatalf("absent role: ok=%v res=%v, want absent with no error", ok, res)
+	}
+}

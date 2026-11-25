@@ -124,7 +124,8 @@ func projectRoleParam(input map[string]any, cmdKey string) (string, bool, *CallT
 	}
 	s = strings.TrimSpace(s)
 	if s == "" {
-		return "", false, nil
+		// Refused, as the CLI refuses --role "", so both transports agree.
+		return "", false, validationFailedResult(cmdKey, "role must not be empty", "Pass role=<slug> naming an agent role, or omit role.")
 	}
 	return s, true, nil
 }
