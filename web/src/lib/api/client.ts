@@ -897,6 +897,17 @@ function redirectToLogin(href: string): void {
 }
 
 /**
+ * The /login URL for a session expiry, carrying the current location as the
+ * `?redirect=` return-to target (BUG-1929 / IDEA-1927 §B2(c)); /login
+ * validates and consumes it (see $lib/auth/redirect.ts). The registered
+ * provider wins over the address bar (the page beneath an open Chat).
+ */
+function loginReturnHref(): string {
+	const target = returnPathProvider?.() || window.location.pathname + window.location.search;
+	return `/login?redirect=${encodeURIComponent(target)}`;
+}
+
+/**
  * Endpoints hit only from explicit, unauthenticated auth-form submissions
  * (login, register, 2FA challenge). A 401 from these means "the
  * credentials/code the user just typed were wrong", not "your session
@@ -1162,12 +1173,9 @@ async function requestAttempt<T>(
 		}
 		// Redirect to login page (avoid infinite loop), preserving the
 		// current location as a return-to target so a genuine session
-		// expiry doesn't strand the user wherever they were (BUG-1929 /
-		// IDEA-1927 §B2(c)) — /login already validates and consumes
-		// `?redirect=` (see $lib/auth/redirect.ts).
+		// expiry doesn't strand the user wherever they were.
 		if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-			const target = returnPathProvider?.() || window.location.pathname + window.location.search;
-			redirectToLogin(`/login?redirect=${encodeURIComponent(target)}`);
+			redirectToLogin(loginReturnHref());
 		}
 		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 	}
@@ -1578,6 +1586,18 @@ export interface InvitationPreview {
 // for the rest of the session — a later call retries.
 let serverCapabilitiesCache: Promise<ServerCapabilities> | null = null;
 
+export interface WorkspaceExportOptions {
+	/** false adds include_versions=false; anything else keeps version history. */
+	includeVersions?: boolean;
+}
+
+/** The workspace tar.gz bundle URL (GET /workspaces/{slug}/export?format=tar). */
+export function workspaceExportUrl(slug: string, opts: WorkspaceExportOptions = {}): string {
+	const q = new URLSearchParams({ format: 'tar' });
+	if (opts.includeVersions === false) q.set('include_versions', 'false');
+	return `${BASE}/workspaces/${encodeURIComponent(slug)}/export?${q.toString()}`;
+}
+
 export const api = {
 	calendarFeeds: {
 		list: async () => (await request<{ feeds: CalendarFeed[] }>('/me/calendar-feeds')).feeds,
@@ -1739,6 +1759,66 @@ export const api = {
 		// (PLAN-1519 / TASK-1525 / IDEA-1517 §4).
 		claimCode: (slug: string) =>
 			request<ClaimCodeResponse>(`/workspaces/${slug}/claim-code`),
+
+		// The tar.gz bundle URL (GET /workspaces/{slug}/export, TASK-4845).
+		exportUrl: workspaceExportUrl,
+
+		// preflightExport asks for the exact bundle URL and resolves once the
+		// server has committed to a 2xx, which it does only after its size and
+		// entry checks pass. The body is never read: the bundle carries the
+		// attachment blobs and can be gigabytes, so the request is aborted as
+		// soon as the headers arrive and the caller starts the real browser
+		// download of the same URL. A refusal (422 export_too_large, or any
+		// other non-2xx) rejects with a PadApiError carrying code and details
+		// (TASK-4845).
+		//
+		// No deadline of its own: the server spools the whole bundle before it
+		// answers, and a large workspace can take minutes. The caller's signal
+		// is the way out instead; aborting it aborts the request (which also
+		// stops the server's spool) and rejects with export_cancelled.
+		preflightExport: async (
+			slug: string,
+			opts: WorkspaceExportOptions = {},
+			signal?: AbortSignal
+		): Promise<void> => {
+			const controller = new AbortController();
+			const onAbort = () => controller.abort();
+			if (signal?.aborted) controller.abort();
+			else signal?.addEventListener('abort', onAbort, { once: true });
+			let resp: Response;
+			try {
+				resp = await fetch(workspaceExportUrl(slug, opts), {
+					credentials: 'same-origin',
+					signal: controller.signal
+				});
+			} catch {
+				if (signal?.aborted) {
+					throw new PadApiError({ code: 'export_cancelled', message: 'Export cancelled.' });
+				}
+				throw new PadApiError({
+					code: 'network_error',
+					message: 'Could not reach the server. Check your connection and try again.'
+				});
+			} finally {
+				signal?.removeEventListener('abort', onAbort);
+			}
+			if (resp.ok) {
+				controller.abort();
+				return;
+			}
+			if (resp.status === 401) {
+				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+					redirectToLogin(loginReturnHref());
+				}
+				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+			}
+			const body = await resp.json().catch(() => null);
+			if (body?.error) throw new PadApiError(body.error);
+			throw new PadApiError({
+				code: 'export_failed',
+				message: `Export failed (status ${resp.status}). Try again.`
+			});
+		},
 
 		// importBundle uploads a workspace tar.gz bundle to the bundle-import
 		// endpoint. The server dispatches on Content-Type

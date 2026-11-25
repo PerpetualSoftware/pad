@@ -146,6 +146,15 @@ describe('api client 401 handling (BUG-1929)', () => {
 		);
 	});
 
+	it('a 401 on the workspace export preflight keeps the return-to path too', async () => {
+		const win = stubWindow('/alice/acme/settings', '?tab=general');
+		mockFetchOnce(401, {});
+		await expect(api.workspaces.preflightExport('acme')).rejects.toMatchObject({ code: 'unauthorized' });
+		expect(win.location.href).toBe(
+			`/login?redirect=${encodeURIComponent('/alice/acme/settings?tab=general')}`
+		);
+	});
+
 	it('the return-to path comes from the registered provider (the page beneath an open Chat), not the address bar', async () => {
 		const win = stubWindow('/messages/7');
 		setReturnPathProvider(() => '/ws/tasks?status=done');
