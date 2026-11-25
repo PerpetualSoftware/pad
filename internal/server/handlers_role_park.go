@@ -1,7 +1,7 @@
 package server
 
 import (
-	"encoding/json"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -36,37 +36,48 @@ type roleParkResponse struct {
 }
 
 // decodeStrictSetRoleParkRequest decodes a single setRoleParkRequest JSON
-// object, refusing unknown fields and trailing tokens.
+// object through readBodyForDecode and decodeJSONBytes (size cap, NUL and
+// repeated-member refusal, trailing data refused), then refuses unknown
+// fields. An empty body is refused.
 func decodeStrictSetRoleParkRequest(r *http.Request, req *setRoleParkRequest) error {
-	if r.Body == nil {
-		return errors.New("request body is required")
-	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(req); err != nil {
+	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return errors.New("request body is required")
+		}
 		return err
 	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return errors.New("unexpected trailing data in request body")
+	if len(bytes.Trim(raw, " \t\r\n")) == 0 {
+		return errors.New("request body is required")
 	}
+	got, err := strictBodyBytes[setRoleParkRequest](raw)
+	if err != nil {
+		return err
+	}
+	*req = got
 	return nil
 }
 
-// decodeStrictClearRoleParkRequest decodes a single clearRoleParkRequest JSON
-// object, refusing unknown fields and trailing tokens.
-func decodeStrictClearRoleParkRequest(r *http.Request, req *clearRoleParkRequest) error {
-	if r.Body == nil {
-		return io.EOF
+// decodeStrictClearRoleParkRequest decodes an optional clearRoleParkRequest
+// JSON object the same way. present is false for an absent or empty
+// (JSON-whitespace-only) body, which the DELETE accepts.
+func decodeStrictClearRoleParkRequest(r *http.Request, req *clearRoleParkRequest) (present bool, err error) {
+	raw, err := readBodyForDecode(r, defaultJSONBodyLimit)
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return false, nil
+		}
+		return false, err
 	}
-	dec := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(req); err != nil {
-		return err
+	if len(bytes.Trim(raw, " \t\r\n")) == 0 {
+		return false, nil
 	}
-	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		return errors.New("unexpected trailing data in request body")
+	got, err := strictBodyBytes[clearRoleParkRequest](raw)
+	if err != nil {
+		return false, err
 	}
-	return nil
+	*req = got
+	return true, nil
 }
 
 // handleSetRolePark places or moves a role lane's park line:
@@ -238,12 +249,13 @@ func (s *Server) handleClearRolePark(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var expectedSeq *int
-	if r.Body != nil && r.ContentLength != 0 {
-		var req clearRoleParkRequest
-		if err := decodeStrictClearRoleParkRequest(r, &req); err != nil && !errors.Is(err, io.EOF) {
-			writeError(w, http.StatusBadRequest, "validation_error", "Invalid park clear body: "+err.Error())
-			return
-		}
+	var req clearRoleParkRequest
+	present, err := decodeStrictClearRoleParkRequest(r, &req)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "Invalid park clear body: "+err.Error())
+		return
+	}
+	if present {
 		if req.ExpectedParkSeq != nil && *req.ExpectedParkSeq < 0 {
 			writeError(w, http.StatusBadRequest, "validation_error", "expected_park_seq must be non-negative")
 			return

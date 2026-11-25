@@ -3,6 +3,8 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -711,5 +713,59 @@ func TestClaim_OwnLeaseAndNowNeverParked(t *testing.T) {
 	rr = doRequestWithHeaders(f.srv, http.MethodPost, claim1, map[string]any{"holder": "agent-ed"}, bearerHdr(f.editorTok))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("claim Now item under park: got %d %s, want 200", rr.Code, rr.Body.String())
+	}
+}
+
+// TestParkEndpoint_BodyGoesThroughSharedDecoder pins that both park bodies
+// are read by the shared decoder: a decoded NUL and a repeated member are
+// refused with 400 on PUT and DELETE, an empty PUT body is refused, and an
+// empty or JSON-whitespace DELETE body still clears the park.
+func TestParkEndpoint_BodyGoesThroughSharedDecoder(t *testing.T) {
+	t.Parallel()
+	f := newParkEndpointFixture(t)
+	parkPath := "/api/v1/workspaces/" + f.ws.Slug + "/agent-roles/" + f.role.Slug + "/park"
+
+	refused := []struct {
+		name   string
+		method string
+		body   string
+	}{
+		{"PUT NUL in before", http.MethodPut, `{"before":"TASK-1\u0000"}`},
+		{"PUT repeated member", http.MethodPut, `{"at":"top","expected_park_seq":0,"expected_park_seq":1}`},
+		{"DELETE repeated member", http.MethodDelete, `{"expected_park_seq":0,"expected_park_seq":1}`},
+		{"DELETE unknown field", http.MethodDelete, `{"bogus":true}`},
+	}
+	for _, tc := range refused {
+		rr := doRequestWithHeaders(f.srv, tc.method, parkPath, json.RawMessage(tc.body), bearerHdr(f.ownerTok))
+		if rr.Code != http.StatusBadRequest {
+			t.Fatalf("%s: got %d %s, want 400", tc.name, rr.Code, rr.Body.String())
+		}
+	}
+
+	req := httptest.NewRequest(http.MethodPut, parkPath, strings.NewReader(" \n"))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range bearerHdr(f.ownerTok) {
+		req.Header.Set(k, v)
+	}
+	rr := httptest.NewRecorder()
+	f.srv.ServeHTTP(rr, req)
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("PUT whitespace body: got %d %s, want 400", rr.Code, rr.Body.String())
+	}
+
+	for _, body := range []string{"", " \r\n"} {
+		rr := doRequestWithHeaders(f.srv, http.MethodPut, parkPath, map[string]any{"at": "top"}, bearerHdr(f.ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PUT at top: got %d %s", rr.Code, rr.Body.String())
+		}
+		req := httptest.NewRequest(http.MethodDelete, parkPath, strings.NewReader(body))
+		for k, v := range bearerHdr(f.ownerTok) {
+			req.Header.Set(k, v)
+		}
+		rr = httptest.NewRecorder()
+		f.srv.ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("DELETE body %q: got %d %s, want 200", body, rr.Code, rr.Body.String())
+		}
 	}
 }
