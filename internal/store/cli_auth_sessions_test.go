@@ -1,6 +1,7 @@
 package store
 
 import (
+	"database/sql"
 	"testing"
 	"time"
 )
@@ -138,5 +139,94 @@ func TestCLIAuthSessionCreateSweepRevokesApprovedTokens(t *testing.T) {
 	}
 	if info, err := s.ValidateSession(expiredTok); err != nil || info != nil {
 		t.Fatalf("expired minted session still validates after create sweep: (%+v, %v)", info, err)
+	}
+}
+
+func TestCLIAuthSessionCollectTokenOnceInsideTTL(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := createTestUser(t, s, "cli-collect@test.com", "CLI Collector", "password123")
+
+	cliSess, err := s.CreateCLIAuthSession()
+	if err != nil {
+		t.Fatalf("CreateCLIAuthSession: %v", err)
+	}
+	mintedToken, err := s.CreateSession(u.ID, "cli-browser-auth", "127.0.0.1", "", 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.ApproveCLIAuthSession(cliSess.Code, mintedToken, u.ID); err != nil {
+		t.Fatalf("ApproveCLIAuthSession: %v", err)
+	}
+
+	if ok, err := s.CollectCLIAuthToken(cliSess.Code, "not-the-token"); err != nil || ok {
+		t.Fatalf("collect with a stale token = (%v, %v), want (false, nil)", ok, err)
+	}
+	if ok, err := s.CollectCLIAuthToken(cliSess.Code, mintedToken); err != nil || !ok {
+		t.Fatalf("first collect = (%v, %v), want (true, nil)", ok, err)
+	}
+	if ok, err := s.CollectCLIAuthToken(cliSess.Code, mintedToken); err != nil || ok {
+		t.Fatalf("second collect = (%v, %v), want (false, nil)", ok, err)
+	}
+	if info, err := s.ValidateSession(mintedToken); err != nil || info == nil {
+		t.Fatalf("collected session should stay valid: info=%+v err=%v", info, err)
+	}
+}
+
+func TestCLIAuthSessionCollectTokenRefusedAfterExpiry(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := createTestUser(t, s, "cli-collect-late@test.com", "CLI Late", "password123")
+
+	cliSess, err := s.CreateCLIAuthSession()
+	if err != nil {
+		t.Fatalf("CreateCLIAuthSession: %v", err)
+	}
+	mintedToken, err := s.CreateSession(u.ID, "cli-browser-auth", "127.0.0.1", "", 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.ApproveCLIAuthSession(cliSess.Code, mintedToken, u.ID); err != nil {
+		t.Fatalf("ApproveCLIAuthSession: %v", err)
+	}
+	past := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`UPDATE cli_auth_sessions SET expires_at = ? WHERE code = ?`), past, cliSess.Code); err != nil {
+		t.Fatalf("backdate expires_at: %v", err)
+	}
+
+	if ok, err := s.CollectCLIAuthToken(cliSess.Code, mintedToken); err != nil || ok {
+		t.Fatalf("collect after expiry = (%v, %v), want (false, nil)", ok, err)
+	}
+}
+
+func TestCLIAuthSessionApproveRefusesRowExpiredSinceRead(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := createTestUser(t, s, "cli-late-approve@test.com", "CLI Late Approver", "password123")
+
+	cliSess, err := s.CreateCLIAuthSession()
+	if err != nil {
+		t.Fatalf("CreateCLIAuthSession: %v", err)
+	}
+	// An expired code must never end up holding a token. The read inside
+	// Approve refuses it first; the write carries the same expiry filter for
+	// the gap between that read and the write, which no test here can open.
+	past := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`UPDATE cli_auth_sessions SET expires_at = ? WHERE code = ?`), past, cliSess.Code); err != nil {
+		t.Fatalf("backdate expires_at: %v", err)
+	}
+	mintedToken, err := s.CreateSession(u.ID, "cli-browser-auth", "127.0.0.1", "", 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.ApproveCLIAuthSession(cliSess.Code, mintedToken, u.ID); err == nil {
+		t.Fatal("approving an expired code succeeded, want an error")
+	}
+	var token sql.NullString
+	if err := s.db.QueryRow(s.q(`SELECT token FROM cli_auth_sessions WHERE code = ?`), cliSess.Code).Scan(&token); err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if token.Valid && token.String != "" {
+		t.Fatalf("expired row was given a token")
 	}
 }

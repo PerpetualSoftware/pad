@@ -258,6 +258,27 @@ func (s *Store) DenyCLIAuthSession(code string) error {
 	return ErrCLIAuthNotPending
 }
 
+// CollectCLIAuthToken hands an approved session's token to its poller at
+// most once (BUG-4836). It deletes the row only while it is still approved,
+// still holds this token and has not expired, and reports whether it did:
+// only then may the caller return the token. A row the expiry sweep or
+// another poll got to first, or one that expired since it was read, is not
+// collected, so no poller is handed a token that is being revoked.
+func (s *Store) CollectCLIAuthToken(code, token string) (bool, error) {
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM cli_auth_sessions
+		WHERE code = ? AND status = 'approved' AND token = ? AND expires_at >= ?
+	`), code, token, now())
+	if err != nil {
+		return false, fmt.Errorf("collect cli auth token: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("collect cli auth token: %w", err)
+	}
+	return rows == 1, nil
+}
+
 // DeleteCLIAuthSession removes a CLI auth session by code.
 func (s *Store) DeleteCLIAuthSession(code string) error {
 	_, err := s.db.Exec(s.q(`DELETE FROM cli_auth_sessions WHERE code = ?`), code)

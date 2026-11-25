@@ -106,6 +106,21 @@ func (s *Server) handlePollCLIAuthSession(w http.ResponseWriter, r *http.Request
 
 	// Only include the token and user info when approved
 	if sess.Status == "approved" && sess.Token != "" {
+		// Collect before answering: the token goes out only if this poll
+		// removed the still-live row. Otherwise the code expired, or a
+		// sweep or another poll reached it first, and it answers expired.
+		collected, err := s.store.CollectCLIAuthToken(code, sess.Token)
+		if err != nil {
+			writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Failed to check CLI auth session")
+			return
+		}
+		if !collected {
+			// Re-reading revokes the minted session now if the row is
+			// still there past its expiry, rather than at the next sweep.
+			_, _ = s.store.GetCLIAuthSession(code)
+			writeJSON(w, http.StatusOK, map[string]interface{}{"status": "expired"})
+			return
+		}
 		response["token"] = sess.Token
 
 		// Look up user info to return alongside the token
@@ -115,9 +130,6 @@ func (s *Server) handlePollCLIAuthSession(w http.ResponseWriter, r *http.Request
 				response["user"] = sessionUserPayload(user)
 			}
 		}
-
-		// Clean up the session after it's been consumed
-		_ = s.store.DeleteCLIAuthSession(code)
 	}
 
 	writeJSON(w, http.StatusOK, response)
@@ -223,6 +235,12 @@ func (s *Server) handleApproveCLIAuthSession(w http.ResponseWriter, r *http.Requ
 		// leave a live 30-day credential unreferenced.
 		_ = s.store.DeleteSession(token)
 		if errors.Is(err, store.ErrCLIAuthNotPending) {
+			// Expired between the read above and this write: answer as
+			// an expired code does (BUG-4836).
+			if cur, gErr := s.store.GetCLIAuthSession(code); gErr == nil && cur != nil && cur.Status == "expired" {
+				writeError(w, http.StatusGone, "expired", "This CLI auth session has expired. Run 'pad auth login' again.")
+				return
+			}
 			// Denied (or approved elsewhere) between the read above and
 			// this write (TASK-2253).
 			writeError(w, http.StatusConflict, "cli_auth_denied", "This sign-in is no longer waiting for approval. Run 'pad auth login' again.")
