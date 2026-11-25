@@ -299,7 +299,12 @@ func (s *Store) loadRoleLaneQ(q Queryer, workspaceID, roleID, nowStr string) ([]
 // respaceRoleLane rewrites every live non-terminal item in the role's
 // canonical lane (Now items included) to role_sort_order = 1024*(i+1), bumping
 // workspace seq per changed row, and remaps park_sort_order when mode is line
-// so the exact same items stay above and below the park line.
+// so the exact same items stay above and below the park line. The role's
+// other live items (terminal ones and ones in archived collections) follow
+// the lane in their old canonical order, so the respace covers every row the
+// arrival fast path's MAX reads, and an item that reopens or whose collection
+// is restored comes back below the lane: parked under any line, never above.
+// The returned lane holds the canonical lane only.
 // Caller must already hold the workspace seq lock and the role row lock on tx.
 func (s *Store) respaceRoleLane(tx *sql.Tx, workspaceID, roleID string) ([]roleLaneEntry, error) {
 	nowStr := now()
@@ -339,6 +344,53 @@ func (s *Store) respaceRoleLane(tx *sql.Tx, workspaceID, roleID string) ([]roleL
 		}
 	}
 
+	// The rows outside the lane, so no row keeps a value the fast path reads.
+	inLane := make(map[string]bool, len(lane))
+	for i := range lane {
+		inLane[lane[i].item.ID] = true
+	}
+	rows, err := tx.Query(s.q(`
+		SELECT id, role_sort_order, created_at, item_number
+		FROM items
+		WHERE workspace_id = ? AND agent_role_id = ? AND deleted_at IS NULL
+	`), workspaceID, roleID)
+	if err != nil {
+		return nil, fmt.Errorf("respace load rows outside lane: %w", err)
+	}
+	var rest []models.Item
+	for rows.Next() {
+		var it models.Item
+		var createdAt string
+		var itemNum sql.NullInt64
+		if err := rows.Scan(&it.ID, &it.RoleSortOrder, &createdAt, &itemNum); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		if inLane[it.ID] {
+			continue
+		}
+		it.CreatedAt = parseTime(createdAt)
+		if itemNum.Valid {
+			n := int(itemNum.Int64)
+			it.ItemNumber = &n
+		}
+		rest = append(rest, it)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	SortRoleLane(rest)
+	for j := range rest {
+		newOrder := roleSortStep * (len(lane) + j + 1)
+		if rest[j].RoleSortOrder != newOrder {
+			if _, err := stmt.Exec(newOrder, workspaceID, rest[j].ID, workspaceID); err != nil {
+				return nil, fmt.Errorf("respace update item %s: %w", rest[j].ID, err)
+			}
+		}
+	}
+
 	if parkMode == models.ParkModeLine && parkSortOrder.Valid {
 		oldP := int(parkSortOrder.Int64)
 		newP := roleSortStep * (len(lane) + 1)
@@ -359,9 +411,9 @@ func (s *Store) respaceRoleLane(tx *sql.Tx, workspaceID, roleID string) ([]roleL
 }
 
 // nextRoleLaneArrivalSortOrderTx computes the role_sort_order for an item
-// arriving in roleIDOrSlug's lane: max(lane max role_sort_order, P if mode
-// line else 0) + 1024. If that value would pass 2^30, the lane is respaced
-// first (which also remaps P).
+// arriving in roleIDOrSlug's lane: max(role_sort_order over every live item
+// of the role, P if mode line else 0) + 1024. If that value would pass 2^30,
+// the role is respaced first (which also remaps P) and the value recomputed.
 // Caller must already hold the workspace seq lock on tx.
 func (s *Store) nextRoleLaneArrivalSortOrderTx(tx *sql.Tx, workspaceID, roleIDOrSlug string) (int, error) {
 	var resolvedRoleID, parkMode string
@@ -380,64 +432,53 @@ func (s *Store) nextRoleLaneArrivalSortOrderTx(tx *sql.Tx, workspaceID, roleIDOr
 	}
 
 	// Fast path: one indexed MAX over the role's live items (terminal ones
-	// included: they never sit in the queue, so counting them only moves the
-	// arrival further down). Every item create and role change runs this under
-	// the workspace seq lock, so it must not load the lane's whole history.
-	// Only when the value would pass the limit does the slow path load the
-	// canonical lane and respace it.
-	var laneMax sql.NullInt64
-	if err := tx.QueryRow(s.q(`
-		SELECT MAX(role_sort_order)
-		FROM items
-		WHERE workspace_id = ? AND agent_role_id = ? AND deleted_at IS NULL
-	`), workspaceID, resolvedRoleID).Scan(&laneMax); err != nil {
-		return 0, fmt.Errorf("role arrival lane max: %w", err)
-	}
-	fast := int64(0)
-	if laneMax.Valid {
-		fast = laneMax.Int64
-	}
-	if parkMode == models.ParkModeLine && parkSortOrder.Valid && parkSortOrder.Int64 > fast {
-		fast = parkSortOrder.Int64
-	}
-	fast += roleSortStep
-	if fast <= roleSortRespaceLimit {
-		return int(fast), nil
-	}
-
-	nowStr := now()
-	lane, err := s.loadRoleLaneQ(tx, workspaceID, resolvedRoleID, nowStr)
-	if err != nil {
-		return 0, err
-	}
-
-	calcNext := func(entries []roleLaneEntry, mode string, p sql.NullInt64) int64 {
+	// and ones in archived collections included: they never sit in the queue,
+	// so counting them only moves the arrival further down). Every item create
+	// and role change runs this under the workspace seq lock, so it must not
+	// load the lane's whole history. Only when the value would pass the limit
+	// does it respace. respaceRoleLane renumbers exactly the rows this MAX
+	// reads, so after one respace the next arrival is fast again; a role still
+	// past the limit after a respace needs over 2^20 live rows.
+	fastNext := func(mode string, p sql.NullInt64) (int64, error) {
+		var laneMax sql.NullInt64
+		if err := tx.QueryRow(s.q(`
+			SELECT MAX(role_sort_order)
+			FROM items
+			WHERE workspace_id = ? AND agent_role_id = ? AND deleted_at IS NULL
+		`), workspaceID, resolvedRoleID).Scan(&laneMax); err != nil {
+			return 0, fmt.Errorf("role arrival lane max: %w", err)
+		}
 		base := int64(0)
-		for _, e := range entries {
-			if int64(e.item.RoleSortOrder) > base {
-				base = int64(e.item.RoleSortOrder)
-			}
+		if laneMax.Valid {
+			base = laneMax.Int64
 		}
 		if mode == models.ParkModeLine && p.Valid && p.Int64 > base {
 			base = p.Int64
 		}
-		return base + roleSortStep
+		return base + roleSortStep, nil
 	}
 
-	cand := calcNext(lane, parkMode, parkSortOrder)
-	if cand > roleSortRespaceLimit {
-		lane, err = s.respaceRoleLane(tx, workspaceID, resolvedRoleID)
-		if err != nil {
-			return 0, err
-		}
-		if err := tx.QueryRow(s.q(`
-			SELECT park_mode, park_sort_order
-			FROM agent_roles
-			WHERE id = ? AND workspace_id = ?
-		`), resolvedRoleID, workspaceID).Scan(&parkMode, &parkSortOrder); err != nil {
-			return 0, fmt.Errorf("role arrival reload park after respace: %w", err)
-		}
-		cand = calcNext(lane, parkMode, parkSortOrder)
+	cand, err := fastNext(parkMode, parkSortOrder)
+	if err != nil {
+		return 0, err
+	}
+	if cand <= roleSortRespaceLimit {
+		return int(cand), nil
+	}
+
+	if _, err := s.respaceRoleLane(tx, workspaceID, resolvedRoleID); err != nil {
+		return 0, err
+	}
+	if err := tx.QueryRow(s.q(`
+		SELECT park_mode, park_sort_order
+		FROM agent_roles
+		WHERE id = ? AND workspace_id = ?
+	`), resolvedRoleID, workspaceID).Scan(&parkMode, &parkSortOrder); err != nil {
+		return 0, fmt.Errorf("role arrival reload park after respace: %w", err)
+	}
+	cand, err = fastNext(parkMode, parkSortOrder)
+	if err != nil {
+		return 0, err
 	}
 	return int(cand), nil
 }

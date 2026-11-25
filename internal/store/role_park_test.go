@@ -563,3 +563,75 @@ func TestRoleArrival_FastPathBelowEveryLiveItem(t *testing.T) {
 		t.Fatalf("arrival role_sort_order = %d, want %d", it.RoleSortOrder, 50000+1024)
 	}
 }
+
+// TestRoleArrival_RespaceCoversFastPathPopulation pins that a respace
+// renumbers every row the arrival fast path's MAX reads, not only the
+// canonical lane. A terminal item or an item in an archived collection left
+// near the limit would otherwise keep MAX past it after every respace, and
+// each later arrival would load the whole lane under the workspace seq lock.
+// The rows outside the lane go below it, so a reopened item comes back
+// parked, never above a park line.
+func TestRoleArrival_RespaceCoversFastPathPopulation(t *testing.T) {
+	t.Parallel()
+	s, ws, col, role, _, items := seedRoleParkFixture(t)
+
+	other := createTestCollection(t, s, ws.ID, "Archived")
+	orphan, err := s.CreateItem(ws.ID, other.ID, models.ItemCreate{Title: "Orphan", Fields: `{"status":"open"}`, AgentRoleID: &role.ID})
+	if err != nil {
+		t.Fatalf("CreateItem orphan: %v", err)
+	}
+	if err := s.UpdateRoleSortOrder(ws.ID, []RoleSortUpdate{
+		{ItemID: items[0].ID, RoleSortOrder: (1 << 30) - 10},
+		{ItemID: orphan.ID, RoleSortOrder: (1 << 30) - 20},
+	}); err != nil {
+		t.Fatalf("UpdateRoleSortOrder: %v", err)
+	}
+	if _, err := s.UpdateItem(items[0].ID, models.ItemUpdate{Fields: strPtr(`{"status":"done"}`)}); err != nil {
+		t.Fatalf("mark done: %v", err)
+	}
+	if err := s.DeleteCollection(other.ID, ""); err != nil {
+		t.Fatalf("DeleteCollection: %v", err)
+	}
+
+	a1, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Arrival 1", Fields: `{"status":"open"}`, AgentRoleID: &role.ID})
+	if err != nil {
+		t.Fatalf("CreateItem a1: %v", err)
+	}
+
+	// After the respace every live row of the role leaves the fast path
+	// room for the next arrival.
+	var laneMax int
+	if err := s.db.QueryRow(s.q(`SELECT MAX(role_sort_order) FROM items WHERE workspace_id = ? AND agent_role_id = ? AND deleted_at IS NULL`), ws.ID, role.ID).Scan(&laneMax); err != nil {
+		t.Fatalf("lane max: %v", err)
+	}
+	if laneMax+roleSortStep > roleSortRespaceLimit {
+		t.Fatalf("after respace MAX(role_sort_order) = %d, fast path still past the limit", laneMax)
+	}
+
+	// Lane first (Beta, Gamma), then the rows outside it in their old
+	// order (Orphan, Alpha), then the arrival below all of them.
+	want := map[string]int{
+		items[1].ID: 1024,
+		items[2].ID: 2048,
+		orphan.ID:   3072,
+		items[0].ID: 4096,
+		a1.ID:       5120,
+	}
+	for id, w := range want {
+		cur, err := s.GetItem(id)
+		if err != nil {
+			t.Fatalf("GetItem %s: %v", id, err)
+		}
+		if cur.RoleSortOrder != w {
+			t.Errorf("%s role_sort_order = %d, want %d", cur.Title, cur.RoleSortOrder, w)
+		}
+	}
+
+	a2, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Arrival 2", Fields: `{"status":"open"}`, AgentRoleID: &role.ID})
+	if err != nil {
+		t.Fatalf("CreateItem a2: %v", err)
+	}
+	if a2.RoleSortOrder != 6144 {
+		t.Fatalf("second arrival role_sort_order = %d, want 6144 (fast path)", a2.RoleSortOrder)
+	}
+}
