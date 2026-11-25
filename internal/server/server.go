@@ -267,6 +267,9 @@ type Server struct {
 	// build that doesn't want the dependency — still serves every
 	// other endpoint and stores originals untouched.
 	imageProcessor attachments.Processor
+	// decodeSem bounds process-wide concurrent full-image decodes across
+	// thumbnail derivation and attachment transforms (BUG-4834).
+	decodeSem chan struct{}
 	// appFetchTLS is the TLS config app manifest/artifact fetches use; nil
 	// (the system roots) in production, set by tests (SetAppFetchTLS).
 	appFetchTLS *tls.Config
@@ -883,6 +886,7 @@ func New(s *store.Store) *Server {
 		storageInfoCache:      newStorageInfoCache(storageInfoTTL),
 		clientWrites:          newClientWriteMarks(),
 		adminAPITokensAllowed: adminTokens,
+		decodeSem:             make(chan struct{}, maxConcurrentImageDecodes),
 	}
 	srv.needsScorers = srv.newNeedsScorers()
 	return srv

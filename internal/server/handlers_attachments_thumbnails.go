@@ -12,11 +12,54 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// maxConcurrentImageDecodes caps process-wide concurrent full-image decodes
+// across thumbnail derivation and attachment transforms. Each decode is
+// bounded at about 256 MiB (MaxPixelsDefault 8000*8000 in
+// internal/attachments/processor.go). A derive holds that one full-size
+// buffer plus small thumbnails; a transform can hold two, because rotate
+// and crop return a full-size copy while the source is still referenced.
+// So 2 slots bound peak pixel memory near 512 MiB for derives and about
+// 1 GiB in the worst case (two maximum-size transforms), where before it
+// grew with every concurrent upload. Two still lets one large image proceed
+// beside another; uploads are async, so waiting costs latency of thumbnail
+// appearance, not upload latency.
+const maxConcurrentImageDecodes = 2
+
+// shareDeriveSlotWait bounds how long one share-link resolve waits, in
+// total, for decode slots when it derives missing variants inline. Past
+// it the page shows placeholders, which a later resolve fills once the
+// background derives have run.
+const shareDeriveSlotWait = 2 * time.Second
+
+// acquireImageDecode acquires a slot from the process-wide decode semaphore,
+// blocking until one is free or ctx is done. When ctx is done before a slot
+// is acquired it takes no slot and returns ctx.Err(). The returned release
+// function is idempotent and safe to defer.
+func (s *Server) acquireImageDecode(ctx context.Context) (release func(), err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sem := s.decodeSem
+	if sem == nil {
+		return func() {}, nil
+	}
+	select {
+	case sem <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-sem })
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 // thumbnailSpecs declares the variants the upload pipeline derives.
 // Keep in sync with the AttachmentVariant constants in
@@ -56,11 +99,36 @@ var thumbnailSpecs = []struct {
 // Each successfully-derived variant becomes its own attachments row
 // with parent_id = parentID and variant = "thumb-sm" / "thumb-md".
 // Variants count toward workspace storage usage (DOC-865 explicit).
+//
+// Full-image decoding is gated by the server's process-wide decode slot
+// (acquireImageDecode) and held across the variant loop so concurrent
+// derivations cannot pin unbounded decoded pixel buffers in memory.
 func (s *Server) deriveThumbnails(parentID string) {
+	s.deriveThumbnailsCtx(context.Background(), parentID)
+}
+
+// deriveThumbnailsCtx is the context-aware implementation of deriveThumbnails.
+// Synchronous HTTP callers (such as share-link resolution) pass their request
+// context so a disconnected client stops waiting on the decode slot; once the
+// slot is held, the work runs uncancelled.
+func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 	if s.imageProcessor == nil || s.attachments == nil {
 		return
 	}
-	ctx := context.Background()
+
+	// Wait for the slot first, so the liveness checks below run after the
+	// wait rather than before it, and a queued derive holds no file handle
+	// or remote GET open while it waits.
+	releaseDecode, err := s.acquireImageDecode(ctx)
+	if err != nil {
+		slog.Debug("thumbnails: decode wait cancelled", "attachment_id", parentID, "error", err)
+		return
+	}
+	defer releaseDecode()
+	// The caller's context bounds only the wait above. Once a slot is held
+	// the derivation runs to completion, so a share viewer disconnecting
+	// mid-derive cannot leave a blob written with no variant row.
+	ctx = context.WithoutCancel(ctx)
 
 	parent, err := s.store.GetAttachment(parentID)
 	if err != nil {
@@ -132,6 +200,7 @@ func (s *Server) deriveThumbnails(parentID string) {
 			continue
 		}
 	}
+	releaseDecode()
 
 	// Derived rows count toward workspace storage usage. Drop the
 	// cached summary so the next storage/usage GET reflects the new
