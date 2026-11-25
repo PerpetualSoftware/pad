@@ -4,6 +4,7 @@
 	import { countedChildren, isChildDone } from '$lib/collections/childProgress';
 	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { collectionsNotStaleFor } from '$lib/collections/categoricalFieldValue';
+	import { buildBurndown } from './childChart';
 
 	interface Props {
 		children: Item[];
@@ -38,134 +39,18 @@
 	const chartW = width - padding.left - padding.right;
 	const chartH = height - padding.top - padding.bottom;
 
-	let chartData = $derived.by(() => {
-		const counted = countedChildren(children, collections);
-		const total = counted.length;
-		if (total < 2) return null;
-
-		// Identify completed children (abandoned ones already left out)
-		const completions: { date: Date; count: number }[] = [];
-		for (const child of counted) {
-			if (isChildDone(child, collections)) {
-				completions.push({ date: new Date(child.updated_at), count: 1 });
-			}
-		}
-		completions.sort((a, b) => a.date.getTime() - b.date.getTime());
-
-		const allDone = completions.length === total;
-		const now = new Date();
-		now.setHours(23, 59, 59, 999);
-
-		// ── Determine start date ──────────────────────────────────────────
-		let start: Date;
-		if (startDate) {
-			start = new Date(dateInput(startDate) as string);
-		} else {
-			// Infer: earliest created_at among the counted children
-			let earliest = new Date(counted[0].created_at);
-			for (const child of counted) {
-				const d = new Date(child.created_at);
-				if (d < earliest) earliest = d;
-			}
-			start = earliest;
-		}
-		start.setHours(0, 0, 0, 0);
-
-		// ── Determine end date ────────────────────────────────────────────
-		let end: Date;
-		if (endDate) {
-			end = new Date(dateInput(endDate) as string);
-		} else if (allDone && completions.length > 0) {
-			// All counted children done → last completion date
-			end = new Date(completions[completions.length - 1].date);
-		} else {
-			// Open-ended → today
-			end = new Date(now);
-		}
-		end.setHours(23, 59, 59, 999);
-
-		// Use the later of end date or today for display range
-		const displayEnd = end > now ? end : now;
-		const totalMs = displayEnd.getTime() - start.getTime();
-		if (totalMs <= 0) return null;
-
-		// Build actual line points (step chart)
-		const actualPoints: { x: number; y: number }[] = [];
-		let remaining = total;
-
-		// Start point
-		actualPoints.push({
-			x: 0,
-			y: (remaining / total) * chartH
-		});
-
-		for (const c of completions) {
-			const xPct = (c.date.getTime() - start.getTime()) / totalMs;
-			const x = Math.max(0, Math.min(chartW, xPct * chartW));
-
-			// Horizontal step to this date at current remaining level
-			actualPoints.push({ x, y: (remaining / total) * chartH });
-
-			remaining -= c.count;
-
-			// Vertical drop to new remaining level
-			actualPoints.push({ x, y: (remaining / total) * chartH });
-		}
-
-		// Extend to today (or end, whichever is shown)
-		const nowX = Math.max(0, Math.min(chartW, ((now.getTime() - start.getTime()) / totalMs) * chartW));
-		actualPoints.push({ x: nowX, y: (remaining / total) * chartH });
-
-		// Ideal line: straight from (start, total) to (end, 0)
-		const idealEndX = Math.max(0, Math.min(chartW, ((end.getTime() - start.getTime()) / totalMs) * chartW));
-		const idealLine = {
-			x1: 0,
-			y1: 0,
-			x2: idealEndX,
-			y2: chartH
-		};
-
-		// Today marker
-		const todayX = ((now.getTime() - start.getTime()) / totalMs) * chartW;
-
-		// Y axis ticks
-		const yTicks: { value: number; y: number }[] = [];
-		const step = total <= 5 ? 1 : total <= 20 ? Math.ceil(total / 5) : Math.ceil(total / 4);
-		for (let v = 0; v <= total; v += step) {
-			yTicks.push({ value: v, y: ((total - v) / total) * chartH });
-		}
-		if (yTicks[yTicks.length - 1]?.value !== total) {
-			yTicks.push({ value: total, y: 0 });
-		}
-
-		// X axis labels
-		const formatDate = (d: Date) => {
-			return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-		};
-
-		// Build the actual line SVG path
-		const actualPath = actualPoints
-			.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x},${p.y}`)
-			.join(' ');
-
-		// Build filled area path (close to bottom)
-		const areaPath =
-			actualPath +
-			` L${actualPoints[actualPoints.length - 1].x},${chartH} L0,${chartH} Z`;
-
-		return {
-			total,
-			remaining,
-			actualPath,
-			areaPath,
-			idealLine,
-			todayX,
-			yTicks,
-			startLabel: formatDate(start),
-			endLabel: formatDate(end),
-			showTodayMarker: todayX > 0 && todayX < chartW
-		};
-	});
+	// The burndown math lives in childChart.ts (BUG-4838): every series uses the
+	// axis's value->y mapping, and a date-only bound is a local calendar day.
+	let chartData = $derived(
+		buildBurndown({
+			counted: countedChildren(children, collections),
+			isDone: (child) => isChildDone(child, collections),
+			startDate: startDate ? dateInput(startDate) : undefined,
+			endDate: endDate ? dateInput(endDate) : undefined,
+			chartW,
+			chartH
+		})
+	);
 </script>
 
 {#if chartData}
