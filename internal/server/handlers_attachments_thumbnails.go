@@ -22,10 +22,14 @@ import (
 // maxConcurrentImageDecodes caps process-wide concurrent full-image decodes
 // across thumbnail derivation and attachment transforms. Each decode is
 // bounded at about 256 MiB (MaxPixelsDefault 8000*8000 in
-// internal/attachments/processor.go), so 2 caps peak decode memory near
-// 512 MiB while still letting one large image proceed beside another;
-// uploads are async, so waiting costs latency of thumbnail appearance, not
-// upload latency.
+// internal/attachments/processor.go). A derive holds that one full-size
+// buffer plus small thumbnails; a transform can hold two, because rotate
+// and crop return a full-size copy while the source is still referenced.
+// So 2 slots bound peak pixel memory near 512 MiB for derives and about
+// 1 GiB in the worst case (two maximum-size transforms), where before it
+// grew with every concurrent upload. Two still lets one large image proceed
+// beside another; uploads are async, so waiting costs latency of thumbnail
+// appearance, not upload latency.
 const maxConcurrentImageDecodes = 2
 
 // shareDeriveSlotWait bounds how long one share-link resolve waits, in
