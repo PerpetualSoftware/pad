@@ -1872,7 +1872,7 @@ export const api = {
 			});
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					redirectToLogin('/login');
+					redirectToLogin(loginReturnHref());
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
@@ -3490,14 +3490,15 @@ export const api = {
 		// `pad-account-export.json`). Modeled on exportItemArtifact, NOT request()
 		// — request() JSON-parses the body and force-redirects on 401, whereas
 		// here we want the raw text and a PadApiError that surfaces the
-		// restricted-owner 403 (BUG-1945). Auth is by session; 401 → /login.
+		// restricted-owner 403 (BUG-1945). Auth is by session; 401 redirects
+		// to /login with the return-to path.
 		exportAccountData: async (): Promise<{ filename: string; text: string }> => {
 			const resp = await fetch(`${BASE}/auth/export`, {
 				credentials: 'same-origin'
 			});
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					redirectToLogin('/login');
+					redirectToLogin(loginReturnHref());
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
@@ -3639,7 +3640,7 @@ export const api = {
 			});
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					redirectToLogin('/login');
+					redirectToLogin(loginReturnHref());
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
@@ -3711,7 +3712,7 @@ export const api = {
 				);
 				if (resp.status === 401) {
 					if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-						redirectToLogin('/login');
+						redirectToLogin(loginReturnHref());
 					}
 					throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 				}
@@ -4050,7 +4051,7 @@ export const api = {
 		});
 		if (resp.status === 401) {
 			if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-				redirectToLogin('/login');
+				redirectToLogin(loginReturnHref());
 			}
 			throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 		}
@@ -4083,7 +4084,7 @@ export const api = {
 		});
 		if (resp.status === 401) {
 			if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-				redirectToLogin('/login');
+				redirectToLogin(loginReturnHref());
 			}
 			throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 		}
