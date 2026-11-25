@@ -139,23 +139,31 @@ test('workspace export → import round-trip via web UI', async ({ page, fixture
 	// 1. Seed source workspace.
 	const seeded = await seedSourceWorkspace(fixture, request);
 
-	// 2. Verify the settings-page export link is wired correctly.
-	// This pins the user-visible contract of the export half: a
-	// link with the right href + download attribute.
+	// 2. Verify the settings-page export control is wired correctly.
+	// This pins the user-visible contract of the export half: the
+	// Download button (history kept by default) preflights the
+	// bundle URL, the server accepts it, and no refusal is shown.
 	await page.goto(`/${fixture.adminUsername}/${fixture.workspaceSlug}/settings`);
 	await page.waitForLoadState('domcontentloaded');
 
-	const downloadLink = page.getByRole('link', { name: /download \.tar\.gz/i });
-	await expect(downloadLink).toBeVisible();
-	await expect(downloadLink).toHaveAttribute('href', /\?format=tar$/);
-	await expect(downloadLink).toHaveAttribute('download', /\.tar\.gz$/);
+	const downloadButton = page.getByRole('button', { name: /download \.tar\.gz/i });
+	await expect(downloadButton).toBeVisible();
+	await expect(page.getByLabel('Leave out version history')).not.toBeChecked();
+	const preflight = page.waitForResponse(
+		(r) => /\/workspaces\/[^/]+\/export\?format=tar$/.test(r.url()) && r.request().resourceType() === 'fetch'
+	);
+	await downloadButton.click();
+	expect((await preflight).status()).toBe(200);
+	await expect(downloadButton).toBeEnabled();
+	await expect(page.locator('.field-row', { has: downloadButton }).getByRole('alert')).toHaveCount(0);
 
 	// Fetch the actual bundle bytes via the auth'd API request.
 	// Playwright's download fork from <a download> doesn't carry
-	// extraHTTPHeaders (Bearer token), so the browser-driven path
-	// would 401. The link's correctness is already pinned above;
-	// what we still need for the import half is real bundle bytes
-	// that the server's bundle handler produced.
+	// extraHTTPHeaders (Bearer token), so the browser-driven
+	// download that follows the preflight would 401 here. The
+	// control's wiring is already pinned above; what we still need
+	// for the import half is real bundle bytes that the server's
+	// bundle handler produced.
 	const bundleResp = await request.get(
 		`/api/v1/workspaces/${fixture.workspaceSlug}/export?format=tar`,
 		{ headers: { Authorization: `Bearer ${fixture.apiToken}` } }
