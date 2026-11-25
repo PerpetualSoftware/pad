@@ -897,6 +897,17 @@ function redirectToLogin(href: string): void {
 }
 
 /**
+ * The /login URL for a session expiry, carrying the current location as the
+ * `?redirect=` return-to target (BUG-1929 / IDEA-1927 §B2(c)); /login
+ * validates and consumes it (see $lib/auth/redirect.ts). The registered
+ * provider wins over the address bar (the page beneath an open Chat).
+ */
+function loginReturnHref(): string {
+	const target = returnPathProvider?.() || window.location.pathname + window.location.search;
+	return `/login?redirect=${encodeURIComponent(target)}`;
+}
+
+/**
  * Endpoints hit only from explicit, unauthenticated auth-form submissions
  * (login, register, 2FA challenge). A 401 from these means "the
  * credentials/code the user just typed were wrong", not "your session
@@ -1162,12 +1173,9 @@ async function requestAttempt<T>(
 		}
 		// Redirect to login page (avoid infinite loop), preserving the
 		// current location as a return-to target so a genuine session
-		// expiry doesn't strand the user wherever they were (BUG-1929 /
-		// IDEA-1927 §B2(c)) — /login already validates and consumes
-		// `?redirect=` (see $lib/auth/redirect.ts).
+		// expiry doesn't strand the user wherever they were.
 		if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-			const target = returnPathProvider?.() || window.location.pathname + window.location.search;
-			redirectToLogin(`/login?redirect=${encodeURIComponent(target)}`);
+			redirectToLogin(loginReturnHref());
 		}
 		throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 	}
@@ -1783,7 +1791,7 @@ export const api = {
 			}
 			if (resp.status === 401) {
 				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
-					redirectToLogin('/login');
+					redirectToLogin(loginReturnHref());
 				}
 				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
 			}
