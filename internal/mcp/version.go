@@ -2388,7 +2388,13 @@ const CmdhelpVersion = "0.1"
 // workspace the caller can read via unscoped /api/v1/search (which applies the
 // caller's read access, OAuth allow-list and token pin) and refuses an explicit
 // workspace on both transports.
-const ToolSurfaceVersion = "0.130"
+// v0.131 — TASK-4853: additive role park line reads and controls: pad_role gains
+// park/unpark actions (before, after, expected_park_seq); pad_project ready/next
+// gain optional role param (reads role queue and park state; refused on other
+// actions); pad_item claim gains ignore_park boolean; item_parked, park_conflict
+// and park_anchor_not_in_queue map identically on stdio and HTTP; suggested_next
+// excludes parked queue items and bootstrap roles carry park when parked.
+const ToolSurfaceVersion = "0.131"
 
 // MetaVersionURI is the canonical URI of the queryable version document.
 // Lives outside the pad://workspace/{ws}/... namespace because it's a

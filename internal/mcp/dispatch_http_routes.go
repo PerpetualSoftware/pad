@@ -539,6 +539,8 @@ func init() {
 			method:       http.MethodDelete,
 			pathTemplate: "/api/v1/workspaces/{workspace}/agent-roles/{slug}",
 		}.toRouteMapper(),
+		"role park":   mapRolePark,
+		"role unpark": mapRoleUnpark,
 
 		// --- Webhooks (admin) ---
 		"webhook list": routeSpec{
@@ -1012,6 +1014,15 @@ func mapItemClaim(input map[string]any) (string, string, []byte, error) {
 			bodyFields["ttl_seconds"] = int(d.Seconds())
 		}
 	}
+	if raw, ok := input["ignore_park"]; ok && raw != nil {
+		b, ok := raw.(bool)
+		if !ok {
+			return "", "", nil, fmt.Errorf("ignore_park must be a boolean, got %T", raw)
+		}
+		if b {
+			path += "?ignore_park=true"
+		}
+	}
 	if len(bodyFields) == 0 {
 		return http.MethodPost, path, nil, nil
 	}
@@ -1220,6 +1231,71 @@ func mapRoleCreate(input map[string]any) (string, string, []byte, error) {
 	}
 	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/agent-roles"
 	return http.MethodPost, urlPath, body, nil
+}
+
+// mapRolePark dispatches `pad role park <slug> [--before REF | --after REF]
+// [--expected-park-seq N]` to PUT /api/v1/workspaces/{ws}/agent-roles/{slug}/park.
+func mapRolePark(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, errWorkspaceRequired
+	}
+	slug, _ := input["slug"].(string)
+	if slug == "" {
+		return "", "", nil, fmt.Errorf("slug is required")
+	}
+	before, _ := input["before"].(string)
+	after, _ := input["after"].(string)
+	if before != "" && after != "" {
+		return "", "", nil, fmt.Errorf("before and after are mutually exclusive")
+	}
+
+	payload := map[string]any{}
+	switch {
+	case before != "":
+		payload["before"] = before
+	case after != "":
+		payload["after"] = after
+	default:
+		payload["at"] = "top"
+	}
+	if seq, ok, err := intParam(input, "expected_park_seq"); err != nil {
+		return "", "", nil, err
+	} else if ok {
+		payload["expected_park_seq"] = seq
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", nil, fmt.Errorf("encode body: %w", err)
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/agent-roles/" + url.PathEscape(slug) + "/park"
+	return http.MethodPut, urlPath, body, nil
+}
+
+// mapRoleUnpark dispatches `pad role unpark <slug> [--expected-park-seq N]`
+// to DELETE /api/v1/workspaces/{ws}/agent-roles/{slug}/park.
+func mapRoleUnpark(input map[string]any) (string, string, []byte, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return "", "", nil, errWorkspaceRequired
+	}
+	slug, _ := input["slug"].(string)
+	if slug == "" {
+		return "", "", nil, fmt.Errorf("slug is required")
+	}
+	var body []byte
+	if seq, ok, err := intParam(input, "expected_park_seq"); err != nil {
+		return "", "", nil, err
+	} else if ok {
+		var mErr error
+		body, mErr = json.Marshal(map[string]any{"expected_park_seq": seq})
+		if mErr != nil {
+			return "", "", nil, fmt.Errorf("encode body: %w", mErr)
+		}
+	}
+	urlPath := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/agent-roles/" + url.PathEscape(slug) + "/park"
+	return http.MethodDelete, urlPath, body, nil
 }
 
 // mapWebhookCreate dispatches `pad webhook create <url> [--events ...]

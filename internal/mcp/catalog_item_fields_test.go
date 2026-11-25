@@ -1727,9 +1727,10 @@ func TestFieldConflictProperty_SourcesDerivedFromTheDeclaredSchema(t *testing.T)
 		// schedule-resolve's consent to end an open item's schedule (TASK-4537, TASK-4806).
 		"end_schedule": true, "dismiss_ended": true, "resolution_id": true,
 
-		// Execution-lease coordination state (#1221) — holder/expiry live on
-		// dedicated columns, never in the item's fields blob.
-		"holder": true, "ttl": true, "worker_id": true,
+		// Execution-lease coordination state (#1221, TASK-4853) — holder/expiry
+		// live on dedicated columns and ignore_park is a claim query flag, never
+		// an item field.
+		"holder": true, "ttl": true, "worker_id": true, "ignore_park": true,
 
 		// The two SOURCES themselves, not keys within them.
 		"fields": true,

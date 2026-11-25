@@ -2562,6 +2562,7 @@ func (s *Server) setupRouter() {
 							r.Get("/", s.handleGetAgentRole)
 							r.Patch("/", s.handleUpdateAgentRole)
 							r.Delete("/", s.handleDeleteAgentRole)
+							r.Get("/queue", s.handleGetRoleQueue)
 							r.Put("/park", s.handleSetRolePark)
 							r.Delete("/park", s.handleClearRolePark)
 						})

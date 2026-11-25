@@ -205,6 +205,9 @@ func TestEveryCLIMarkerCodeIsInTheStdioVocabulary(t *testing.T) {
 		"WriteLeaseHeldError": func(w *bytes.Buffer) {
 			cli.WriteLeaseHeldError(w, api("lease_held"))
 		},
+		"WriteRoleParkError": func(w *bytes.Buffer) {
+			cli.WriteRoleParkError(w, api("item_parked"))
+		},
 		"WritePatchRefusalError": func(w *bytes.Buffer) {
 			cli.WritePatchRefusalError(w, api("patch_anchor_missing"))
 		},

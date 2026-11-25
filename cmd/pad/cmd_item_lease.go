@@ -18,8 +18,9 @@ import (
 func itemClaimCmd() *cobra.Command {
 	var workerIDFlag string
 	var (
-		holderFlag string
-		ttlFlag    string
+		holderFlag     string
+		ttlFlag        string
+		ignoreParkFlag bool
 	)
 
 	cmd := &cobra.Command{
@@ -72,7 +73,7 @@ worker has leased, by the same identity a claim uses.`,
 			}
 			ws := getWorkspace()
 
-			lease, err := client.ClaimItem(ws, args[0], holderFlag, ttlSeconds)
+			lease, err := client.ClaimItem(ws, args[0], holderFlag, ttlSeconds, ignoreParkFlag)
 			if err != nil {
 				return err
 			}
@@ -93,6 +94,7 @@ worker has leased, by the same identity a claim uses.`,
 
 	cmd.Flags().StringVar(&holderFlag, "holder", "", "lease holder display label (default: this session's agent name, else your email); the lease is matched by worker id when this session has one")
 	cmd.Flags().StringVar(&ttlFlag, "ttl", "", "lease duration, e.g. 15m, 1h (default: 15m; max 24h)")
+	cmd.Flags().BoolVar(&ignoreParkFlag, "ignore-park", false, "override a role park refusal (item_parked)")
 
 	addWorkerIDFlag(cmd, &workerIDFlag)
 	return cmd

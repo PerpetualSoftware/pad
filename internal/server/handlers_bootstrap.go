@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/collections"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -244,6 +245,17 @@ func titleCaseLabel(key string) string {
 	return strings.Join(parts, " ")
 }
 
+// BootstrapRolePark is the lightweight park-line projection embedded on a
+// BootstrapRole when the role lane is parked. Omitted on unparked roles so
+// bootstrap JSON stays byte-identical when no role is parked.
+type BootstrapRolePark struct {
+	Mode           string     `json:"mode"`
+	FirstParkedRef *string    `json:"first_parked_ref"`
+	SetBy          *string    `json:"set_by"`
+	SetAt          *time.Time `json:"set_at"`
+	ParkSeq        int        `json:"park_seq"`
+}
+
 // BootstrapRole is the lightweight role projection delivered in the
 // agent bootstrap response. Distinct from models.AgentRole: drops
 // fields the /pad skill never reads (id, workspace_id, created_at,
@@ -256,22 +268,26 @@ func titleCaseLabel(key string) string {
 //   - name / description / icon — greeting + role-picker rendering
 //   - item_count — surface-area count in role-queue greetings
 //   - sort_order — preserves the workspace's authored role ordering
+//   - park — active park line (mode, visible first_parked_ref, set_by, set_at,
+//     park_seq), omitted when unparked
 //
 // PLAN-1410 / TASK-1423. Mirror of TASK-1412's BootstrapCollection
 // projection.
 type BootstrapRole struct {
-	Slug        string `json:"slug"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Icon        string `json:"icon,omitempty"`
-	SortOrder   int    `json:"sort_order"`
-	ItemCount   int    `json:"item_count"`
+	Slug        string             `json:"slug"`
+	Name        string             `json:"name"`
+	Description string             `json:"description,omitempty"`
+	Icon        string             `json:"icon,omitempty"`
+	SortOrder   int                `json:"sort_order"`
+	ItemCount   int                `json:"item_count"`
+	Park        *BootstrapRolePark `json:"park,omitempty"`
 }
 
 // projectBootstrapRole converts a models.AgentRole into the slim
 // bootstrap projection. Stateless — the role count recompute for
 // restricted callers happens upstream and writes into c.ItemCount
-// before this projection runs.
+// before this projection runs; Park (which needs visibility-scoped
+// first_parked_ref) is populated by the caller when r.Park != nil.
 func projectBootstrapRole(r models.AgentRole) BootstrapRole {
 	return BootstrapRole{
 		Slug:        r.Slug,
@@ -672,8 +688,22 @@ func (s *Server) BuildAgentBootstrap(workspaceID string, user *models.User, r *h
 		out.Collections = append(out.Collections, projectBootstrapCollection(c))
 	}
 	out.Roles = make([]BootstrapRole, 0, len(roles))
-	for _, r := range roles {
-		out.Roles = append(out.Roles, projectBootstrapRole(r))
+	for _, role := range roles {
+		br := projectBootstrapRole(role)
+		if role.Park != nil {
+			firstRef, pErr := s.store.FirstParkedQueueRef(workspaceID, role.ID, role.Park, subCollIDs, subItemIDs)
+			if pErr != nil {
+				return nil, pErr
+			}
+			br.Park = &BootstrapRolePark{
+				Mode:           role.Park.Mode,
+				FirstParkedRef: firstRef,
+				SetBy:          role.Park.SetBy,
+				SetAt:          role.Park.SetAt,
+				ParkSeq:        role.Park.ParkSeq,
+			}
+		}
+		out.Roles = append(out.Roles, br)
 	}
 
 	// Playbooks (metadata only) — restricted to the caller's authorized

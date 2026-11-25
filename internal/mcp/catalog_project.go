@@ -1,10 +1,30 @@
 package mcp
 
+import (
+	"context"
+	"fmt"
+)
+
 // padProjectTool exposes project intelligence — computed views over
 // the workspace state. All actions are read-only.
 
 func init() {
+	for name, fn := range padProjectTool.Actions {
+		if name == "ready" || name == "next" {
+			continue
+		}
+		padProjectTool.Actions[name] = rejectProjectRoleParam("pad_project."+name, fn)
+	}
 	appendToCatalog(padProjectTool)
+}
+
+func rejectProjectRoleParam(prefix string, fn ActionFn) ActionFn {
+	return func(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+		if _, present := input["role"]; present {
+			return errStructured(prefix, fmt.Errorf("role is only accepted for action=ready and action=next")), nil
+		}
+		return fn(ctx, input, env)
+	}
 }
 
 var padProjectTool = ToolDef{
@@ -13,46 +33,15 @@ var padProjectTool = ToolDef{
 	Schema: ToolSchema{
 		Workspace: true,
 		Params: []ParamDef{
-			{
-				Name:        "worker_id",
-				Type:        "string",
-				Description: "Your lease worker id, as a claim answers it. Optional for action=next/ready, which leave out items leased to another worker.",
-			},
-			{
-				Name:        "days",
-				Type:        "number",
-				Description: "Lookback window in days. Optional for action=standup (default 1) and action=changelog (default 7).",
-			},
-			{
-				Name:        "since",
-				Type:        "string",
-				Description: "ISO date (YYYY-MM-DD) — include entries on or after this date. Optional for action=changelog (mutually exclusive with `days`) and action=activity (applied server-side).",
-			},
-			{
-				Name:        "parent",
-				Type:        "string",
-				Description: "Parent item ref (e.g. PLAN-2). Optional for action=changelog — scope the changelog to items under this parent.",
-			},
-			{
-				Name:        "window",
-				Type:        "string",
-				Description: "Report window for action=report: day | week | 2wk | month (default week).",
-			},
-			{
-				Name:        "collections",
-				Type:        "string",
-				Description: "Comma-separated collection slugs to include for action=report (default: all visible, non-system; name a system collection to include it).",
-			},
-			{
-				Name:        "actor",
-				Type:        "string",
-				Description: "Filter by actor category — `user` or `agent`. Optional for action=activity.",
-			},
-			{
-				Name:        "limit",
-				Type:        "number",
-				Description: "Maximum number of entries to return. Optional for action=activity (default 20, max 200).",
-			},
+			{Name: "role", Type: "string", Description: "Agent role slug (ready/next only; reads role queue; refused elsewhere)."},
+			{Name: "worker_id", Type: "string", Description: "Lease worker id for next/ready (skips foreign leases)."},
+			{Name: "days", Type: "number", Description: "Lookback days: standup (default 1), changelog (default 7)."},
+			{Name: "since", Type: "string", Description: "ISO date YYYY-MM-DD: changelog (excludes days) or activity."},
+			{Name: "parent", Type: "string", Description: "Parent ref (e.g. PLAN-2) to scope changelog."},
+			{Name: "window", Type: "string", Description: "Report window: day | week | 2wk | month (default week)."},
+			{Name: "collections", Type: "string", Description: "Comma-separated collection slugs for report (default visible non-system)."},
+			{Name: "actor", Type: "string", Description: "Filter activity by actor: user | agent."},
+			{Name: "limit", Type: "number", Description: "Max activity entries (default 20, max 200)."},
 		},
 	},
 	Actions: map[string]ActionFn{
@@ -70,38 +59,13 @@ var padProjectTool = ToolDef{
 
 const padProjectToolDescription = `Project intelligence — computed views over workspace state.
 
-Actions:
-  dashboard  — Project overview: collections, active items, plans, attention,
-               blockers, suggested next.
-               Required: workspace.
-  next       — Recommended next item to work on (uses dashboard's suggestion logic).
-               Required: workspace.
-  ready      — Up to three items to work on next, best first (the same
-  ranked list as next). Reminders, overdue, in-progress, active-
-  plan and high/critical items lead; other open items from
-  collections tracking priority or severity fill leftover slots. Blocked items are excluded (see stale).
-               Required: workspace.
-  stale      — Items needing attention — stalled, blocked, overdue, or
-               otherwise falling out of the active workflow.
-               Required: workspace.
-  standup    — Daily standup report (recent done, in-progress, blockers).
-               Required: workspace.
-               Optional: days (default 1).
-  changelog  — Changelog of completed items.
-               Required: workspace.
-               Optional: days (default 7), since (ISO date), parent (item ref to scope).
-  report     — Windowed project report: created-vs-completed throughput, net
-               flow, completed-by-collection, current status distribution.
-               Required: workspace.
-               Optional: window (day|week|2wk|month, default week),
-               collections (comma-separated slugs, default all visible).
-  activity   — Recent workspace activity feed (non-streaming): what agents and
-               users changed, with item refs, titles, and field-level change
-               details.
-               Required: workspace.
-               Optional: limit (default 20), actor (user | agent),
-               since (ISO date).
-  catch-up   — Your own catch-up digest: what needs you, and what others
-               finished, created, reopened, commented on or did as agents since you
-               last marked caught up (max 14 days). Never marks caught up.
-               Required: workspace.`
+Actions (all require workspace):
+  dashboard  — Overview: collections, active items, plans, attention, blockers, suggested next.
+  next       — Top recommended items (same rank as ready). Optional: role (role queue, max 3 ready).
+  ready      — Ranked actionable items (blocked and parked excluded; see stale). Optional: role (role queue with now/park).
+  stale      — Stalled, blocked, overdue, or orphaned items.
+  standup    — Daily standup (done, in-progress, blockers). Optional: days (default 1).
+  changelog  — Completed items. Optional: days (default 7), since, parent.
+  report     — Throughput, net flow, status distribution. Optional: window (day|week|2wk|month), collections.
+  activity   — Recent activity feed. Optional: limit (default 20), actor (user|agent), since.
+  catch-up   — Personal digest since last caught up (max 14d). Read-only; never marks caught up.`

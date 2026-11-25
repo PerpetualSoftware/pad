@@ -30,6 +30,11 @@ func (d *HTTPHandlerDispatcher) dispatchProjectReady(
 	user *models.User,
 ) (*CallToolResult, error) {
 	const cmdKey = "project ready"
+	if role, ok, errRes := projectRoleParam(input, cmdKey); errRes != nil {
+		return errRes, nil
+	} else if ok {
+		return d.dispatchProjectRoleQueue(ctx, input, user, cmdKey, role, 0)
+	}
 	dash, errRes := d.fetchDashboardJSON(ctx, input, user, cmdKey)
 	if errRes != nil {
 		return errRes, nil
@@ -95,12 +100,93 @@ func (d *HTTPHandlerDispatcher) dispatchProjectNext(
 	user *models.User,
 ) (*CallToolResult, error) {
 	const cmdKey = "project next"
+	if role, ok, errRes := projectRoleParam(input, cmdKey); errRes != nil {
+		return errRes, nil
+	} else if ok {
+		return d.dispatchProjectRoleQueue(ctx, input, user, cmdKey, role, 3)
+	}
 	workspace, _ := input["workspace"].(string)
 	if workspace == "" {
 		return noWorkspaceResult(ctx, d.Lister), nil
 	}
 	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/next"
 	return d.executeRequest(ctx, cmdKey, user, http.MethodGet, path, nil)
+}
+
+func projectRoleParam(input map[string]any, cmdKey string) (string, bool, *CallToolResult) {
+	raw, present := input["role"]
+	if !present || raw == nil {
+		return "", false, nil
+	}
+	s, ok := raw.(string)
+	if !ok {
+		return "", false, validationFailedResult(cmdKey, fmt.Sprintf("role must be a string, got %T", raw), "Pass role=<slug> naming an agent role.")
+	}
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "", false, nil
+	}
+	return s, true, nil
+}
+
+// dispatchProjectRoleQueue mirrors `pad project ready|next --role <slug> --format json`:
+// GET /api/v1/workspaces/{ws}/agent-roles/{role}/queue?limit=50, filtering
+// queue entries to ready=true (and capping to capResults when > 0).
+func (d *HTTPHandlerDispatcher) dispatchProjectRoleQueue(
+	ctx context.Context,
+	input map[string]any,
+	user *models.User,
+	cmdKey, role string,
+	capResults int,
+) (*CallToolResult, error) {
+	workspace, _ := input["workspace"].(string)
+	if workspace == "" {
+		return noWorkspaceResult(ctx, d.Lister), nil
+	}
+	path := "/api/v1/workspaces/" + url.PathEscape(workspace) + "/agent-roles/" + url.PathEscape(role) + "/queue?limit=50"
+	req, err := d.buildAuthedRequest(ctx, http.MethodGet, path, nil, user)
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "build role queue request", err), nil
+	}
+	rec := httptest.NewRecorder()
+	d.Handler.ServeHTTP(rec, req)
+	if rec.Code >= 400 {
+		kind := ResourceListing
+		refOrSlug := role
+		if rec.Code == http.StatusNotFound && strings.Contains(strings.ToLower(rec.Body.String()), `"scope":"workspace"`) {
+			kind = ResourceWorkspace
+			refOrSlug = workspace
+		}
+		return upstreamHTTPErrorResult(ctx, cmdKey, "fetch role queue", path,
+			rec.Code, rec.Body.Bytes(), d.Lister, kind, refOrSlug), nil
+	}
+	var q models.RoleQueueResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &q); err != nil {
+		return dispatcherErrorResult(cmdKey, "parse role queue", err), nil
+	}
+	results := make([]models.RoleQueueItem, 0, len(q.Queue))
+	for _, item := range q.Queue {
+		if item.Ready {
+			results = append(results, item)
+		}
+	}
+	if capResults > 0 && len(results) > capResults {
+		results = results[:capResults]
+	}
+	nowItems := q.Now
+	if nowItems == nil {
+		nowItems = []models.RoleQueueNowItem{}
+	}
+	payload := map[string]any{
+		"count":   len(results),
+		"results": results,
+		"role":    q.Role.Slug,
+		"now":     nowItems,
+	}
+	if q.Park != nil {
+		payload["park"] = q.Park
+	}
+	return packageStructuredResponse(cmdKey, payload)
 }
 
 // dispatchProjectStandup proxies `project standup` to GET

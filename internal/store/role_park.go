@@ -185,8 +185,47 @@ type roleLaneCollectionInfo struct {
 }
 
 type roleLaneEntry struct {
-	item    models.Item
-	inQueue bool
+	item          models.Item
+	inQueue       bool
+	isNow         bool
+	doneKey       string
+	tracksWork    bool
+	leaseWorkerID string
+	leaseUserID   string
+}
+
+// RoleLaneEntry is one live, non-terminal item in a role's canonical lane.
+// Returned by LoadRoleLane in canonical lane order (SortRoleLane).
+type RoleLaneEntry struct {
+	Item          models.Item
+	InQueue       bool
+	IsNow         bool
+	DoneKey       string
+	TracksWork    bool
+	LeaseWorkerID string
+	LeaseUserID   string
+}
+
+// LoadRoleLane returns the canonical full lane for (workspaceID, roleID) in a
+// single query pair (collections + role items), sorted with SortRoleLane.
+func (s *Store) LoadRoleLane(workspaceID, roleID string) ([]RoleLaneEntry, error) {
+	entries, err := s.loadRoleLaneQ(s.db, workspaceID, roleID, now())
+	if err != nil {
+		return nil, err
+	}
+	out := make([]RoleLaneEntry, len(entries))
+	for i, e := range entries {
+		out[i] = RoleLaneEntry{
+			Item:          e.item,
+			InQueue:       e.inQueue,
+			IsNow:         e.isNow,
+			DoneKey:       e.doneKey,
+			TracksWork:    e.tracksWork,
+			LeaseWorkerID: e.leaseWorkerID,
+			LeaseUserID:   e.leaseUserID,
+		}
+	}
+	return out, nil
 }
 
 func (s *Store) loadRoleLaneCollectionsQ(q Queryer, workspaceID string) (map[string]roleLaneCollectionInfo, error) {
@@ -234,8 +273,8 @@ func (s *Store) loadRoleLaneQ(q Queryer, workspaceID, roleID, nowStr string) ([]
 	}
 
 	rows, err := q.Query(s.q(`
-		SELECT i.id, i.collection_id, i.fields, i.role_sort_order, i.created_at, i.item_number,
-		       i.lease_holder, i.lease_expires_at
+		SELECT i.id, i.collection_id, i.title, i.fields, i.role_sort_order, i.created_at, i.updated_at, i.item_number,
+		       i.lease_holder, i.lease_worker_id, i.lease_user_id, i.lease_expires_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
 		WHERE i.workspace_id = ? AND i.agent_role_id = ? AND i.deleted_at IS NULL
@@ -248,16 +287,17 @@ func (s *Store) loadRoleLaneQ(q Queryer, workspaceID, roleID, nowStr string) ([]
 	var entries []roleLaneEntry
 	for rows.Next() {
 		var it models.Item
-		var createdAt string
+		var createdAt, updatedAt string
 		var itemNum sql.NullInt64
-		var leaseHolder, leaseExpiresAt sql.NullString
+		var leaseHolder, leaseWorkerID, leaseUserID, leaseExpiresAt sql.NullString
 		if err := rows.Scan(
-			&it.ID, &it.CollectionID, &it.Fields, &it.RoleSortOrder, &createdAt, &itemNum,
-			&leaseHolder, &leaseExpiresAt,
+			&it.ID, &it.CollectionID, &it.Title, &it.Fields, &it.RoleSortOrder, &createdAt, &updatedAt, &itemNum,
+			&leaseHolder, &leaseWorkerID, &leaseUserID, &leaseExpiresAt,
 		); err != nil {
 			return nil, err
 		}
 		it.CreatedAt = parseTime(createdAt)
+		it.UpdatedAt = parseTime(updatedAt)
 		if itemNum.Valid {
 			n := int(itemNum.Int64)
 			it.ItemNumber = &n
@@ -281,9 +321,23 @@ func (s *Store) loadRoleLaneQ(q Queryer, workspaceID, roleID, nowStr string) ([]
 
 		hasLiveLease := leaseHolder.Valid && leaseExpiresAt.Valid && leaseExpiresAt.String > nowStr
 		isNow := IsItemNow(&it, cinfo.doneKey, hasLiveLease)
+		var lWorker, lUser string
+		if hasLiveLease {
+			if leaseWorkerID.Valid {
+				lWorker = leaseWorkerID.String
+			}
+			if leaseUserID.Valid {
+				lUser = leaseUserID.String
+			}
+		}
 		entries = append(entries, roleLaneEntry{
-			item:    it,
-			inQueue: cinfo.tracksWork && !isNow,
+			item:          it,
+			inQueue:       cinfo.tracksWork && !isNow,
+			isNow:         isNow,
+			doneKey:       cinfo.doneKey,
+			tracksWork:    cinfo.tracksWork,
+			leaseWorkerID: lWorker,
+			leaseUserID:   lUser,
 		})
 	}
 	if err := rows.Err(); err != nil {

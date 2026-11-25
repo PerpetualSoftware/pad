@@ -178,6 +178,8 @@ func bug4065Doors() []bug4065Door {
 		{[]string{"item", "patch"}, map[string]any{"ref": "TASK-1"}, "line_hint", hint, false, `"line_hint":7`},
 		{[]string{"collection", "update"}, map[string]any{"slug": "tasks"}, "sort_order", top("sort_order"), false, `"sort_order":7`},
 		{[]string{"role", "update"}, map[string]any{"slug": "rook"}, "sort_order", top("sort_order"), false, `"sort_order":7`},
+		{[]string{"role", "park"}, map[string]any{"slug": "rook"}, "expected_park_seq", top("expected_park_seq"), false, `"expected_park_seq":7`},
+		{[]string{"role", "unpark"}, map[string]any{"slug": "rook"}, "expected_park_seq", top("expected_park_seq"), false, `"expected_park_seq":7`},
 		// pr_number (b46baef8).
 		{[]string{"github", "link"}, map[string]any{"item_ref": "TASK-1", "pr_url": "https://example.com/pr/7"}, "pr_number", top("pr_number"), false, `"number":7`},
 		// chatSequence's doors. Validation runs before target resolution; the
@@ -704,6 +706,8 @@ var bug4065ReadSet = []string{
 	"project activity limit",
 	"project changelog days",
 	"project standup days",
+	"role park expected_park_seq",
+	"role unpark expected_park_seq",
 	"role update sort_order",
 	"workspace audit-log days",
 	"workspace audit-log limit",

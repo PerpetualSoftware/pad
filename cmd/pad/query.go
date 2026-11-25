@@ -30,10 +30,12 @@ type relatedGroup struct {
 
 func readyCmd() *cobra.Command {
 	var workerIDFlag string
+	var roleFlag string
 	cmd := &cobra.Command{
-		Use:     "ready",
-		Short:   "Show actionable next items for an agent",
-		Example: `  pad project ready`,
+		Use:   "ready",
+		Short: "Show actionable next items for an agent",
+		Example: `  pad project ready
+  pad project ready --role implementer`,
 		Long: `List up to three items Pad suggests working on next, best first.
 
 It is the same ranked list as 'pad project next' and the dashboard's Up next:
@@ -41,13 +43,28 @@ fired reminders, then overdue work, in-progress work, open items in active
 plans, and high or critical priority items. Any slot left over is filled with
 other open items from collections that track priority or severity (Tasks,
 Bugs, Features, Backlog), ranked by priority (else severity), then age.
-Blocked items are never listed; 'pad project stale' shows them.`,
+Blocked items are never listed; 'pad project stale' shows them.
+
+With --role <slug>, reads that role's canonical queue instead of the dashboard,
+returning only unblocked, unparked items in lane order.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			if err := applyWorkerID(client, workerIDFlag); err != nil {
 				return err
 			}
 			ws := getWorkspace()
+
+			if cmd.Flags().Changed("role") {
+				role := strings.TrimSpace(roleFlag)
+				if role == "" {
+					return fmt.Errorf("--role must not be empty")
+				}
+				q, err := client.GetRoleQueue(ws, role, 50)
+				if err != nil {
+					return err
+				}
+				return renderRoleQueueReady(q, 0)
+			}
 
 			dash, err := loadDashboard(client, ws)
 			if err != nil {
@@ -90,8 +107,84 @@ Blocked items are never listed; 'pad project stale' shows them.`,
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&roleFlag, "role", "", "agent role slug (reads that role's queue instead of the dashboard)")
 	addWorkerIDFlag(cmd, &workerIDFlag)
 	return cmd
+}
+
+// renderRoleQueueReady outputs ready items for `pad project ready --role`
+// (capResults == 0) and `pad project next --role` (capResults == 3).
+func renderRoleQueueReady(q *models.RoleQueueResponse, capResults int) error {
+	readyItems := make([]models.RoleQueueItem, 0, len(q.Queue))
+	for _, item := range q.Queue {
+		if item.Ready {
+			readyItems = append(readyItems, item)
+		}
+	}
+	if capResults > 0 && len(readyItems) > capResults {
+		readyItems = readyItems[:capResults]
+	}
+	nowItems := q.Now
+	if nowItems == nil {
+		nowItems = []models.RoleQueueNowItem{}
+	}
+
+	if formatFlag == "json" {
+		payload := map[string]any{
+			"count":   len(readyItems),
+			"results": readyItems,
+			"role":    q.Role.Slug,
+			"now":     nowItems,
+		}
+		if q.Park != nil {
+			payload["park"] = q.Park
+		}
+		return cli.PrintJSON(payload)
+	}
+
+	if len(readyItems) == 0 {
+		if q.Park != nil {
+			setBy := "someone"
+			if q.Park.SetBy != nil && *q.Park.SetBy != "" {
+				setBy = *q.Park.SetBy
+			}
+			atStr := "unknown"
+			if q.Park.SetAt != nil {
+				atStr = cli.FormatInstant(*q.Park.SetAt, "15:04")
+			}
+			if len(nowItems) > 0 {
+				refs := make([]string, 0, len(nowItems))
+				for _, n := range nowItems {
+					refs = append(refs, n.Ref)
+				}
+				fmt.Printf("Parked by %s at %s: finish %s, then stop.\n", setBy, atStr, strings.Join(refs, ", "))
+			} else {
+				fmt.Printf("Parked by %s at %s: stop.\n", setBy, atStr)
+			}
+			return nil
+		}
+		fmt.Printf("Nothing ready in %s's queue.\n", q.Role.Slug)
+		return nil
+	}
+
+	bold := color.New(color.Bold)
+	dim := color.New(color.Faint)
+	fmt.Println("Ready to work on:")
+	for i, item := range readyItems {
+		label := strings.TrimSpace(strings.Join([]string{item.Ref, item.Title}, " "))
+		fmt.Printf("  %s %s\n", dim.Sprintf("%d.", i+1), bold.Sprint(label))
+		var meta []string
+		if item.Status != "" {
+			meta = append(meta, item.Status)
+		}
+		if item.Priority != "" {
+			meta = append(meta, item.Priority+" priority")
+		}
+		if len(meta) > 0 {
+			fmt.Printf("     %s\n", dim.Sprint(strings.Join(meta, " · ")))
+		}
+	}
+	return nil
 }
 
 func staleCmd() *cobra.Command {

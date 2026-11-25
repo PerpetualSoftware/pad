@@ -62,7 +62,7 @@ type toolSurfaceToolSummary struct {
 //   - pad_collection: list read; create/update/delete write.
 //   - pad_project:    all read (dashboard/next/ready/stale/standup/
 //     changelog/report/activity).
-//   - pad_role:       list read; create/update/delete write.
+//   - pad_role:       list read; create/update/delete/park/unpark write.
 //   - pad_chat:       list/inbox read; show/send/delete/read write.
 //   - pad_needs:      list read; not-mine/restore write (not-mine with
 //     to_role/to_user reassigns the item, so the tool is destructive).

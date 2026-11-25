@@ -1915,6 +1915,87 @@ func (c *Client) DeleteAgentRole(wsSlug, idOrSlug string) error {
 	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/agent-roles/" + url.PathEscape(idOrSlug))
 }
 
+// GetRoleQueue fetches a role lane's Now items, canonical Queue prefix, park
+// state, and capabilities. limit <= 0 uses the server default.
+func (c *Client) GetRoleQueue(wsSlug, roleIDOrSlug string, limit int) (*models.RoleQueueResponse, error) {
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/agent-roles/" + url.PathEscape(roleIDOrSlug) + "/queue"
+	if limit > 0 {
+		path += "?limit=" + strconv.Itoa(limit)
+	}
+	var result models.RoleQueueResponse
+	return &result, c.get(path, &result)
+}
+
+// SetRolePark places or moves a role lane's park line (PUT .../park), returning
+// both the decoded response and the verbatim server JSON body.
+func (c *Client) SetRolePark(wsSlug, roleIDOrSlug string, input models.RoleParkSetRequest) (*models.RoleParkSetResponse, json.RawMessage, error) {
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/agent-roles/" + url.PathEscape(roleIDOrSlug) + "/park"
+	data, err := json.Marshal(input)
+	if err != nil {
+		return nil, nil, err
+	}
+	req, err := c.newRequest("PUT", path, bytes.NewReader(data))
+	if err != nil {
+		return nil, nil, err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, nil, c.parseError(resp)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read role park response: %w", err)
+	}
+	var parsed models.RoleParkSetResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, nil, fmt.Errorf("decode role park response: %w", err)
+	}
+	return &parsed, json.RawMessage(raw), nil
+}
+
+// ClearRolePark clears a role lane's park line (DELETE .../park), returning
+// both the decoded response and the verbatim server JSON body.
+func (c *Client) ClearRolePark(wsSlug, roleIDOrSlug string, expectedParkSeq *int) (*models.RoleParkClearResponse, json.RawMessage, error) {
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/agent-roles/" + url.PathEscape(roleIDOrSlug) + "/park"
+	var bodyReader io.Reader
+	if expectedParkSeq != nil {
+		data, err := json.Marshal(models.RoleParkClearRequest{ExpectedParkSeq: expectedParkSeq})
+		if err != nil {
+			return nil, nil, err
+		}
+		bodyReader = bytes.NewReader(data)
+	}
+	req, err := c.newRequest("DELETE", path, bodyReader)
+	if err != nil {
+		return nil, nil, err
+	}
+	if bodyReader != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, nil, fmt.Errorf("request failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 400 {
+		return nil, nil, c.parseError(resp)
+	}
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, nil, fmt.Errorf("read clear role park response: %w", err)
+	}
+	var parsed models.RoleParkClearResponse
+	if err := json.Unmarshal(raw, &parsed); err != nil {
+		return nil, nil, fmt.Errorf("decode clear role park response: %w", err)
+	}
+	return &parsed, json.RawMessage(raw), nil
+}
+
 // --- Export / Import ---
 
 // ExportItemArtifactResult holds the bytes of an exported artifact plus the
@@ -2687,6 +2768,54 @@ func WriteLeaseHeldError(w io.Writer, apiErr *APIError) {
 		"code":    LeaseHeldCode,
 		"message": apiErr.Message,
 		"hint":    LeaseHeldHint,
+	}
+	if len(apiErr.Details) > 0 {
+		body["details"] = apiErr.Details
+	}
+	if data, err := json.Marshal(map[string]any{"error": body}); err == nil {
+		fmt.Fprintln(w, StructuredErrorMarker+string(data))
+	}
+}
+
+// Role park refusal codes and hints (TASK-4853). Keep in lockstep with
+// internal/mcp's allowedStructuredErrorCodes and matching hint constants.
+const (
+	ItemParkedCode           = "item_parked"
+	ParkConflictCode         = "park_conflict"
+	ParkAnchorNotInQueueCode = "park_anchor_not_in_queue"
+
+	ItemParkedHint           = "This role lane is parked (details.role, details.first_parked_ref, details.set_by). Finish your Now work and stop; do not pass ignore_park unless the user explicitly asks."
+	ParkConflictHint         = "The role's park state changed (details.actual_park_seq). Re-read the queue or role and retry with the current expected_park_seq."
+	ParkAnchorNotInQueueHint = "The anchor item is not in this role lane's queue (wrong role, terminal, Now item, or reference collection). Choose an open queue item in this role's lane, or park at top."
+)
+
+// IsRoleParkError reports whether err is one of the role-park refusals
+// (item_parked, park_conflict, park_anchor_not_in_queue).
+func IsRoleParkError(err error) (*APIError, bool) {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
+		switch apiErr.Code {
+		case ItemParkedCode, ParkConflictCode, ParkAnchorNotInQueueCode:
+			return apiErr, true
+		}
+	}
+	return nil, false
+}
+
+// WriteRoleParkError writes the structured marker line for role-park refusals
+// so the stdio MCP transport lifts the exact code, details, and hint.
+func WriteRoleParkError(w io.Writer, apiErr *APIError) {
+	hint := ItemParkedHint
+	switch apiErr.Code {
+	case ParkConflictCode:
+		hint = ParkConflictHint
+	case ParkAnchorNotInQueueCode:
+		hint = ParkAnchorNotInQueueHint
+	}
+	body := map[string]any{
+		"code":    apiErr.Code,
+		"message": apiErr.Message,
+		"hint":    hint,
 	}
 	if len(apiErr.Details) > 0 {
 		body["details"] = apiErr.Details
