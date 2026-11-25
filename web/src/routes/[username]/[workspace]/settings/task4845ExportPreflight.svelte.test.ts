@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/svelte';
+import { render, screen, waitFor, fireEvent, cleanup } from '@testing-library/svelte';
 import { page } from '$app/state';
 import { tick } from 'svelte';
 import SettingsPage from './+page.svelte';
@@ -135,6 +135,28 @@ describe('TASK-4845: workspace export preflight', () => {
 		await tick();
 		await new Promise((r) => setTimeout(r, 0));
 		expect(screen.queryByRole('alert')).toBeNull();
+		expect(clicked).toHaveLength(0);
+	});
+
+	it('leaving the page aborts the preflight and never starts the download', async () => {
+		let seen: AbortSignal | undefined;
+		let finish: (() => void) | undefined;
+		h.preflight.mockImplementation(
+			(_slug: string, _opts: unknown, signal?: AbortSignal) =>
+				new Promise<void>((resolve) => {
+					seen = signal;
+					finish = resolve;
+				})
+		);
+		const btn = await renderOwner('ws-leave');
+		await fireEvent.click(btn);
+		await screen.findByRole('button', { name: /Preparing export/ });
+		cleanup();
+		expect(seen?.aborted).toBe(true);
+		// Even a preflight that settles after the page is gone clicks nothing.
+		finish?.();
+		await tick();
+		await new Promise((r) => setTimeout(r, 0));
 		expect(clicked).toHaveLength(0);
 	});
 });

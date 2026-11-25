@@ -471,6 +471,12 @@
 
 	onDestroy(() => {
 		unsubscribeSSE?.();
+		// Leaving the page retires an in-flight export: the abort stops the
+		// server's spool, and the seq bump keeps a late answer from starting
+		// a download on whatever page the user moved to.
+		exportSeq++;
+		exportAbort?.abort();
+		exportAbort = null;
 	});
 	async function load(slug: string) {
 		loading = true;
