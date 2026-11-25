@@ -374,17 +374,24 @@ func (s *Store) insertItemTx(tx *sql.Tx, id, workspaceID, collectionID, slug, ts
 		}
 		sortOrder = topSortOrder(sortOrder)
 	}
+	roleSortOrder := 0
+	if input.AgentRoleID != nil && *input.AgentRoleID != "" {
+		roleSortOrder, err = s.nextRoleLaneArrivalSortOrderTx(tx, workspaceID, *input.AgentRoleID)
+		if err != nil {
+			return fmt.Errorf("compute role_sort_order: %w", err)
+		}
+	}
 	_, err = tx.Exec(s.q(`
 		INSERT INTO items (id, workspace_id, collection_id, title, slug, content, fields, tags,
 		                   pinned, sort_order, parent_id, assigned_user_id, agent_role_id, role_sort_order,
 		                   created_by, last_modified_by, source, item_number, created_at, updated_at,
 		                   content_flushed_at, content_flushed_op_log_id, seq,
 		                   created_by_user_id, last_modified_by_user_id)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?,
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
 		        (SELECT COALESCE(MAX(item_number), 0) + 1 FROM items WHERE workspace_id = ?),
 		        ?, ?, ?, ?, `+nextWorkspaceSeqSubquery+`, ?, ?)
 	`), id, workspaceID, collectionID, input.Title, slug, input.Content, fields, tags,
-		s.dialect.BoolToInt(input.Pinned), sortOrder, input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID),
+		s.dialect.BoolToInt(input.Pinned), sortOrder, input.ParentID, nullIfEmptyID(input.AssignedUserID), nullIfEmptyID(input.AgentRoleID), roleSortOrder,
 		createdBy, createdBy, source, workspaceID, ts, ts, contentFlushedAt, contentFlushedOpLogID, workspaceID,
 		// BUG-3372: the canonical user columns record WHICH account wrote the
 		// row; created_by/last_modified_by only say user or agent. Empty for
@@ -3567,8 +3574,21 @@ func (s *Store) updateItemWithParentLinkOnce(
 		sets = append(sets, "assigned_user_id = NULL")
 	}
 	if input.AgentRoleID != nil && *input.AgentRoleID != "" {
+		newRoleID := *input.AgentRoleID
 		sets = append(sets, "agent_role_id = ?")
-		args = append(args, *input.AgentRoleID)
+		args = append(args, newRoleID)
+		prevRoleID := ""
+		if existing.AgentRoleID != nil {
+			prevRoleID = *existing.AgentRoleID
+		}
+		if newRoleID != prevRoleID {
+			roleSortOrder, err := s.nextRoleLaneArrivalSortOrderTx(tx, existing.WorkspaceID, newRoleID)
+			if err != nil {
+				return nil, fmt.Errorf("compute role_sort_order: %w", err)
+			}
+			sets = append(sets, "role_sort_order = ?")
+			args = append(args, roleSortOrder)
+		}
 	} else if input.ClearAgentRole || (input.AgentRoleID != nil && *input.AgentRoleID == "") {
 		sets = append(sets, "agent_role_id = NULL")
 	}

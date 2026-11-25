@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"sort"
 	"strings"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -40,14 +39,22 @@ func (s *Store) CreateAgentRole(workspaceID string, input models.AgentRoleCreate
 func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, error) {
 	var role models.AgentRole
 	var createdAt, updatedAt string
+	var parkMode string
+	var parkSortOrder sql.NullInt64
+	var parkSetAt, parkSetByUserID, parkSetBy sql.NullString
+	var parkSeq int
 
 	err := s.db.QueryRow(s.q(`
-		SELECT id, workspace_id, slug, name, description, icon, tools, sort_order, created_at, updated_at
-		FROM agent_roles
-		WHERE workspace_id = ? AND (id = ? OR slug = ?)
+		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.tools, r.sort_order,
+		       r.created_at, r.updated_at,
+		       r.park_mode, r.park_sort_order, r.park_set_at, r.park_set_by_user_id, r.park_seq,
+		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.username END FROM users u WHERE u.id = r.park_set_by_user_id)
+		FROM agent_roles r
+		WHERE r.workspace_id = ? AND (r.id = ? OR r.slug = ?)
 	`), workspaceID, idOrSlug, idOrSlug).Scan(
 		&role.ID, &role.WorkspaceID, &role.Slug, &role.Name, &role.Description,
 		&role.Icon, &role.Tools, &role.SortOrder, &createdAt, &updatedAt,
+		&parkMode, &parkSortOrder, &parkSetAt, &parkSetByUserID, &parkSeq, &parkSetBy,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -58,6 +65,7 @@ func (s *Store) GetAgentRole(workspaceID, idOrSlug string) (*models.AgentRole, e
 
 	role.CreatedAt = parseTime(createdAt)
 	role.UpdatedAt = parseTime(updatedAt)
+	role.Park = buildRolePark(parkMode, parkSortOrder, parkSetAt, parkSetByUserID, parkSetBy, parkSeq)
 	return &role, nil
 }
 
@@ -69,6 +77,8 @@ func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
 	rows, err := s.db.Query(s.q(`
 		SELECT r.id, r.workspace_id, r.slug, r.name, r.description, r.icon, r.tools, r.sort_order,
 		       r.created_at, r.updated_at,
+		       r.park_mode, r.park_sort_order, r.park_set_at, r.park_set_by_user_id, r.park_seq,
+		       (SELECT CASE WHEN u.name <> '' THEN u.name ELSE u.username END FROM users u WHERE u.id = r.park_set_by_user_id),
 		       COUNT(i.id) as item_count
 		FROM agent_roles r
 		LEFT JOIN items i ON i.agent_role_id = r.id AND i.deleted_at IS NULL
@@ -86,14 +96,21 @@ func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
 	for rows.Next() {
 		var role models.AgentRole
 		var createdAt, updatedAt string
+		var parkMode string
+		var parkSortOrder sql.NullInt64
+		var parkSetAt, parkSetByUserID, parkSetBy sql.NullString
+		var parkSeq int
 		if err := rows.Scan(
 			&role.ID, &role.WorkspaceID, &role.Slug, &role.Name, &role.Description,
-			&role.Icon, &role.Tools, &role.SortOrder, &createdAt, &updatedAt, &role.ItemCount,
+			&role.Icon, &role.Tools, &role.SortOrder, &createdAt, &updatedAt,
+			&parkMode, &parkSortOrder, &parkSetAt, &parkSetByUserID, &parkSeq, &parkSetBy,
+			&role.ItemCount,
 		); err != nil {
 			return nil, err
 		}
 		role.CreatedAt = parseTime(createdAt)
 		role.UpdatedAt = parseTime(updatedAt)
+		role.Park = buildRolePark(parkMode, parkSortOrder, parkSetAt, parkSetByUserID, parkSetBy, parkSeq)
 		roles = append(roles, role)
 	}
 	if roles == nil {
@@ -374,7 +391,7 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 		}
 	}
 
-	// Build result in role order, sorting items within each lane by role_sort_order
+	// Build result in role order, sorting items within each lane in canonical lane order
 	var result []RoleBoardLane
 	for _, role := range roles {
 		lane := roleMap[role.ID]
@@ -383,16 +400,12 @@ func (s *Store) GetRoleBoardItems(workspaceID string, params RoleBoardParams) ([
 				lane.Users = append(lane.Users, u)
 			}
 		}
-		sort.Slice(lane.Items, func(i, j int) bool {
-			return lane.Items[i].RoleSortOrder < lane.Items[j].RoleSortOrder
-		})
+		SortRoleLane(lane.Items)
 		result = append(result, *lane)
 	}
 
-	// Add unassigned lane (sorted by role_sort_order)
-	sort.Slice(unassignedLane.Items, func(i, j int) bool {
-		return unassignedLane.Items[i].RoleSortOrder < unassignedLane.Items[j].RoleSortOrder
-	})
+	// Add unassigned lane in canonical lane order
+	SortRoleLane(unassignedLane.Items)
 	if len(unassignedLane.Items) > 0 {
 		// Dedupe users
 		userSet := make(map[string]bool)

@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"sort"
 	"strconv"
-	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -232,14 +231,7 @@ func itemNumber(it models.Item) int {
 }
 
 func isActiveStatus(status string) bool {
-	s := strings.ToLower(strings.ReplaceAll(status, "-", "_"))
-	switch s {
-	// Active statuses
-	case "in_progress", "exploring", "fixing", "confirmed", "in_review":
-		return true
-	default:
-		return false
-	}
+	return models.IsActiveStatus(status)
 }
 
 // doneContext pairs a collection's schema with its settings so

@@ -123,6 +123,18 @@ var NegativeTerminals = map[string]bool{
 	"disabled":  true,
 }
 
+// IsActiveStatus returns true if the status indicates work actively in progress.
+// It excludes both initial/queued states and terminal/completed states.
+func IsActiveStatus(status string) bool {
+	s := strings.ToLower(strings.ReplaceAll(status, "-", "_"))
+	switch s {
+	case "in_progress", "exploring", "fixing", "confirmed", "in_review":
+		return true
+	default:
+		return false
+	}
+}
+
 // IsNegativeTerminal reports whether value is a non-shipping terminal.
 func IsNegativeTerminal(value string) bool {
 	return NegativeTerminals[strings.ToLower(strings.TrimSpace(value))]

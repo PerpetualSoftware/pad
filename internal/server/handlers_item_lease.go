@@ -51,6 +51,12 @@ func (s *Server) handleClaimItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	ignorePark, validFlag := parseStrictBoolQueryParam(r, "ignore_park")
+	if !validFlag {
+		writeError(w, http.StatusBadRequest, "validation_error", "ignore_park must be true or false")
+		return
+	}
+
 	ttl := defaultLeaseTTL
 	if input.TTLSeconds != 0 {
 		if input.TTLSeconds < 0 || time.Duration(input.TTLSeconds)*time.Second > maxLeaseTTL {
@@ -59,6 +65,12 @@ func (s *Server) handleClaimItem(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		ttl = time.Duration(input.TTLSeconds) * time.Second
+	}
+
+	if !ignorePark {
+		if !s.checkItemParkedForClaim(w, r, item.WorkspaceID, item.Item) {
+			return
+		}
 	}
 
 	lease, err := s.store.ClaimItemLease(item.ID, holder, worker, currentUserID(r), ttl)
@@ -170,7 +182,12 @@ func (s *Server) resolveLeaseRequest(w http.ResponseWriter, r *http.Request) (it
 		return nil, "", "", input, false
 	}
 
-	return &resolvedLeaseItem{ID: resolved.ID, Ref: resolved.Ref}, holder, worker, input, true
+	return &resolvedLeaseItem{
+		ID:          resolved.ID,
+		Ref:         resolved.Ref,
+		WorkspaceID: workspaceID,
+		Item:        resolved,
+	}, holder, worker, input, true
 }
 
 // defaultLeaseHolder is the holder a claim or release names when the caller
@@ -229,10 +246,13 @@ func defaultLeaseWorker(r *http.Request) string {
 }
 
 // resolvedLeaseItem is the slice of the resolved item the lease handlers
-// need — id for the store call, ref for the response envelope.
+// need — id for the store call, ref for the response envelope, and the
+// resolved item + workspace id for the park-line check on claim.
 type resolvedLeaseItem struct {
-	ID  string
-	Ref string
+	ID          string
+	Ref         string
+	WorkspaceID string
+	Item        *models.Item
 }
 
 // writeLeaseHeldError emits the structured 409 for a live foreign lease —

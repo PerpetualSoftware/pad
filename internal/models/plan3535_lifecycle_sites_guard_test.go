@@ -93,6 +93,8 @@ var lifecycleSites = map[string]string{
 	// Role breakdown.
 	"internal/store/agent_roles.go::GetRoleBreakdown::doneFiltersForWorkspace": "exclude: AND NOT buildReferenceExpr",
 	"internal/store/agent_roles.go::GetRoleBreakdown::buildChildrenDoneExpr":   "exclude: AND NOT buildReferenceExpr",
+	"internal/store/role_park.go::loadRoleLaneQ::IsTerminalItem":               "exclude: queue entries require cinfo.tracksWork (models.CollectionTracksWork); canonical lane respace preserves order of all non-terminal items",
+	"internal/store/role_park.go::IsItemInRoleQueue::IsTerminalItem":           "exclude: returns false before IsTerminalItem when !cinfo.tracksWork",
 
 	// Completed work (standup, changelog).
 	"internal/server/handlers_project_intel.go::listTerminalItemsSince::CollectionCompletedWorkValues": "exclude: a reference collection contributes no values",
