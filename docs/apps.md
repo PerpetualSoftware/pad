@@ -73,7 +73,7 @@ Every URL field (`homepage`, `redirect_uris`, `webhook_url`, `docs`, artifact `u
 | `key` | A lower-case key (`^[a-z][a-z0-9_-]{0,63}$`). `events` and `item_actions` refer to a collection by this key. |
 | `slug` | The collection's slug in the workspace: 2 to 64 characters of `a-z`, `0-9` and `-`, not starting or ending with `-`. Unique within the pack. Some slugs are reserved by Pad and refused (`422 invalid_manifest`). |
 | `name` | Display name, up to 200 bytes. |
-| `schema` | A Pad collection schema, `{"fields": [...]}`. Required. |
+| `schema` | A Pad collection schema, `{"fields": [...]}`. Required. Held to the rules a collection create follows: field keys and select options are unique and non-empty, every `abandoned_options` value is one of the field's `terminal_options`, and every `awaits_human_options` value is one of its `options` and none of its `terminal_options`. A schema that breaks one is refused (`422 invalid_manifest`). |
 
 If the workspace already has a collection with that slug that the app did not create, the install is refused with `409 collection_conflict`. If it was created by an earlier install of the same origin that has since been uninstalled, it is adopted. If that install is still installed or disabled, the install is refused (`409 app_already_installed`).
 
