@@ -83,6 +83,7 @@ func (s *Server) handleSnoozeNeedsItem(w http.ResponseWriter, r *http.Request) {
 		writeInternalError(w, err)
 		return
 	}
+	s.publishHomeChanged(workspaceID, item.CollectionID, item.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ref":    item.Ref,
 		"snooze": sn,
@@ -93,7 +94,7 @@ func (s *Server) handleSnoozeNeedsItem(w http.ResponseWriter, r *http.Request) {
 // their inbox again. Idempotent: no snooze is not an error.
 // DELETE /api/v1/workspaces/{slug}/items/{itemSlug}/needs/snooze
 func (s *Server) handleUnsnoozeNeedsItem(w http.ResponseWriter, r *http.Request) {
-	_, item, userID, ok := s.resolveNeedsSnoozeItem(w, r)
+	workspaceID, item, userID, ok := s.resolveNeedsSnoozeItem(w, r)
 	if !ok {
 		return
 	}
@@ -101,6 +102,7 @@ func (s *Server) handleUnsnoozeNeedsItem(w http.ResponseWriter, r *http.Request)
 		writeInternalError(w, err)
 		return
 	}
+	s.publishHomeChanged(workspaceID, item.CollectionID, item.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ref":    item.Ref,
 		"snooze": nil,

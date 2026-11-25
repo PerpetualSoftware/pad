@@ -1319,20 +1319,20 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 // per-collection count, and the max seq as the reconcile cursor — but
 // no per-item IDs (see events.Event doc for why).
 func (s *Server) publishBulkItemsEvent(workspaceID, op, collection string, count int, actor, actorName, source string, maxSeq int64) {
-	if s.events == nil {
-		return
+	if s.events != nil {
+		s.publishActivityEvent(events.Event{
+			Type:        sseItemsBulk,
+			WorkspaceID: workspaceID,
+			Collection:  collection,
+			Op:          op,
+			Count:       count,
+			Actor:       actor,
+			ActorName:   actorName,
+			Source:      source,
+			Seq:         maxSeq,
+		})
 	}
-	s.publishActivityEvent(events.Event{
-		Type:        sseItemsBulk,
-		WorkspaceID: workspaceID,
-		Collection:  collection,
-		Op:          op,
-		Count:       count,
-		Actor:       actor,
-		ActorName:   actorName,
-		Source:      source,
-		Seq:         maxSeq,
-	})
+	s.publishHomeChanged(workspaceID, "", "")
 }
 
 // bulkEventDelta is the SHARED delta of a bulk operation — the change every

@@ -223,7 +223,7 @@ func (s *Server) writeGraphError(w http.ResponseWriter, r *http.Request, err err
 // response is unaffected. A removed item is skipped. Best-effort: a failed
 // lookup is logged and changes no response.
 func (s *Server) publishCommitmentGraphWrite(r *http.Request, workspaceID string, changed []string, ends ...string) {
-	if s.events == nil {
+	if s.events == nil && s.watchEvents == nil {
 		return
 	}
 	seen := map[string]bool{}

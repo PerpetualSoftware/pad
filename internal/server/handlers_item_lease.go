@@ -97,6 +97,7 @@ func (s *Server) handleClaimItem(w http.ResponseWriter, r *http.Request) {
 	if worker != "" {
 		body["worker_id"] = worker
 	}
+	s.publishHomeChanged(item.WorkspaceID, item.Item.CollectionID, item.ID)
 	writeJSON(w, http.StatusOK, body)
 }
 
@@ -119,6 +120,7 @@ func (s *Server) handleReleaseItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.publishHomeChanged(item.WorkspaceID, item.Item.CollectionID, item.ID)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ref":      item.Ref,
 		"released": released,

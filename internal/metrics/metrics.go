@@ -551,6 +551,9 @@ type Metrics struct {
 	SignupsTotal         *prometheus.CounterVec   // method, client
 	FirstWritesTotal     *prometheus.CounterVec   // kind, client
 	FirstWriteAgeSeconds *prometheus.HistogramVec // client
+
+	// HomeHintsTotal counts home_changed refetch hints published onto the watch event bus.
+	HomeHintsTotal prometheus.Counter
 }
 
 // Label values for the funnel series (TASK-3926). SignupClients is the
@@ -926,7 +929,13 @@ func New() *Metrics {
 		Help: "Failed session-presence operations by op. READ THE LABEL — register/renew RISK a live session being unlisted and untargetable, deregister risks a DEAD one staying listed, list returns 503, prune is benign. A failure means an error was reported; Redis can fail after applying.",
 	}, []string{"op"})
 
+	homeHintsTotal := prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "pad_home_hints_total",
+		Help: "Total home_changed refetch hints published onto the watch event bus.",
+	})
+
 	reg.MustRegister(
+		homeHintsTotal,
 		watchNotificationsDroppedTotal,
 		watchSequenceGapsTotal,
 		watchNotificationsMissedTotal,
@@ -1048,6 +1057,7 @@ func New() *Metrics {
 		FirstWritesTotal:             firstWritesTotal,
 		FirstWriteAgeSeconds:         firstWriteAgeSeconds,
 		OAuthTokenTTLSeconds:         oauthTokenTTLSeconds,
+		HomeHintsTotal:               homeHintsTotal,
 	}
 }
 

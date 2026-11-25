@@ -211,6 +211,7 @@ func (s *Server) handleSetRolePark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.publishHomeChanged(workspaceID, "", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"park": roleParkResponse{
 			Mode:           park.Mode,
@@ -279,6 +280,7 @@ func (s *Server) handleClearRolePark(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	s.publishHomeChanged(workspaceID, "", "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"park":     nil,
 		"park_seq": seq,
