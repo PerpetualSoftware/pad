@@ -368,6 +368,11 @@ var nulColumns = []nulColumn{
 	{"item_entries", "entry_id", classText},
 	{"item_entries", "head", classText},
 	{"item_entries", "body", classText},
+
+	// agent_roles park columns (TASK-4852, migration 192).
+	{"agent_roles", "park_mode", classText},
+	{"agent_roles", "park_set_at", classText},
+	{"agent_roles", "park_set_by_user_id", classText},
 }
 
 // nulTriggerMigrations are the generated trigger files, in migration order.
@@ -406,11 +411,17 @@ var nulTriggerMigrations = []string{
 	"182_nul_invariant_triggers_post181.sql",
 	"185_nul_invariant_triggers_post184.sql",
 	"188_nul_invariant_triggers_post187.sql",
+	"193_nul_invariant_triggers_post192.sql",
 }
 
 // nulColumnTriggerFile assigns a column to a trigger file other than the
 // first. Every column not named here is in nulTriggerMigrations[0].
 var nulColumnTriggerFile = map[string]string{
+	// 192 added role park columns (TASK-4852).
+	"agent_roles.park_mode":           "193_nul_invariant_triggers_post192.sql",
+	"agent_roles.park_set_at":         "193_nul_invariant_triggers_post192.sql",
+	"agent_roles.park_set_by_user_id": "193_nul_invariant_triggers_post192.sql",
+
 	"workspace_slug_claims.slug":         "188_nul_invariant_triggers_post187.sql",
 	"workspace_slug_claims.workspace_id": "188_nul_invariant_triggers_post187.sql",
 	// 184 introduced the table (TASK-4491).

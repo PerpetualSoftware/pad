@@ -178,6 +178,11 @@ type Dialect interface {
 	//             still reaches the cast and fails the query. Only server-minted
 	//             stamps reach these columns, so none exists.
 	EpochSeconds(column string) string
+
+	// ForUpdate returns the row-lock clause for SELECT queries:
+	// SQLite: "" (single-writer transactions; FOR UPDATE is a syntax error)
+	// PostgreSQL: " FOR UPDATE"
+	ForUpdate() string
 }
 
 // ---------- SQLite dialect ----------
@@ -431,12 +436,20 @@ func (d *sqliteDialect) EpochSeconds(column string) string {
 	return "CAST(strftime('%s', " + column + ") AS INTEGER)"
 }
 
+func (d *sqliteDialect) ForUpdate() string {
+	return ""
+}
+
 // pgRFC3339Pattern is the shape the Postgres EpochSeconds accepts. It sits
 // inside a single-quoted literal, so rebindQuery copies its "?" unchanged.
 const pgRFC3339Pattern = `^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:\d{2})$`
 
 func (d *postgresDialect) EpochSeconds(column string) string {
 	return "(CASE WHEN " + column + " ~ '" + pgRFC3339Pattern + "' THEN FLOOR(EXTRACT(EPOCH FROM " + column + "::timestamptz))::bigint END)"
+}
+
+func (d *postgresDialect) ForUpdate() string {
+	return " FOR UPDATE"
 }
 
 // ---------- Helper ----------

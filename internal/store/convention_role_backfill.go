@@ -210,9 +210,13 @@ func (s *Store) copyConventionRole(wsID string, c conventionRoleCandidate, roleI
 	if err := s.acquireWorkspaceSeqLock(tx, wsID); err != nil {
 		return 0, err
 	}
-	r, err := tx.Exec(s.q(`UPDATE items SET agent_role_id = ?, seq = `+nextWorkspaceSeqSubquery+`, updated_at = ?
+	roleSortOrder, err := s.nextRoleLaneArrivalSortOrderTx(tx, wsID, roleID)
+	if err != nil {
+		return 0, fmt.Errorf("convention role backfill: compute role_sort_order %s: %w", c.id, err)
+	}
+	r, err := tx.Exec(s.q(`UPDATE items SET agent_role_id = ?, role_sort_order = ?, seq = `+nextWorkspaceSeqSubquery+`, updated_at = ?
 		WHERE id = ? AND workspace_id = ? AND agent_role_id IS NULL AND seq = ? AND deleted_at IS NULL`),
-		roleID, wsID, now(), c.id, wsID, c.seq)
+		roleID, roleSortOrder, wsID, now(), c.id, wsID, c.seq)
 	if err != nil {
 		return 0, fmt.Errorf("convention role backfill: update %s: %w", c.id, err)
 	}
