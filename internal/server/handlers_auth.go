@@ -1810,6 +1810,31 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, okResponse)
 }
 
+// refuseBrowserLocalReset refuses browser-originated requests to the
+// CSRF-exempt local password reset endpoint (BUG-4837).
+//
+// Without it, a web page open in the operator's browser on the server host
+// can submit a cross-site text/plain form POST with a JSON-shaped body to
+// force a temporary password and revoke sessions. Unlike refuseCrossSiteSignIn,
+// this refuses ANY non-empty Origin header — including this server's own
+// origin — because a DNS-rebound page presents a same-origin Origin and could
+// read the temporary password from the response. Modern browsers also attach
+// Sec-Fetch-Site to POSTs. The pad CLI on the server host sends
+// Content-Type: application/json with neither Origin nor Sec-Fetch-Site, so
+// it is unaffected. Reports whether it refused.
+func refuseBrowserLocalReset(w http.ResponseWriter, r *http.Request) bool {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || mediaType != "application/json" {
+		writeError(w, http.StatusUnsupportedMediaType, "unsupported_media_type", "Local password reset requires a JSON request body")
+		return true
+	}
+	if r.Header.Get("Origin") != "" || r.Header.Get("Sec-Fetch-Site") != "" {
+		writeError(w, http.StatusForbidden, "forbidden", "Local password reset is only available from the pad CLI on the server host")
+		return true
+	}
+	return false
+}
+
 // handleLocalReset is the self-host account-recovery escape hatch for an
 // operator who is locked out — forgot the only admin password and has no
 // email provider configured. It is the password-reset analogue of
@@ -1817,7 +1842,7 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 // established by the strict loopback check, so it deliberately requires no
 // session (the whole point is that the caller cannot log in).
 //
-// Two hard gates, both required:
+// Three hard gates, all required:
 //
 //   - NOT cloud mode. On Pad Cloud the host process must never be able to
 //     reset an arbitrary tenant's password; cloud always has email plus
@@ -1826,6 +1851,9 @@ func (s *Server) handleForgotPassword(w http.ResponseWriter, r *http.Request) {
 //     headers. A reverse proxy forwarding public traffic always sets
 //     X-Forwarded-For / X-Real-IP and is rejected, so this cannot be
 //     reached from off-box. Same invariant bootstrap relies on.
+//   - refuseBrowserLocalReset — requires application/json and refuses any
+//     Origin or Sec-Fetch-Site header so a browser tab on the server host
+//     cannot trigger a reset cross-site or via DNS rebinding.
 //
 // POST /api/v1/auth/local-reset  {email, temp_password?}
 // Default: returns a single-use reset token+path the operator opens in a
@@ -1838,6 +1866,9 @@ func (s *Server) handleLocalReset(w http.ResponseWriter, r *http.Request) {
 	}
 	if !requestIsLoopback(r) {
 		writeError(w, http.StatusForbidden, "forbidden", "Local password reset is only allowed from localhost on the server host")
+		return
+	}
+	if refuseBrowserLocalReset(w, r) {
 		return
 	}
 
