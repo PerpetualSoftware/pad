@@ -19,6 +19,47 @@ function mockFetchOnce(status: number, body: unknown) {
 	);
 }
 
+function mockXHROnce(status: number, responseText = '') {
+	class FakeXHR {
+		status = status;
+		responseText = responseText;
+		withCredentials = false;
+		upload: { onprogress: ((e: ProgressEvent) => void) | null; onload: (() => void) | null } = {
+			onprogress: null,
+			onload: null,
+		};
+		onload: (() => void) | null = null;
+		onerror: (() => void) | null = null;
+		ontimeout: (() => void) | null = null;
+		onabort: (() => void) | null = null;
+		open() {}
+		setRequestHeader() {}
+		getResponseHeader() {
+			return null;
+		}
+		abort() {}
+		send() {
+			queueMicrotask(() => this.onload?.());
+		}
+	}
+	vi.stubGlobal('XMLHttpRequest', FakeXHR);
+}
+
+function extractRedirectToLoginArgs(src: string): string[] {
+	const args: string[] = [];
+	for (const m of src.matchAll(/(?<!function\s)redirectToLogin\(/g)) {
+		const start = m.index! + m[0].length;
+		let depth = 1;
+		let i = start;
+		for (; i < src.length && depth > 0; i++) {
+			if (src[i] === '(') depth++;
+			else if (src[i] === ')') depth--;
+		}
+		args.push(src.slice(start, i - 1).trim());
+	}
+	return args;
+}
+
 describe('BUG-3571 part 2: the 401 redirect keeps first', () => {
 	beforeEach(() => vi.unstubAllGlobals());
 	afterEach(() => vi.unstubAllGlobals());
@@ -80,5 +121,48 @@ describe('BUG-3571 part 2: the 401 redirect keeps first', () => {
 		const toLogin = navs.filter((n) => n.includes('login') || n.includes('href = href'));
 		expect(toLogin).toEqual(['location.href = href']);
 		expect((src.match(/redirectToLogin\(/g) ?? []).length).toBeGreaterThanOrEqual(8);
+	});
+
+	// TASK-4847: every session-expiry redirect carries the return-to target,
+	// never a bare '/login'.
+	it('every redirectToLogin call passes loginReturnHref()', () => {
+		const src = readFileSync('src/lib/api/client.ts', 'utf8');
+		expect(src.match(/redirectToLogin\('\/login'\)/g)).toBeNull();
+		const args = extractRedirectToLoginArgs(src);
+		expect(args).toHaveLength(8);
+		expect(args).toEqual(Array(8).fill('loginReturnHref()'));
+	});
+
+	it.each<{ name: string; call: () => Promise<unknown> }>([
+		{
+			name: 'api.workspaces.importBundle',
+			call: () => api.workspaces.importBundle(new File(['x'], 'bundle.tar.gz')),
+		},
+		{
+			name: 'api.auth.exportAccountData',
+			call: () => api.auth.exportAccountData(),
+		},
+		{
+			name: 'api.attachments.upload',
+			call: () => api.attachments.upload('ws', new File(['x'], 'a.png')),
+		},
+		{
+			name: 'api.attachments.transform',
+			call: () => api.attachments.transform('ws', 'att-1', { operation: 'rotate', degrees: 90 }),
+		},
+		{
+			name: 'api.exportItemArtifact',
+			call: () => api.exportItemArtifact('ws', 'TASK-1'),
+		},
+		{
+			name: 'api.importArtifact',
+			call: () => api.importArtifact('ws', '# doc'),
+		},
+	])('$name preserves return-to path on 401', async ({ call }) => {
+		const win = stubWindow('/ws/tasks', '?item=TASK-1');
+		mockFetchOnce(401, { error: { code: 'unauthorized', message: 'Not logged in' } });
+		mockXHROnce(401);
+		await expect(call()).rejects.toMatchObject({ code: 'unauthorized' });
+		expect(win.location.href).toBe(`/login?redirect=${encodeURIComponent('/ws/tasks?item=TASK-1')}`);
 	});
 });
