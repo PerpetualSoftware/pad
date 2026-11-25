@@ -88,7 +88,7 @@ func writeExportBundleEntriesTooLarge(w http.ResponseWriter, counts exportBundle
 		reason = fmt.Sprintf("%d tar header blocks, limit %d", counts.HeaderBlocks, maxHeaderBlocks)
 	}
 	msg := fmt.Sprintf(
-		"This workspace has too many attachments for a bundle this server can import (%s). Export as plain JSON instead (pad workspace export without the bundle format), which carries no attachment blobs.",
+		"This workspace has too many attachments for a bundle this server can import (%s). Export as plain JSON instead (pad workspace export --json), which carries no attachment blobs.",
 		reason,
 	)
 	writeError2(w, http.StatusUnprocessableEntity, "export_too_large", msg, map[string]interface{}{

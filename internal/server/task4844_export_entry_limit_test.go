@@ -127,7 +127,7 @@ func TestTask4844_ExportOverEntryCapRefusesBeforeAnyByte(t *testing.T) {
 	if !strings.Contains(env.Error.Message, "5") || !strings.Contains(env.Error.Message, "4") {
 		t.Errorf("message should name count (5) and limit (4): %q", env.Error.Message)
 	}
-	if !strings.Contains(env.Error.Message, "pad workspace export") {
+	if !strings.Contains(env.Error.Message, "pad workspace export --json") {
 		t.Errorf("message should suggest plain JSON pad workspace export: %q", env.Error.Message)
 	}
 	if strings.Contains(env.Error.Message, "PAD_") {
