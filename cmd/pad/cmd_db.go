@@ -115,20 +115,44 @@ func backupSQLite(srcPath, outPath string) error {
 		return fmt.Errorf("prepare staged backup: %w", err)
 	}
 
-	if err := os.Link(stagePath, absOut); err != nil {
-		if errors.Is(err, fs.ErrExist) {
-			return fmt.Errorf("output file already exists: %s (remove it or choose another -o path)", outPath)
-		}
-		if _, statErr := os.Lstat(absOut); statErr == nil {
-			return fmt.Errorf("output file already exists: %s (remove it or choose another -o path)", outPath)
-		} else if !errors.Is(statErr, fs.ErrNotExist) {
-			return fmt.Errorf("publish SQLite backup: %w", statErr)
-		}
-		if renameErr := os.Rename(stagePath, absOut); renameErr != nil {
-			return fmt.Errorf("publish SQLite backup: %w", renameErr)
-		}
+	err = linkFile(stagePath, absOut)
+	if err != nil && !errors.Is(err, fs.ErrExist) {
+		// No hard links on this filesystem: an exclusive create keeps the
+		// no-overwrite guarantee that a check followed by a rename cannot.
+		err = copyFileExclusive(stagePath, absOut)
+	}
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("output file already exists: %s (remove it or choose another -o path)", outPath)
+	}
+	if err != nil {
+		return fmt.Errorf("publish SQLite backup: %w", err)
 	}
 	return nil
+}
+
+// linkFile is os.Link, replaceable in tests to exercise the copy fallback.
+var linkFile = os.Link
+
+// copyFileExclusive copies src to a new file at dst, created with mode 0600,
+// and fails with fs.ErrExist rather than replace anything already at dst. A
+// failed copy removes the file it created.
+func copyFileExclusive(src, dst string) (err error) {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			os.Remove(dst)
+		}
+	}()
+	_, err = io.Copy(out, in)
+	return errors.Join(err, out.Chmod(0o600), out.Sync(), out.Close())
 }
 
 func dumpPostgres(dbURL, path string) error {

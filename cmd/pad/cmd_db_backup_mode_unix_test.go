@@ -188,3 +188,72 @@ func TestPostgresBackupExistingKeepsMode(t *testing.T) {
 		t.Errorf("backup content = %q, want %q", got, "complete SQL\n")
 	}
 }
+
+// withoutHardLinks makes linkFile fail as it does on a filesystem with no hard
+// links, after running racer (when set) to model a file appearing at the
+// destination between the failed link and the fallback.
+func withoutHardLinks(t *testing.T, racer func(dst string)) {
+	t.Helper()
+	orig := linkFile
+	linkFile = func(_, dst string) error {
+		if racer != nil {
+			racer(dst)
+		}
+		return &os.LinkError{Op: "link", New: dst, Err: syscall.EPERM}
+	}
+	t.Cleanup(func() { linkFile = orig })
+}
+
+func TestSQLiteBackupCopyFallbackIsPrivate(t *testing.T) {
+	old := syscall.Umask(0)
+	t.Cleanup(func() { syscall.Umask(old) })
+	withoutHardLinks(t, nil)
+
+	src := createTestSQLiteDB(t)
+	outDir := t.TempDir()
+	out := filepath.Join(outDir, "backup.db")
+	if err := backupSQLite(src, out); err != nil {
+		t.Fatalf("backupSQLite failed: %v", err)
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatalf("stat backup: %v", err)
+	}
+	if perm := info.Mode().Perm(); perm != 0o600 {
+		t.Errorf("backup mode = %04o, want 0600", perm)
+	}
+	if entries, err := os.ReadDir(outDir); err != nil || len(entries) != 1 {
+		t.Errorf("destination dir entries = %v, error %v; want only backup.db", entries, err)
+	}
+	bdb, err := sql.Open("sqlite", out)
+	if err != nil {
+		t.Fatalf("open backup sqlite: %v", err)
+	}
+	defer bdb.Close()
+	var got int
+	if err := bdb.QueryRow("SELECT x FROM t").Scan(&got); err != nil || got != 1 {
+		t.Errorf("SELECT x FROM t = %d, error %v; want 1", got, err)
+	}
+}
+
+func TestSQLiteBackupCopyFallbackNeverOverwrites(t *testing.T) {
+	withoutHardLinks(t, func(dst string) {
+		if err := os.WriteFile(dst, []byte("racer"), 0o644); err != nil {
+			t.Fatalf("racer write: %v", err)
+		}
+	})
+
+	src := createTestSQLiteDB(t)
+	outDir := t.TempDir()
+	out := filepath.Join(outDir, "backup.db")
+	err := backupSQLite(src, out)
+	if err == nil || !strings.Contains(err.Error(), "output file already exists") {
+		t.Fatalf("backupSQLite error = %v, want error containing %q", err, "output file already exists")
+	}
+	if got, err := os.ReadFile(out); err != nil || string(got) != "racer" {
+		t.Errorf("destination = %q, error %v; want the racer's file untouched", got, err)
+	}
+	if entries, err := os.ReadDir(outDir); err != nil || len(entries) != 1 {
+		t.Errorf("destination dir entries = %v, error %v; want 1 entry", entries, err)
+	}
+}
