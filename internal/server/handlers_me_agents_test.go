@@ -633,19 +633,147 @@ func TestMeAgents_FinishedExcludesCustomAbandonedAndReopened(t *testing.T) {
 	}
 }
 
+func TestMeAgents_FinishedCompletedAtIsTheDoneTransition(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+
+	owner := mkAgentsUser(t, srv, "done-ts-owner@example.com", "Done TS Owner")
+	tok := mkAgentsPAT(t, srv, owner.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Done TS WS", Slug: "done-ts-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	schema := `{"fields":[{"key":"status","type":"select","options":["open","done","shipped","cancelled"],"terminal_options":["done","shipped","cancelled"],"abandoned_options":["cancelled"],"default":"open"},{"key":"stage","type":"select","options":["draft","reviewed"],"default":"draft"}]}`
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Slug: "tasks", Prefix: "DTS", Schema: schema})
+	if err != nil {
+		t.Fatalf("coll: %v", err)
+	}
+	role, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Builder", Slug: "builder"})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	tItemADone := now.Add(-4 * time.Hour)
+	tItemAOtherField := now.Add(-10 * time.Minute)
+	tItemBDone := now.Add(-3 * time.Hour)
+	tItemBShipped := now.Add(-2 * time.Hour)
+	tItemCFirstDone := now.Add(-5 * time.Hour)
+	tItemCReopen := now.Add(-3*time.Hour - 30*time.Minute)
+	tItemCSecondDone := now.Add(-1 * time.Hour)
+	tItemCOtherField := now.Add(-5 * time.Minute)
+
+	insertTransition := func(id, itemID, fieldKey, fromStatus, toStatus string, at time.Time) {
+		t.Helper()
+		if _, err := srv.store.DB().Exec(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, itemID, ws.ID, coll.ID, fieldKey, fromStatus, toStatus, at.UTC().Format(time.RFC3339),
+		); err != nil {
+			t.Fatalf("insert transition %s: %v", id, err)
+		}
+	}
+
+	// Item A: set done at -4h, then a later transition on another select field ("stage") at -10m.
+	itemA, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title: "Item A Other Field Later", Fields: `{"status":"done","stage":"reviewed"}`, AgentRoleID: &role.ID,
+	})
+	if err != nil {
+		t.Fatalf("itemA: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, itemA.ID); err != nil {
+		t.Fatalf("clear itemA transitions: %v", err)
+	}
+	insertTransition("a-done", itemA.ID, "status", "open", "done", tItemADone)
+	insertTransition("a-stage", itemA.ID, "stage", "draft", "reviewed", tItemAOtherField)
+	itemA, _ = srv.store.GetItem(itemA.ID)
+
+	// Item B: done at -3h, then moved to another completed-work value ("shipped") at -2h.
+	itemB, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title: "Item B Done To Shipped", Fields: `{"status":"shipped","stage":"draft"}`, AgentRoleID: &role.ID,
+	})
+	if err != nil {
+		t.Fatalf("itemB: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, itemB.ID); err != nil {
+		t.Fatalf("clear itemB transitions: %v", err)
+	}
+	insertTransition("b-done", itemB.ID, "status", "open", "done", tItemBDone)
+	insertTransition("b-shipped", itemB.ID, "status", "done", "shipped", tItemBShipped)
+	itemB, _ = srv.store.GetItem(itemB.ID)
+
+	// Item C: done (-5h) -> reopened (-3h30m) -> done (-1h) -> other select field (-5m).
+	// Must report -1h (newest transition into current done value), NOT -5m and NOT -5h.
+	itemC, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title: "Item C Recompleted", Fields: `{"status":"done","stage":"reviewed"}`, AgentRoleID: &role.ID,
+	})
+	if err != nil {
+		t.Fatalf("itemC: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, itemC.ID); err != nil {
+		t.Fatalf("clear itemC transitions: %v", err)
+	}
+	insertTransition("c-done-1", itemC.ID, "status", "open", "done", tItemCFirstDone)
+	insertTransition("c-reopen", itemC.ID, "status", "done", "open", tItemCReopen)
+	insertTransition("c-done-2", itemC.ID, "status", "open", "done", tItemCSecondDone)
+	insertTransition("c-stage", itemC.ID, "stage", "draft", "reviewed", tItemCOtherField)
+	itemC, _ = srv.store.GetItem(itemC.ID)
+
+	rr := doRequestWithHeaders(srv, http.MethodGet, "/api/v1/me/agents?finished=5", nil, bearerHdr(tok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /me/agents: %d %s", rr.Code, rr.Body.String())
+	}
+	var got meAgentsTestResponse
+	parseJSON(t, rr, &got)
+	if len(got.Agents) != 1 {
+		t.Fatalf("agents = %d, want 1", len(got.Agents))
+	}
+	fin := got.Agents[0].Finished
+	if len(fin) != 3 {
+		t.Fatalf("finished len = %d, want 3: %+v", len(fin), fin)
+	}
+
+	want := []struct {
+		ref         string
+		value       string
+		completedAt string
+	}{
+		{itemC.Ref, "done", tItemCSecondDone.Format(time.RFC3339)},
+		{itemB.Ref, "shipped", tItemBShipped.Format(time.RFC3339)},
+		{itemA.Ref, "done", tItemADone.Format(time.RFC3339)},
+	}
+	for i, w := range want {
+		if fin[i].Ref != w.ref || fin[i].Value != w.value || fin[i].CompletedAt != w.completedAt {
+			t.Errorf("fin[%d] = {%s, %s, %s}, want {%s, %s, %s}",
+				i, fin[i].Ref, fin[i].Value, fin[i].CompletedAt, w.ref, w.value, w.completedAt)
+		}
+	}
+}
+
 func TestMeAgents_QueryBudget(t *testing.T) {
 	t.Parallel()
 
-	measure := func(t *testing.T, rolesPerWS int) int64 {
+	// Budget: 9*2 (2 workspaces with roles) + 1 (1 workspace without roles) + 2 (request-level) = 21.
+	const maxBound = 9*2 + 1 + 2
+
+	measure := func(t *testing.T, principal string, rolesPerWS int) int64 {
 		t.Helper()
 		srv := testServer(t)
 		presence := NewMemorySessionPresence()
 		srv.SetSessionPresence(presence)
 
-		owner := mkAgentsUser(t, srv, fmt.Sprintf("budget-%d@example.com", rolesPerWS), "Budget Owner")
-		tok := mkAgentsPAT(t, srv, owner.ID, "")
+		owner := mkAgentsUser(t, srv, fmt.Sprintf("budget-owner-%s-%d@example.com", principal, rolesPerWS), "Budget Owner")
+		caller := owner
+		if principal != "owner" {
+			caller = mkAgentsUser(t, srv, fmt.Sprintf("budget-%s-%d@example.com", principal, rolesPerWS), "Budget "+principal)
+		}
+		tok := mkAgentsPAT(t, srv, caller.ID, "")
 		workerID := "wk_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-		presence.Add(owner.ID, SessionIdentity{Agent: "agent-budget", WorkerID: workerID}, SessionOrigin{})
+		presence.Add(caller.ID, SessionIdentity{Agent: "agent-budget", WorkerID: workerID}, SessionOrigin{})
 
 		for w := 0; w < 2; w++ {
 			ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
@@ -655,13 +783,33 @@ func TestMeAgents_QueryBudget(t *testing.T) {
 				t.Fatalf("ws: %v", err)
 			}
 			if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
-				t.Fatalf("member: %v", err)
+				t.Fatalf("member owner: %v", err)
 			}
 			coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
 				Name: "Tasks", Slug: "tasks", Prefix: "BDG", Schema: meAgentsStdSchema,
 			})
 			if err != nil {
 				t.Fatalf("coll: %v", err)
+			}
+			hiddenColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+				Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: meAgentsStdSchema,
+			})
+			if err != nil {
+				t.Fatalf("hiddenColl: %v", err)
+			}
+
+			switch principal {
+			case "restricted_member":
+				if err := srv.store.AddWorkspaceMember(ws.ID, caller.ID, "editor"); err != nil {
+					t.Fatalf("member restricted: %v", err)
+				}
+				if err := srv.store.SetMemberCollectionAccess(ws.ID, caller.ID, "specific", []string{coll.ID}); err != nil {
+					t.Fatalf("SetMemberCollectionAccess: %v", err)
+				}
+			case "guest":
+				if _, err := srv.store.CreateCollectionGrant(ws.ID, coll.ID, caller.ID, "read", owner.ID); err != nil {
+					t.Fatalf("CreateCollectionGrant: %v", err)
+				}
 			}
 
 			for r := 0; r < rolesPerWS; r++ {
@@ -670,6 +818,12 @@ func TestMeAgents_QueryBudget(t *testing.T) {
 				})
 				if err != nil {
 					t.Fatalf("role: %v", err)
+				}
+				// 1 hidden item in hiddenColl to exercise visibility filtering.
+				if _, err := srv.store.CreateItem(ws.ID, hiddenColl.ID, models.ItemCreate{
+					Title: fmt.Sprintf("Hidden %d-%d", w, r), Fields: `{"status":"open"}`, AgentRoleID: &role.ID,
+				}); err != nil {
+					t.Fatalf("hidden item: %v", err)
 				}
 				// 3 queued items
 				var lastQueued *models.Item
@@ -689,7 +843,7 @@ func TestMeAgents_QueryBudget(t *testing.T) {
 				if err != nil {
 					t.Fatalf("leased: %v", err)
 				}
-				if _, err := srv.store.ClaimItemLease(leased.ID, "agent-budget", workerID, owner.ID, 15*time.Minute); err != nil {
+				if _, err := srv.store.ClaimItemLease(leased.ID, "agent-budget", workerID, caller.ID, 15*time.Minute); err != nil {
 					t.Fatalf("claim: %v", err)
 				}
 				// Park line before last queued item
@@ -722,6 +876,25 @@ func TestMeAgents_QueryBudget(t *testing.T) {
 		if err := srv.store.AddWorkspaceMember(wsNoRoles.ID, owner.ID, "owner"); err != nil {
 			t.Fatalf("member no roles: %v", err)
 		}
+		emptyColl, err := srv.store.CreateCollection(wsNoRoles.ID, models.CollectionCreate{
+			Name: "Tasks", Slug: "tasks", Prefix: "EMP", Schema: meAgentsStdSchema,
+		})
+		if err != nil {
+			t.Fatalf("emptyColl: %v", err)
+		}
+		switch principal {
+		case "restricted_member":
+			if err := srv.store.AddWorkspaceMember(wsNoRoles.ID, caller.ID, "editor"); err != nil {
+				t.Fatalf("member restricted empty ws: %v", err)
+			}
+			if err := srv.store.SetMemberCollectionAccess(wsNoRoles.ID, caller.ID, "specific", []string{emptyColl.ID}); err != nil {
+				t.Fatalf("SetMemberCollectionAccess empty ws: %v", err)
+			}
+		case "guest":
+			if _, err := srv.store.CreateCollectionGrant(wsNoRoles.ID, emptyColl.ID, caller.ID, "read", owner.ID); err != nil {
+				t.Fatalf("CreateCollectionGrant empty ws: %v", err)
+			}
+		}
 
 		var cq *countingQueryer
 		srv.meAgentsQueryerOverride = func(r *http.Request) store.Queryer {
@@ -731,12 +904,12 @@ func TestMeAgents_QueryBudget(t *testing.T) {
 
 		rr := doRequestWithHeaders(srv, http.MethodGet, "/api/v1/me/agents", nil, bearerHdr(tok))
 		if rr.Code != http.StatusOK {
-			t.Fatalf("GET /me/agents (%d roles): %d %s", rolesPerWS, rr.Code, rr.Body.String())
+			t.Fatalf("GET /me/agents (%s, %d roles): %d %s", principal, rolesPerWS, rr.Code, rr.Body.String())
 		}
 		var got meAgentsTestResponse
 		parseJSON(t, rr, &got)
 		if len(got.Agents) != rolesPerWS {
-			t.Fatalf("got %d agents, want %d", len(got.Agents), rolesPerWS)
+			t.Fatalf("%s: got %d agents, want %d", principal, len(got.Agents), rolesPerWS)
 		}
 		if cq == nil {
 			t.Fatal("meAgentsQueryerOverride was not called")
@@ -744,17 +917,19 @@ func TestMeAgents_QueryBudget(t *testing.T) {
 		return cq.count.Load()
 	}
 
-	count1 := measure(t, 1)
-	count8 := measure(t, 8)
-	// Budget: 9*2 (2 workspaces with roles) + 1 (1 workspace without roles) + 2 (request-level) = 21.
-	const maxBound = 9*2 + 1 + 2
-	t.Logf("TestMeAgents_QueryBudget: 1-role=%d queries, 8-role=%d queries (bound<=%d)", count1, count8, maxBound)
+	for _, principal := range []string{"owner", "restricted_member", "guest"} {
+		t.Run(principal, func(t *testing.T) {
+			count1 := measure(t, principal, 1)
+			count8 := measure(t, principal, 8)
+			t.Logf("TestMeAgents_QueryBudget/%s: 1-role=%d queries, 8-role=%d queries (bound<=%d)", principal, count1, count8, maxBound)
 
-	if count1 != count8 {
-		t.Fatalf("query count grew with role count: 1-role=%d, 8-role=%d (must be equal)", count1, count8)
-	}
-	if count1 > maxBound {
-		t.Fatalf("query count %d exceeds budget %d (9*2 + 1 + 2)", count1, maxBound)
+			if count1 != count8 {
+				t.Fatalf("%s: query count grew with role count: 1-role=%d, 8-role=%d (must be equal)", principal, count1, count8)
+			}
+			if count1 > maxBound {
+				t.Fatalf("%s: query count %d exceeds budget %d (9*2 + 1 + 2)", principal, count1, maxBound)
+			}
+		})
 	}
 }
 

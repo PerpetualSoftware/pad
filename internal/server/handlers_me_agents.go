@@ -114,10 +114,20 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "private, no-store")
 
 	q := s.meAgentsQueryer(r)
-	admitted, err := s.needsAdmittedWorkspacesQ(q, r, user)
+	admitted, memberships, err := s.store.ListUserAdmittedWorkspacesAndMembershipsQ(q, user.ID)
 	if err != nil {
 		writeInternalError(w, err)
 		return
+	}
+	admitted = filterWorkspacesByTokenAllowlist(r.Context(), admitted)
+	if id := tokenWorkspaceID(r); id != "" {
+		kept := admitted[:0]
+		for _, ws := range admitted {
+			if ws.ID == id {
+				kept = append(kept, ws)
+			}
+		}
+		admitted = kept
 	}
 	if wsFilter != "" {
 		var filtered []models.Workspace
@@ -174,8 +184,6 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 	}
 
 	degraded := []string{}
-	var memberships map[string]models.WorkspaceMember
-	membershipsLoaded := false
 	finishedSince := s.agendaNow().UTC().Add(-meAgentsFinishedWindow)
 	needPresence := false
 
@@ -192,19 +200,16 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		if !membershipsLoaded {
-			memberships, err = s.store.ListUserWorkspaceMembershipsMapQ(q, user.ID)
-			if err != nil {
-				slog.Error("me/agents: list memberships failed; workspace degraded", "workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", err)
-				degraded = append(degraded, ws.Slug)
-				continue
-			}
-			membershipsLoaded = true
+		member, isMember := memberships[ws.ID]
+		var memberPtr *models.WorkspaceMember
+		if isMember {
+			memberPtr = &member
 		}
 
 		// Visibility: same per-user backlinks rule as needsEligibility.visibility
-		// (platform admin counted by membership only, bearer-style).
-		fullCollIDs, grantedItemIDs, err := s.store.ResolveBacklinksVisibilityQ(q, user.ID, ws.ID, false, true)
+		// (platform admin counted by membership only, bearer-style), reusing the
+		// already-loaded user and membership rows.
+		fullCollIDs, grantedItemIDs, memberColls, err := s.store.ResolveBacklinksVisibilityWithLoadedQ(q, user, memberPtr, ws.ID, false, true)
 		if err != nil {
 			slog.Error("me/agents: resolve visibility failed; workspace degraded", "workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", err)
 			degraded = append(degraded, ws.Slug)
@@ -213,7 +218,6 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 		vis := buildMeAgentsVisibility(fullCollIDs, grantedItemIDs)
 
 		// Capabilities from membership role + collection access (grants ignored for can_edit).
-		member, isMember := memberships[ws.ID]
 		isEditorOrOwner := isMember && (member.Role == "owner" || member.Role == "editor")
 		canReorder := isEditorOrOwner
 		canPark := canReorder && vis.unrestricted
@@ -223,12 +227,6 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 		} else if member.CollectionAccess == "all" || member.CollectionAccess == "" {
 			canEdit = func(string, string) bool { return true }
 		} else {
-			memberColls, err := s.store.GetMemberCollectionAccessQ(q, ws.ID, user.ID)
-			if err != nil {
-				slog.Error("me/agents: member collection access failed; workspace degraded", "workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", err)
-				degraded = append(degraded, ws.Slug)
-				continue
-			}
 			editSet := make(map[string]bool, len(memberColls))
 			for _, cid := range memberColls {
 				editSet[cid] = true
@@ -303,7 +301,17 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			})
 		}
 
+		type finishedCollMeta struct {
+			tracksWork    bool
+			doneKey       string
+			completedVals []string
+		}
+		collMetaCache := make(map[string]finishedCollMeta)
+		seenFinished := make(map[string]bool)
 		for _, row := range finishedRows {
+			if seenFinished[row.ItemID] {
+				continue
+			}
 			if !vis.allows(row.CollectionID, row.ItemID) {
 				continue
 			}
@@ -311,14 +319,28 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				continue
 			}
-			if !models.CollectionTracksWorkJSON(row.Settings) {
+			meta, cached := collMetaCache[row.CollectionID]
+			if !cached {
+				meta.tracksWork = models.CollectionTracksWorkJSON(row.Settings)
+				if meta.tracksWork {
+					meta.doneKey, meta.completedVals = models.CollectionCompletedWorkValues(row.Schema, row.Settings)
+				}
+				collMetaCache[row.CollectionID] = meta
+			}
+			if !meta.tracksWork {
 				continue
 			}
-			doneKey, completedVals := models.CollectionCompletedWorkValues(row.Schema, row.Settings)
-			val := extractFieldValue(row.Fields, doneKey)
-			if !containsFoldValue(completedVals, val) {
+			if row.FieldKey != meta.doneKey {
 				continue
 			}
+			val := extractFieldValue(row.Fields, meta.doneKey)
+			if !containsFoldValue(meta.completedVals, val) {
+				continue
+			}
+			if !strings.EqualFold(row.ToStatus, val) {
+				continue
+			}
+			seenFinished[row.ItemID] = true
 			g := getGroup(role.Slug)
 			g.fallbackRoles = append(g.fallbackRoles, fallbackRoleMeta{wsName: ws.Name, wsSlug: ws.Slug, role: role})
 			g.finished = append(g.finished, meAgentsFinishedItem{
@@ -326,8 +348,8 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 				Ref:         row.Ref,
 				Title:       row.Title,
 				Value:       val,
-				CompletedAt: row.CompletedAt.UTC().Format(time.RFC3339),
-				completedAt: row.CompletedAt,
+				CompletedAt: row.CreatedAt.UTC().Format(time.RFC3339),
+				completedAt: row.CreatedAt,
 			})
 		}
 	}
