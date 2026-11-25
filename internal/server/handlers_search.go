@@ -148,14 +148,12 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 			if access.unrestricted {
 				// Collection IDs are unique across workspaces, so a full-access
 				// workspace joins the union as all of its collections.
-				colls, err := s.store.ListCollections(ws.ID)
+				collIDs, err := s.store.LiveCollectionIDs(ws.ID)
 				if err != nil {
 					writeInternalError(w, err)
 					return
 				}
-				for _, c := range colls {
-					params.CollectionIDs = append(params.CollectionIDs, c.ID)
-				}
+				params.CollectionIDs = append(params.CollectionIDs, collIDs...)
 				continue
 			}
 			allUnrestricted = false
