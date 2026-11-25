@@ -99,7 +99,8 @@ func (s *Server) deriveThumbnails(parentID string) {
 
 // deriveThumbnailsCtx is the context-aware implementation of deriveThumbnails.
 // Synchronous HTTP callers (such as share-link resolution) pass their request
-// context so a disconnected client stops waiting on the decode slot.
+// context so a disconnected client stops waiting on the decode slot; once the
+// slot is held, the work runs uncancelled.
 func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 	if s.imageProcessor == nil || s.attachments == nil {
 		return
@@ -128,6 +129,10 @@ func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 		return
 	}
 	defer releaseDecode()
+	// The caller's context bounds only the wait above. Once a slot is held
+	// the derivation runs to completion, so a share viewer disconnecting
+	// mid-derive cannot leave a blob written with no variant row.
+	ctx = context.WithoutCancel(ctx)
 
 	src, err := s.openOriginalForThumbnail(ctx, parent)
 	if err != nil {
