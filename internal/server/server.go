@@ -390,10 +390,19 @@ type Server struct {
 
 	// importBundleMaxBytes caps a single workspace import bundle.
 	// 0 → defaultImportBundleMaxBytes (2 GiB). Set via
-	// SetImportBundleMaxBytes from cmd/pad/main.go using the
+	// SetImportBundleMaxBytes from cmd/pad/cmd_server.go using the
 	// PAD_IMPORT_BUNDLE_MAX_BYTES env var so operators with larger
 	// exports can opt in without recompiling.
 	importBundleMaxBytes int64
+
+	// exportMetadataMaxBytes is the shared cap for workspace export metadata
+	// (pad-export.json and attachments/manifest.json) on both export and
+	// import (TASK-4839). 0 → defaultExportMetadataMaxBytes (100 MiB).
+	exportMetadataMaxBytes int64
+
+	// exportSpoolPath is the directory for temporary workspace export spool
+	// files (TASK-4839). Empty → os.TempDir().
+	exportSpoolPath string
 
 	// importReadIdle and importReadCeiling bound reading a workspace import's
 	// body in place of the server-wide ReadTimeout (BUG-3184); see
@@ -3241,41 +3250,6 @@ func decodeJSONWithLimit(r *http.Request, v interface{}, maxBytes int64) error {
 		return fmt.Errorf("invalid JSON: %w", err)
 	}
 	return decodeJSONBytes(raw, v)
-}
-
-// decodeJSONRepairingNUL is decodeJSONWithLimit with exactly one difference,
-// and the difference is deliberately NOT a bypass (DOC-2823 S3, BUG-2810).
-//
-// The workspace import's --repair-nul flag exists because a self-hoster whose
-// database predates the enforcement can EXPORT a workspace and then not import
-// it back: the server emits a payload it will refuse. The flag ships with
-// the default staying strict.
-//
-// What the flag does is repair the body and then run the SAME gate on the
-// repaired bytes. It does not skip the gate, and it must not: a decode path
-// that does is precisely the door BUG-2803 took many attempts to close, and it
-// would be reachable from the endpoint carrying the largest attacker-controlled
-// body in the product. So a value the repair cannot fix is still refused, by
-// the same function, with the same error.
-//
-// A body that is not valid JSON is left alone, so its own decode error is what
-// the caller reports: a raw NUL BYTE inside a JSON string makes the document
-// invalid, and replacing one would turn a body the decoder rejects into one it
-// accepts. Widening what parses is not this flag's job.
-//
-// The count of rewritten values, and any reason the repair declined to act,
-// are recorded on the tally the caller passes in.
-func decodeJSONRepairingNUL(r *http.Request, v interface{}, maxBytes int64, t *nulRepairTally) error {
-	raw, err := readBodyForDecode(r, maxBytes)
-	if err != nil {
-		return fmt.Errorf("invalid JSON: %w", err)
-	}
-	// The tally owns the repair, so the count and the "could not repair, and
-	// why" both come back through one object rather than through a return
-	// value the caller has to remember to record. The first version returned
-	// the count and one caller dropped it, which is how the header reported 0
-	// for an import that had rewritten a value.
-	return decodeJSONBytes(t.Apply(raw), v)
 }
 
 // repairBodyNULEscapes repairs a JSON body the way the GATE reads it, and

@@ -2,14 +2,15 @@ package server
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -100,20 +101,29 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	if !s.requireUnrestrictedExportAccess(w, r, ws.ID) {
 		return
 	}
+	includeVersions, err := parseIncludeVersions(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 
 	// The export and the manifest rows come from one snapshot (BUG-3654), and
-	// both are read before anything is written to the response so a store
-	// error doesn't strand half a tar header. Streaming the blobs themselves
-	// still happens after we commit to the response.
-	export, attachments, err := s.store.ExportWorkspaceSnapshot(r.Context(), ws.Slug, true)
-	if errors.Is(err, store.ErrExportManifest) {
-		writeInternalError(w, err)
-		return
-	}
+	// pad-export.json is spooled under the shared metadata limit before any
+	// header or response byte is sent (TASK-4839). Streaming the blobs
+	// themselves still happens after we commit to the response.
+	spoolFile, spoolSize, attachments, reached, err := s.spoolExport(r.Context(), ws.Slug, store.ExportOptions{
+		WithAttachments: true,
+		IncludeVersions: includeVersions,
+	}, false)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		s.writeSpoolExportError(w, r, reached, includeVersions, err)
 		return
 	}
+	defer func() {
+		name := spoolFile.Name()
+		_ = spoolFile.Close()
+		_ = os.Remove(name)
+	}()
 
 	// If attachments exist, the registry must be wired — otherwise
 	// the blobs aren't reachable and the bundle would be a lie.
@@ -148,6 +158,17 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		// ParentID + Variant stay empty for shipped entries — derived
 		// rows are filtered out in workspaceAttachmentsForExportQ.
 		manifest.Entries = append(manifest.Entries, entry)
+	}
+
+	manifestJSON, err := json.Marshal(manifest)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	limit := s.effectiveExportMetadataMaxBytes()
+	if int64(len(manifestJSON)) > limit {
+		writeExportTooLarge(w, int64(len(manifestJSON)), limit, includeVersions, false)
+		return
 	}
 
 	w.Header().Set("Content-Type", "application/gzip")
@@ -194,23 +215,13 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	}()
 
 	// 1. pad-export.json
-	exportJSON, err := json.MarshalIndent(export, "", "  ")
-	if err != nil {
-		s.logBundleStreamError(r.Context(), "marshal export", err)
-		return
-	}
-	if err := writeTarFile(tw, "pad-export.json", exportJSON); err != nil {
+	if err := writeTarFileFrom(tw, "pad-export.json", spoolFile, spoolSize); err != nil {
 		s.logBundleStreamError(r.Context(), "write pad-export.json", err)
 		return
 	}
 
 	// 2. attachments/manifest.json
-	manifestJSON, err := json.MarshalIndent(manifest, "", "  ")
-	if err != nil {
-		s.logBundleStreamError(r.Context(), "marshal manifest", err)
-		return
-	}
-	if err := writeTarFile(tw, "attachments/manifest.json", manifestJSON); err != nil {
+	if err := writeTarFileFrom(tw, "attachments/manifest.json", bytes.NewReader(manifestJSON), int64(len(manifestJSON))); err != nil {
 		s.logBundleStreamError(r.Context(), "write manifest", err)
 		return
 	}
@@ -305,20 +316,23 @@ func bundleAttachmentPath(id, filename string) string {
 	return "attachments/" + id + ext
 }
 
-// writeTarFile writes a single buffered file into the tar archive.
-// Used for the small JSON entries (pad-export.json + manifest.json);
-// blob entries stream through streamAttachmentToTar instead.
-func writeTarFile(tw *tar.Writer, name string, data []byte) error {
+// writeTarFileFrom streams a sized reader into the tar archive and verifies
+// the exact byte count written.
+func writeTarFileFrom(tw *tar.Writer, name string, r io.Reader, size int64) error {
 	hdr := &tar.Header{
 		Name: name,
 		Mode: 0o644,
-		Size: int64(len(data)),
+		Size: size,
 	}
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}
-	if _, err := tw.Write(data); err != nil {
+	n, err := io.Copy(tw, r)
+	if err != nil {
 		return err
+	}
+	if n != size {
+		return fmt.Errorf("tar entry %s truncated: copied %d bytes, expected %d", name, n, size)
 	}
 	return nil
 }

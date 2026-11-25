@@ -286,7 +286,8 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"middleware_form_body.go":      "the form-body chokepoint itself: ValidateFormBody reads a form-encoded body up to net/http's own ParseForm cap, checks it with validQueryText, and hands the same bytes (or the same read error) back to the handler (BUG-2811)",
 		"handlers_watches.go":          "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — the fix for the chunked-body drop; the one reader expression is the nil check itself, and the body bytes flow through the chokepoint",
 		"handlers_item_lease.go":       "guards on r.Body != nil && r.ContentLength != 0, then decodes THROUGH decodeJSON — same shape as handlers_watches.go; the one reader expression is the nil check, and the body (optional holder/ttl_seconds) flows through the chokepoint, so the caller-text holder gets BUG-2803's NUL refusal before it can reach items.lease_holder",
-		"import_read_deadline.go":      "a PASS-THROUGH, not a reader: it replaces r.Body with a wrapper whose Read arms the connection deadline and delegates, byte for byte, to the original body (BUG-3184). Nothing in the file inspects the bytes; the import route's two decoders (decodeJSONWithLimit, and the bundle path's bodyDecodesNUL on pad-export.json) read them afterwards, unchanged",
+		"handlers_workspaces.go":       "plain JSON workspace import (TASK-4839) — caps r.Body with http.MaxBytesReader at effectiveExportMetadataMaxBytes and streams it through decodeExportStream, which applies the NUL and repeated-member gates per record before ImportWorkspace",
+		"import_read_deadline.go":      "a PASS-THROUGH, not a reader: it replaces r.Body with a wrapper whose Read arms the connection deadline and delegates, byte for byte, to the original body (BUG-3184). Nothing in the file inspects the bytes; the import route's two decoders (decodeExportStream on plain JSON and pad-export.json) read them afterwards, unchanged",
 	}
 
 	// Every call site, counted. MEASURED from the census, not written from
@@ -334,6 +335,7 @@ func TestEveryRequestBodyReaderIsAccountedFor(t *testing.T) {
 		"handlers_oauth.go::Server.validateConsentCSRFToken::FormValue": 1,
 		"handlers_tokens.go::Server.handleRotateUserToken::Body":        1,
 		"handlers_watches.go::Server.handleCreateWatch::Body":           1,
+		"handlers_workspaces.go::Server.handleImportWorkspace::Body":    3,
 		"import_read_deadline.go::Server.withImportReadDeadline::Body":  2,
 		"middleware_mcp_audit.go::Server.MCPAuditLog::Body":             5,
 		"middleware_mcp_audit.go::Server.emitMCPAuditDenied::Body":      2,
