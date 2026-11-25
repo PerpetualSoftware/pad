@@ -230,3 +230,41 @@ func TestCLIAuthSessionApproveRefusesRowExpiredSinceRead(t *testing.T) {
 		t.Fatalf("expired row was given a token")
 	}
 }
+
+func TestCLIAuthSessionSweepRevokesClaimedRowStillHoldingToken(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := createTestUser(t, s, "cli-claimed@test.com", "CLI Claimed", "password123")
+
+	cliSess, err := s.CreateCLIAuthSession()
+	if err != nil {
+		t.Fatalf("CreateCLIAuthSession: %v", err)
+	}
+	mintedToken, err := s.CreateSession(u.ID, "cli-browser-auth", "127.0.0.1", "", 30*24*time.Hour)
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if err := s.ApproveCLIAuthSession(cliSess.Code, mintedToken, u.ID); err != nil {
+		t.Fatalf("ApproveCLIAuthSession: %v", err)
+	}
+	// The state a claim leaves when its revoke did not complete: expired,
+	// past its expiry, still holding the token.
+	past := time.Now().UTC().Add(-10 * time.Minute).Format(time.RFC3339)
+	if _, err := s.db.Exec(s.q(`UPDATE cli_auth_sessions SET status = 'expired', expires_at = ? WHERE code = ?`), past, cliSess.Code); err != nil {
+		t.Fatalf("set claimed state: %v", err)
+	}
+
+	if err := s.CleanExpiredCLIAuthSessions(); err != nil {
+		t.Fatalf("CleanExpiredCLIAuthSessions: %v", err)
+	}
+	if info, err := s.ValidateSession(mintedToken); err != nil || info != nil {
+		t.Fatalf("minted session of a claimed row still validates after the sweep: info=%+v err=%v", info, err)
+	}
+	var n int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*) FROM cli_auth_sessions WHERE code = ?`), cliSess.Code).Scan(&n); err != nil {
+		t.Fatalf("count rows: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("claimed row still present after the sweep (%d rows)", n)
+	}
+}
