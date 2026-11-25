@@ -626,6 +626,8 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 	decompressedCap := budget.remaining
 	tr := tar.NewReader(budget)
 	blobCap := s.effectiveBlobMaxBytes()
+	maxEntries := s.effectiveImportBundleMaxEntries()
+	maxHeaderBlocks := s.effectiveImportBundleMaxHeaderBlocks()
 	entries := 0
 	// Two more counters, because the physical byte count alone is not the
 	// whole cost. A sparse entry's holes are synthesized by the tar
@@ -674,7 +676,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			retErr = bundleTooLargeError(s.decompressedCapMessage(""))
 		}
 		if retErr != nil && budget.headersTripped {
-			retErr = bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", importBundleMaxHeaderBlocks))
+			retErr = bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", maxHeaderBlocks))
 		}
 		if retErr != nil && result == nil && ws != nil {
 			result = ws
@@ -722,15 +724,15 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 		before := budget.remaining
 		// Arm the header window for this Next: the blocks still allowed,
 		// plus one for the previous entry's padding.
-		budget.headerArmed, budget.headerWindow = true, (importBundleMaxHeaderBlocks-headerBlocks+1)*512
+		budget.headerArmed, budget.headerWindow = true, (maxHeaderBlocks-headerBlocks+1)*512
 		hdr, err := tr.Next()
 		budget.headerArmed = false
 		// Every entry's body is read to its end before the next Next (the
 		// skip arms below drain it), so what Next consumed is headers plus at
 		// most one block of the previous entry's padding.
 		headerBlocks += (before - budget.remaining) / 512
-		if budget.headersTripped || headerBlocks > importBundleMaxHeaderBlocks {
-			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", importBundleMaxHeaderBlocks))
+		if budget.headersTripped || headerBlocks > maxHeaderBlocks {
+			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has too many entries (more than %d tar header blocks)", maxHeaderBlocks))
 		}
 		if err == io.EOF {
 			break
@@ -739,8 +741,8 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			return nil, fmt.Errorf("read tar entry: %w", err)
 		}
 		entries++
-		if entries > importBundleMaxEntries {
-			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has more than %d entries", importBundleMaxEntries))
+		if entries > maxEntries {
+			return ws, bundleTooLargeError(fmt.Sprintf("Bundle has more than %d entries", maxEntries))
 		}
 		// The tar reader accepts a NEGATIVE size on some entry types (base-256
 		// encoding), and charging one would raise the budget it is charged to.

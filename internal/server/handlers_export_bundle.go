@@ -171,6 +171,20 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
+	// Refuse before sending any header or body byte when the bundle would
+	// exceed the importer's tar entry or header-block cap (TASK-4844).
+	counts, err := countExportBundleTar(spoolSize, int64(len(manifestJSON)), attachments)
+	if err != nil {
+		writeInternalError(w, err)
+		return
+	}
+	maxEntries := s.effectiveImportBundleMaxEntries()
+	maxHeaderBlocks := s.effectiveImportBundleMaxHeaderBlocks()
+	if counts.Entries > maxEntries || counts.HeaderBlocks > maxHeaderBlocks {
+		writeExportBundleEntriesTooLarge(w, counts, maxEntries, maxHeaderBlocks)
+		return
+	}
+
 	w.Header().Set("Content-Type", "application/gzip")
 	w.Header().Set("Content-Disposition", contentDisposition("attachment", ws.Slug+"-export.tar.gz"))
 	// Bundles are streamed; we don't know the final size up front. No
@@ -269,12 +283,7 @@ func (s *Server) streamAttachmentToTar(ctx context.Context, tw *tar.Writer, a *m
 	}
 	defer body.Close()
 
-	hdr := &tar.Header{
-		Name:    bundleAttachmentPath(a.ID, a.Filename),
-		Mode:    0o644,
-		Size:    a.SizeBytes,
-		ModTime: a.CreatedAt.UTC(),
-	}
+	hdr := bundleAttachmentTarHeader(a)
 	if err := tw.WriteHeader(hdr); err != nil {
 		return fmt.Errorf("tar header: %w", err)
 	}
@@ -316,14 +325,28 @@ func bundleAttachmentPath(id, filename string) string {
 	return "attachments/" + id + ext
 }
 
+// bundleTarHeader builds the tar.Header for a bundle entry. Both the tar
+// writer (writeTarFileFrom, streamAttachmentToTar) and the pre-flight entry
+// counter (countExportBundleTar) call this so header-block counts cannot
+// drift from what the exporter writes.
+func bundleTarHeader(name string, size int64, modTime time.Time) *tar.Header {
+	return &tar.Header{
+		Name:    name,
+		Mode:    0o644,
+		Size:    size,
+		ModTime: modTime,
+	}
+}
+
+// bundleAttachmentTarHeader builds the tar.Header for an attachment blob entry.
+func bundleAttachmentTarHeader(a *models.Attachment) *tar.Header {
+	return bundleTarHeader(bundleAttachmentPath(a.ID, a.Filename), a.SizeBytes, a.CreatedAt.UTC())
+}
+
 // writeTarFileFrom streams a sized reader into the tar archive and verifies
 // the exact byte count written.
 func writeTarFileFrom(tw *tar.Writer, name string, r io.Reader, size int64) error {
-	hdr := &tar.Header{
-		Name: name,
-		Mode: 0o644,
-		Size: size,
-	}
+	hdr := bundleTarHeader(name, size, time.Time{})
 	if err := tw.WriteHeader(hdr); err != nil {
 		return err
 	}
