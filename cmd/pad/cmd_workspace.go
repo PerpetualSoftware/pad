@@ -1226,25 +1226,34 @@ Both formats can be re-imported via 'pad workspace import'.`,
 			// memory before the first byte hits disk — defeats the
 			// server-side streaming design and risks OOM (PR #305).
 			var dest io.Writer = os.Stdout
-			var f *os.File
+			var tmp *os.File
+			var tmpPath string
+			committed := false
 			if outputFile != "" {
 				if filepath.Ext(outputFile) == "" {
 					outputFile += defaultExt
 				}
+				dir := filepath.Dir(outputFile)
 				var err error
-				f, err = os.Create(outputFile)
+				tmp, err = os.CreateTemp(dir, "."+filepath.Base(outputFile)+".*.tmp")
 				if err != nil {
-					return fmt.Errorf("create file: %w", err)
+					return fmt.Errorf("create temp in %s: %w", dir, err)
 				}
-				defer f.Close()
-				dest = f
+				tmpPath = tmp.Name()
+				defer func() {
+					tmp.Close()
+					if !committed {
+						_ = os.Remove(tmpPath)
+					}
+				}()
+				if err := os.Chmod(tmpPath, 0o600); err != nil {
+					return fmt.Errorf("chmod temp: %w", err)
+				}
+				dest = tmp
 			}
 
 			n, resp, err := client.RawStream(path, dest)
 			if err != nil {
-				if outputFile != "" {
-					_ = os.Remove(outputFile) // don't leave a partial file behind
-				}
 				return fmt.Errorf("export: %w", err)
 			}
 
@@ -1252,23 +1261,28 @@ Both formats can be re-imported via 'pad workspace import'.`,
 			// whether the server-side stream completed cleanly. A
 			// missing or non-"ok" value means the bundle is corrupt
 			// (an attachment blob got truncated mid-stream, etc.) —
-			// delete the partial file and surface failure rather
-			// than printing success. The legacy JSON path doesn't
-			// set the trailer; we only check it for --bundle.
+			// discard the temp file (leaving any existing destination
+			// untouched) and surface failure rather than printing
+			// success. The legacy JSON path doesn't set the trailer;
+			// we only check it for --bundle.
 			if bundle && resp != nil {
 				status := resp.Trailer.Get("X-Bundle-Status")
 				if status != "ok" {
-					if outputFile != "" {
-						_ = os.Remove(outputFile)
-					}
 					return fmt.Errorf("export bundle is incomplete (server X-Bundle-Status=%q); check server logs for stream errors", status)
 				}
 			}
 
-			if f != nil {
-				if err := f.Close(); err != nil {
-					return fmt.Errorf("close file: %w", err)
+			if tmp != nil {
+				if err := tmp.Sync(); err != nil {
+					return fmt.Errorf("sync temp: %w", err)
 				}
+				if err := tmp.Close(); err != nil {
+					return fmt.Errorf("close temp: %w", err)
+				}
+				if err := os.Rename(tmpPath, outputFile); err != nil {
+					return fmt.Errorf("rename %s -> %s: %w", tmpPath, outputFile, err)
+				}
+				committed = true
 				fmt.Printf("Exported workspace %q to %s (%s)\n", ws, outputFile, humanBytes(n))
 			}
 			return nil

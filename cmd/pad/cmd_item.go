@@ -3118,7 +3118,7 @@ Items can be referenced by issue ID (e.g. PLAYB-3) or slug.`,
 				outPath = defaultExportPath(res.Filename, args[0])
 			}
 
-			if err := writeFileAtomic(outPath, res.Body, 0o644); err != nil {
+			if err := writeFileAtomic(outPath, res.Body, 0o600); err != nil {
 				return fmt.Errorf("write artifact: %w", err)
 			}
 			fmt.Printf("Exported %s to %s\n", args[0], outPath)
