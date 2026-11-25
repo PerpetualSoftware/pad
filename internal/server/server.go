@@ -156,6 +156,9 @@ type Server struct {
 	// runs per workspace (TASK-3920). New registers the two real ones
 	// (TASK-3959); tests replace the slice.
 	needsScorers []needs.Scorer
+	// meAgentsQueryerOverride is a TEST-ONLY seam, nil in production: when set,
+	// handleMeAgents routes all store reads through the returned Queryer.
+	meAgentsQueryerOverride func(r *http.Request) store.Queryer
 	// needsMemoLoad is a TEST-ONLY seam, nil in production: the scorers' shared
 	// memo calls it with the name of each batch read it actually performs, so a
 	// test can hold a request to one read of each kind (TASK-3959).
@@ -2207,6 +2210,7 @@ func (s *Server) setupRouter() {
 			// The cross-workspace needs-you inbox (TASK-3920): outside the
 			// /{slug} subrouter, so the handler admits each workspace itself.
 			r.Get("/me/needs", s.handleMeNeeds)
+			r.Get("/me/agents", s.handleMeAgents)
 			r.Get("/me/agenda", s.handleMeAgenda)
 			// Push device registration (session-only) and the account's push
 			// settings (TASK-3938).

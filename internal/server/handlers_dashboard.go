@@ -288,6 +288,43 @@ func (s *Server) firstActiveBlockers(r *http.Request, workspaceID string, visibl
 	return firstActiveBlocker, nil
 }
 
+// firstActiveBlockersWithVisibilityQ resolves the first visible non-done
+// blocker per target in workspaceID using the supplied Queryer and visibility
+// predicate, deriving each source collection's done context from the edge row
+// itself (so callers need no separate ListCollections query).
+func (s *Server) firstActiveBlockersWithVisibilityQ(q store.Queryer, workspaceID string, visible func(collectionID, itemID string) bool) (map[string]activeBlocker, error) {
+	blocksEdges, err := s.store.GetBlocksEdgesQ(q, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	ctxMap := make(map[string]doneContext)
+	firstActiveBlocker := make(map[string]activeBlocker)
+	for _, e := range blocksEdges {
+		if _, resolved := firstActiveBlocker[e.TargetID]; resolved {
+			continue
+		}
+		if !visible(e.SourceCollectionID, e.SourceID) {
+			continue
+		}
+		if _, cached := ctxMap[e.SourceCollectionID]; !cached {
+			var ctx doneContext
+			_ = models.UnmarshalItemFieldSchema([]byte(e.SourceSchema), &ctx.schema)
+			if e.SourceSettings != "" {
+				_ = json.Unmarshal([]byte(e.SourceSettings), &ctx.settings)
+			}
+			ctxMap[e.SourceCollectionID] = ctx
+		}
+		if isItemDone(e.SourceFields, e.SourceCollectionID, ctxMap) {
+			continue
+		}
+		firstActiveBlocker[e.TargetID] = activeBlocker{
+			title:  e.SourceTitle,
+			status: extractFieldValue(e.SourceFields, "status"),
+		}
+	}
+	return firstActiveBlocker, nil
+}
+
 // buildDoneContextMap builds a map of collection ID → (schema, settings)
 // for quick lookups during dashboard / lineage traversals.
 func buildDoneContextMap(collections []models.Collection) map[string]doneContext {
