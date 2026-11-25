@@ -1,10 +1,14 @@
-// Web wording for a refused workspace bundle export (TASK-4845). The server's
-// export_too_large message names CLI flags, which mean nothing in the
-// browser, so the settings page composes its own sentence from the refusal's
-// details. Two detail shapes exist (internal/server/export_spool.go
-// writeExportTooLarge, internal/server/export_entry_limit.go
-// writeExportBundleEntriesTooLarge); anything else falls back to the
-// server's message.
+// Web wording for a refused workspace bundle export (TASK-4845, TASK-4848).
+// The server's export_too_large message names CLI flags, which mean nothing in
+// the browser, so the settings page composes its own sentence from the
+// refusal's details. Three detail shapes exist:
+//   - metadata spool refusal: { part?: 'export', size_reached, limit_bytes, include_versions }
+//     (internal/server/export_spool.go writeExportTooLarge)
+//   - attachment manifest refusal: { part: 'manifest', size_reached, limit_bytes, include_versions }
+//     (internal/server/export_spool.go writeExportManifestTooLarge)
+//   - tar entry/header-block cap refusal: { entries, limit_entries, header_blocks, limit_header_blocks }
+//     (internal/server/export_entry_limit.go writeExportBundleEntriesTooLarge)
+// Anything else falls back to the server's message.
 
 const GENERIC = 'Export failed. Try again.';
 const UNITS = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
@@ -33,7 +37,25 @@ export function exportErrorMessage(err: unknown): string {
 
 	const d = (e.details && typeof e.details === 'object' ? e.details : {}) as Record<string, unknown>;
 
-	if (num(d.limit_bytes) && num(d.size_reached) && typeof d.include_versions === 'boolean') {
+	if (d.part === 'manifest' && num(d.limit_bytes) && num(d.size_reached)) {
+		const limit = formatBytes(d.limit_bytes);
+		const reached = formatBytes(d.size_reached);
+		// size_reached is the manifest's full size here, not a spool stop point.
+		const size = reached === limit ? 'it is just over that' : `it is ${reached}`;
+		return (
+			`This workspace's list of attachments is larger than this server's limit of ${limit} (${size}). ` +
+			`Leaving out version history does not help. ` +
+			`The CLI command pad workspace export --json exports the workspace without attachment blobs; ` +
+			`otherwise the server operator can raise PAD_EXPORT_METADATA_MAX_BYTES.`
+		);
+	}
+
+	if (
+		(d.part === undefined || d.part === 'export') &&
+		num(d.limit_bytes) &&
+		num(d.size_reached) &&
+		typeof d.include_versions === 'boolean'
+	) {
 		const limit = formatBytes(d.limit_bytes);
 		const reached = formatBytes(d.size_reached);
 		// The server stops spooling just past the limit, so the two often

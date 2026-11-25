@@ -106,6 +106,11 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
+	checkOnly, err := parseExportCheck(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 
 	// The export and the manifest rows come from one snapshot (BUG-3654), and
 	// pad-export.json is spooled under the shared metadata limit before any
@@ -167,7 +172,7 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	}
 	limit := s.effectiveExportMetadataMaxBytes()
 	if int64(len(manifestJSON)) > limit {
-		writeExportTooLarge(w, int64(len(manifestJSON)), limit, includeVersions, false)
+		writeExportManifestTooLarge(w, int64(len(manifestJSON)), limit, includeVersions)
 		return
 	}
 
@@ -182,6 +187,11 @@ func (s *Server) handleExportWorkspaceBundle(w http.ResponseWriter, r *http.Requ
 	maxHeaderBlocks := s.effectiveImportBundleMaxHeaderBlocks()
 	if counts.Entries > maxEntries || counts.HeaderBlocks > maxHeaderBlocks {
 		writeExportBundleEntriesTooLarge(w, counts, maxEntries, maxHeaderBlocks)
+		return
+	}
+
+	if checkOnly {
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 

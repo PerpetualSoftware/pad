@@ -1598,6 +1598,10 @@ export function workspaceExportUrl(slug: string, opts: WorkspaceExportOptions = 
 	return `${BASE}/workspaces/${encodeURIComponent(slug)}/export?${q.toString()}`;
 }
 
+function workspaceExportCheckUrl(slug: string, opts: WorkspaceExportOptions = {}): string {
+	return `${workspaceExportUrl(slug, opts)}&check=true`;
+}
+
 export const api = {
 	calendarFeeds: {
 		list: async () => (await request<{ feeds: CalendarFeed[] }>('/me/calendar-feeds')).feeds,
@@ -1763,19 +1767,22 @@ export const api = {
 		// The tar.gz bundle URL (GET /workspaces/{slug}/export, TASK-4845).
 		exportUrl: workspaceExportUrl,
 
-		// preflightExport asks for the exact bundle URL and resolves once the
-		// server has committed to a 2xx, which it does only after its size and
-		// entry checks pass. The body is never read: the bundle carries the
-		// attachment blobs and can be gigabytes, so the request is aborted as
-		// soon as the headers arrive and the caller starts the real browser
-		// download of the same URL. A refusal (422 export_too_large, or any
-		// other non-2xx) rejects with a PadApiError carrying code and details
-		// (TASK-4845).
+		// preflightExport requests the bundle export URL in check-only mode
+		// (`check=true`, TASK-4848): the server runs every metadata, manifest,
+		// attachment-storage and tar-entry check and answers 204 No Content
+		// with no body when all pass, so the caller can then start the real
+		// browser download (which streams the bundle once) without triggering
+		// a streaming response during preflight. Aborting the internal
+		// controller on any 2xx stays harmless here and also guards against an
+		// older server that ignores `check` and starts streaming. A refusal
+		// (422 export_too_large, or any other non-2xx) rejects with a
+		// PadApiError carrying code and details (TASK-4845).
 		//
-		// No deadline of its own: the server spools the whole bundle before it
-		// answers, and a large workspace can take minutes. The caller's signal
-		// is the way out instead; aborting it aborts the request (which also
-		// stops the server's spool) and rejects with export_cancelled.
+		// No deadline of its own: the server still checks the workspace
+		// metadata before it answers, and a large workspace can take minutes.
+		// The caller's signal is the way out instead; aborting it aborts the
+		// request (which also stops the server's spool) and rejects with
+		// export_cancelled.
 		preflightExport: async (
 			slug: string,
 			opts: WorkspaceExportOptions = {},
@@ -1787,7 +1794,7 @@ export const api = {
 			else signal?.addEventListener('abort', onAbort, { once: true });
 			let resp: Response;
 			try {
-				resp = await fetch(workspaceExportUrl(slug, opts), {
+				resp = await fetch(workspaceExportCheckUrl(slug, opts), {
 					credentials: 'same-origin',
 					signal: controller.signal
 				});

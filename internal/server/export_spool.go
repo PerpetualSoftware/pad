@@ -103,10 +103,10 @@ func (s *Server) spoolExport(
 	return f, size, atts, cw.n, nil
 }
 
-func parseIncludeVersions(r *http.Request) (bool, error) {
-	raw := strings.TrimSpace(r.URL.Query().Get("include_versions"))
+func parseBoolQuery(r *http.Request, name string, def bool) (bool, error) {
+	raw := strings.TrimSpace(r.URL.Query().Get(name))
 	if raw == "" {
-		return true, nil
+		return def, nil
 	}
 	switch strings.ToLower(raw) {
 	case "true", "1", "yes":
@@ -114,9 +114,22 @@ func parseIncludeVersions(r *http.Request) (bool, error) {
 	case "false", "0", "no":
 		return false, nil
 	default:
-		return false, fmt.Errorf("invalid include_versions value %q: expected true, false, 1, 0, yes, or no", raw)
+		return false, fmt.Errorf("invalid %s value %q: expected true, false, 1, 0, yes, or no", name, raw)
 	}
 }
+
+func parseIncludeVersions(r *http.Request) (bool, error) {
+	return parseBoolQuery(r, "include_versions", true)
+}
+
+func parseExportCheck(r *http.Request) (bool, error) {
+	return parseBoolQuery(r, "check", false)
+}
+
+const (
+	exportTooLargePartExport   = "export"
+	exportTooLargePartManifest = "manifest"
+)
 
 func writeExportTooLarge(w http.ResponseWriter, reached, limit int64, includeVersions, suggestNoVersions bool) {
 	var msg string
@@ -132,7 +145,21 @@ func writeExportTooLarge(w http.ResponseWriter, reached, limit int64, includeVer
 		)
 	}
 	writeError2(w, http.StatusUnprocessableEntity, "export_too_large", msg, map[string]interface{}{
+		"part":             exportTooLargePartExport,
 		"size_reached":     reached,
+		"limit_bytes":      limit,
+		"include_versions": includeVersions,
+	})
+}
+
+func writeExportManifestTooLarge(w http.ResponseWriter, size, limit int64, includeVersions bool) {
+	msg := fmt.Sprintf(
+		"The attachment manifest passed this server's metadata limit of %d bytes (%d bytes). Leaving out version history does not shrink it. Export as plain JSON instead (pad workspace export --json), which carries no attachment blobs, or ask the operator to raise PAD_EXPORT_METADATA_MAX_BYTES.",
+		limit, size,
+	)
+	writeError2(w, http.StatusUnprocessableEntity, "export_too_large", msg, map[string]interface{}{
+		"part":             exportTooLargePartManifest,
+		"size_reached":     size,
 		"limit_bytes":      limit,
 		"include_versions": includeVersions,
 	})
