@@ -239,13 +239,8 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		writeInternalError(w, fmt.Errorf("resolve source backend: %w", err))
 		return
 	}
-	body, err := srcStore.Get(r.Context(), parent.StorageKey)
-	if err != nil {
-		writeInternalError(w, fmt.Errorf("read source blob: %w", err))
-		return
-	}
-	defer body.Close()
-
+	// Wait for the decode slot before opening the source, so a queued
+	// transform does not hold the blob handle open while it waits.
 	releaseDecode, err := s.acquireImageDecode(r.Context())
 	if err != nil {
 		// The client went away while waiting for a decode slot; nobody to answer.
@@ -253,6 +248,13 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		return
 	}
 	defer releaseDecode()
+
+	body, err := srcStore.Get(r.Context(), parent.StorageKey)
+	if err != nil {
+		writeInternalError(w, fmt.Errorf("read source blob: %w", err))
+		return
+	}
+	defer body.Close()
 
 	srcImg, srcFormat, err := s.imageProcessor.Decode(body)
 	if err != nil {

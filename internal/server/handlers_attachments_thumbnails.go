@@ -120,6 +120,15 @@ func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 		return
 	}
 
+	// Wait for the slot before opening the source, so a queued derive
+	// does not hold a file handle or a remote GET open while it waits.
+	releaseDecode, err := s.acquireImageDecode(ctx)
+	if err != nil {
+		slog.Debug("thumbnails: decode wait cancelled", "attachment_id", parent.ID, "error", err)
+		return
+	}
+	defer releaseDecode()
+
 	src, err := s.openOriginalForThumbnail(ctx, parent)
 	if err != nil {
 		slog.Warn("thumbnails: open source failed",
@@ -127,13 +136,6 @@ func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 		return
 	}
 	defer src.Close()
-
-	releaseDecode, err := s.acquireImageDecode(ctx)
-	if err != nil {
-		slog.Debug("thumbnails: decode wait cancelled", "attachment_id", parent.ID, "error", err)
-		return
-	}
-	defer releaseDecode()
 
 	img, format, err := s.imageProcessor.Decode(src)
 	if err != nil {
