@@ -874,6 +874,13 @@ func (s *Server) mintShareAttachmentRefs(ctx context.Context, link *models.Share
 		expStr = strconv.FormatInt(exp, 10)
 	}
 
+	// One deadline for every decode-slot wait in this resolve: behind a
+	// queue of background derives (a bulk upload or import) the page falls
+	// back to placeholders rather than stalling. It bounds only the wait;
+	// a derive that got its slot runs to completion.
+	deriveCtx, cancelDerive := context.WithTimeout(ctx, shareDeriveSlotWait)
+	defer cancelDerive()
+
 	refs := make(map[string]shareAttachmentRef)
 	for _, id := range uuids {
 		att, err := s.store.GetAttachment(id)
@@ -882,14 +889,14 @@ func (s *Server) mintShareAttachmentRefs(ctx context.Context, link *models.Share
 		}
 		variant, err := s.store.GetAttachmentVariant(link.WorkspaceID, att.ID, shareAssetVariant)
 		if err == nil && variant == nil {
-			// Legacy attachment with no derived variant yet (uploaded before
+			// No derived variant yet: a legacy attachment (uploaded before
 			// thumb-md was always-derived, or a small source under the old
-			// skip rule). Derive it NOW — synchronously, so this first resolve
+			// skip rule), or a fresh upload whose background derive has not
+			// run. Derive it NOW — synchronously, so this first resolve
 			// renders the image rather than a placeholder. deriveThumbnails is
-			// idempotent and bounded; new uploads already have the row and pay
-			// nothing here (TASK-2637 / fork-3 Option C: a share viewer must
+			// idempotent (TASK-2637 / fork-3 Option C: a share viewer must
 			// never receive an original, so we derive rather than fall back).
-			s.deriveThumbnailsCtx(ctx, att.ID)
+			s.deriveThumbnailsCtx(deriveCtx, att.ID)
 			variant, err = s.store.GetAttachmentVariant(link.WorkspaceID, att.ID, shareAssetVariant)
 		}
 		if err != nil || variant == nil {

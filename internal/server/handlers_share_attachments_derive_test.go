@@ -10,6 +10,7 @@ import (
 	"image/jpeg"
 	"net/http"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -198,5 +199,43 @@ func TestShareAssetDerive_FormatNormalization(t *testing.T) {
 				t.Errorf("Content-Type = %q, want %q", ct, tc.wantType)
 			}
 		})
+	}
+}
+
+// A resolve that needs an inline derive while every decode slot is held
+// gives up after shareDeriveSlotWait and shows the placeholder, rather than
+// stalling behind queued background derives; once a slot frees, the next
+// resolve derives and mints the ref.
+func TestShareAssetDerive_SlotWaitIsBounded(t *testing.T) {
+	t.Parallel()
+	f := newDerivingShareFixture(t)
+	f.srv.decodeSem = make(chan struct{}, 1)
+	orig := f.seedRawOriginal(t, f.itemID, "image/png", realPNGImage(t, 64, 64))
+	f.setContent(t, f.itemID, imageRef(orig))
+	link := f.createLink(t, "item", f.itemID, nil)
+
+	release, err := f.srv.acquireImageDecode(context.Background())
+	if err != nil {
+		t.Fatalf("hold decode slot: %v", err)
+	}
+	defer release()
+
+	start := time.Now()
+	refs := f.resolvedRefs(t, link.Token, "")
+	elapsed := time.Since(start)
+	if elapsed < shareDeriveSlotWait {
+		t.Errorf("resolve returned after %v, before the %v slot wait", elapsed, shareDeriveSlotWait)
+	}
+	if elapsed > shareDeriveSlotWait+3*time.Second {
+		t.Fatalf("resolve took %v with the slot held; the wait is not bounded", elapsed)
+	}
+	if _, ok := refs[orig]; ok {
+		t.Fatal("minted a ref while no decode slot was free")
+	}
+
+	release()
+	refs = f.resolvedRefs(t, link.Token, "")
+	if _, ok := refs[orig]; !ok {
+		t.Fatalf("no ref after the slot freed; refs=%v", refs)
 	}
 }

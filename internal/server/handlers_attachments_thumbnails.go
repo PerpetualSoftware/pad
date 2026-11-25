@@ -28,6 +28,12 @@ import (
 // upload latency.
 const maxConcurrentImageDecodes = 2
 
+// shareDeriveSlotWait bounds how long one share-link resolve waits, in
+// total, for decode slots when it derives missing variants inline. Past
+// it the page shows placeholders, which a later resolve fills once the
+// background derives have run.
+const shareDeriveSlotWait = 2 * time.Second
+
 // acquireImageDecode acquires a slot from the process-wide decode semaphore,
 // blocking until one is free or ctx is done. When ctx is done before a slot
 // is acquired it takes no slot and returns ctx.Err(). The returned release
@@ -106,6 +112,20 @@ func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 		return
 	}
 
+	// Wait for the slot first, so the liveness checks below run after the
+	// wait rather than before it, and a queued derive holds no file handle
+	// or remote GET open while it waits.
+	releaseDecode, err := s.acquireImageDecode(ctx)
+	if err != nil {
+		slog.Debug("thumbnails: decode wait cancelled", "attachment_id", parentID, "error", err)
+		return
+	}
+	defer releaseDecode()
+	// The caller's context bounds only the wait above. Once a slot is held
+	// the derivation runs to completion, so a share viewer disconnecting
+	// mid-derive cannot leave a blob written with no variant row.
+	ctx = context.WithoutCancel(ctx)
+
 	parent, err := s.store.GetAttachment(parentID)
 	if err != nil {
 		slog.Warn("thumbnails: get parent failed", "attachment_id", parentID, "error", err)
@@ -120,19 +140,6 @@ func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 	if !s.thumbnailParentItemLive(parent) {
 		return
 	}
-
-	// Wait for the slot before opening the source, so a queued derive
-	// does not hold a file handle or a remote GET open while it waits.
-	releaseDecode, err := s.acquireImageDecode(ctx)
-	if err != nil {
-		slog.Debug("thumbnails: decode wait cancelled", "attachment_id", parent.ID, "error", err)
-		return
-	}
-	defer releaseDecode()
-	// The caller's context bounds only the wait above. Once a slot is held
-	// the derivation runs to completion, so a share viewer disconnecting
-	// mid-derive cannot leave a blob written with no variant row.
-	ctx = context.WithoutCancel(ctx)
 
 	src, err := s.openOriginalForThumbnail(ctx, parent)
 	if err != nil {
