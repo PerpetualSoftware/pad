@@ -955,6 +955,11 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
+	checkOnly, err := parseExportCheck(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
+		return
+	}
 	spoolFile, _, _, reached, err := s.spoolExport(r.Context(), ws.Slug, store.ExportOptions{
 		WithAttachments: false,
 		IncludeVersions: includeVersions,
@@ -968,6 +973,11 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 		_ = spoolFile.Close()
 		_ = os.Remove(name)
 	}()
+
+	if checkOnly {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", contentDisposition("attachment", ws.Slug+"-export.json"))

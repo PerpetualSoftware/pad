@@ -144,9 +144,10 @@ func TestExportOverLimitRefusesBeforeAnyByte(t *testing.T) {
 					Code    string `json:"code"`
 					Message string `json:"message"`
 					Details struct {
-						SizeReached     int64 `json:"size_reached"`
-						LimitBytes      int64 `json:"limit_bytes"`
-						IncludeVersions bool  `json:"include_versions"`
+						Part            string `json:"part"`
+						SizeReached     int64  `json:"size_reached"`
+						LimitBytes      int64  `json:"limit_bytes"`
+						IncludeVersions bool   `json:"include_versions"`
 					} `json:"details"`
 				} `json:"error"`
 			}
@@ -155,6 +156,9 @@ func TestExportOverLimitRefusesBeforeAnyByte(t *testing.T) {
 			}
 			if env.Error.Code != "export_too_large" {
 				t.Errorf("code = %q, want export_too_large", env.Error.Code)
+			}
+			if env.Error.Details.Part != "export" {
+				t.Errorf("part = %q, want export", env.Error.Details.Part)
 			}
 			if env.Error.Details.LimitBytes != tc.size-1 {
 				t.Errorf("limit_bytes = %d, want %d", env.Error.Details.LimitBytes, tc.size-1)

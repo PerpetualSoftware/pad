@@ -41,6 +41,59 @@ describe('exportErrorMessage', () => {
 		expect(msg).not.toContain('Leave out version history" and try');
 	});
 
+	it('part: export keeps exact include_versions wording for both true and false', () => {
+		const withHistoryNoPart = exportErrorMessage({
+			code: 'export_too_large',
+			message: 'server words',
+			details: { size_reached: 70 * MiB, limit_bytes: 64 * MiB, include_versions: true }
+		});
+		const withHistoryExportPart = exportErrorMessage({
+			code: 'export_too_large',
+			message: 'server words',
+			details: { part: 'export', size_reached: 70 * MiB, limit_bytes: 64 * MiB, include_versions: true }
+		});
+		expect(withHistoryExportPart).toBe(withHistoryNoPart);
+
+		const noHistoryNoPart = exportErrorMessage({
+			code: 'export_too_large',
+			message: 'server words',
+			details: { size_reached: 70 * MiB, limit_bytes: 64 * MiB, include_versions: false }
+		});
+		const noHistoryExportPart = exportErrorMessage({
+			code: 'export_too_large',
+			message: 'server words',
+			details: { part: 'export', size_reached: 70 * MiB, limit_bytes: 64 * MiB, include_versions: false }
+		});
+		expect(noHistoryExportPart).toBe(noHistoryNoPart);
+	});
+
+	it('part: manifest (with include_versions true or false): blames attachment list, does not tell user to tick checkbox, names CLI JSON export and operator setting', () => {
+		for (const include_versions of [true, false]) {
+			const msg = exportErrorMessage({
+				code: 'export_too_large',
+				message: 'server words',
+				details: { part: 'manifest', size_reached: 70 * MiB, limit_bytes: 64 * MiB, include_versions }
+			});
+			expect(msg).toContain('list of attachments');
+			expect(msg).toContain('64 MiB');
+			expect(msg).toContain('70 MiB');
+			expect(msg).toContain('does not help');
+			expect(msg).toContain('pad workspace export --json');
+			expect(msg).toContain('PAD_EXPORT_METADATA_MAX_BYTES');
+			expect(msg).not.toContain('Tick');
+		}
+
+		// When limit and size round to the same figure, says "just over that".
+		const rounded = exportErrorMessage({
+			code: 'export_too_large',
+			message: 'server words',
+			details: { part: 'manifest', size_reached: 64 * MiB + 128, limit_bytes: 64 * MiB, include_versions: true }
+		});
+		expect(rounded).toContain('it is just over that');
+		expect(rounded).not.toContain('stopped');
+		expect(rounded).not.toContain('Tick');
+	});
+
 	it('entry-count limit: too many attachments, history does not help, names the CLI JSON export', () => {
 		const msg = exportErrorMessage({
 			code: 'export_too_large',

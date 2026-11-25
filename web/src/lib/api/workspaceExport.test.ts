@@ -24,6 +24,7 @@ describe('api.workspaces.exportUrl', () => {
 
 	it('adds include_versions=false when history is left out', () => {
 		const url = api.workspaces.exportUrl('acme', { includeVersions: false });
+		expect(url).toBe('/api/v1/workspaces/acme/export?format=tar&include_versions=false');
 		const q = new URLSearchParams(url.split('?')[1]);
 		expect(q.get('format')).toBe('tar');
 		expect(q.get('include_versions')).toBe('false');
@@ -41,6 +42,28 @@ function stubFetch(resp: Record<string, unknown>) {
 }
 
 describe('api.workspaces.preflightExport', () => {
+	it('requests check=true with no options and resolves on 204 without reading the body', async () => {
+		const abort = vi.spyOn(AbortController.prototype, 'abort');
+		const text = vi.fn();
+		const blob = vi.fn();
+		const json = vi.fn();
+		const arrayBuffer = vi.fn();
+		const fetchMock = stubFetch({ status: 204, ok: true, text, blob, json, arrayBuffer, body: null });
+
+		await expect(api.workspaces.preflightExport('acme')).resolves.toBeUndefined();
+
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+		const [url, init] = fetchMock.mock.calls[0];
+		expect(url).toBe('/api/v1/workspaces/acme/export?format=tar&check=true');
+		expect(init?.signal).toBeInstanceOf(AbortSignal);
+		expect(init?.signal?.aborted).toBe(true);
+		expect(abort).toHaveBeenCalled();
+		expect(text).not.toHaveBeenCalled();
+		expect(blob).not.toHaveBeenCalled();
+		expect(json).not.toHaveBeenCalled();
+		expect(arrayBuffer).not.toHaveBeenCalled();
+	});
+
 	it('resolves on 200 after aborting, without reading the body', async () => {
 		const abort = vi.spyOn(AbortController.prototype, 'abort');
 		const text = vi.fn();
@@ -53,7 +76,7 @@ describe('api.workspaces.preflightExport', () => {
 
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 		const [url, init] = fetchMock.mock.calls[0];
-		expect(url).toBe('/api/v1/workspaces/acme/export?format=tar&include_versions=false');
+		expect(url).toBe('/api/v1/workspaces/acme/export?format=tar&include_versions=false&check=true');
 		expect(init?.signal).toBeInstanceOf(AbortSignal);
 		expect(init?.signal?.aborted).toBe(true);
 		expect(abort).toHaveBeenCalled();
