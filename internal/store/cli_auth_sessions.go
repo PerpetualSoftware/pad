@@ -164,21 +164,25 @@ func (s *Store) GetCLIAuthSession(code string) (*CLIAuthSession, error) {
 			`), code)
 		case "approved":
 			// An approved code past its TTL must not hand out its minted
-			// token; atomically transition it to expired and revoke the
-			// minted session once (BUG-4836).
+			// token (BUG-4836). Revoke the minted session first, and clear
+			// the row only once that succeeded: the row holds the only copy
+			// of the token, so clearing it first and then failing to revoke
+			// would leave a live session nothing can find again. If the
+			// revoke fails the row stays approved and the expiry sweep
+			// retries it; the caller still sees it as expired.
 			mintedToken := sess.Token
 			sess.Status = "expired"
 			sess.Token = ""
-			res, err := s.db.Exec(s.q(`
+			if mintedToken != "" {
+				if err := s.DeleteSession(mintedToken); err != nil {
+					return &sess, nil
+				}
+			}
+			_, _ = s.db.Exec(s.q(`
 				UPDATE cli_auth_sessions
 				SET status = 'expired', token = NULL
 				WHERE code = ? AND status = 'approved'
 			`), code)
-			if err == nil && mintedToken != "" {
-				if rows, rErr := res.RowsAffected(); rErr == nil && rows == 1 {
-					_ = s.DeleteSession(mintedToken)
-				}
-			}
 		}
 	}
 
