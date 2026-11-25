@@ -23,6 +23,7 @@ var seqMovingSites = map[string]string{
 	"fenced_items.go:CreateItem":                         "BREAKS: an app's item create (no stamped entry)",
 	"fenced_items.go:UpdateItemFields":                   "BREAKS: an app's field write",
 	"agent_roles.go:UpdateRoleSortOrder":                 "BREAKS: role-board reorder, many items at once",
+	"role_park.go:respaceRoleLane":                       "BREAKS: role-lane respace renumbers items in a lane at once",
 	"item_sort_order.go:UpdateItemSortOrders":            "BREAKS: drag reorder, many items at once",
 	"attachments_remap.go:writeRemapUnit":                "BREAKS: attachment reference rewrite across a workspace (one item per call, chunked by RemapAttachmentReferencesInWorkspace)",
 	"collections.go:applyFieldMigrationsTx":              "BREAKS: schema migration across a collection",
