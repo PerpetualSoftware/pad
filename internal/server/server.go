@@ -395,6 +395,13 @@ type Server struct {
 	// exports can opt in without recompiling.
 	importBundleMaxBytes int64
 
+	// importBundleMaxEntriesOverride and importBundleMaxHeaderBlocksOverride,
+	// when positive, replace importBundleMaxEntries and
+	// importBundleMaxHeaderBlocks for both bundle import and bundle export
+	// (TASK-4844). Tests only; 0 uses the package constants.
+	importBundleMaxEntriesOverride      int
+	importBundleMaxHeaderBlocksOverride int64
+
 	// exportMetadataMaxBytes is the shared cap for workspace export metadata
 	// (pad-export.json and attachments/manifest.json) on both export and
 	// import (TASK-4839). 0 → defaultExportMetadataMaxBytes (100 MiB).
