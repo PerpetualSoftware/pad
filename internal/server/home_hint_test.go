@@ -165,6 +165,10 @@ func TestWatchStream_HomeHintOptInAndVisibility(t *testing.T) {
 func TestHomeHint_ProducersCovered(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)
+	// This table exercises 35+ routes sequentially under one owner token; bypass
+	// the general API burst limiter so the later rows are not 429'd.
+	srv.rateLimiters.Stop()
+	srv.rateLimiters = nil
 
 	owner := mkAgentsUser(t, srv, "prod-owner@example.com", "Prod Owner")
 	viewer := mkAgentsUser(t, srv, "prod-viewer@example.com", "Prod Viewer")
@@ -205,6 +209,31 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 	}
 	schedItem, _ = srv.store.GetItem(schedItem.ID)
 
+	// Extra items for recurring resolve states, renegotiate (+ cascade), move, links, gates, milestone children, and reminders.
+	mkItem := func(title string) *models.Item {
+		it, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+			Title: title, Fields: `{"status":"open"}`, AgentRoleID: &role.ID,
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		it, _ = srv.store.GetItem(it.ID)
+		return it
+	}
+	recurItem := mkItem("Recur Item")
+	ackSchedItem := mkItem("Ack Sched Item")
+	renegItem := mkItem("Reneg Item")
+	renegChild := mkItem("Reneg Child")
+	moveItem := mkItem("Move Item")
+	linkParent := mkItem("Link Parent")
+	linkChild := mkItem("Link Child")
+	gateBlocked := mkItem("Gate Blocked")
+	gateBlocker := mkItem("Gate Blocker")
+	milestoneItem := mkItem("Milestone Item")
+	milestoneChild := mkItem("Milestone Child")
+	remItem := mkItem("Reminder Item")
+	remAckItem := mkItem("Reminder Ack Item")
+
 	latestBusID := func() int64 {
 		evs := srv.watchEvents.EventsSince(0)
 		if len(evs) == 0 {
@@ -225,15 +254,49 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 
 	wsBase := "/api/v1/workspaces/" + ws.Slug
 	var reopenResolutionID string
+	var createdLinkID string
+	var createdGateID string
+	var createdReminderID string
+	var ackByIDReminderID string
+
+	getNextOccAt := func(t *testing.T, slug string) string {
+		t.Helper()
+		rr := doRequestWithHeaders(srv, http.MethodGet, wsBase+"/items/"+slug+"/commitment", nil, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("GET commitment %s: %d %s", slug, rr.Code, rr.Body.String())
+		}
+		var cm map[string]any
+		if err := json.Unmarshal(rr.Body.Bytes(), &cm); err != nil {
+			t.Fatalf("unmarshal commitment: %v", err)
+		}
+		next, ok := cm["next_occurrence"].(map[string]any)
+		if !ok {
+			t.Fatalf("missing next_occurrence on %s: %s", slug, rr.Body.String())
+		}
+		at, _ := next["at"].(string)
+		if at == "" {
+			t.Fatalf("empty next_occurrence.at on %s: %s", slug, rr.Body.String())
+		}
+		return at
+	}
+
+	mustCreateCommitment := func(t *testing.T, it *models.Item, body map[string]any) {
+		t.Helper()
+		rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+it.Slug+"/commitment", body, bearerHdr(ownerTok))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("setup create commitment on %s: %d %s", it.Slug, rr.Code, rr.Body.String())
+		}
+	}
 
 	type producerRow struct {
-		name       string
-		itemLevel  bool
-		expectItem string // empty means any non-empty itemID when itemLevel=true
-		setup      func(t *testing.T)
-		runOK      func(t *testing.T) *httptest.ResponseRecorder
-		wantOKCode int
-		runRefused func(t *testing.T) *httptest.ResponseRecorder
+		name        string
+		itemLevel   bool
+		expectItems []string // every listed item ID must appear in hints; empty with itemLevel=true means any non-empty ItemID
+		setup       func(t *testing.T)
+		runPreview  func(t *testing.T) *httptest.ResponseRecorder // optional: must return 200 and publish 0 home_changed hints
+		runOK       func(t *testing.T) *httptest.ResponseRecorder
+		wantOKCode  int
+		runRefused  func(t *testing.T) *httptest.ResponseRecorder
 	}
 
 	rows := []producerRow{
@@ -251,10 +314,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "single_item_update",
-			itemLevel:  true,
-			expectItem: item.ID,
-			wantOKCode: http.StatusOK,
+			name:        "single_item_update",
+			itemLevel:   true,
+			expectItems: []string{item.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Slug,
 					map[string]any{"title": "Updated Title"}, bearerHdr(ownerTok))
@@ -278,10 +341,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "lease_claim",
-			itemLevel:  true,
-			expectItem: item.ID,
-			wantOKCode: http.StatusOK,
+			name:        "lease_claim",
+			itemLevel:   true,
+			expectItems: []string{item.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/claim",
 					map[string]any{"holder": "agent-prod"}, bearerHdr(ownerTok))
@@ -292,10 +355,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "lease_release",
-			itemLevel:  true,
-			expectItem: item.ID,
-			wantOKCode: http.StatusOK,
+			name:        "lease_release",
+			itemLevel:   true,
+			expectItems: []string{item.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/release",
 					map[string]any{"holder": "agent-prod"}, bearerHdr(ownerTok))
@@ -358,10 +421,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "schedule_create",
-			itemLevel:  true,
-			expectItem: schedItem.ID,
-			wantOKCode: http.StatusCreated,
+			name:        "POST /commitment",
+			itemLevel:   true,
+			expectItems: []string{schedItem.ID},
+			wantOKCode:  http.StatusCreated,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+schedItem.Slug+"/commitment",
 					map[string]any{"roles": map[string]any{}, "dtstart": "2099-01-01T09:00", "tz": "UTC"}, bearerHdr(ownerTok))
@@ -372,10 +435,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "schedule_update",
-			itemLevel:  true,
-			expectItem: schedItem.ID,
-			wantOKCode: http.StatusOK,
+			name:        "PATCH /commitment",
+			itemLevel:   true,
+			expectItems: []string{schedItem.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+schedItem.Slug+"/commitment",
 					map[string]any{"dtstart": "2099-01-02T09:00"}, bearerHdr(ownerTok))
@@ -386,10 +449,110 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "schedule_resolve_done_end",
-			itemLevel:  true,
-			expectItem: schedItem.ID,
-			wantOKCode: http.StatusOK,
+			name:        "POST /commitment/resolve (done recurring)",
+			itemLevel:   true,
+			expectItems: []string{recurItem.ID},
+			wantOKCode:  http.StatusOK,
+			setup: func(t *testing.T) {
+				startDay := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
+				mustCreateCommitment(t, recurItem, map[string]any{
+					"roles": map[string]any{}, "dtstart": startDay + "T09:00", "tz": "UTC", "rrule": "FREQ=DAILY",
+				})
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "done"}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "done"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/resolve (skip)",
+			itemLevel:   true,
+			expectItems: []string{recurItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "skip"}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "skip"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/resolve (snooze)",
+			itemLevel:   true,
+			expectItems: []string{recurItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				until := time.Now().UTC().AddDate(0, 0, 10).Truncate(time.Second).Format(time.RFC3339)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "snooze", "until": until}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				until := time.Now().UTC().AddDate(0, 0, 10).Truncate(time.Second).Format(time.RFC3339)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "snooze", "until": until}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/resolve (move)",
+			itemLevel:   true,
+			expectItems: []string{recurItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				until := time.Now().UTC().AddDate(0, 0, 12).Truncate(time.Second).Format(time.RFC3339)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "move", "until": until}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, recurItem.Slug)
+				until := time.Now().UTC().AddDate(0, 0, 12).Truncate(time.Second).Format(time.RFC3339)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+recurItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "move", "until": until}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/resolve (ack)",
+			itemLevel:   true,
+			expectItems: []string{ackSchedItem.ID},
+			wantOKCode:  http.StatusOK,
+			setup: func(t *testing.T) {
+				startDay := time.Now().UTC().AddDate(0, 0, 1).Format("2006-01-02")
+				mustCreateCommitment(t, ackSchedItem, map[string]any{
+					"roles": map[string]any{}, "dtstart": startDay + "T09:00", "tz": "UTC",
+				})
+				at := getNextOccAt(t, ackSchedItem.Slug)
+				if _, err := srv.store.DB().Exec(`UPDATE item_reminders SET fired_at = ? WHERE item_id = ?`, at, ackSchedItem.ID); err != nil {
+					t.Fatalf("mark ackSchedItem fired: %v", err)
+				}
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, ackSchedItem.Slug)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+ackSchedItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "ack"}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				at := getNextOccAt(t, ackSchedItem.Slug)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+ackSchedItem.Slug+"/commitment/resolve",
+					map[string]any{"occurrence_at": at, "state": "ack"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/resolve (done+end)",
+			itemLevel:   true,
+			expectItems: []string{schedItem.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+schedItem.Slug+"/commitment/resolve",
 					map[string]any{"occurrence_at": "2099-01-02T09:00:00Z", "state": "done", "end_schedule": true}, bearerHdr(ownerTok))
@@ -411,10 +574,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "schedule_reopen",
-			itemLevel:  true,
-			expectItem: schedItem.ID,
-			wantOKCode: http.StatusOK,
+			name:        "POST /commitment/reopen",
+			itemLevel:   true,
+			expectItems: []string{schedItem.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				if reopenResolutionID == "" {
 					t.Fatal("missing reopenResolutionID from prior resolve row")
@@ -428,10 +591,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "schedule_dismiss_ended",
-			itemLevel:  true,
-			expectItem: schedItem.ID,
-			wantOKCode: http.StatusOK,
+			name:        "POST /commitment/dismiss-ended",
+			itemLevel:   true,
+			expectItems: []string{schedItem.ID},
+			wantOKCode:  http.StatusOK,
 			setup: func(t *testing.T) {
 				rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+schedItem.Slug+"/commitment/resolve",
 					map[string]any{"occurrence_at": "2099-01-02T09:00:00Z", "state": "done", "end_schedule": true}, bearerHdr(ownerTok))
@@ -449,10 +612,284 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "schedule_delete",
-			itemLevel:  true,
-			expectItem: schedItem.ID,
-			wantOKCode: http.StatusOK,
+			name:        "POST /commitment/renegotiate",
+			itemLevel:   true,
+			expectItems: []string{renegItem.ID, renegChild.ID},
+			wantOKCode:  http.StatusOK,
+			setup: func(t *testing.T) {
+				startDay := time.Now().UTC().AddDate(0, 0, 5).Format("2006-01-02")
+				childDay := time.Now().UTC().AddDate(0, 0, 6).Format("2006-01-02")
+				mustCreateCommitment(t, renegItem, map[string]any{
+					"roles":   map[string]any{"deadline_days": 0, "deadline_secs": 8 * 3600, "deadline_behavior": "lapses"},
+					"dtstart": startDay + "T09:00", "tz": "UTC",
+				})
+				mustCreateCommitment(t, renegChild, map[string]any{
+					"roles":   map[string]any{},
+					"dtstart": childDay + "T09:00", "tz": "UTC",
+				})
+				// Link renegItem.deadline -> renegChild.target so renegotiate cascades to renegChild too.
+				rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+renegItem.Slug+"/commitment/links",
+					map[string]any{
+						"child":       renegChild.Slug,
+						"parent_role": "deadline",
+						"child_role":  "target",
+						"offset":      map[string]any{"mode": "elapsed", "elapsed_secs": 3600},
+					}, bearerHdr(ownerTok))
+				if rr.Code != http.StatusCreated {
+					t.Fatalf("setup link for renegotiate cascade: %d %s", rr.Code, rr.Body.String())
+				}
+			},
+			runPreview: func(t *testing.T) *httptest.ResponseRecorder {
+				newDeadline := time.Now().UTC().AddDate(0, 0, 10).Truncate(time.Second).Format(time.RFC3339)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+renegItem.Slug+"/commitment/renegotiate",
+					map[string]any{"reason": "scope change", "scope": "occurrence", "deadline": newDeadline, "preview": true}, bearerHdr(ownerTok))
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				newDeadline := time.Now().UTC().AddDate(0, 0, 10).Truncate(time.Second).Format(time.RFC3339)
+				prev := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+renegItem.Slug+"/commitment/renegotiate",
+					map[string]any{"reason": "scope change", "scope": "occurrence", "deadline": newDeadline, "preview": true}, bearerHdr(ownerTok))
+				if prev.Code != http.StatusOK {
+					t.Fatalf("renegotiate preview for revision: %d %s", prev.Code, prev.Body.String())
+				}
+				var p struct {
+					Revision string `json:"revision"`
+				}
+				if err := json.Unmarshal(prev.Body.Bytes(), &p); err != nil {
+					t.Fatalf("unmarshal renegotiate preview: %v", err)
+				}
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+renegItem.Slug+"/commitment/renegotiate",
+					map[string]any{"reason": "scope change", "scope": "occurrence", "deadline": newDeadline, "revision": p.Revision}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				newDeadline := time.Now().UTC().AddDate(0, 0, 10).Truncate(time.Second).Format(time.RFC3339)
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+renegItem.Slug+"/commitment/renegotiate",
+					map[string]any{"reason": "scope change", "scope": "occurrence", "deadline": newDeadline}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/move",
+			itemLevel:   true,
+			expectItems: []string{moveItem.ID},
+			wantOKCode:  http.StatusOK,
+			setup: func(t *testing.T) {
+				mustCreateCommitment(t, moveItem, map[string]any{
+					"roles": map[string]any{}, "dtstart": "2099-04-01T09:00", "tz": "UTC",
+				})
+			},
+			runPreview: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+moveItem.Slug+"/commitment/move-preview",
+					map[string]any{"role": "target", "to": "2099-04-02T09:00:00Z", "reason": "shift"}, bearerHdr(ownerTok))
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+moveItem.Slug+"/commitment/move",
+					map[string]any{"role": "target", "to": "2099-04-02T09:00:00Z", "reason": "shift"}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+moveItem.Slug+"/commitment/move",
+					map[string]any{"role": "target", "to": "2099-04-03T09:00:00Z", "reason": "shift"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/links",
+			itemLevel:   true,
+			expectItems: []string{linkParent.ID, linkChild.ID},
+			wantOKCode:  http.StatusCreated,
+			setup: func(t *testing.T) {
+				mustCreateCommitment(t, linkParent, map[string]any{
+					"roles": map[string]any{}, "dtstart": "2099-05-01T09:00", "tz": "UTC",
+				})
+				mustCreateCommitment(t, linkChild, map[string]any{
+					"roles": map[string]any{}, "dtstart": "2099-05-02T09:00", "tz": "UTC",
+				})
+			},
+			runPreview: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+linkParent.Slug+"/commitment/links",
+					map[string]any{
+						"child": linkChild.Slug, "parent_role": "target", "child_role": "target",
+						"offset": map[string]any{"mode": "elapsed", "elapsed_secs": 3600}, "preview": true,
+					}, bearerHdr(ownerTok))
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+linkParent.Slug+"/commitment/links",
+					map[string]any{
+						"child": linkChild.Slug, "parent_role": "target", "child_role": "target",
+						"offset": map[string]any{"mode": "elapsed", "elapsed_secs": 3600},
+					}, bearerHdr(ownerTok))
+				if rr.Code == http.StatusCreated {
+					var resp struct {
+						Link struct {
+							ID string `json:"id"`
+						} `json:"link"`
+					}
+					if err := json.Unmarshal(rr.Body.Bytes(), &resp); err == nil {
+						createdLinkID = resp.Link.ID
+					}
+				}
+				return rr
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+linkParent.Slug+"/commitment/links",
+					map[string]any{
+						"child": linkChild.Slug, "parent_role": "target", "child_role": "target",
+						"offset": map[string]any{"mode": "elapsed", "elapsed_secs": 3600},
+					}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "PATCH /commitment-links/{linkID}",
+			itemLevel:   true,
+			expectItems: []string{linkParent.ID, linkChild.ID},
+			wantOKCode:  http.StatusOK,
+			runPreview: func(t *testing.T) *httptest.ResponseRecorder {
+				if createdLinkID == "" {
+					t.Fatal("missing createdLinkID from prior POST /commitment/links row")
+				}
+				return doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/commitment-links/"+createdLinkID,
+					map[string]any{"offset": map[string]any{"mode": "elapsed", "elapsed_secs": 7200}, "preview": true}, bearerHdr(ownerTok))
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				if createdLinkID == "" {
+					t.Fatal("missing createdLinkID from prior POST /commitment/links row")
+				}
+				return doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/commitment-links/"+createdLinkID,
+					map[string]any{"offset": map[string]any{"mode": "elapsed", "elapsed_secs": 7200}}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/commitment-links/"+createdLinkID,
+					map[string]any{"offset": map[string]any{"mode": "elapsed", "elapsed_secs": 7200}}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "DELETE /commitment-links/{linkID}",
+			itemLevel:   true,
+			expectItems: []string{linkParent.ID, linkChild.ID},
+			wantOKCode:  http.StatusNoContent,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				if createdLinkID == "" {
+					t.Fatal("missing createdLinkID from prior POST /commitment/links row")
+				}
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/commitment-links/"+createdLinkID,
+					nil, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/commitment-links/"+createdLinkID,
+					nil, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /commitment/gates",
+			itemLevel:   true,
+			expectItems: []string{gateBlocked.ID, gateBlocker.ID},
+			wantOKCode:  http.StatusCreated,
+			setup: func(t *testing.T) {
+				mustCreateCommitment(t, gateBlocked, map[string]any{
+					"roles": map[string]any{}, "dtstart": "2099-06-01T09:00", "tz": "UTC",
+				})
+				mustCreateCommitment(t, gateBlocker, map[string]any{
+					"roles": map[string]any{}, "dtstart": "2099-05-30T09:00", "tz": "UTC",
+				})
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+gateBlocked.Slug+"/commitment/gates",
+					map[string]any{"blocker": gateBlocker.Slug}, bearerHdr(ownerTok))
+				if rr.Code == http.StatusCreated {
+					var gate struct {
+						ID string `json:"id"`
+					}
+					if err := json.Unmarshal(rr.Body.Bytes(), &gate); err == nil {
+						createdGateID = gate.ID
+					}
+				}
+				return rr
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+gateBlocked.Slug+"/commitment/gates",
+					map[string]any{"blocker": gateBlocker.Slug}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "DELETE /commitment-gates/{gateID}",
+			itemLevel:   true,
+			expectItems: []string{gateBlocked.ID, gateBlocker.ID},
+			wantOKCode:  http.StatusNoContent,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				if createdGateID == "" {
+					t.Fatal("missing createdGateID from prior POST /commitment/gates row")
+				}
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/commitment-gates/"+createdGateID,
+					nil, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/commitment-gates/"+createdGateID,
+					nil, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "PUT /commitment/forecast",
+			itemLevel:   true,
+			expectItems: []string{milestoneItem.ID},
+			wantOKCode:  http.StatusOK,
+			setup: func(t *testing.T) {
+				mustCreateCommitment(t, milestoneItem, map[string]any{
+					"roles": map[string]any{}, "dtstart": "2099-07-01T09:00", "tz": "UTC",
+				})
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPut, wsBase+"/items/"+milestoneItem.Slug+"/commitment/forecast",
+					map[string]any{"value": "2099-07-05", "source": "plan"}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPut, wsBase+"/items/"+milestoneItem.Slug+"/commitment/forecast",
+					map[string]any{"value": "2099-07-05"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "DELETE /commitment/forecast",
+			itemLevel:   true,
+			expectItems: []string{milestoneItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/items/"+milestoneItem.Slug+"/commitment/forecast",
+					nil, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/items/"+milestoneItem.Slug+"/commitment/forecast",
+					nil, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "PUT /commitment/children/{childRef}",
+			itemLevel:   true,
+			expectItems: []string{milestoneItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPut, wsBase+"/items/"+milestoneItem.Slug+"/commitment/children/"+milestoneChild.Slug,
+					map[string]any{"kind": "child"}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPut, wsBase+"/items/"+milestoneItem.Slug+"/commitment/children/"+milestoneChild.Slug,
+					map[string]any{"kind": "child"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "DELETE /commitment/children/{childRef}",
+			itemLevel:   true,
+			expectItems: []string{milestoneItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/items/"+milestoneItem.Slug+"/commitment/children/"+milestoneChild.Slug,
+					nil, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/items/"+milestoneItem.Slug+"/commitment/children/"+milestoneChild.Slug,
+					nil, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "DELETE /commitment",
+			itemLevel:   true,
+			expectItems: []string{schedItem.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/items/"+schedItem.Slug+"/commitment",
 					nil, bearerHdr(ownerTok))
@@ -463,10 +900,109 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "needs_snooze",
-			itemLevel:  true,
-			expectItem: item.ID,
-			wantOKCode: http.StatusOK,
+			name:        "POST /reminders",
+			itemLevel:   true,
+			expectItems: []string{remItem.ID},
+			wantOKCode:  http.StatusCreated,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+remItem.Slug+"/reminders",
+					map[string]any{"remind_at": "2099-08-01T09:00:00Z"}, bearerHdr(ownerTok))
+				if rr.Code == http.StatusCreated {
+					var rem models.Reminder
+					if err := json.Unmarshal(rr.Body.Bytes(), &rem); err == nil {
+						createdReminderID = rem.ID
+					}
+				}
+				return rr
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+remItem.Slug+"/reminders",
+					map[string]any{"remind_at": "2099-08-01T09:00:00Z"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "PATCH /reminders/{reminderID}",
+			itemLevel:   true,
+			expectItems: []string{remItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				if createdReminderID == "" {
+					t.Fatal("missing createdReminderID from prior POST /reminders row")
+				}
+				return doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/reminders/"+createdReminderID,
+					map[string]any{"remind_at": "2020-01-01T09:00:00Z"}, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/reminders/"+createdReminderID,
+					map[string]any{"remind_at": "2099-08-02T09:00:00Z"}, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /reminders/ack",
+			itemLevel:   true,
+			expectItems: []string{remItem.ID},
+			wantOKCode:  http.StatusOK,
+			setup: func(t *testing.T) {
+				srv.runReminderTick()
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+remItem.Slug+"/reminders/ack",
+					nil, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+remItem.Slug+"/reminders/ack",
+					nil, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "POST /reminders/{reminderID}/ack",
+			itemLevel:   true,
+			expectItems: []string{remAckItem.ID},
+			wantOKCode:  http.StatusOK,
+			setup: func(t *testing.T) {
+				rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+remAckItem.Slug+"/reminders",
+					map[string]any{"remind_at": "2020-01-01T09:00:00Z"}, bearerHdr(ownerTok))
+				if rr.Code != http.StatusCreated {
+					t.Fatalf("setup arm reminder for id ack: %d %s", rr.Code, rr.Body.String())
+				}
+				var rem models.Reminder
+				if err := json.Unmarshal(rr.Body.Bytes(), &rem); err != nil {
+					t.Fatalf("unmarshal reminder: %v", err)
+				}
+				ackByIDReminderID = rem.ID
+				srv.runReminderTick()
+			},
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/reminders/"+ackByIDReminderID+"/ack",
+					nil, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodPost, wsBase+"/reminders/"+ackByIDReminderID+"/ack",
+					nil, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "DELETE /reminders/{reminderID}",
+			itemLevel:   true,
+			expectItems: []string{remItem.ID},
+			wantOKCode:  http.StatusOK,
+			runOK: func(t *testing.T) *httptest.ResponseRecorder {
+				if createdReminderID == "" {
+					t.Fatal("missing createdReminderID from prior POST /reminders row")
+				}
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/reminders/"+createdReminderID,
+					nil, bearerHdr(ownerTok))
+			},
+			runRefused: func(t *testing.T) *httptest.ResponseRecorder {
+				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/reminders/"+createdReminderID,
+					nil, bearerHdr(viewerTok))
+			},
+		},
+		{
+			name:        "needs_snooze",
+			itemLevel:   true,
+			expectItems: []string{item.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodPut, wsBase+"/items/"+item.Ref+"/needs/snooze",
 					map[string]any{"kind": "dismiss"}, bearerHdr(ownerTok))
@@ -477,10 +1013,10 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			},
 		},
 		{
-			name:       "needs_unsnooze",
-			itemLevel:  true,
-			expectItem: item.ID,
-			wantOKCode: http.StatusOK,
+			name:        "needs_unsnooze",
+			itemLevel:   true,
+			expectItems: []string{item.ID},
+			wantOKCode:  http.StatusOK,
 			runOK: func(t *testing.T) *httptest.ResponseRecorder {
 				return doRequestWithHeaders(srv, http.MethodDelete, wsBase+"/items/"+item.Ref+"/needs/snooze",
 					nil, bearerHdr(ownerTok))
@@ -507,7 +1043,19 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 				t.Fatalf("refused request published %d home_changed hint(s): %+v", len(hints), hints)
 			}
 
-			// 2. Successful request must publish >= 1 home_changed with right workspace (and item when itemLevel).
+			// 1b. Preview request (when present) must succeed and publish NO home_changed.
+			if tc.runPreview != nil {
+				beforePrev := latestBusID()
+				rrPrev := tc.runPreview(t)
+				if rrPrev.Code != http.StatusOK {
+					t.Fatalf("preview request got %d %s, want 200", rrPrev.Code, rrPrev.Body.String())
+				}
+				if hints := homeHintsSince(beforePrev); len(hints) != 0 {
+					t.Fatalf("preview request published %d home_changed hint(s): %+v", len(hints), hints)
+				}
+			}
+
+			// 2. Successful request must publish >= 1 home_changed with right workspace (and item(s) when itemLevel).
 			beforeOK := latestBusID()
 			rrOK := tc.runOK(t)
 			if rrOK.Code != tc.wantOKCode {
@@ -517,6 +1065,7 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 			if len(hints) == 0 {
 				t.Fatalf("successful request published 0 home_changed hints")
 			}
+			seenItems := make(map[string]bool, len(hints))
 			for _, h := range hints {
 				if h.WorkspaceID != ws.ID {
 					t.Errorf("hint.WorkspaceID = %q, want %q", h.WorkspaceID, ws.ID)
@@ -525,16 +1074,19 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 					if h.ItemID == "" {
 						t.Errorf("item-level producer published empty ItemID: %+v", h)
 					}
-					if tc.expectItem != "" && h.ItemID != tc.expectItem {
-						t.Errorf("hint.ItemID = %q, want %q", h.ItemID, tc.expectItem)
-					}
 					if h.CollectionID == "" {
 						t.Errorf("item-level producer published empty CollectionID: %+v", h)
 					}
+					seenItems[h.ItemID] = true
 				} else {
 					if h.ItemID != "" {
 						t.Errorf("workspace-level producer published non-empty ItemID %q", h.ItemID)
 					}
+				}
+			}
+			for _, wantID := range tc.expectItems {
+				if !seenItems[wantID] {
+					t.Errorf("expected home_changed hint for item %q; got hints=%+v", wantID, hints)
 				}
 			}
 		})
