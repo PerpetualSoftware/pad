@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -245,8 +246,16 @@ Pass --expected-park-seq N for optimistic concurrency.`,
   pad role park implementer --after TASK-10 --expected-park-seq 2`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			beforeSet := cmd.Flags().Changed("before") && beforeFlag != ""
-			afterSet := cmd.Flags().Changed("after") && afterFlag != ""
+			// An anchor flag given with an empty value is refused rather than
+			// falling through to a park at the top, the broadest park there is.
+			beforeSet := cmd.Flags().Changed("before")
+			afterSet := cmd.Flags().Changed("after")
+			if beforeSet && strings.TrimSpace(beforeFlag) == "" {
+				return fmt.Errorf("--before needs an item ref")
+			}
+			if afterSet && strings.TrimSpace(afterFlag) == "" {
+				return fmt.Errorf("--after needs an item ref")
+			}
 			if beforeSet && afterSet {
 				return fmt.Errorf("--before and --after are mutually exclusive")
 			}

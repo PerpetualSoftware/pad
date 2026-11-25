@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -351,5 +352,23 @@ func TestRoleParkUnparkAndClaimIgnorePark_RoundTrip(t *testing.T) {
 	}
 	if unparkResp["park"] != nil || unparkResp["park_seq"] != float64(2) {
 		t.Fatalf("unexpected unpark response: %v", unparkResp)
+	}
+}
+
+// An anchor flag given with an empty value is refused before any request, so a
+// blank shell variable cannot turn into a park of the whole lane.
+func TestRolePark_EmptyAnchorRefused(t *testing.T) {
+	for _, args := range [][]string{
+		{"implementer", "--before", ""},
+		{"implementer", "--after", "  "},
+	} {
+		cmd := roleParkCmd()
+		cmd.SetArgs(args)
+		cmd.SetOut(io.Discard)
+		cmd.SetErr(io.Discard)
+		err := cmd.Execute()
+		if err == nil || !strings.Contains(err.Error(), "needs an item ref") {
+			t.Fatalf("args %v: err = %v, want a needs-an-item-ref refusal", args, err)
+		}
 	}
 }

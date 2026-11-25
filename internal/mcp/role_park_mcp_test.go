@@ -288,3 +288,17 @@ func TestCatalogProject_RoleParamAcceptedForReadyNextAndRefusedElsewhere(t *test
 		t.Fatalf("HTTP next --role = %+v, want count=3 role=implementer", nextBody)
 	}
 }
+
+// A present but empty or non-string anchor is refused by the HTTP mapper rather
+// than falling through to a park at the top.
+func TestRoleParkRoute_EmptyAnchorRefused(t *testing.T) {
+	for _, in := range []map[string]any{
+		{"workspace": "docapp", "slug": "implementer", "before": ""},
+		{"workspace": "docapp", "slug": "implementer", "after": "   "},
+		{"workspace": "docapp", "slug": "implementer", "before": float64(3)},
+	} {
+		if _, _, _, err := routeTable["role park"](in); err == nil || !strings.Contains(err.Error(), "non-empty item ref") {
+			t.Fatalf("input %v: err = %v, want a non-empty-item-ref refusal", in, err)
+		}
+	}
+}

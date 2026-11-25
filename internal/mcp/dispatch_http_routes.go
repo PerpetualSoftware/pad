@@ -1244,8 +1244,27 @@ func mapRolePark(input map[string]any) (string, string, []byte, error) {
 	if slug == "" {
 		return "", "", nil, fmt.Errorf("slug is required")
 	}
-	before, _ := input["before"].(string)
-	after, _ := input["after"].(string)
+	// A present anchor must be a non-empty string: an empty or mistyped one is
+	// refused rather than falling through to a park at the top.
+	anchor := func(key string) (string, error) {
+		raw, ok := input[key]
+		if !ok || raw == nil {
+			return "", nil
+		}
+		v, isStr := raw.(string)
+		if !isStr || strings.TrimSpace(v) == "" {
+			return "", fmt.Errorf("%s must be a non-empty item ref", key)
+		}
+		return v, nil
+	}
+	before, err := anchor("before")
+	if err != nil {
+		return "", "", nil, err
+	}
+	after, err := anchor("after")
+	if err != nil {
+		return "", "", nil, err
+	}
 	if before != "" && after != "" {
 		return "", "", nil, fmt.Errorf("before and after are mutually exclusive")
 	}
