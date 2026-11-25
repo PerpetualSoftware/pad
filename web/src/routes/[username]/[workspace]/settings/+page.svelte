@@ -28,6 +28,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 	import { copyToClipboard } from '$lib/utils/clipboard';
+	import { exportErrorMessage } from '$lib/workspaces/exportError';
 	import PartialImportBanner from '$lib/components/PartialImportBanner.svelte';
 
 	/**
@@ -214,6 +215,13 @@
 	// invite form and the delete controls go readonly and then come back.
 	let isOwner = $state(false);
 	let canExport = $state(false);
+	// Workspace bundle export (TASK-4845). exportSeq marks the latest export
+	// click, so a slow preflight of an earlier one, or of another workspace,
+	// neither downloads nor writes this one's message.
+	let exportNoVersions = $state(false);
+	let exportBusy = $state(false);
+	let exportError = $state<string | null>(null);
+	let exportSeq = 0;
 	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991). Same hole the dashboard had, for the same reason and found in
 	// the same sweep: since BUG-2991 the store drops membership to UNKNOWN when
 	// the signed-in user changes, unknown deliberately does not update these
@@ -252,6 +260,9 @@
 			canEditWs = false;
 			isOwner = false;
 			canExport = false;
+			exportSeq++;
+			exportBusy = false;
+			exportError = null;
 		}
 	});
 	$effect(() => {
@@ -733,6 +744,38 @@
 		toastStore.show(ok ? 'Link copied' : 'Couldn’t copy the invitation link. Copy it below and send it to the invitee.', ok ? 'success' : 'error');
 	}
 
+	async function startExport() {
+		if (!pageIdentityHeld()) return;
+		const epochAtEntry = captureIdentity();
+		const reqWs = wsSlug;
+		const opts = { includeVersions: !exportNoVersions };
+		const mySeq = ++exportSeq;
+		exportError = null;
+		exportBusy = true;
+		try {
+			// The preflight lets a refusal (422 export_too_large) show here
+			// instead of as a failed browser download. Accepted residual: on
+			// success the server spools the metadata twice (preflight, then the
+			// real download), and a workspace that passes the limit in between
+			// still fails as a plain failed download.
+			await api.workspaces.preflightExport(reqWs, opts);
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== exportSeq) return;
+			// A real link click, so the browser streams the bundle to disk.
+			const a = document.createElement('a');
+			a.href = api.workspaces.exportUrl(reqWs, opts);
+			a.download = `${reqWs}-export.tar.gz`;
+			a.style.display = 'none';
+			document.body.appendChild(a);
+			a.click();
+			a.remove();
+		} catch (err) {
+			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== exportSeq) return;
+			exportError = exportErrorMessage(err);
+		} finally {
+			if (mySeq === exportSeq) exportBusy = false;
+		}
+	}
+
 	async function handleRemoveMember(userId: string, name: string) {
 		// Captured at ENTRY, before any await (the confirmation is one): the
 		// only epoch that cannot be re-stamped by a concurrent load. The workspace too, so a yes given after the page moved to
@@ -1121,14 +1164,32 @@
 					{#if canExport}
 						<div class="field-row">
 							<span class="field-label">Export bundle</span>
-							<a
-								href="/api/v1/workspaces/{wsSlug}/export?format=tar"
-								download="{wsSlug}-export.tar.gz"
-								class="btn btn-small"
-								title="Includes items, comments, version history, and attachment blobs. Re-importable via the Create Workspace dialog."
-							>
-								Download .tar.gz
-							</a>
+							<div class="export-controls">
+								<div class="export-actions">
+									<Button
+										variant="secondary"
+										size="sm"
+										onclick={startExport}
+										disabled={exportBusy}
+										title="Includes items, comments, attachment blobs and, unless left out, version history. Re-importable via the Create Workspace dialog."
+									>
+										{exportBusy ? 'Preparing export…' : 'Download .tar.gz'}
+									</Button>
+									<label class="export-option">
+										<input
+											type="checkbox"
+											bind:checked={exportNoVersions}
+											disabled={exportBusy}
+											onchange={() => (exportError = null)}
+										/>
+										<span>Leave out version history</span>
+									</label>
+								</div>
+								<p class="export-hint">Version history is usually the largest part of an export.</p>
+								{#if exportError}
+									<p class="export-error" role="alert">{exportError}</p>
+								{/if}
+							</div>
 						</div>
 						<!-- TASK-3612: the guided path for taking this bundle to Cloud. -->
 						<MoveToCloudLink on="self-hosted" />
@@ -1631,9 +1692,16 @@
 	.inline-edit input { flex: 1; min-width: 120px; max-width: 300px; }
 	.status-saved { font-size: 0.8em; color: var(--accent-green); }
 	.status-error { font-size: 0.8em; color: var(--accent-orange); }
-	/* .btn/.btn-small retained for the remaining non-migrated controls: the
-	   export <a> (Button renders <button> only), .btn-access (stateful
-	   toggle), .copy-link-btn (accent-outline), and .btn-create (dashed). */
+	.export-controls { display: flex; flex-direction: column; gap: var(--space-1); flex: 1; min-width: 0; }
+	.export-actions { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+	.field-row label.export-option { width: auto; display: inline-flex; align-items: center; gap: var(--space-2); color: var(--text-primary); cursor: pointer; flex-shrink: 1; }
+	.export-option input[type="checkbox"] { margin: 0; cursor: pointer; }
+	.export-option input[type="checkbox"]:disabled { cursor: default; }
+	.export-hint { margin: 0; font-size: 0.8em; color: var(--text-muted); }
+	.export-error { margin: 0; font-size: 0.82em; color: var(--accent-red); overflow-wrap: anywhere; }
+	/* .btn/.btn-small retained for the remaining non-migrated controls:
+	   .btn-access (stateful toggle), .copy-link-btn (accent-outline), and
+	   .btn-create (dashed). */
 	.btn { padding: var(--space-2) var(--space-4); background: var(--bg-tertiary); border: 1px solid var(--border); border-radius: var(--radius); font-size: 0.85em; cursor: pointer; color: var(--text-primary); }
 	.btn:hover { background: var(--bg-hover); }
 	.btn-small { padding: var(--space-1) var(--space-3); font-size: 0.8em; }

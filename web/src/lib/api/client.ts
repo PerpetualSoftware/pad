@@ -1578,6 +1578,18 @@ export interface InvitationPreview {
 // for the rest of the session — a later call retries.
 let serverCapabilitiesCache: Promise<ServerCapabilities> | null = null;
 
+export interface WorkspaceExportOptions {
+	/** false adds include_versions=false; anything else keeps version history. */
+	includeVersions?: boolean;
+}
+
+/** The workspace tar.gz bundle URL (GET /workspaces/{slug}/export?format=tar). */
+export function workspaceExportUrl(slug: string, opts: WorkspaceExportOptions = {}): string {
+	const q = new URLSearchParams({ format: 'tar' });
+	if (opts.includeVersions === false) q.set('include_versions', 'false');
+	return `${BASE}/workspaces/${encodeURIComponent(slug)}/export?${q.toString()}`;
+}
+
 export const api = {
 	calendarFeeds: {
 		list: async () => (await request<{ feeds: CalendarFeed[] }>('/me/calendar-feeds')).feeds,
@@ -1739,6 +1751,49 @@ export const api = {
 		// (PLAN-1519 / TASK-1525 / IDEA-1517 §4).
 		claimCode: (slug: string) =>
 			request<ClaimCodeResponse>(`/workspaces/${slug}/claim-code`),
+
+		// The tar.gz bundle URL (GET /workspaces/{slug}/export, TASK-4845).
+		exportUrl: workspaceExportUrl,
+
+		// preflightExport asks for the exact bundle URL and resolves once the
+		// server has committed to a 2xx, which it does only after its size and
+		// entry checks pass. The body is never read: the bundle carries the
+		// attachment blobs and can be gigabytes, so the request is aborted as
+		// soon as the headers arrive and the caller starts the real browser
+		// download of the same URL. A refusal (422 export_too_large, or any
+		// other non-2xx) rejects with a PadApiError carrying code and details
+		// (TASK-4845).
+		preflightExport: async (slug: string, opts: WorkspaceExportOptions = {}): Promise<void> => {
+			const controller = new AbortController();
+			let resp: Response;
+			try {
+				resp = await fetch(workspaceExportUrl(slug, opts), {
+					credentials: 'same-origin',
+					signal: controller.signal
+				});
+			} catch {
+				throw new PadApiError({
+					code: 'network_error',
+					message: 'Could not reach the server. Check your connection and try again.'
+				});
+			}
+			if (resp.ok) {
+				controller.abort();
+				return;
+			}
+			if (resp.status === 401) {
+				if (typeof window !== 'undefined' && !window.location.pathname.startsWith('/login')) {
+					redirectToLogin('/login');
+				}
+				throw new PadApiError({ code: 'unauthorized', message: 'Authentication required' });
+			}
+			const body = await resp.json().catch(() => null);
+			if (body?.error) throw new PadApiError(body.error);
+			throw new PadApiError({
+				code: 'export_failed',
+				message: `Export failed (status ${resp.status}). Try again.`
+			});
+		},
 
 		// importBundle uploads a workspace tar.gz bundle to the bundle-import
 		// endpoint. The server dispatches on Content-Type

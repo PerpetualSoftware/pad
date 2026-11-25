@@ -37,6 +37,7 @@ identityGateSuite({
 				reviewed: '9a3c67cefe81',
 				why: 'identityHeld(epochAtDelete) after the delete on both arms; the Undo callback it hands the global toast compares the epoch at click time against the one captured at delete time; navigation now lands at the root workspace list, with both identity checks unchanged',
 			},
+			startExport: { reviewed: '37c523dea55b', why: `TASK-4845: pageIdentityHeld() at entry (the button may be from a page rendered for the previous identity), then the entry epoch, the entry workspace and exportSeq (bumped by the page reset effect and by every new click) after the preflight await on both arms, before the download link is clicked or the message is written; the finally releases the busy flag only for the latest click` },
 			undoDeleteWorkspace: { reviewed: 'd9f84d9f668c', why: "identityHeld(epochAtDelete), the caller's delete-time epoch, after the restore on both arms" },
 		},
 		nested: [],

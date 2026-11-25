@@ -11,6 +11,9 @@ import { workspaceStore } from '$lib/stores/workspace.svelte';
  * canExportWorkspace (owner with unrestricted access), the server's own rule.
  * This drives the real page, so it fails if the page stops reading that
  * getter (CONVE-19: the unit test vouches for the rule, not its binding).
+ *
+ * TASK-4845: the download is a button now (it preflights the export before
+ * starting the browser download), so these find it by the button role.
  */
 
 const me = vi.hoisted(() => ({ value: null as unknown }));
@@ -66,19 +69,19 @@ describe('BUG-3614: the export download follows the server rule', () => {
 	it('is shown to an owner with access to every collection (control)', async () => {
 		await renderAs('ws-owner', { role: 'owner', collection_access: 'all' });
 		await waitFor(() => {
-			expect(screen.getByRole('link', { name: /Download \.tar\.gz/ })).toBeTruthy();
+			expect(screen.getByRole('button', { name: /Download \.tar\.gz/ })).toBeTruthy();
 		});
 	});
 
 	it('is not shown to an editor', async () => {
 		await renderAs('ws-editor', { role: 'editor', collection_access: 'all' });
-		expect(screen.queryByRole('link', { name: /Download \.tar\.gz/ })).toBeNull();
+		expect(screen.queryByRole('button', { name: /Download \.tar\.gz/ })).toBeNull();
 	});
 
 	it('is not shown to an owner scoped to specific collections', async () => {
 		await renderAs('ws-scoped', { role: 'owner', collection_access: 'specific' });
 		// Owner chrome has rendered too, so the page has applied the membership.
 		await screen.findByRole('tab', { name: /Danger Zone/ });
-		expect(screen.queryByRole('link', { name: /Download \.tar\.gz/ })).toBeNull();
+		expect(screen.queryByRole('button', { name: /Download \.tar\.gz/ })).toBeNull();
 	});
 });
