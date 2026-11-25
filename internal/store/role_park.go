@@ -355,10 +355,14 @@ func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[stri
 	return byRole, nil
 }
 
-// WorkspaceRoleFinishedRow is one candidate recently-finished item returned by
-// ListWorkspaceRoleFinishedItemsQ for post-visibility and completed-work filtering.
+// WorkspaceRoleFinishedRow is one candidate status-transition row returned by
+// ListWorkspaceRoleFinishedItemsQ for post-visibility, done-key, current-value
+// matching and per-item deduplication.
 type WorkspaceRoleFinishedRow struct {
 	ItemID       string
+	FieldKey     string
+	ToStatus     string
+	CreatedAt    time.Time
 	CollectionID string
 	AgentRoleID  string
 	Ref          string
@@ -366,12 +370,13 @@ type WorkspaceRoleFinishedRow struct {
 	Fields       string
 	Schema       string
 	Settings     string
-	CompletedAt  time.Time
 }
 
-// ListWorkspaceRoleFinishedItemsQ returns up to limit live items in workspaceID
-// assigned to one of roleIDs that had a status transition at or after since,
-// grouped to one row per item at its newest transition timestamp, newest first.
+// ListWorkspaceRoleFinishedItemsQ returns up to limit status-transition rows
+// for live items in workspaceID assigned to one of roleIDs at or after since,
+// ordered newest first (st.created_at DESC, st.id DESC). Callers filter to
+// transitions matching each collection's done field and the item's current
+// completed-work value and dedupe by item.
 func (s *Store) ListWorkspaceRoleFinishedItemsQ(q Queryer, workspaceID string, roleIDs []string, since time.Time, limit int) ([]WorkspaceRoleFinishedRow, error) {
 	if len(roleIDs) == 0 || limit <= 0 {
 		return nil, nil
@@ -384,9 +389,9 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(q Queryer, workspaceID string, r
 	args = append(args, limit)
 
 	rows, err := q.Query(s.q(`
-		SELECT i.id, i.collection_id, i.agent_role_id, i.title, i.fields, i.item_number,
-		       c.prefix, c.schema, c.settings,
-		       MAX(st.created_at) AS completed_at
+		SELECT st.item_id, st.field_key, st.to_status, st.created_at,
+		       i.collection_id, i.agent_role_id, i.title, i.fields, i.item_number,
+		       c.prefix, c.schema, c.settings
 		FROM status_transitions st
 		JOIN items i ON i.id = st.item_id
 		JOIN collections c ON c.id = i.collection_id
@@ -396,9 +401,7 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(q Queryer, workspaceID string, r
 		  AND i.deleted_at IS NULL
 		  AND c.deleted_at IS NULL
 		  AND i.agent_role_id IN (`+placeholders(len(roleIDs))+`)
-		GROUP BY i.id, i.collection_id, i.agent_role_id, i.title, i.fields, i.item_number,
-		         c.prefix, c.schema, c.settings
-		ORDER BY completed_at DESC, i.id ASC
+		ORDER BY st.created_at DESC, st.id DESC
 		LIMIT ?
 	`), args...)
 	if err != nil {
@@ -410,10 +413,11 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(q Queryer, workspaceID string, r
 	for rows.Next() {
 		var r WorkspaceRoleFinishedRow
 		var itemNum sql.NullInt64
-		var prefix, completedAt string
+		var prefix, createdAt string
 		if err := rows.Scan(
-			&r.ItemID, &r.CollectionID, &r.AgentRoleID, &r.Title, &r.Fields, &itemNum,
-			&prefix, &r.Schema, &r.Settings, &completedAt,
+			&r.ItemID, &r.FieldKey, &r.ToStatus, &createdAt,
+			&r.CollectionID, &r.AgentRoleID, &r.Title, &r.Fields, &itemNum,
+			&prefix, &r.Schema, &r.Settings,
 		); err != nil {
 			return nil, err
 		}
@@ -422,7 +426,7 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(q Queryer, workspaceID string, r
 		} else {
 			r.Ref = r.ItemID
 		}
-		r.CompletedAt = parseTime(completedAt)
+		r.CreatedAt = parseTime(createdAt)
 		out = append(out, r)
 	}
 	return out, rows.Err()
