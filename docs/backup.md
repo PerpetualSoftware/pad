@@ -375,15 +375,21 @@ its op-log, so re-exporting after a tab has flushed produces a clean bundle. The
 one case where that is not true is `pad db migrate-to-pg`, which is why that
 command refuses instead of warning.
 
+### Export size limits and leaving out version history
+
+Workspace export and import (both tar.gz bundles and plain JSON) share one metadata size limit: **100 MiB** of compact JSON by default (`PAD_EXPORT_METADATA_MAX_BYTES`). The exporter checks the limit before sending any response bytes, so an export that succeeds fits within the same server's import limit. Older indented exports remain importable as long as they fit the limit.
+
+If a workspace's metadata passes the limit, the server refuses the export with `422 export_too_large`. Item version history is usually the largest part of the metadata; you can export without it and still keep every current item, comment, schedule and attachment:
+
+```bash
+pad workspace export --no-versions -o my-workspace.tar.gz
+```
+
+Or ask the server operator to raise `PAD_EXPORT_METADATA_MAX_BYTES`.
+
 ### One case where an export is not importable
 
-A workspace whose stored data contains a **NUL character** exports fine and is
-refused on import, with a 400 naming the cause. This is not a corruption of
-your backup — it is the import applying a rule the write path now applies too
-(BUG-2803): Pad does not accept a NUL in a text or JSON value. That is an
-application rule, not a universal storage fact — PostgreSQL does refuse a NUL
-outright, but SQLite accepts one in a TEXT column, which is why the rule has to
-be enforced rather than assumed, and why the paragraphs below matter.
+A workspace whose stored data contains a **NUL character** exports fine and is refused on import, with a 400 naming the cause (size mismatches between export and import no longer occur on the same server because both enforce `PAD_EXPORT_METADATA_MAX_BYTES`). This is not a corruption of your backup — it is the import applying a rule the write path now applies too (BUG-2803): Pad does not accept a NUL in a text or JSON value. That is an application rule, not a universal storage fact — PostgreSQL does refuse a NUL outright, but SQLite accepts one in a TEXT column, which is why the rule has to be enforced rather than assumed, and why the paragraphs below matter.
 
 **The rule is now enforced by the database as well as by the binary.** It used
 to live only in the running build, which meant any window where an older binary

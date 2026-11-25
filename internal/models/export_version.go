@@ -1,55 +1,18 @@
 package models
 
-import "encoding/json"
+import (
+	"bytes"
+	"encoding/json"
+)
 
 // UnmarshalJSON retains versioned member presence, including explicit null
 // and empty values, so older bundles cannot silently discard commitment data.
 func (x *WorkspaceExport) UnmarshalJSON(b []byte) error {
-	type plain WorkspaceExport
-	var decoded plain
-	if err := json.Unmarshal(b, &decoded); err != nil {
+	decoded, err := DecodeWorkspaceExport(bytes.NewReader(b), nil)
+	if err != nil {
 		return err
 	}
-	*x = WorkspaceExport(decoded)
-	var raw struct {
-		Changes json.RawMessage `json:"schedule_changes"`
-		Links   json.RawMessage `json:"schedule_links"`
-		Gates   json.RawMessage `json:"schedule_gates"`
-		// Only the presence of deleted_at: a map here would hold every body twice.
-		Items []struct {
-			DeletedAt json.RawMessage `json:"deleted_at"`
-		} `json:"items"`
-		Schedules []map[string]json.RawMessage `json:"schedules"`
-	}
-	if err := json.Unmarshal(b, &raw); err != nil {
-		return err
-	}
-	x.hasV2Members = raw.Changes != nil
-	x.hasV3Members = raw.Links != nil
-	x.hasV4Members = raw.Gates != nil
-	for _, it := range raw.Items {
-		if it.DeletedAt != nil {
-			x.hasV4Members = true
-		}
-	}
-	for _, sc := range raw.Schedules {
-		for _, key := range []string{"id", "roles", "overrides", "forecast", "forecast_events", "children", "completion_evidence"} {
-			if _, ok := sc[key]; ok {
-				x.hasV2Members = true
-			}
-		}
-		var occs []map[string]json.RawMessage
-		if err := json.Unmarshal(sc["occurrences"], &occs); len(sc["occurrences"]) != 0 && err != nil {
-			return err
-		}
-		for _, o := range occs {
-			for _, key := range []string{"actual_done_at", "actual_source", "roles"} {
-				if _, ok := o[key]; ok {
-					x.hasV2Members = true
-				}
-			}
-		}
-	}
+	*x = *decoded
 	return nil
 }
 

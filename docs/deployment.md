@@ -89,6 +89,7 @@ All configuration is via environment variables or a config file (`~/.pad/config.
 | `PAD_DATA_DIR` | `~/.pad` | Data directory for SQLite DB, logs, and config. Must be absolute: a relative value is deprecated and warns (it resolves against each process's own directory, so a CLI and a server started in different places use different data), and a future release refuses it |
 | `PAD_LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
 | `PAD_MODE` | `local` | Mode: `local`, `remote`, `cloud` |
+| `PAD_EXPORT_METADATA_MAX_BYTES` | `104857600` (100 MiB) | Shared maximum size in bytes for workspace export metadata (`pad-export.json` and `attachments/manifest.json`) on both export and import (plain JSON and tar.gz bundles). Exports exceeding this limit refuse with `422 export_too_large` before streaming; imports exceeding it refuse with `413 bundle_too_large`. |
 
 ### Database
 

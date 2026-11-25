@@ -582,6 +582,26 @@ func serveCmd() *cobra.Command {
 				}
 			}
 
+			// Shared workspace export/import metadata cap (TASK-4839).
+			// Default is 100 MiB inside internal/server;
+			// PAD_EXPORT_METADATA_MAX_BYTES lets operators adjust it
+			// without recompiling.
+			if v := os.Getenv("PAD_EXPORT_METADATA_MAX_BYTES"); v != "" {
+				if n, perr := strconv.ParseInt(v, 10, 64); perr == nil && n > 0 {
+					srv.SetExportMetadataMaxBytes(n)
+					slog.Info("Export metadata cap overridden", "max_bytes", n)
+				} else {
+					slog.Warn("PAD_EXPORT_METADATA_MAX_BYTES ignored — not a positive integer", "value", v)
+				}
+			}
+
+			exportSpoolDir := filepath.Join(cfg.DataDir, "tmp", "export")
+			if err := os.MkdirAll(exportSpoolDir, 0o700); err != nil {
+				return fmt.Errorf("create export spool dir: %w", err)
+			}
+			sweepExportSpoolDir(exportSpoolDir)
+			srv.SetExportSpoolDir(exportSpoolDir)
+
 			// Single-artifact import cap. Default is 1 MiB inside
 			// internal/server; PAD_IMPORT_ARTIFACT_MAX_BYTES lets
 			// operators raise the ceiling without recompiling.
@@ -1648,4 +1668,32 @@ func applyDBRuntimeLimits(s *store.Store, cfg *config.Config, dbDriver string) e
 		"lock_timeout", limits.Lock,
 		"idle_in_transaction_timeout", limits.IdleInTx)
 	return nil
+}
+
+// sweepExportSpoolDir removes leftover pad-export-*.json spool files left behind
+// by a previous server process that crashed mid-export (TASK-4839).
+func sweepExportSpoolDir(dir string) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		slog.Warn("export spool sweep failed", "dir", dir, "error", err)
+		return
+	}
+	removed := 0
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasPrefix(name, "pad-export-") || !strings.HasSuffix(name, ".json") {
+			continue
+		}
+		if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+			slog.Warn("failed to remove leftover export spool file", "file", name, "error", err)
+			continue
+		}
+		removed++
+	}
+	if removed > 0 {
+		slog.Info("Removed leftover export spool files", "dir", dir, "count", removed)
+	}
 }

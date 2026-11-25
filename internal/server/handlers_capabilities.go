@@ -86,6 +86,12 @@ type serverCapabilities struct {
 	// answer. An older build ignores op_key, so a client that relies on
 	// replay checks this first.
 	IdempotencyKeys bool `json:"idempotency_keys"`
+
+	// ExportIncludeVersions is true when GET /workspaces/{ws}/export honours
+	// include_versions=false to omit item version history (TASK-4839). An
+	// older build ignores the parameter and still exports history, so the CLI
+	// checks this flag before sending --no-versions.
+	ExportIncludeVersions bool `json:"export_include_versions"`
 }
 
 // WHAT A BUILD THAT CANNOT DECODE A FORMAT ACTUALLY COSTS THE READER
@@ -128,7 +134,7 @@ type serverCapabilities struct {
 // rather than 500-ing — that signals to the editor "uploads still work,
 // but disable transformation tools."
 func (s *Server) handleServerCapabilities(w http.ResponseWriter, r *http.Request) {
-	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true, ItemSortOrderBulk: true, ItemPatch: true, IdempotencyKeys: true}
+	resp := serverCapabilities{CollectionResolution: true, ItemFieldAppend: true, SearchCollectionResolution: true, ItemScopedCommentWrites: true, AttachmentAttach: true, LibraryActivate: true, BuiltinUpdate: true, ItemSortOrderBulk: true, ItemPatch: true, IdempotencyKeys: true, ExportIncludeVersions: true}
 	if s.imageProcessor != nil {
 		resp.Image = s.imageProcessor.Capabilities()
 	} else {

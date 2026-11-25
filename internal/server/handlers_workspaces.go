@@ -5,9 +5,11 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -948,14 +950,31 @@ func (s *Server) handleExportWorkspace(w http.ResponseWriter, r *http.Request) {
 	if !s.requireUnrestrictedExportAccess(w, r, ws.ID) {
 		return
 	}
-	export, _, err := s.store.ExportWorkspaceSnapshot(r.Context(), ws.Slug, false)
+	includeVersions, err := parseIncludeVersions(r)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "not_found", err.Error())
+		writeError(w, http.StatusBadRequest, "validation_error", err.Error())
 		return
 	}
+	spoolFile, _, _, reached, err := s.spoolExport(r.Context(), ws.Slug, store.ExportOptions{
+		WithAttachments: false,
+		IncludeVersions: includeVersions,
+	}, true)
+	if err != nil {
+		s.writeSpoolExportError(w, r, reached, includeVersions, err)
+		return
+	}
+	defer func() {
+		name := spoolFile.Name()
+		_ = spoolFile.Close()
+		_ = os.Remove(name)
+	}()
 
+	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", contentDisposition("attachment", ws.Slug+"-export.json"))
-	writeJSON(w, http.StatusOK, export)
+	w.WriteHeader(http.StatusOK)
+	if _, err := io.Copy(w, spoolFile); err != nil {
+		slog.Warn("export json stream failed", "workspace", ws.Slug, "error", err)
+	}
 }
 
 func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
@@ -969,9 +988,9 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// ABOVE the Content-Type dispatch, so the tar.gz bundle path is covered
 	// by this same line rather than needing its own, and above either body
 	// read, so a refused caller never uploads anything. The two reads have
-	// different bounds (the JSON path's 64 MiB decodeJSONWithLimit, the
-	// bundle path's own configurable and much larger limit); the gate
-	// precedes both.
+	// different bounds (the JSON path's shared metadata cap, the bundle
+	// path's own configurable compressed limit plus the same metadata cap);
+	// the gate precedes both.
 	//
 	// Reachability of the consent half, stated precisely because the create
 	// door's is different: NO OAuth-bound caller can reach this handler
@@ -1012,24 +1031,25 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var data models.WorkspaceExport
-	// WorkspaceExport contains all collections, items, comments, and item
-	// versions for the workspace — even a modest project export blows past
-	// the default 2 MiB decodeJSON cap. 64 MiB is well above any realistic
-	// single-workspace backup while still far from the heap-exhaustion
-	// range the default cap protects against.
-	//
 	// --repair-nul (DOC-2823 S3 / BUG-2810). The default is strict; the flag
-	// buys the body ONE repair attempt and then runs the same gate on the
+	// buys each record one repair attempt and then runs the same gate on the
 	// repaired bytes, so this is not a decode path that skips the check.
 	repair := &nulRepairTally{Enabled: wantsNULRepair(r)}
-	var decodeErr error
-	if repair.Enabled {
-		decodeErr = decodeJSONRepairingNUL(r, &data, 64<<20, repair)
-	} else {
-		decodeErr = decodeJSONWithLimit(r, &data, 64<<20)
+	metaLimit := s.effectiveExportMetadataMaxBytes()
+	var body io.Reader = strings.NewReader("")
+	if r.Body != nil {
+		capped := http.MaxBytesReader(nil, r.Body, metaLimit)
+		r.Body = capped
+		body = capped
 	}
+	data, decodeErr := decodeExportStream(body, repair)
 	if decodeErr != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(decodeErr, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "bundle_too_large",
+				fmt.Sprintf("Workspace export exceeds this server's %d-byte metadata limit; raise PAD_EXPORT_METADATA_MAX_BYTES on this server to import it.", metaLimit))
+			return
+		}
 		msg := "invalid export data: " + decodeErr.Error()
 		if errors.Is(decodeErr, errJSONBodyNUL) {
 			// The strict refusal NAMES the remedy —
@@ -1068,9 +1088,9 @@ func (s *Server) handleImportWorkspace(w http.ResponseWriter, r *http.Request) {
 	// `data` is still the thing the exporter wrote. Nothing after this point can
 	// recover the fact — the destination has no op-log to evaluate against.
 	staleBodies := &staleBodyTally{}
-	staleBodies.Observe(&data)
+	staleBodies.Observe(data)
 
-	ws, importReport, err := s.store.ImportWorkspaceWithReport(&data, newName, userID, mint.Source, s.planLimitMintOpts(userID)...)
+	ws, importReport, err := s.store.ImportWorkspaceWithReport(data, newName, userID, mint.Source, s.planLimitMintOpts(userID)...)
 	if err != nil {
 		if writeStorePlanLimitError(w, r, err, "") {
 			return

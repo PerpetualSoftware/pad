@@ -1189,6 +1189,7 @@ func switchCmd() *cobra.Command {
 func exportCmd() *cobra.Command {
 	var outputFile string
 	var jsonOnly bool
+	var noVersions bool
 	cmd := &cobra.Command{
 		Use:     "export",
 		Short:   "Export workspace as a self-contained tar.gz bundle",
@@ -1201,17 +1202,30 @@ and attachments) to a portable tar.gz bundle:
   attachments/<uuid>.<ext>     — original attachment blobs
 
 Pass --json to emit the legacy items-only JSON file (no attachments).
+Pass --no-versions to omit item version history when the export metadata
+exceeds the server's limit.
 Both formats can be re-imported via 'pad workspace import'.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			ws := getWorkspace()
 			bundle := !jsonOnly
 
+			if noVersions && !client.ServerSupportsExportWithoutVersions() {
+				return fmt.Errorf("this server cannot export without version history; upgrade it")
+			}
+
 			path := "/workspaces/" + url.PathEscape(ws) + "/export"
 			defaultExt := ".json"
+			q := url.Values{}
 			if bundle {
-				path += "?format=tar"
+				q.Set("format", "tar")
 				defaultExt = ".tar.gz"
+			}
+			if noVersions {
+				q.Set("include_versions", "false")
+			}
+			if encoded := q.Encode(); encoded != "" {
+				path += "?" + encoded
 			}
 
 			if outputFile == "" && bundle && term.IsTerminal(int(os.Stdout.Fd())) {
@@ -1290,6 +1304,7 @@ Both formats can be re-imported via 'pad workspace import'.`,
 	}
 	cmd.Flags().StringVarP(&outputFile, "output", "o", "", "output file path (default: stdout)")
 	cmd.Flags().BoolVar(&jsonOnly, "json", false, "emit legacy items-only JSON (no attachments)")
+	cmd.Flags().BoolVar(&noVersions, "no-versions", false, "omit item version history from the export")
 	return cmd
 }
 

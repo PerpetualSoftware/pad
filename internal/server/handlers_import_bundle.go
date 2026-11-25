@@ -32,19 +32,6 @@ import (
 // in cmd/pad/main.go).
 const defaultImportBundleMaxBytes int64 = 2 << 30 // 2 GiB
 
-// importMetadataMaxBytes is the size ceiling for the small JSON
-// payloads inside a bundle (pad-export.json + attachments/manifest.json).
-// Independent of the per-blob cap so a deployment that LOWERS
-// PAD_ATTACHMENT_MAX_BYTES (e.g. to 1 MiB for a tightly-controlled
-// host) doesn't inadvertently reject metadata for a workspace
-// nobody intended to gate on attachment-blob limits.
-//
-// 100 MiB comfortably holds a workspace with many thousands of
-// items + version history. Bumped via the import bundle cap, not
-// per-attachment cap, since metadata size scales with the export's
-// item count, not attachment sizes.
-const importMetadataMaxBytes int64 = 100 << 20 // 100 MiB
-
 // BUG-3354: the body cap above bounds the COMPRESSED bytes. Gzip expands up
 // to ~1000:1, so a 2 GiB body could decompress to terabytes, and entries the
 // import discards (unmanifested blobs, unknown names) were inflated in full
@@ -143,7 +130,7 @@ func (b *bundleBudgetReader) read(p []byte) (int, error) {
 // decompressedBundleCap is the ceiling on the tar stream: a multiple of the
 // body cap for attachment bytes, plus both metadata files at their own cap.
 func (s *Server) decompressedBundleCap() int64 {
-	return s.effectiveImportBundleMaxBytes()*importBundleExpansionFactor + 2*importMetadataMaxBytes
+	return s.effectiveImportBundleMaxBytes()*importBundleExpansionFactor + 2*s.effectiveExportMetadataMaxBytes()
 }
 
 // decompressedCapMessage is the 413 for the decompressed ceiling. It states
@@ -151,7 +138,7 @@ func (s *Server) decompressedBundleCap() int64 {
 // legitimately large export knows which setting raises it.
 func (s *Server) decompressedCapMessage(detail string) string {
 	return fmt.Sprintf("Bundle expands past %d bytes once decompressed%s. The limit is %dx the import body cap (%d bytes) plus %d bytes for metadata; raise PAD_IMPORT_BUNDLE_MAX_BYTES on this server to import a larger export.",
-		s.decompressedBundleCap(), detail, importBundleExpansionFactor, s.effectiveImportBundleMaxBytes(), 2*importMetadataMaxBytes)
+		s.decompressedBundleCap(), detail, importBundleExpansionFactor, s.effectiveImportBundleMaxBytes(), 2*s.effectiveExportMetadataMaxBytes())
 }
 
 // effectiveImportBundleMaxBytes is the compressed-body cap in force.
@@ -813,46 +800,28 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				}
 			}
 			// pad-export.json can grow large for content-heavy
-			// workspaces (items + version history). Use the
-			// metadata-specific cap so deployments that lower
-			// PAD_ATTACHMENT_MAX_BYTES (e.g. to 1 MiB) don't
-			// inadvertently make metadata fail.
-			if hdr.Size > importMetadataMaxBytes {
-				return nil, fmt.Errorf("pad-export.json exceeds %d-byte cap (declared %d)", importMetadataMaxBytes, hdr.Size)
+			// workspaces (items + version history). Use the shared
+			// metadata cap so export and import enforce the same
+			// ceiling (TASK-4839).
+			metaLimit := s.effectiveExportMetadataMaxBytes()
+			if hdr.Size > metaLimit {
+				return nil, bundleTooLargeError(fmt.Sprintf(
+					"Workspace export metadata exceeds this server's %d-byte limit (pad-export.json is %d bytes); raise PAD_EXPORT_METADATA_MAX_BYTES on this server to import it.",
+					metaLimit, hdr.Size))
 			}
-			buf, err := readEntry(tr, hdr.Size)
+			er := &readErrRecorder{r: tr}
+			export, err := decodeExportStream(er, repair)
 			if err != nil {
-				return nil, fmt.Errorf("read pad-export.json: %w", err)
-			}
-			// The bundle path parses pad-export.json HERE rather than
-			// through decodeJSON, so it inherits none of that helper's
-			// checks — including BUG-2803's NUL refusal. A gzip import is
-			// the same door as the JSON one, reached by a different
-			// Content-Type, so it gets the same answer rather than a 500
-			// from Postgres further down.
-			buf = repair.Apply(buf)
-			found := scanRequestBody(buf, foldMembers)
-			if found.nul {
-				return nil, &importStatusError{
-					status: http.StatusBadRequest, code: "bad_bundle",
-					message: "Bundle pad-export.json could not be decoded: " + errJSONBodyNUL.Error() +
-						nulRepairRemedy(repair),
+				if er.err != nil {
+					return nil, fmt.Errorf("read pad-export.json: %w", er.err)
 				}
-			}
-			// The same door as the JSON import, so the same refusal
-			// (BUG-2812). An export never repeats a member: json.Marshal
-			// cannot emit one.
-			if found.repeat != "" {
-				return nil, &importStatusError{
-					status: http.StatusBadRequest, code: "bad_bundle",
-					message: "Bundle pad-export.json could not be decoded: " + (&models.RepeatedMemberError{Member: found.repeat}).Error(),
+				msg := "Bundle pad-export.json could not be decoded: " + err.Error()
+				if errors.Is(err, errJSONBodyNUL) {
+					msg += nulRepairRemedy(repair)
 				}
-			}
-			var export models.WorkspaceExport
-			if err := json.Unmarshal(buf, &export); err != nil {
 				return nil, &importStatusError{
 					status: http.StatusBadRequest, code: "bad_bundle",
-					message: "Bundle pad-export.json could not be decoded: " + err.Error(),
+					message: msg,
 				}
 			}
 			// The payload-shaped preconditions, from the same place the
@@ -870,7 +839,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			}
 			// BUG-3032: read the bundle's own stale-body marker while `export`
 			// is still the thing the exporter wrote.
-			staleBodies.Observe(&export)
+			staleBodies.Observe(export)
 			// TASK-3612: what the bundle carried, for the post-import count
 			// check. Read before the import, from the arrays the exporter wrote.
 			if bundled != nil {
@@ -885,7 +854,7 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 				bundled.Comments = len(export.Comments)
 			}
 			var rep store.ImportReport
-			ws, rep, err = s.store.ImportWorkspaceWithReport(&export, newName, ownerID, mint.Source, s.planLimitMintOpts(ownerID)...)
+			ws, rep, err = s.store.ImportWorkspaceWithReport(export, newName, ownerID, mint.Source, s.planLimitMintOpts(ownerID)...)
 			if report != nil {
 				*report = rep
 			}
@@ -961,9 +930,10 @@ func (s *Server) importBundle(req *http.Request, r io.Reader, newName string, mi
 			// Manifest size scales with attachment count, not blob
 			// content, so use the metadata cap rather than the
 			// per-blob one (same rationale as pad-export.json above).
-			if hdr.Size > importMetadataMaxBytes {
+			metaLimit := s.effectiveExportMetadataMaxBytes()
+			if hdr.Size > metaLimit {
 				return ws, fmt.Errorf("manifest.json exceeds %d-byte cap (declared %d)",
-					importMetadataMaxBytes, hdr.Size)
+					metaLimit, hdr.Size)
 			}
 			buf, err := readEntry(tr, hdr.Size)
 			if err != nil {

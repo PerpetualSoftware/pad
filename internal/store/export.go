@@ -244,6 +244,62 @@ func importedBodySHA256(h string) interface{} {
 	return h
 }
 
+// ExportOptions configures StreamWorkspaceExport (TASK-4839).
+type ExportOptions struct {
+	WithAttachments bool
+	IncludeVersions bool
+}
+
+// VersionIter streams item version rows from an open export snapshot.
+// Returning a non-nil error from yield stops iteration and closes the rows.
+type VersionIter func(yield func(*models.ItemVersionExport) error) error
+
+// StreamWorkspaceExport reads a workspace export inside one read-only snapshot
+// transaction and streams item versions through emit instead of collecting them
+// in memory (TASK-4839).
+//
+// Constraint: no other query may run on the transaction while the version rows
+// are open. Postgres drivers cannot interleave result sets on one connection.
+// All base sections and attachment rows are read before emit is called.
+//
+// Postgres: the version statement runs under PAD_DB_STATEMENT_TIMEOUT while
+// rows stream to disk; local writes of at most 100 MiB fit inside the 30s
+// default statement timeout.
+func (s *Store) StreamWorkspaceExport(
+	ctx context.Context,
+	slug string,
+	opts ExportOptions,
+	emit func(x *models.WorkspaceExport, atts []models.Attachment, versions VersionIter) error,
+) error {
+	tx, err := s.beginReadSnapshot(ctx)
+	if err != nil {
+		return fmt.Errorf("begin export snapshot: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	export, wsID, err := s.exportWorkspaceBaseQ(tx, slug)
+	if err != nil {
+		return err
+	}
+
+	var atts []models.Attachment
+	if opts.WithAttachments {
+		atts, err = s.workspaceAttachmentsForExportQ(tx, wsID)
+		if err != nil {
+			return fmt.Errorf("%w: %w", ErrExportManifest, err)
+		}
+	}
+
+	versions := func(yield func(*models.ItemVersionExport) error) error {
+		if !opts.IncludeVersions {
+			return nil
+		}
+		return s.exportItemVersionsCtxQ(ctx, tx, wsID, yield)
+	}
+
+	return emit(export, atts, versions)
+}
+
 // ExportWorkspaceQ is ExportWorkspace against a caller-supplied executor, so
 // every section of a bundle can be read inside one transaction (BUG-3072).
 //
@@ -268,12 +324,26 @@ func importedBodySHA256(h string) interface{} {
 // concurrency. ExportWorkspace and the two HTTP export doors pass a read-only
 // snapshot transaction instead (ExportWorkspaceSnapshot, BUG-3654).
 func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExport, error) {
+	export, wsID, err := s.exportWorkspaceBaseQ(q, slug)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.exportItemVersionsQ(q, wsID, func(ver *models.ItemVersionExport) error {
+		export.ItemVersions = append(export.ItemVersions, *ver)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return export, nil
+}
+
+func (s *Store) exportWorkspaceBaseQ(q Queryer, slug string) (*models.WorkspaceExport, string, error) {
 	ws, err := s.getWorkspaceBySlugQ(q, slug)
 	if err != nil {
-		return nil, fmt.Errorf("workspace lookup: %w", err)
+		return nil, "", fmt.Errorf("workspace lookup: %w", err)
 	}
 	if ws == nil {
-		return nil, fmt.Errorf("workspace not found: %s", slug)
+		return nil, "", fmt.Errorf("workspace not found: %s", slug)
 	}
 
 	export := &models.WorkspaceExport{
@@ -309,21 +379,21 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		FROM collections WHERE workspace_id = ?
 		ORDER BY sort_order, name`), ws.ID)
 	if err != nil {
-		return nil, fmt.Errorf("export collections: %w", err)
+		return nil, "", fmt.Errorf("export collections: %w", err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var c models.CollectionExport
 		var isDefault, isSystem bool
 		if err := rows.Scan(&c.ID, &c.Name, &c.Slug, &c.Icon, &c.Description, &c.Schema, &c.Settings, &c.Traits, &c.Prefix, &c.Source, &c.SortOrder, &isDefault, &isSystem, &c.CreatedAt, &c.UpdatedAt, &c.DeletedAt); err != nil {
-			return nil, fmt.Errorf("scan collection: %w", err)
+			return nil, "", fmt.Errorf("scan collection: %w", err)
 		}
 		c.IsDefault = isDefault
 		c.IsSystem = isSystem
 		export.Collections = append(export.Collections, c)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if exportAfterCollectionsHook != nil {
 		exportAfterCollectionsHook(slug)
@@ -350,20 +420,20 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		      AND blocked.workspace_id=i.workspace_id AND blocked.deleted_at IS NULL))
 		ORDER BY i.created_at, i.id`), ws.ID)
 	if err != nil {
-		return nil, fmt.Errorf("export items: %w", err)
+		return nil, "", fmt.Errorf("export items: %w", err)
 	}
 	defer itemRows.Close()
 	for itemRows.Next() {
 		var it models.ItemExport
 		var pinned bool
 		if err := itemRows.Scan(&it.ID, &it.CollectionID, &it.Title, &it.Slug, &it.Content, &it.ContentState, &it.Fields, &it.Tags, &pinned, &it.SortOrder, &it.ParentID, &it.CreatedBy, &it.LastModifiedBy, &it.Source, &it.ItemNumber, &it.CreatedAt, &it.UpdatedAt, &it.DeletedAt); err != nil {
-			return nil, fmt.Errorf("scan item: %w", err)
+			return nil, "", fmt.Errorf("scan item: %w", err)
 		}
 		it.Pinned = pinned
 		export.Items = append(export.Items, it)
 	}
 	if err := itemRows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Only gate-referenced deleted blockers join the item rows above, without
@@ -384,21 +454,21 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
 		ORDER BY sa.item_id, sa.op_log_id, sa.id`), ws.ID)
 	if err != nil {
-		return nil, fmt.Errorf("export set-aside edits: %w", err)
+		return nil, "", fmt.Errorf("export set-aside edits: %w", err)
 	}
 	defer setAsideRows.Close()
 	for setAsideRows.Next() {
 		var itemID string
 		var r models.YjsSetAsideExport
 		if err := setAsideRows.Scan(&itemID, &r.OpLogID, &r.UpdateData, &r.SchemaVersion, &r.CreatedAt, &r.SetAsideAt); err != nil {
-			return nil, fmt.Errorf("scan set-aside edit: %w", err)
+			return nil, "", fmt.Errorf("scan set-aside edit: %w", err)
 		}
 		if i, ok := itemIndex[itemID]; ok {
 			export.Items[i].CollabSetAside = append(export.Items[i].CollabSetAside, r)
 		}
 	}
 	if err := setAsideRows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Built-in origins (TASK-3462), attached to their items: one join, read
@@ -409,7 +479,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		JOIN items i ON i.id = o.item_id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL`), ws.ID)
 	if err != nil {
-		return nil, fmt.Errorf("export built-in origins: %w", err)
+		return nil, "", fmt.Errorf("export built-in origins: %w", err)
 	}
 	defer originRows.Close()
 	for originRows.Next() {
@@ -417,7 +487,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		var o models.BuiltinOrigin
 		var hash, content, fields sql.NullString
 		if err := originRows.Scan(&itemID, &o.Key, &hash, &content, &fields); err != nil {
-			return nil, fmt.Errorf("scan built-in origin: %w", err)
+			return nil, "", fmt.Errorf("scan built-in origin: %w", err)
 		}
 		o.SeedHash, o.SeedContent, o.SeedFields = hash.String, content.String, fields.String
 		if i, ok := itemIndex[itemID]; ok {
@@ -425,7 +495,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		}
 	}
 	if err := originRows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Comments
@@ -439,18 +509,18 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		  AND c.deleted_at IS NULL
 		ORDER BY c.created_at`), ws.ID)
 	if err != nil {
-		return nil, fmt.Errorf("export comments: %w", err)
+		return nil, "", fmt.Errorf("export comments: %w", err)
 	}
 	defer commentRows.Close()
 	for commentRows.Next() {
 		var cm models.CommentExport
 		if err := commentRows.Scan(&cm.ID, &cm.ItemID, &cm.Author, &cm.Body, &cm.CreatedBy, &cm.Source, &cm.CreatedAt, &cm.UpdatedAt); err != nil {
-			return nil, fmt.Errorf("scan comment: %w", err)
+			return nil, "", fmt.Errorf("scan comment: %w", err)
 		}
 		export.Comments = append(export.Comments, cm)
 	}
 	if err := commentRows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Item links — exported in full, including links whose source or target item
@@ -465,27 +535,27 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		FROM item_links WHERE workspace_id = ?
 		ORDER BY created_at`), ws.ID)
 	if err != nil {
-		return nil, fmt.Errorf("export item links: %w", err)
+		return nil, "", fmt.Errorf("export item links: %w", err)
 	}
 	defer linkRows.Close()
 	for linkRows.Next() {
 		var lk models.ItemLinkExport
 		if err := linkRows.Scan(&lk.ID, &lk.SourceID, &lk.TargetID, &lk.LinkType, &lk.CreatedBy, &lk.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan item link: %w", err)
+			return nil, "", fmt.Errorf("scan item link: %w", err)
 		}
 		export.ItemLinks = append(export.ItemLinks, lk)
 	}
 	if err := linkRows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Alarm delivery state travels with its commitment.
 	if export.Schedules, err = s.exportSchedules(q, ws.ID); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	if export.ScheduleChanges, err = s.scheduleChangesQ(q, ws.ID, ""); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Time links (TASK-4353): only those whose BOTH ends are schedules of this
@@ -497,7 +567,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		inBundle[sx.ID] = true
 	}
 	if export.ScheduleLinks, export.OmittedScheduleLinks, err = s.exportScheduleLinksQ(q, ws.ID, inBundle); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if export.OmittedScheduleLinks > 0 {
 		slog.Warn("workspace export: left out schedule links with an end that is not in the bundle",
@@ -505,7 +575,7 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 	}
 
 	if export.ScheduleGates, err = s.exportScheduleGatesQ(q, ws.ID); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
 	// Verifications (TASK-3617), for the items this bundle carries, on the
@@ -519,52 +589,73 @@ func (s *Store) ExportWorkspaceQ(q Queryer, slug string) (*models.WorkspaceExpor
 		WHERE v.workspace_id = ? AND i.deleted_at IS NULL
 		ORDER BY v.created_at, v.id`), ws.ID)
 	if err != nil {
-		return nil, fmt.Errorf("export verifications: %w", err)
+		return nil, "", fmt.Errorf("export verifications: %w", err)
 	}
 	defer verRows.Close()
 	for verRows.Next() {
 		var v models.VerificationExport
 		if err := verRows.Scan(&v.ItemID, &v.CriterionID, &v.CriterionHash, &v.SpecSeq, &v.CodeRevision, &v.Verdict,
 			&v.Evidence, &v.EvidenceURL, &v.ViaItemID, &v.RunID, &v.CreatedBy, &v.AgentName, &v.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan verification: %w", err)
+			return nil, "", fmt.Errorf("scan verification: %w", err)
 		}
 		export.Verifications = append(export.Verifications, v)
 	}
 	if err := verRows.Err(); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 
-	// Item versions
-	versionRows, err := q.Query(s.q(`
+	return export, ws.ID, nil
+}
+
+func (s *Store) exportItemVersionsQ(q Queryer, wsID string, yield func(*models.ItemVersionExport) error) error {
+	return s.exportItemVersionsCtxQ(context.Background(), q, wsID, yield)
+}
+
+func (s *Store) exportItemVersionsCtxQ(ctx context.Context, q Queryer, wsID string, yield func(*models.ItemVersionExport) error) error {
+	query := s.q(`
 		SELECT v.id, v.item_id, v.content, v.change_summary, v.created_by, v.source, v.is_diff, v.created_at,
 		       v.lines_added, v.lines_removed, v.is_create, COALESCE(v.body_sha256, '')
 		FROM item_versions v
 		JOIN items i ON v.item_id = i.id
 		WHERE i.workspace_id = ? AND i.deleted_at IS NULL
-		ORDER BY v.created_at, v.version_seq`), ws.ID)
+		ORDER BY v.created_at, v.version_seq`)
+	var (
+		versionRows *sql.Rows
+		err         error
+	)
+	if cq, ok := q.(interface {
+		QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	}); ok && ctx != nil {
+		versionRows, err = cq.QueryContext(ctx, query, wsID)
+	} else {
+		versionRows, err = q.Query(query, wsID)
+	}
 	if err != nil {
-		return nil, fmt.Errorf("export item versions: %w", err)
+		return fmt.Errorf("export item versions: %w", err)
 	}
 	defer versionRows.Close()
 	for versionRows.Next() {
+		if ctx != nil {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
 		var ver models.ItemVersionExport
 		var isDiff, isCreate bool
 		var added, removed sql.NullInt64
 		if err := versionRows.Scan(&ver.ID, &ver.ItemID, &ver.Content, &ver.ChangeSummary, &ver.CreatedBy, &ver.Source, &isDiff, &ver.CreatedAt,
 			&added, &removed, &isCreate, &ver.BodySHA256); err != nil {
-			return nil, fmt.Errorf("scan item version: %w", err)
+			return fmt.Errorf("scan item version: %w", err)
 		}
 		ver.IsDiff = isDiff
 		ver.IsCreate = isCreate
 		ver.LinesAdded = nullIntPtr(added)
 		ver.LinesRemoved = nullIntPtr(removed)
-		export.ItemVersions = append(export.ItemVersions, ver)
+		if err := yield(&ver); err != nil {
+			return err
+		}
 	}
-	if err := versionRows.Err(); err != nil {
-		return nil, err
-	}
-
-	return export, nil
+	return versionRows.Err()
 }
 
 // resolveImportParent maps an exported parent_id onto the id its item received

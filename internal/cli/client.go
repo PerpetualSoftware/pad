@@ -68,6 +68,7 @@ type serverCapabilityFlags struct {
 	BuiltinUpdate              bool `json:"builtin_update"`
 	ItemPatch                  bool `json:"item_patch"`
 	IdempotencyKeys            bool `json:"idempotency_keys"`
+	ExportIncludeVersions      bool `json:"export_include_versions"`
 }
 
 func NewClient(host string, port int) *Client {
@@ -1279,6 +1280,15 @@ func (c *Client) BuiltinUpdateSupport() (supported, definitive bool) {
 func (c *Client) ServerSupportsItemPatch() bool {
 	caps, _ := c.serverCapabilities()
 	return caps.ItemPatch
+}
+
+// ServerSupportsExportWithoutVersions reports whether this server honours
+// include_versions=false on GET /workspaces/{ws}/export (TASK-4839). Both a
+// definitive false and an indeterminate probe return false so --no-versions
+// refuses instead of silently exporting version history against an older server.
+func (c *Client) ServerSupportsExportWithoutVersions() bool {
+	caps, definitive := c.serverCapabilities()
+	return definitive && caps.ExportIncludeVersions
 }
 
 // PatchResult is the answer to a patch write (PLAN-3578).
