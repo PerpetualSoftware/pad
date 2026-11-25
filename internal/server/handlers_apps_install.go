@@ -439,9 +439,20 @@ func (s *Server) buildAppPreviewQ(q store.Queryer, r *http.Request, workspaceID 
 			e.path = fmt.Sprintf("companion_pack.collections[%d].schema", i)
 			return nil, e
 		}
-		// The rule collection writes follow (TASK-3539), checked on the NEW
-		// manifest here rather than in appmanifest.Parse, which also re-reads
-		// an installed app's stored manifest.
+		// Hold the companion schema to the same rules as the collection
+		// handlers, checked on the new manifest here rather than in
+		// appmanifest.Parse, which also re-reads an installed app's stored
+		// manifest.
+		if err := models.ValidateAbandonedOptions(c.Parsed); err != nil {
+			e := installErr(http.StatusUnprocessableEntity, "invalid_manifest", "collection %q: %v", c.Key, err)
+			e.path = fmt.Sprintf("companion_pack.collections[%d].schema", i)
+			return nil, e
+		}
+		if err := models.ValidateAwaitsHumanOptions(c.Parsed); err != nil {
+			e := installErr(http.StatusUnprocessableEntity, "invalid_manifest", "collection %q: %v", c.Key, err)
+			e.path = fmt.Sprintf("companion_pack.collections[%d].schema", i)
+			return nil, e
+		}
 		if err := models.ValidateSchemaKeysAndOptions(c.Parsed); err != nil {
 			e := installErr(http.StatusUnprocessableEntity, "invalid_manifest", "collection %q: %v", c.Key, err)
 			e.path = fmt.Sprintf("companion_pack.collections[%d].schema", i)

@@ -261,6 +261,34 @@ func TestAppInstallPreview_Refusals(t *testing.T) {
 				"schema": map[string]any{"fields": []any{map[string]any{"key": "status", "label": "Status", "type": "select", "options": []any{"open", "open"}}}}}}
 			e.publish(t, m)
 		}, 422, "invalid_manifest"},
+		"companion schema abandons a non-terminal option": {func(t *testing.T, e *appsEnv) {
+			m := e.manifest(t)
+			pack := m["companion_pack"].(map[string]any)
+			pack["collections"] = []any{map[string]any{"key": "tickets", "slug": "portal-tickets", "name": "Portal tickets",
+				"schema": map[string]any{"fields": []any{map[string]any{
+					"key":               "status",
+					"label":             "Status",
+					"type":              "select",
+					"options":           []any{"open", "done", "dropped"},
+					"terminal_options":  []any{"done"},
+					"abandoned_options": []any{"dropped"},
+				}}}}}
+			e.publish(t, m)
+		}, 422, "invalid_manifest"},
+		"companion schema awaits a person on a terminal option": {func(t *testing.T, e *appsEnv) {
+			m := e.manifest(t)
+			pack := m["companion_pack"].(map[string]any)
+			pack["collections"] = []any{map[string]any{"key": "tickets", "slug": "portal-tickets", "name": "Portal tickets",
+				"schema": map[string]any{"fields": []any{map[string]any{
+					"key":                  "status",
+					"label":                "Status",
+					"type":                 "select",
+					"options":              []any{"open", "review", "done"},
+					"terminal_options":     []any{"done"},
+					"awaits_human_options": []any{"done"},
+				}}}}}
+			e.publish(t, m)
+		}, 422, "invalid_manifest"},
 		"companion schema repeats a field key": {func(t *testing.T, e *appsEnv) {
 			m := e.manifest(t)
 			pack := m["companion_pack"].(map[string]any)
