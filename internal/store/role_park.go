@@ -358,6 +358,64 @@ func (s *Store) respaceRoleLane(tx *sql.Tx, workspaceID, roleID string) ([]roleL
 	return lane, nil
 }
 
+// nextRoleLaneArrivalSortOrderTx computes the role_sort_order for an item
+// arriving in roleIDOrSlug's lane: max(lane max role_sort_order, P if mode
+// line else 0) + 1024. If that value would pass 2^30, the lane is respaced
+// first (which also remaps P).
+// Caller must already hold the workspace seq lock on tx.
+func (s *Store) nextRoleLaneArrivalSortOrderTx(tx *sql.Tx, workspaceID, roleIDOrSlug string) (int, error) {
+	var resolvedRoleID, parkMode string
+	var parkSortOrder sql.NullInt64
+	err := tx.QueryRow(s.q(`
+		SELECT id, park_mode, park_sort_order
+		FROM agent_roles
+		WHERE workspace_id = ? AND (id = ? OR slug = ?)`+s.dialect.ForUpdate()),
+		workspaceID, roleIDOrSlug, roleIDOrSlug,
+	).Scan(&resolvedRoleID, &parkMode, &parkSortOrder)
+	if err == sql.ErrNoRows {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("role arrival lock role: %w", err)
+	}
+
+	nowStr := now()
+	lane, err := s.loadRoleLaneQ(tx, workspaceID, resolvedRoleID, nowStr)
+	if err != nil {
+		return 0, err
+	}
+
+	calcNext := func(entries []roleLaneEntry, mode string, p sql.NullInt64) int64 {
+		base := int64(0)
+		for _, e := range entries {
+			if int64(e.item.RoleSortOrder) > base {
+				base = int64(e.item.RoleSortOrder)
+			}
+		}
+		if mode == models.ParkModeLine && p.Valid && p.Int64 > base {
+			base = p.Int64
+		}
+		return base + roleSortStep
+	}
+
+	cand := calcNext(lane, parkMode, parkSortOrder)
+	if cand > roleSortRespaceLimit {
+		lane, err = s.respaceRoleLane(tx, workspaceID, resolvedRoleID)
+		if err != nil {
+			return 0, err
+		}
+		if err := tx.QueryRow(s.q(`
+			SELECT park_mode, park_sort_order
+			FROM agent_roles
+			WHERE id = ? AND workspace_id = ?
+		`), resolvedRoleID, workspaceID).Scan(&parkMode, &parkSortOrder); err != nil {
+			return 0, fmt.Errorf("role arrival reload park after respace: %w", err)
+		}
+		cand = calcNext(lane, parkMode, parkSortOrder)
+	}
+	return int(cand), nil
+}
+
 // SetRolePark places or moves the park line for a role lane.
 // Lock order: workspace seq lock -> agent_roles row (FOR UPDATE on Postgres) -> items.
 func (s *Store) SetRolePark(workspaceID, roleIDOrSlug string, spec ParkSpec, expectedSeq *int, userID string) (*models.RolePark, error) {
