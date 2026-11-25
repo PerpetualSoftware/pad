@@ -166,7 +166,12 @@ func (s *Store) GetItemLease(itemID string) (*models.ItemLease, error) {
 // id. Expired leases are filtered in SQL so the map carries only what a
 // list rendering should decorate.
 func (s *Store) ListItemLeases(workspaceID string) (map[string]models.ItemLease, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.ListItemLeasesQ(s.db, workspaceID)
+}
+
+// ListItemLeasesQ is ListItemLeases parameterized over its executor (see Queryer).
+func (s *Store) ListItemLeasesQ(q Queryer, workspaceID string) (map[string]models.ItemLease, error) {
+	rows, err := q.Query(s.q(`
 		SELECT id, lease_holder, lease_worker_id, lease_acquired_at, lease_expires_at
 		FROM items
 		WHERE workspace_id = ? AND lease_holder IS NOT NULL AND lease_expires_at > ?

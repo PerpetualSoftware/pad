@@ -471,6 +471,32 @@ func (s *Store) GetWorkspaceMemberQ(q Queryer, workspaceID, userID string) (*mod
 	return &m, nil
 }
 
+// ListUserWorkspaceMembershipsMapQ loads every workspace_members row for userID
+// keyed by workspace_id in a single query.
+func (s *Store) ListUserWorkspaceMembershipsMapQ(q Queryer, userID string) (map[string]models.WorkspaceMember, error) {
+	rows, err := q.Query(s.q(`
+		SELECT workspace_id, user_id, role, collection_access, created_at
+		FROM workspace_members
+		WHERE user_id = ?
+	`), userID)
+	if err != nil {
+		return nil, fmt.Errorf("list user workspace memberships: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]models.WorkspaceMember)
+	for rows.Next() {
+		var m models.WorkspaceMember
+		var createdAt string
+		if err := rows.Scan(&m.WorkspaceID, &m.UserID, &m.Role, &m.CollectionAccess, &createdAt); err != nil {
+			return nil, err
+		}
+		m.CreatedAt = parseTime(createdAt)
+		out[m.WorkspaceID] = m
+	}
+	return out, rows.Err()
+}
+
 // ListWorkspaceMembers returns all members of a workspace, enriched with
 // user name and email from a join.
 func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error) {
