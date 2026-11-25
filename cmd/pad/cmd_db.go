@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"log/slog"
 	"net/url"
 	"os"
@@ -64,12 +65,25 @@ func resolveSQLiteDBPath() (string, error) {
 // pad.db/-wal/-shm trio, VACUUM INTO produces a single fully-checkpointed file
 // and is safe to run while the server is actively writing: SQLite reads a
 // consistent snapshot through the engine instead of us copying live pages out
-// from under an in-flight WAL checkpoint.
+// from under an in-flight WAL checkpoint. The copy is staged inside a private
+// temporary directory next to the destination, restricted to mode 0600 and
+// synced before being published without overwriting an existing file.
 func backupSQLite(srcPath, outPath string) error {
 	// VACUUM INTO refuses to write to an existing file; surface a clear error
 	// rather than SQLite's terse "output file already exists".
 	if _, err := os.Stat(outPath); err == nil {
 		return fmt.Errorf("output file already exists: %s (remove it or choose another -o path)", outPath)
+	}
+
+	resolvedOut, err := resolveDBFilePath(outPath)
+	if err != nil {
+		return fmt.Errorf("resolve output path: %w", err)
+	}
+	// Resolve to an absolute path so the target doesn't depend on the SQLite
+	// engine's notion of the current directory.
+	absOut, err := filepath.Abs(resolvedOut)
+	if err != nil {
+		return fmt.Errorf("resolve output path: %w", err)
 	}
 
 	// busy_timeout lets the read wait out a transient write lock instead of
@@ -82,15 +96,37 @@ func backupSQLite(srcPath, outPath string) error {
 	}
 	defer db.Close()
 
-	// Resolve to an absolute path so the target doesn't depend on the SQLite
-	// engine's notion of the current directory.
-	absOut, err := filepath.Abs(outPath)
+	stageDir, err := os.MkdirTemp(filepath.Dir(absOut), ".pad-backup-*")
 	if err != nil {
-		return fmt.Errorf("resolve output path: %w", err)
+		return fmt.Errorf("stage SQLite backup: %w", err)
+	}
+	defer os.RemoveAll(stageDir)
+	stagePath := filepath.Join(stageDir, "backup.db")
+
+	if _, err := db.Exec("VACUUM INTO ?", stagePath); err != nil {
+		return fmt.Errorf("vacuum into %s: %w", outPath, err)
 	}
 
-	if _, err := db.Exec("VACUUM INTO ?", absOut); err != nil {
-		return fmt.Errorf("vacuum into %s: %w", outPath, err)
+	file, err := os.OpenFile(stagePath, os.O_RDWR, 0)
+	if err != nil {
+		return fmt.Errorf("open staged backup: %w", err)
+	}
+	if err := errors.Join(file.Chmod(0o600), file.Sync(), file.Close()); err != nil {
+		return fmt.Errorf("prepare staged backup: %w", err)
+	}
+
+	if err := os.Link(stagePath, absOut); err != nil {
+		if errors.Is(err, fs.ErrExist) {
+			return fmt.Errorf("output file already exists: %s (remove it or choose another -o path)", outPath)
+		}
+		if _, statErr := os.Lstat(absOut); statErr == nil {
+			return fmt.Errorf("output file already exists: %s (remove it or choose another -o path)", outPath)
+		} else if !errors.Is(statErr, fs.ErrNotExist) {
+			return fmt.Errorf("publish SQLite backup: %w", statErr)
+		}
+		if renameErr := os.Rename(stagePath, absOut); renameErr != nil {
+			return fmt.Errorf("publish SQLite backup: %w", renameErr)
+		}
 	}
 	return nil
 }
@@ -136,15 +172,17 @@ func backupPostgres(dbURL, outPath string) (string, error) {
 	if err := dumpPostgres(dbURL, stagePath); err != nil {
 		return "", err
 	}
+	file, err := os.OpenFile(stagePath, os.O_RDWR, 0)
+	if err != nil {
+		return "", fmt.Errorf("open staged backup: %w", err)
+	}
 	if info != nil {
-		file, err := os.OpenFile(stagePath, os.O_RDWR, 0)
-		if err != nil {
-			return "", fmt.Errorf("open staged backup: %w", err)
-		}
 		err = errors.Join(preserveDBFileOwnership(file, info), file.Chmod(info.Mode().Perm()), file.Sync(), file.Close())
-		if err != nil {
-			return "", fmt.Errorf("prepare staged backup: %w", err)
-		}
+	} else {
+		err = errors.Join(file.Chmod(0o600), file.Sync(), file.Close())
+	}
+	if err != nil {
+		return "", fmt.Errorf("prepare staged backup: %w", err)
 	}
 	if err := os.Rename(stagePath, outPath); err != nil {
 		return "", fmt.Errorf("publish PostgreSQL backup: %w", err)
