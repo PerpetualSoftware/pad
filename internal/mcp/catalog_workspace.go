@@ -141,45 +141,19 @@ func actionWorkspaceAuditLog(ctx context.Context, input map[string]any, env Acti
 	return env.Dispatch(ctx, []string{"workspace", "audit-log"}, input)
 }
 
-const padWorkspaceToolDescription = `Workspace operations — discovery, membership, storage, audit log, and lifecycle.
+const padWorkspaceToolDescription = `Workspace operations — discovery, membership, storage, audit log, lifecycle.
 
 Actions:
-  list       — List workspaces visible to the current user. No params; admins see all,
-               regular users see their memberships.
-  members    — List members + pending invitations for a workspace.
-               Required: workspace.
-  invite     — Invite a user to a workspace.
-               Required: workspace, email.
-               Optional: role (owner | editor | viewer; default editor).
-  storage    — Workspace storage usage breakdown (attachments, items, total bytes).
-               Required: workspace.
-  audit-log  — Workspace audit log. ADMIN ONLY — non-admin users get an auth error.
-               Optional: action_filter, actor, days, limit.
-               Entries span all workspaces.
-  create     — Create a new workspace.
-               Required: name.
-               Optional: slug (derived from name when omitted), template (e.g.
-               "startup" / "scrum" / "blank").
-               When called over an OAuth-bound MCP session whose grant has
-               may_create_workspaces=true, the new workspace is auto-added to that connection's allow-list, usable at once
-               with no re-auth.
-               When that grant has may_create_workspaces=FALSE the call is
-               REFUSED with a 403 and no workspace is created (IDEA-2756);
-               retrying will not help. Only the USER can lift it: re-authorize, or enable the flag
-               on the existing connection at /settings/connected-apps.
-  claim      — Redeem a 6-digit claim code to add a workspace to the calling
-               OAuth connection's allow-list.
-               Required: workspace, code.
-               Generate the code in the workspace's web UI ("Connect project"
-               modal). Valid for 5–10 minutes (sliding window). Errors: 401
-               invalid_code, 404 not_found (workspace doesn't exist or you're
-               not a member), 412 connection_not_persisted (pre-Phase-C grant
-               — re-authorize).
-  deleted    — List the caller's soft-deleted workspaces still inside the
-               30-day restore window, with days remaining before each is
-               permanently purged. No params. Read-only.
-  restore    — Un-soft-delete a workspace by slug, provided it is still inside
-               the restore window. Owner-only. Mutating but non-destructive.
-               Required: slug.
-  rename     — Change a workspace slug in place. Owner-only. Previous links keep working.
-               Required: workspace (current slug), new_slug. Optional: name.`
+  list       — List visible workspaces (admins see all). No params.
+  members    — List members and pending invitations. Required: workspace.
+  invite     — Invite user. Required: workspace, email. Optional: role (owner|editor|viewer; default editor).
+  storage    — Storage usage breakdown. Required: workspace.
+  audit-log  — Cross-workspace audit log (ADMIN ONLY). Optional: action_filter, actor, days, limit.
+  create     — Create workspace. Required: name. Optional: slug, template (startup/scrum/blank).
+               OAuth may_create_workspaces=true auto-adds it to the allow-list. False refuses 403 and
+               retrying will not help: only the USER can lift it (re-authorize, or /settings/connected-apps).
+  claim      — Redeem 6-digit claim code (web UI "Connect project", 5–10m TTL) into OAuth allow-list.
+               Required: workspace, code. Errors: 401 invalid_code, 404 not_found, 412 connection_not_persisted.
+  deleted    — List soft-deleted workspaces in 30-day restore window. No params. Read-only.
+  restore    — Un-soft-delete workspace (owner-only). Required: slug.
+  rename     — Rename workspace slug in place (owner-only; old links keep working). Required: workspace, new_slug. Optional: name.`

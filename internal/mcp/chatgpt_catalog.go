@@ -384,6 +384,8 @@ var ChatGPTExclusions = map[ChatGPTSource]string{
 	{"pad_role", "update"}:               "workspace configuration; web app or onboarding",
 	{"pad_role", "delete"}:               "workspace configuration; web app or onboarding",
 	{"pad_role", "list"}:                 "agent-role configuration, not used in chat",
+	{"pad_role", "park"}:                 "agent-role lane control; web app or coding-agent MCP",
+	{"pad_role", "unpark"}:               "agent-role lane control; web app or coding-agent MCP",
 	{"pad_project", "changelog"}:         "deferred to v2 (long output)",
 	{"pad_project", "standup"}:           "deferred to v2 (long output)",
 	{"pad_project", "report"}:            "deferred to v2 (long output)",

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"text/tabwriter"
 
 	"github.com/spf13/cobra"
@@ -20,7 +21,7 @@ func roleCmd() *cobra.Command {
 		Long:  "Agent roles define capability specializations (e.g. Planner, Implementer, Reviewer) for human-agent work assignment.",
 		RunE:  unknownSubcommandRun,
 	}
-	cmd.AddCommand(roleListCmd(), roleCreateCmd(), roleUpdateCmd(), roleDeleteCmd())
+	cmd.AddCommand(roleListCmd(), roleCreateCmd(), roleUpdateCmd(), roleDeleteCmd(), roleParkCmd(), roleUnparkCmd())
 	return cmd
 }
 
@@ -224,6 +225,113 @@ func roleDeleteCmd() *cobra.Command {
 			return nil
 		},
 	}
+}
+
+func roleParkCmd() *cobra.Command {
+	var (
+		beforeFlag      string
+		afterFlag       string
+		expectedParkSeq int
+	)
+	cmd := &cobra.Command{
+		Use:   "park <slug>",
+		Short: "Place or move a role lane's park line",
+		Long: `Place or move the park line on an agent role's queue.
+
+With no anchor flags, parks the entire queue at the top. Pass --before <ref>
+or --after <ref> (mutually exclusive) to park from a specific queue item onward.
+Pass --expected-park-seq N for optimistic concurrency.`,
+		Example: `  pad role park implementer
+  pad role park implementer --before TASK-12
+  pad role park implementer --after TASK-10 --expected-park-seq 2`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			// An anchor flag given with an empty value is refused rather than
+			// falling through to a park at the top, the broadest park there is.
+			beforeSet := cmd.Flags().Changed("before")
+			afterSet := cmd.Flags().Changed("after")
+			if beforeSet && strings.TrimSpace(beforeFlag) == "" {
+				return fmt.Errorf("--before needs an item ref")
+			}
+			if afterSet && strings.TrimSpace(afterFlag) == "" {
+				return fmt.Errorf("--after needs an item ref")
+			}
+			if beforeSet && afterSet {
+				return fmt.Errorf("--before and --after are mutually exclusive")
+			}
+
+			var req models.RoleParkSetRequest
+			switch {
+			case beforeSet:
+				req.Before = &beforeFlag
+			case afterSet:
+				req.After = &afterFlag
+			default:
+				top := "top"
+				req.At = &top
+			}
+			if cmd.Flags().Changed("expected-park-seq") {
+				seq := expectedParkSeq
+				req.ExpectedParkSeq = &seq
+			}
+
+			client, _ := getClient()
+			ws := getWorkspace()
+			res, raw, err := client.SetRolePark(ws, args[0], req)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(raw)
+			}
+
+			firstRef := "none"
+			if res.Park.FirstParkedRef != nil && *res.Park.FirstParkedRef != "" {
+				firstRef = *res.Park.FirstParkedRef
+			}
+			setBy := "someone"
+			if res.Park.SetBy != nil && *res.Park.SetBy != "" {
+				setBy = *res.Park.SetBy
+			}
+			fmt.Printf("Parked role %s (mode: %s, first parked: %s, set by %s)\n", args[0], res.Park.Mode, firstRef, setBy)
+			return nil
+		},
+	}
+	cmd.Flags().StringVar(&beforeFlag, "before", "", "place the park line immediately before this queue item ref")
+	cmd.Flags().StringVar(&afterFlag, "after", "", "place the park line immediately after this queue item ref")
+	cmd.Flags().IntVar(&expectedParkSeq, "expected-park-seq", 0, "optimistic-concurrency token from prior park or queue read")
+	return cmd
+}
+
+func roleUnparkCmd() *cobra.Command {
+	var expectedParkSeq int
+	cmd := &cobra.Command{
+		Use:     "unpark <slug>",
+		Short:   "Clear a role lane's park line",
+		Example: `  pad role unpark implementer`,
+		Args:    cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			var seqPtr *int
+			if cmd.Flags().Changed("expected-park-seq") {
+				seq := expectedParkSeq
+				seqPtr = &seq
+			}
+
+			client, _ := getClient()
+			ws := getWorkspace()
+			res, raw, err := client.ClearRolePark(ws, args[0], seqPtr)
+			if err != nil {
+				return err
+			}
+			if formatFlag == "json" {
+				return cli.PrintJSON(raw)
+			}
+			fmt.Printf("Unparked role %s (park_seq: %d)\n", args[0], res.ParkSeq)
+			return nil
+		},
+	}
+	cmd.Flags().IntVar(&expectedParkSeq, "expected-park-seq", 0, "optimistic-concurrency token from prior park or queue read")
+	return cmd
 }
 
 // --- webhooks ---

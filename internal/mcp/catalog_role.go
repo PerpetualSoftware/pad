@@ -24,37 +24,52 @@ var padRoleTool = ToolDef{
 			{
 				Name:        "name",
 				Type:        "string",
-				Description: "Display name of the role (e.g. \"Implementer\"). Required for action=create. Optional for action=update — provide to rename.",
+				Description: "Display name (e.g. \"Implementer\"). Required: create; optional: update.",
 			},
 			{
 				Name:        "slug",
 				Type:        "string",
-				Description: "Role slug (e.g. \"implementer\") or UUID. Required for action=update and action=delete; identifies which role to mutate. To RENAME a role, also pass new_slug.",
+				Description: "Role slug or UUID. Required: update, delete, park, unpark. Rename via new_slug.",
 			},
 			{
 				Name:        "new_slug",
 				Type:        "string",
-				Description: "Replacement slug when renaming an existing role. Optional for action=update; ignored otherwise.",
+				Description: "New slug when renaming. Optional: update.",
 			},
 			{
 				Name:        "description",
 				Type:        "string",
-				Description: "What kind of work this role does. Optional for action=create and action=update.",
+				Description: "Role description. Optional: create, update.",
 			},
 			{
 				Name:        "icon",
 				Type:        "string",
-				Description: "Emoji icon for the role (e.g. \"🔨\"). Optional for action=create and action=update.",
+				Description: "Emoji icon. Optional: create, update.",
 			},
 			{
 				Name:        "tools",
 				Type:        "string",
-				Description: "Comma-separated list of tools/integrations the role uses. Optional for action=create and action=update.",
+				Description: "Comma-separated tools. Optional: create, update.",
 			},
 			{
 				Name:        "sort_order",
 				Type:        "number",
-				Description: "Display sort order (lower = appears first). Optional for action=update.",
+				Description: "Sort order (lower first). Optional: update.",
+			},
+			{
+				Name:        "before",
+				Type:        "string",
+				Description: "Queue item ref/ID to park before (park only; excludes after; omit both for top).",
+			},
+			{
+				Name:        "after",
+				Type:        "string",
+				Description: "Queue item ref/ID to park after (park only; excludes before).",
+			},
+			{
+				Name:        "expected_park_seq",
+				Type:        "number",
+				Description: "Optimistic-concurrency token; stale returns park_conflict. Optional: park, unpark.",
 			},
 		},
 	},
@@ -63,24 +78,21 @@ var padRoleTool = ToolDef{
 		"create": passThrough([]string{"role", "create"}),
 		"update": passThrough([]string{"role", "update"}),
 		"delete": passThrough([]string{"role", "delete"}),
+		"park":   passThrough([]string{"role", "park"}),
+		"unpark": passThrough([]string{"role", "unpark"}),
 	},
 }
 
-const padRoleToolDescription = `Agent role management — what kind of thinking each item requires.
+const padRoleToolDescription = `Agent role management.
 
 Actions:
-  list    — List roles in the workspace.
-            Required: workspace.
-  create  — Create a new role.
-            Required: workspace, name.
-            Optional: description, icon, tools.
-  update  — Update an existing role's name, slug, description, icon, tools,
-            or sort_order. Only fields you explicitly set are mutated.
-            Required: workspace, slug.
-            Optional: name, description, icon, tools, sort_order, new_slug
-                      (the rename target; pass slug for lookup AND
-                      new_slug for the replacement value).
-  delete  — Delete a role by slug.
-            Required: workspace, slug.
+  list    — List workspace roles. Required: workspace.
+  create  — Create a role. Required: workspace, name. Optional: description, icon, tools.
+  update  — Update supplied fields only. Required: workspace, slug.
+            Optional: name, description, icon, tools, sort_order, new_slug.
+  delete  — Delete a role. Required: workspace, slug.
+  park    — Set/move park line. Required: workspace, slug.
+            Optional: before, after (mutually exclusive; omit both for top), expected_park_seq.
+  unpark  — Clear park line (idempotent). Required: workspace, slug. Optional: expected_park_seq.
 
 Assign an item a role with pad_item.action=update role=<slug>.`

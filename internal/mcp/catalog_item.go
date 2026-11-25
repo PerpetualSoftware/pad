@@ -274,6 +274,7 @@ var padItemSchemaParams = []ParamDef{
 	{Name: "holder", Type: "string", Description: "Lease holder label for action=claim/release. Optional; defaults to your agent name. Display only with a worker_id."},
 	{Name: "worker_id", Type: "string", Description: "Your lease worker id, as a claim answers it. For: claim, release; pass it to resume your leases from a new connection."},
 	{Name: "ttl", Type: "string", Description: "Lease duration for action=claim, as a Go duration (e.g. \"15m\", \"1h\"): default 15m, max 24h, minimum 1s (fractions truncate)."},
+	{Name: "ignore_park", Type: "bool", Description: "claim: override a role park refusal (item_parked). Only pass if the user explicitly asks."},
 
 	{Name: "artifact", Type: "string", Description: "Full portable artifact (YAML frontmatter + Markdown body). Required: import (not plain content)."},
 
@@ -504,8 +505,9 @@ Actions:
   reminders — Armed/fired/acknowledged reminders; ref required. Row id is reminder_id for unremind/ack-reminder (fired only).
   unremind — Delete a simple run-once commitment by reminder_id.
   claim — Atomic execution lease. Required: ref. Optional: holder, worker_id, ttl
-    (Go duration; default 15m, max 24h). Returns worker_id. One claimer wins; loser's
-    409 names live holder/expiry: log and skip, never retry in a loop. Re-claim extends expiry.
+    (Go duration; default 15m, max 24h), ignore_park. Returns worker_id. One claimer wins;
+    409 lease_held names live holder/expiry: log and skip, never retry in a loop.
+    409 item_parked: the role is parked. Re-claim extends expiry.
   release — Release when you finish. Required: ref. Optional: holder, worker_id.
     Another holder's live lease is refused. Absent/expired leases return released:false, no error.
   star — Star. Required: ref.

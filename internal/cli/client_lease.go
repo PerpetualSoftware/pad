@@ -29,10 +29,15 @@ type leaseResponse struct {
 
 // ClaimItem acquires (or refreshes, for the live holder) the execution
 // lease on an item. holder and ttlSeconds may be zero for the server
-// defaults.
-func (c *Client) ClaimItem(wsSlug, ref, holder string, ttlSeconds int) (*models.ItemLease, error) {
+// defaults. Pass ignorePark=true as an optional fifth argument to send
+// ?ignore_park=true and override a role park refusal.
+func (c *Client) ClaimItem(wsSlug, ref, holder string, ttlSeconds int, ignorePark ...bool) (*models.ItemLease, error) {
 	var out leaseResponse
-	err := c.post("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(ref)+"/claim",
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(ref) + "/claim"
+	if len(ignorePark) > 0 && ignorePark[0] {
+		path += "?ignore_park=true"
+	}
+	err := c.post(path,
 		leaseRequest{Holder: holder, TTLSeconds: ttlSeconds}, &out)
 	if err != nil {
 		return nil, err

@@ -78,6 +78,8 @@ Agent roles organize work by the kind of thinking it requires (planning, impleme
 
 **Core behavior (keep inline — this is load-bearing):** On context load, if the bootstrap's `roles` array is non-empty and the user hasn't declared a role this conversation, ask which role they're working as (list them; offer "no role" to skip). Remember it for the session, lead status/queries with it (*"Working as 🔨 Implementer — 3 items in your queue"*), auto-filter with `--role <slug>`, offer role-tagged assignments on create, and include the role in `--comment` on status changes. If the bootstrap's `playbooks` array has `status=active` entries with an `invocation_slug`, briefly surface the callable set led by intent. Never block — if the user says "no role" or no roles exist, work normally. Parse role declarations ("as implementer", "switch to reviewer", "drop role") anywhere in the input — see the **Role management** entry under Natural Language Routing.
 
+**Park line:** At each unit boundary, an agent with a role runs `pad project ready --role <slug>`. When `park` is present and `results` is empty, report the stop message and stop. `pad item claim` refuses a parked item with `item_parked` — do not pass `--ignore-park` unless the user explicitly says so.
+
 **Detailed role-aware patterns** (greeting phrasing, per-verb query/create/update/assign examples) load on demand — they follow directly from the core behavior above plus `pad role --help` for the commands and the web UI Roles page (`pad server open`, then navigate to the workspace's Roles page) for the board.
 
 ## Parse $ARGUMENTS

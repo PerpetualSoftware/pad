@@ -208,16 +208,30 @@ func colorProgressBar(pct, width int, filledColor *color.Color) string {
 
 func nextCmd() *cobra.Command {
 	var workerIDFlag string
+	var roleFlag string
 	cmd := &cobra.Command{
-		Use:     "next",
-		Short:   "Recommend the next task to work on",
-		Example: `  pad project next`,
+		Use:   "next",
+		Short: "Recommend the next task to work on",
+		Example: `  pad project next
+  pad project next --role implementer`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			if err := applyWorkerID(client, workerIDFlag); err != nil {
 				return err
 			}
 			ws := getWorkspace()
+
+			if cmd.Flags().Changed("role") {
+				role := strings.TrimSpace(roleFlag)
+				if role == "" {
+					return fmt.Errorf("--role must not be empty")
+				}
+				q, err := client.GetRoleQueue(ws, role, 50)
+				if err != nil {
+					return err
+				}
+				return renderRoleQueueReady(q, 3)
+			}
 
 			dashJSON, err := client.GetDashboard(ws)
 			if err != nil {
@@ -283,6 +297,7 @@ func nextCmd() *cobra.Command {
 			return nil
 		},
 	}
+	cmd.Flags().StringVar(&roleFlag, "role", "", "agent role slug (reads that role's queue instead of the dashboard)")
 	addWorkerIDFlag(cmd, &workerIDFlag)
 	return cmd
 }

@@ -1248,6 +1248,47 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
+	// Parked role-lane queue items are not ready and leave suggested_next
+	// through the shared store.ItemParked predicate (TASK-4853). Now items
+	// (active status or live execution lease) are never parked and stay.
+	// Filtered before the sort and cap so non-parked items fill the slots;
+	// fired reminders are prepended later and remain unfiltered.
+	if len(candidates) > 0 {
+		roles, rErr := s.store.ListAgentRoles(workspaceID)
+		if rErr != nil {
+			markDegraded("suggested_next.role_park", rErr)
+		} else {
+			parkByRole := make(map[string]*models.RolePark)
+			for i := range roles {
+				if roles[i].Park != nil {
+					parkByRole[roles[i].ID] = roles[i].Park
+				}
+			}
+			if len(parkByRole) > 0 {
+				liveLeases, lErr := s.store.ListItemLeases(workspaceID)
+				if lErr != nil {
+					markDegraded("suggested_next.role_park_leases", lErr)
+					liveLeases = nil
+				}
+				kept := candidates[:0]
+				for _, c := range candidates {
+					if c.item.AgentRoleID != nil && *c.item.AgentRoleID != "" {
+						if park := parkByRole[*c.item.AgentRoleID]; park != nil {
+							cctx := ctxMap[c.item.CollectionID]
+							doneKey := models.DoneFieldKey(cctx.schema, cctx.settings)
+							_, hasLiveLease := liveLeases[c.item.ID]
+							if !store.IsItemNow(&c.item, doneKey, hasLiveLease) && store.ItemParked(park, c.item.RoleSortOrder) {
+								continue
+							}
+						}
+					}
+					kept = append(kept, c)
+				}
+				candidates = kept
+			}
+		}
+	}
+
 	// Sort: in-progress first, then by priority rank within each
 	// bucket, then plan-children before orphans so the existing
 	// "active-plan continuation" suggestion stays at the top when

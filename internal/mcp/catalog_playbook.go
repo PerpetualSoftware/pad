@@ -202,34 +202,13 @@ func actionPlaybookRun(ctx context.Context, input map[string]any, env ActionEnv)
 	return env.Dispatch(ctx, []string{"playbook", "run"}, rewired)
 }
 
-const padPlaybookToolDescription = `Playbooks — first-class invokable procedures (PLAN-1377).
+const padPlaybookToolDescription = `Playbooks — invokable agent procedures. Invoke by natural language or ` + "`action: run, ref: <invocation_slug>`" + `.
 
-Agent-executed workflows in the playbooks collection. Invoke by natural
-language or ` + "`action: run, ref: <invocation_slug>`" + `.
-
-Actions:
-  list  — Workspace playbook catalog. Returns metadata only (no bodies):
-          ref, title, slug, invocation_slug, trigger, scope, status,
-          has_arguments, summary. Sorted with invocation_slug-bearing playbooks first, so
-          user-invokable candidates lead.
-          Required: workspace.
-  get   — Full item for one playbook, including body content + structured
-          fields (which carry the canonical ` + "`arguments`" + ` JSON spec).
-          Required: workspace, ref.
-  run   — Parse args against the playbook's declared spec and return the
-          body + bound_args + any required-but-unbound entries (so the
-          agent can prompt the user instead of failing the call). Side-effect-free: the playbook body is markdown instructions for the
-          agent, not a shell script — the server primes the call; the
-          agent executes the steps.
-          Required: workspace, ref.
-          Optional: args (pre-parsed map), raw_args (CLI-style tokens).
-                    Pass exactly one or merge — see the per-param docs.
-          Draft gate: run refuses a playbook whose status isn't "active"
-                    (e.g. one still being drafted), returning a
-                    playbook_not_active error. Pass allow_draft: true to
-                    override and run it anyway. The status is echoed on
-                    both the run and get responses.
-  match — Pick the ACTIVE playbook (or "none") that text asks for.
-          Returns choice, confidence, probabilities, model.
-          Required: workspace, text.
-          404 = no provider; fall back to slug/trigger routing.`
+Actions (all require workspace):
+  list  — Metadata catalog (no bodies): ref, title, slug, invocation_slug, trigger, scope, status, has_arguments, summary.
+  get   — Full playbook item (body + ` + "`arguments`" + ` spec). Required: ref.
+  run   — Bind args and return body + bound_args + unbound required args. Side-effect-free (agent executes steps).
+          Required: ref. Optional: args (map), raw_args (tokens): pass one or merge (see the per-param docs);
+          allow_draft (overrides playbook_not_active for non-active playbooks).
+          Both run and get echo status.
+  match — Pick ACTIVE playbook (or "none") for text. Required: text. 404 = no provider; fall back to slug/trigger.`

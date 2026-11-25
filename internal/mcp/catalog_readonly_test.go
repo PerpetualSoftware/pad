@@ -129,6 +129,8 @@ func TestReadOnlyCatalog_ActionsMatchCmdhelp(t *testing.T) {
 		{"pad_role", "create"}: {"role", "create"},
 		{"pad_role", "update"}: {"role", "update"},
 		{"pad_role", "delete"}: {"role", "delete"},
+		{"pad_role", "park"}:   {"role", "park"},
+		{"pad_role", "unpark"}: {"role", "unpark"},
 
 		{"pad_search", "query"}: {"item", "search"},
 
@@ -335,6 +337,8 @@ func TestReadOnlyCatalog_ActionsDispatchExpectedCmdPath(t *testing.T) {
 		{"pad_role", "create"}: {"role", "create"},
 		{"pad_role", "update"}: {"role", "update"},
 		{"pad_role", "delete"}: {"role", "delete"},
+		{"pad_role", "park"}:   {"role", "park"},
+		{"pad_role", "unpark"}: {"role", "unpark"},
 
 		{"pad_search", "query"}: {"item", "search"},
 
@@ -639,8 +643,8 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			},
 			// Project
 			"project dashboard": {Summary: "dash", Flags: mkFlags("workspace")},
-			"project next":      {Summary: "next", Flags: mkFlags("workspace")},
-			"project ready":     {Summary: "ready", Flags: mkFlags("workspace")},
+			"project next":      {Summary: "next", Flags: mkFlags("workspace", "role")},
+			"project ready":     {Summary: "ready", Flags: mkFlags("workspace", "role")},
 			"project stale":     {Summary: "stale", Flags: mkFlags("workspace")},
 			"project standup": {
 				Summary: "standup",
@@ -698,6 +702,24 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 				Summary: "delete role",
 				Args:    mkArgs("slug"),
 				Flags:   mkFlags("workspace"),
+			},
+			"role park": {
+				Summary: "park role lane",
+				Args:    mkArgs("slug"),
+				Flags: func() map[string]cmdhelp.Flag {
+					f := mkFlags("workspace", "before", "after")
+					f["expected-park-seq"] = cmdhelp.Flag{Type: "int"}
+					return f
+				}(),
+			},
+			"role unpark": {
+				Summary: "unpark role lane",
+				Args:    mkArgs("slug"),
+				Flags: func() map[string]cmdhelp.Flag {
+					f := mkFlags("workspace")
+					f["expected-park-seq"] = cmdhelp.Flag{Type: "int"}
+					return f
+				}(),
 			},
 			// Search (item search)
 			"item search": {
@@ -874,7 +896,11 @@ func liveCmdhelpDoc(t *testing.T) *cmdhelp.Document {
 			"item claim": {
 				Summary: "claim an execution lease",
 				Args:    mkArgs("ref"),
-				Flags:   mkFlags("workspace", "holder", "ttl"),
+				Flags: func() map[string]cmdhelp.Flag {
+					f := mkFlags("workspace", "holder", "ttl")
+					f["ignore-park"] = cmdhelp.Flag{Type: "bool"}
+					return f
+				}(),
 			},
 			"item release": {
 				Summary: "release an execution lease",

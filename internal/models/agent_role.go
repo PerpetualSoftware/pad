@@ -60,3 +60,98 @@ type AgentRoleUpdate struct {
 	Tools       *string `json:"tools,omitempty"`
 	SortOrder   *int    `json:"sort_order,omitempty"`
 }
+
+// RoleQueueRole is the lightweight role header inside RoleQueueResponse.
+type RoleQueueRole struct {
+	Slug string `json:"slug"`
+	Name string `json:"name"`
+	Icon string `json:"icon"`
+}
+
+// RoleQueueLease is the live lease projection on a Now item in a role queue.
+type RoleQueueLease struct {
+	Holder    string    `json:"holder"`
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
+// RoleQueueNowItem is an active or leased lane item (not in the queue).
+type RoleQueueNowItem struct {
+	Ref    string          `json:"ref"`
+	Title  string          `json:"title"`
+	Status string          `json:"status"`
+	Since  time.Time       `json:"since"`
+	Lease  *RoleQueueLease `json:"lease"`
+	Live   string          `json:"live"`
+}
+
+// RoleQueueItem is one queued item in canonical role lane order.
+type RoleQueueItem struct {
+	Ref           string `json:"ref"`
+	Title         string `json:"title"`
+	Status        string `json:"status"`
+	Priority      string `json:"priority"`
+	RoleSortOrder int    `json:"role_sort_order"`
+	Blocked       bool   `json:"blocked"`
+	Ready         bool   `json:"ready"`
+	CanEdit       bool   `json:"can_edit"`
+}
+
+// RoleQueuePark describes the active park line relative to the caller's
+// visible queue. Omitted on RoleQueueResponse when the role is unparked.
+type RoleQueuePark struct {
+	Mode           string     `json:"mode"`
+	Index          *int       `json:"index"`
+	FirstParkedRef *string    `json:"first_parked_ref"`
+	SetBy          *string    `json:"set_by"`
+	SetAt          *time.Time `json:"set_at"`
+	ParkSeq        int        `json:"park_seq"`
+}
+
+// RoleQueueResponse is the response shape for
+// GET /api/v1/workspaces/{ws}/agent-roles/{role}/queue.
+type RoleQueueResponse struct {
+	Workspace   string             `json:"workspace"`
+	Role        RoleQueueRole      `json:"role"`
+	CanReorder  bool               `json:"can_reorder"`
+	CanPark     bool               `json:"can_park"`
+	Now         []RoleQueueNowItem `json:"now"`
+	Queue       []RoleQueueItem    `json:"queue"`
+	Park        *RoleQueuePark     `json:"park,omitempty"`
+	QueueTotal  int                `json:"queue_total"`
+	ParkedTotal int                `json:"parked_total"`
+	QueueMore   bool               `json:"queue_more"`
+}
+
+// RoleParkSetRequest is the request body for PUT .../agent-roles/{role}/park.
+type RoleParkSetRequest struct {
+	At              *string `json:"at,omitempty"`
+	Before          *string `json:"before,omitempty"`
+	After           *string `json:"after,omitempty"`
+	ExpectedParkSeq *int    `json:"expected_park_seq,omitempty"`
+}
+
+// RoleParkClearRequest is the optional request body for DELETE .../agent-roles/{role}/park.
+type RoleParkClearRequest struct {
+	ExpectedParkSeq *int `json:"expected_park_seq,omitempty"`
+}
+
+// RoleParkDetail is the park object returned by PUT .../agent-roles/{role}/park.
+type RoleParkDetail struct {
+	Mode           string     `json:"mode"`
+	SortOrder      *int       `json:"sort_order"`
+	FirstParkedRef *string    `json:"first_parked_ref"`
+	SetBy          *string    `json:"set_by"`
+	SetAt          *time.Time `json:"set_at"`
+	ParkSeq        int        `json:"park_seq"`
+}
+
+// RoleParkSetResponse is the response body for PUT .../agent-roles/{role}/park.
+type RoleParkSetResponse struct {
+	Park RoleParkDetail `json:"park"`
+}
+
+// RoleParkClearResponse is the response body for DELETE .../agent-roles/{role}/park.
+type RoleParkClearResponse struct {
+	Park    *RoleParkDetail `json:"park"`
+	ParkSeq int             `json:"park_seq"`
+}

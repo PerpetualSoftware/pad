@@ -259,6 +259,13 @@ const (
 	// refuses identically.
 	ErrLeaseHeld ErrorCode = "lease_held"
 
+	// Role park refusals (TASK-4853): claiming a parked queue item (409),
+	// optimistic-concurrency mismatch on expected_park_seq (409), or parking
+	// anchored on an item outside the role lane's queue (422).
+	ErrItemParked           ErrorCode = "item_parked"
+	ErrParkConflict         ErrorCode = "park_conflict"
+	ErrParkAnchorNotInQueue ErrorCode = "park_anchor_not_in_queue"
+
 	// Patch refusals (PLAN-3578): nothing was written. Anchor codes mean the
 	// quoted text no longer occurs exactly once; room_open means the item is
 	// open in an editor, which a patch does not support yet.
@@ -581,6 +588,10 @@ var allowedStructuredErrorCodes = map[string]struct{}{
 	// BUG-3496: a claim on an item someone else leases. details.holder and
 	// details.expires_at say who and until when.
 	"lease_held": {},
+	// TASK-4853: role park refusals.
+	"item_parked":              {},
+	"park_conflict":            {},
+	"park_anchor_not_in_queue": {},
 	// PLAN-3578: patch refusals.
 	"patch_anchor_missing":     {},
 	"patch_anchor_ambiguous":   {},
@@ -1173,6 +1184,12 @@ func classifyHTTPStatusKind(
 				// The lease stands until it expires or its holder releases it.
 				hint = LeaseHeldHint
 			}
+			if upstream.Code == string(ErrItemParked) {
+				hint = ItemParkedHint
+			}
+			if upstream.Code == string(ErrParkConflict) {
+				hint = ParkConflictHint
+			}
 			if upstream.Code == string(ErrPatchAnchorMissing) || upstream.Code == string(ErrPatchAnchorAmbiguous) {
 				hint = PatchAnchorHint
 			}
@@ -1214,6 +1231,8 @@ func classifyHTTPStatusKind(
 		// the request; it has its own code and remedy.
 		if upstream := extractUpstreamErrorEnvelope(bodyText); upstream.Code == string(ErrIdempotencyKeyReused) {
 			return NewErrorResult(ErrorPayload{Code: ErrIdempotencyKeyReused, Message: bodyMessage, Hint: IdempotencyKeyReusedHint, Details: upstream.Details})
+		} else if upstream.Code == string(ErrParkAnchorNotInQueue) {
+			return NewErrorResult(ErrorPayload{Code: ErrParkAnchorNotInQueue, Message: bodyMessage, Hint: ParkAnchorNotInQueueHint, Details: upstream.Details})
 		}
 		hint := validationHintFor(bodyMessage, route)
 		if h := moveNeedsValueHintFor(extractUpstreamErrorEnvelope(bodyText), bodyMessage); h != "" {
@@ -1608,6 +1627,14 @@ const CommentDeletedHint = "The comment was deleted and is kept only as a placeh
 // it on stdio; keep the two identical.
 const LeaseHeldHint = "Another holder (details.holder) has claimed this item until details.expires_at. " +
 	"Pick other work, or wait until the lease expires; claiming again before then is refused the same way."
+
+// Role park refusal hints (TASK-4853). Duplicated in internal/cli, whose
+// marker carries them on stdio; keep identical across both transports.
+const (
+	ItemParkedHint           = "This role lane is parked (details.role, details.first_parked_ref, details.set_by). Finish your Now work and stop; do not pass ignore_park unless the user explicitly asks."
+	ParkConflictHint         = "The role's park state changed (details.actual_park_seq). Re-read the queue or role and retry with the current expected_park_seq."
+	ParkAnchorNotInQueueHint = "The anchor item is not in this role lane's queue (wrong role, terminal, Now item, or reference collection). Choose an open queue item in this role's lane, or park at top."
+)
 
 // ContentPendingFlushHint is the recovery guidance for ErrContentPendingFlush,
 // on both transports. Duplicated in internal/cli (ContentPendingFlushHint) for

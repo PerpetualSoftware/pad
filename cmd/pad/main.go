@@ -139,6 +139,11 @@ func writeRootStructuredError(w io.Writer, err error) {
 		cli.WriteLeaseHeldError(w, apiErr)
 		return
 	}
+	// TASK-4853: role park refusals (item_parked, park_conflict, park_anchor_not_in_queue).
+	if apiErr, ok := cli.IsRoleParkError(err); ok {
+		cli.WriteRoleParkError(w, apiErr)
+		return
+	}
 	// PLAN-3578: a patch whose anchor no longer matches, or an open item.
 	if apiErr, ok := cli.IsPatchRefusal(err); ok {
 		cli.WritePatchRefusalError(w, apiErr)
