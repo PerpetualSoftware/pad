@@ -117,6 +117,11 @@ func (s *Server) handleGetRoleQueue(w http.ResponseWriter, r *http.Request) {
 		if !s.isItemVisibleToGuest(r, workspaceID, &entry.Item, fullCollIDs, grantedItemIDs) {
 			continue
 		}
+		// The lane is items in collections that track work; an active item in
+		// any other collection is not this role's Now work.
+		if !entry.TracksWork {
+			continue
+		}
 		if entry.IsNow {
 			nowEntries = append(nowEntries, entry)
 		} else if entry.InQueue {

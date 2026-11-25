@@ -29,7 +29,7 @@ Reads: `relation_targets` beside `fields`, field key → `{id, ref, title}`. `fi
 
 - `pad_workspace` — Workspaces: list / members / invite / storage / audit-log / create / claim / deleted / restore / rename.
 - `pad_collection` — Collections: list / create / update / delete / list-archived / restore. `delete` archives: the collection and its items leave every view, and `restore` brings them back. An `update` that removes a field or a select option still in use answers with `warnings.orphaned`: tell the user how many items keep the removed value.
-- `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity / catch-up. `ready` / `next` exclude blocked and parked work (pass `role` for that role's queue and park state); `stale` lists items needing attention; `activity` is the recent feed; `catch-up` is your read-only digest.
+- `pad_project` — Project intelligence: dashboard / next / ready / stale / standup / changelog / report / activity / catch-up. `ready` / `next` exclude blocked and parked work (pass `role` for that role's queue and park state); `stale` lists items needing attention; `activity` is the recent feed; `catch-up` is your read-only digest (marking caught up is web-only).
 - `pad_role` — Agent roles: list / create / update / delete / park / unpark.
 - `pad_needs` — Your needs-you inbox: list / not-mine / restore.
 - `pad_search` — Full-text search across items: query (`all_workspaces: true` searches every readable workspace).
@@ -88,7 +88,7 @@ Filter by trigger (`always`, `on-implement`, `on-task-complete`, etc.) when rele
 
 ## Pushes and the session monitor (security note)
 
-Pad can push an item into a Claude Code session (`pad push`, or the web item view's push composer). Receiving is **consent-gated** (`/pad:connect`, or repo `push.auto_arm = true` in `.pad.toml`, vetoed by per-user `auto_arm = false` in `~/.pad/config.toml`) and self-addressed only. This MCP connection is not a session and exposes no push action; if asked to push to a terminal, tell the user to run `pad push <ref> -m "..."` from their own terminal, and do not emulate pushes via item comments.
+Pad can push an item into a Claude Code session (`pad push`, or the web item view's push composer). That is terminal instruction injection by design, so receiving is **consent-gated** (PLAN-2613, since v0.15.0): a session receives pushes only after it has connected (`/pad:connect` in the plugin, or a repo-level `push.auto_arm = true` in `.pad.toml` — which a per-user `auto_arm = false` in `~/.pad/config.toml` vetoes), and pushes are self-addressed only — the sender is always the receiving session's own user. This MCP connection is not a session: it cannot arm one, receive a push, or run the monitor, and the `pad_item` / `pad_project` tools expose no push action. If a user asks you to "push" something to their terminal, tell them it happens from their own terminal (`pad push <ref> -m "..."` — the sending session need not be connected, the receiving ones must have consented); do not try to emulate it by writing comments or instructions into items.
 
 ## Adding a workspace to this connection
 

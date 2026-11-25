@@ -208,6 +208,7 @@ Actions (all require workspace):
   list  — Metadata catalog (no bodies): ref, title, slug, invocation_slug, trigger, scope, status, has_arguments, summary.
   get   — Full playbook item (body + ` + "`arguments`" + ` spec). Required: ref.
   run   — Bind args and return body + bound_args + unbound required args. Side-effect-free (agent executes steps).
-          Required: ref. Optional: args (map), raw_args (tokens), allow_draft (overrides playbook_not_active for non-active playbooks).
+          Required: ref. Optional: args (map), raw_args (tokens): pass one or merge (see the per-param docs);
+          allow_draft (overrides playbook_not_active for non-active playbooks).
           Both run and get echo status.
   match — Pick ACTIVE playbook (or "none") for text. Required: text. 404 = no provider; fall back to slug/trigger.`

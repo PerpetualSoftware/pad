@@ -150,9 +150,10 @@ Actions:
   storage    — Storage usage breakdown. Required: workspace.
   audit-log  — Cross-workspace audit log (ADMIN ONLY). Optional: action_filter, actor, days, limit.
   create     — Create workspace. Required: name. Optional: slug, template (startup/scrum/blank).
-               OAuth may_create_workspaces=true auto-adds it; false refuses 403 (re-auth or /settings/connected-apps).
+               OAuth may_create_workspaces=true auto-adds it to the allow-list. False refuses 403 and
+               retrying will not help: only the USER can lift it (re-authorize, or /settings/connected-apps).
   claim      — Redeem 6-digit claim code (web UI "Connect project", 5–10m TTL) into OAuth allow-list.
                Required: workspace, code. Errors: 401 invalid_code, 404 not_found, 412 connection_not_persisted.
-  deleted    — List soft-deleted workspaces in 30-day restore window. No params.
+  deleted    — List soft-deleted workspaces in 30-day restore window. No params. Read-only.
   restore    — Un-soft-delete workspace (owner-only). Required: slug.
   rename     — Rename workspace slug in place (owner-only; old links keep working). Required: workspace, new_slug. Optional: name.`

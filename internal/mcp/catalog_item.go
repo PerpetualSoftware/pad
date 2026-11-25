@@ -506,7 +506,8 @@ Actions:
   unremind — Delete a simple run-once commitment by reminder_id.
   claim — Atomic execution lease. Required: ref. Optional: holder, worker_id, ttl
     (Go duration; default 15m, max 24h), ignore_park. Returns worker_id. One claimer wins;
-    409 lease_held names live holder/expiry (skip); 409 item_parked means role is parked.
+    409 lease_held names live holder/expiry: log and skip, never retry in a loop.
+    409 item_parked: the role is parked. Re-claim extends expiry.
   release — Release when you finish. Required: ref. Optional: holder, worker_id.
     Another holder's live lease is refused. Absent/expired leases return released:false, no error.
   star — Star. Required: ref.

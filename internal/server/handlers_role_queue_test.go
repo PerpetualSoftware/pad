@@ -632,3 +632,49 @@ func TestBootstrap_ParkOmittedByteIdentical(t *testing.T) {
 		}
 	}
 }
+
+// An active item in a collection that does not track work is not lane work:
+// it appears in neither now nor queue.
+func TestRoleQueue_NowExcludesNonWorkCollections(t *testing.T) {
+	t.Parallel()
+	f := newParkEndpointFixture(t)
+	refActive, err := f.srv.store.CreateItem(f.ws.ID, f.refColl.ID, models.ItemCreate{
+		Title: "Reference doc in progress", Fields: `{"status":"in_progress"}`, AgentRoleID: &f.role.ID,
+	})
+	if err != nil {
+		t.Fatalf("create refActive: %v", err)
+	}
+	refActive, _ = f.srv.store.GetItem(refActive.ID)
+	workActive, err := f.srv.store.CreateItem(f.ws.ID, f.visibleColl.ID, models.ItemCreate{
+		Title: "Task in progress", Fields: `{"status":"in_progress"}`, AgentRoleID: &f.role.ID,
+	})
+	if err != nil {
+		t.Fatalf("create workActive: %v", err)
+	}
+	workActive, _ = f.srv.store.GetItem(workActive.ID)
+
+	queuePath := "/api/v1/workspaces/" + f.ws.Slug + "/agent-roles/" + f.role.Slug + "/queue"
+	rr := doRequestWithHeaders(f.srv, http.MethodGet, queuePath, nil, bearerHdr(f.ownerTok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET queue: got %d %s, want 200", rr.Code, rr.Body.String())
+	}
+	var resp roleQueueTestResponse
+	parseJSON(t, rr, &resp)
+	sawWork := false
+	for _, n := range resp.Now {
+		if n.Ref == refActive.Ref {
+			t.Fatalf("now lists %s from a collection that does not track work", refActive.Ref)
+		}
+		if n.Ref == workActive.Ref {
+			sawWork = true
+		}
+	}
+	if !sawWork {
+		t.Fatalf("now is missing the in-progress task %s: %+v", workActive.Ref, resp.Now)
+	}
+	for _, q := range resp.Queue {
+		if q.Ref == refActive.Ref {
+			t.Fatalf("queue lists %s from a collection that does not track work", refActive.Ref)
+		}
+	}
+}
