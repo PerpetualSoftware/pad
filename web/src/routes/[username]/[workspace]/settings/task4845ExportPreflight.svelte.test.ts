@@ -78,7 +78,7 @@ describe('TASK-4845: workspace export preflight', () => {
 		expect(box.checked).toBe(false);
 		await fireEvent.click(btn);
 		await waitFor(() => expect(clicked).toHaveLength(1));
-		expect(h.preflight).toHaveBeenCalledWith('ws-ok', { includeVersions: true });
+		expect(h.preflight).toHaveBeenCalledWith('ws-ok', { includeVersions: true }, expect.any(AbortSignal));
 		expect(clicked[0]).toBe('/api/v1/workspaces/ws-ok/export?format=tar ws-ok-export.tar.gz');
 		expect(screen.queryByRole('alert')).toBeNull();
 	});
@@ -89,7 +89,7 @@ describe('TASK-4845: workspace export preflight', () => {
 		await fireEvent.click(screen.getByRole('checkbox', { name: /Leave out version history/ }));
 		await fireEvent.click(btn);
 		await waitFor(() => expect(clicked).toHaveLength(1));
-		expect(h.preflight).toHaveBeenCalledWith('ws-nov', { includeVersions: false });
+		expect(h.preflight).toHaveBeenCalledWith('ws-nov', { includeVersions: false }, expect.any(AbortSignal));
 		expect(clicked[0]).toBe('/api/v1/workspaces/ws-nov/export?format=tar&include_versions=false ws-nov-export.tar.gz');
 	});
 
@@ -109,5 +109,32 @@ describe('TASK-4845: workspace export preflight', () => {
 
 		await fireEvent.click(screen.getByRole('checkbox', { name: /Leave out version history/ }));
 		await waitFor(() => expect(screen.queryByRole('alert')).toBeNull());
+	});
+
+	it('cancels a stalled preflight: Download comes back, no alert, no download', async () => {
+		let seen: AbortSignal | undefined;
+		h.preflight.mockImplementation(
+			(_slug: string, _opts: unknown, signal?: AbortSignal) =>
+				new Promise((_resolve, reject) => {
+					seen = signal;
+					signal?.addEventListener('abort', () =>
+						reject(Object.assign(new Error('Export cancelled.'), { code: 'export_cancelled' }))
+					);
+				})
+		);
+		const btn = await renderOwner('ws-stall');
+		await fireEvent.click(btn);
+		await screen.findByRole('button', { name: /Preparing export/ });
+		const cancel = await screen.findByRole('button', { name: /^Cancel$/ });
+		expect(seen).toBeInstanceOf(AbortSignal);
+		await fireEvent.click(cancel);
+		expect(seen?.aborted).toBe(true);
+		const again = await screen.findByRole('button', { name: /Download \.tar\.gz/ });
+		expect((again as HTMLButtonElement).disabled).toBe(false);
+		expect(screen.queryByRole('button', { name: /^Cancel$/ })).toBeNull();
+		await tick();
+		await new Promise((r) => setTimeout(r, 0));
+		expect(screen.queryByRole('alert')).toBeNull();
+		expect(clicked).toHaveLength(0);
 	});
 });

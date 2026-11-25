@@ -222,6 +222,9 @@
 	let exportBusy = $state(false);
 	let exportError = $state<string | null>(null);
 	let exportSeq = 0;
+	// The current export's preflight, so Cancel and the page reset can abort
+	// it. Plain, not $state: only event handlers and the reset touch it.
+	let exportAbort: AbortController | null = null;
 	// KEYED ON (USER, WORKSPACE), not on workspace alone (BUG-2991). Same hole the dashboard had, for the same reason and found in
 	// the same sweep: since BUG-2991 the store drops membership to UNKNOWN when
 	// the signed-in user changes, unknown deliberately does not update these
@@ -261,6 +264,8 @@
 			isOwner = false;
 			canExport = false;
 			exportSeq++;
+			exportAbort?.abort();
+			exportAbort = null;
 			exportBusy = false;
 			exportError = null;
 		}
@@ -750,6 +755,9 @@
 		const reqWs = wsSlug;
 		const opts = { includeVersions: !exportNoVersions };
 		const mySeq = ++exportSeq;
+		exportAbort?.abort();
+		const controller = new AbortController();
+		exportAbort = controller;
 		exportError = null;
 		exportBusy = true;
 		try {
@@ -758,7 +766,7 @@
 			// success the server spools the metadata twice (preflight, then the
 			// real download), and a workspace that passes the limit in between
 			// still fails as a plain failed download.
-			await api.workspaces.preflightExport(reqWs, opts);
+			await api.workspaces.preflightExport(reqWs, opts, controller.signal);
 			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== exportSeq) return;
 			// A real link click, so the browser streams the bundle to disk.
 			const a = document.createElement('a');
@@ -772,8 +780,20 @@
 			if (!identityHeld(epochAtEntry) || wsSlug !== reqWs || mySeq !== exportSeq) return;
 			exportError = exportErrorMessage(err);
 		} finally {
+			if (exportAbort === controller) exportAbort = null;
 			if (mySeq === exportSeq) exportBusy = false;
 		}
+	}
+
+	// A cancel is the user's choice, so it writes no message. Bumping
+	// exportSeq retires the cancelled export: its rejection then writes
+	// nothing and clicks no link.
+	function cancelExport() {
+		exportSeq++;
+		exportAbort?.abort();
+		exportAbort = null;
+		exportBusy = false;
+		exportError = null;
 	}
 
 	async function handleRemoveMember(userId: string, name: string) {
@@ -1175,6 +1195,9 @@
 									>
 										{exportBusy ? 'Preparing export…' : 'Download .tar.gz'}
 									</Button>
+									{#if exportBusy}
+										<Button variant="secondary" size="sm" onclick={cancelExport}>Cancel</Button>
+									{/if}
 									<label class="export-option">
 										<input
 											type="checkbox"

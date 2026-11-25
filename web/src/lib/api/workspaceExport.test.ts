@@ -92,6 +92,61 @@ describe('api.workspaces.preflightExport', () => {
 		expect(err.code).toBe('network_error');
 	});
 
+	it('throws export_cancelled when the caller aborts mid-fetch', async () => {
+		let seen: AbortSignal | undefined;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(
+				(_url: string, init?: RequestInit) =>
+					new Promise((_resolve, reject) => {
+						seen = init?.signal ?? undefined;
+						seen?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+					})
+			)
+		);
+		const caller = new AbortController();
+		const p = api.workspaces.preflightExport('acme', {}, caller.signal).catch((e) => e);
+		await Promise.resolve();
+		expect(seen?.aborted).toBe(false);
+		caller.abort();
+		const err = await p;
+		expect(seen?.aborted).toBe(true);
+		expect(err).toBeInstanceOf(PadApiError);
+		expect(err.code).toBe('export_cancelled');
+		expect(err.message).toBe('Export cancelled.');
+	});
+
+	it('throws export_cancelled at once for an already-aborted signal', async () => {
+		let seen: AbortSignal | undefined;
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(
+				(_url: string, init?: RequestInit) =>
+					new Promise((_resolve, reject) => {
+						seen = init?.signal ?? undefined;
+						if (seen?.aborted) reject(new DOMException('aborted', 'AbortError'));
+						seen?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError')));
+					})
+			)
+		);
+		const caller = new AbortController();
+		caller.abort();
+		const err = await api.workspaces.preflightExport('acme', {}, caller.signal).catch((e) => e);
+		expect(seen === undefined || seen.aborted).toBe(true);
+		expect(err).toBeInstanceOf(PadApiError);
+		expect(err.code).toBe('export_cancelled');
+	});
+
+	it('removes its abort listener from the caller signal once settled', async () => {
+		stubFetch({ status: 200, ok: true, body: null });
+		const caller = new AbortController();
+		const add = vi.spyOn(caller.signal, 'addEventListener');
+		const remove = vi.spyOn(caller.signal, 'removeEventListener');
+		await api.workspaces.preflightExport('acme', {}, caller.signal);
+		expect(add).toHaveBeenCalledTimes(1);
+		expect(remove).toHaveBeenCalledWith('abort', add.mock.calls[0][1]);
+	});
+
 	it('throws unauthorized on a 401', async () => {
 		stubFetch({ status: 401, ok: false, json: async () => ({}) });
 		const err = await api.workspaces.preflightExport('acme').catch((e) => e);

@@ -1771,8 +1771,20 @@ export const api = {
 		// download of the same URL. A refusal (422 export_too_large, or any
 		// other non-2xx) rejects with a PadApiError carrying code and details
 		// (TASK-4845).
-		preflightExport: async (slug: string, opts: WorkspaceExportOptions = {}): Promise<void> => {
+		//
+		// No deadline of its own: the server spools the whole bundle before it
+		// answers, and a large workspace can take minutes. The caller's signal
+		// is the way out instead; aborting it aborts the request (which also
+		// stops the server's spool) and rejects with export_cancelled.
+		preflightExport: async (
+			slug: string,
+			opts: WorkspaceExportOptions = {},
+			signal?: AbortSignal
+		): Promise<void> => {
 			const controller = new AbortController();
+			const onAbort = () => controller.abort();
+			if (signal?.aborted) controller.abort();
+			else signal?.addEventListener('abort', onAbort, { once: true });
 			let resp: Response;
 			try {
 				resp = await fetch(workspaceExportUrl(slug, opts), {
@@ -1780,10 +1792,15 @@ export const api = {
 					signal: controller.signal
 				});
 			} catch {
+				if (signal?.aborted) {
+					throw new PadApiError({ code: 'export_cancelled', message: 'Export cancelled.' });
+				}
 				throw new PadApiError({
 					code: 'network_error',
 					message: 'Could not reach the server. Check your connection and try again.'
 				});
+			} finally {
+				signal?.removeEventListener('abort', onAbort);
 			}
 			if (resp.ok) {
 				controller.abort();
