@@ -206,11 +206,15 @@ func (s *Store) ApproveCLIAuthSession(code, sessionToken, userID string) error {
 		return ErrCLIAuthNotPending
 	}
 
+	// The expiry filter keeps an approval from landing on a row that expired
+	// after the read above: the expiry sweep selects the tokens to revoke and
+	// then deletes the rows, so a token written in between would outlive its
+	// row as a live session nobody can collect.
 	result, err := s.db.Exec(s.q(`
 		UPDATE cli_auth_sessions
 		SET status = 'approved', token = ?, user_id = ?
-		WHERE code = ? AND status = 'pending'
-	`), sessionToken, userID, code)
+		WHERE code = ? AND status = 'pending' AND expires_at >= ?
+	`), sessionToken, userID, code, now())
 	if err != nil {
 		return fmt.Errorf("approve cli auth session: %w", err)
 	}
