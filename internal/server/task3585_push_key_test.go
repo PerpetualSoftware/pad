@@ -57,9 +57,9 @@ func pushOnce(t *testing.T, srv *Server, slug, itemSlug, token, key string) *htt
 func TestTASK3585_PushReplaysWithoutRedelivering(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &capturingBus{}
 	srv.SetWatchEventsBus(bus)
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	first := pushOnce(t, srv, slug, item.Slug, tok.Token, "p-1")
 	again := pushOnce(t, srv, slug, item.Slug, tok.Token, "p-1")
@@ -77,9 +77,9 @@ func TestTASK3585_PushReplaysWithoutRedelivering(t *testing.T) {
 func TestTASK3585_AmbiguousPushIsNotRedelivered(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &capturingBus{err: errors.New("redis: i/o timeout")}
 	srv.SetWatchEventsBus(bus)
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	first := pushOnce(t, srv, slug, item.Slug, tok.Token, "p-2")
 	if first.StatusCode != http.StatusBadGateway {
@@ -121,9 +121,9 @@ func TestTASK3585_ClosedBusReleasesThePushKey(t *testing.T) {
 // with the SAME push_id, which is what lets a monitor drop the repeat.
 func TestTASK3585_PushTakeoverKeepsThePushID(t *testing.T) {
 	srv := testServer(t)
+	slug, item, tok, user := setupWatchTestUser(t, srv)
 	bus := &capturingBus{}
 	srv.SetWatchEventsBus(bus)
-	slug, item, tok, user := setupWatchTestUser(t, srv)
 	ws, err := srv.store.GetWorkspaceBySlug(slug)
 	if err != nil || ws == nil {
 		t.Fatalf("workspace: %v", err)
