@@ -94,10 +94,9 @@ func capRunes(s string, n int) string {
 }
 
 func (s *Store) createCLIAuthSession(ttl time.Duration, req CLIAuthRequester) (*CLIAuthSession, error) {
-	// Clean up expired sessions opportunistically
-	_, _ = s.db.Exec(s.q(`
-		DELETE FROM cli_auth_sessions WHERE expires_at < ?
-	`), now())
+	// Clean up expired sessions opportunistically (revoking any uncollected
+	// approved sessions first — BUG-4836).
+	_ = s.cleanExpiredCLIAuthSessions()
 
 	// Generate a 16-byte random code (32 hex chars)
 	raw := make([]byte, 16)
@@ -155,12 +154,30 @@ func (s *Store) GetCLIAuthSession(code string) (*CLIAuthSession, error) {
 	}
 
 	// Check expiry
-	if sess.Status == "pending" && parseTime(sess.ExpiresAt).Before(time.Now().UTC()) {
-		sess.Status = "expired"
-		// Update in DB lazily
-		_, _ = s.db.Exec(s.q(`
-			UPDATE cli_auth_sessions SET status = 'expired' WHERE code = ?
-		`), code)
+	if parseTime(sess.ExpiresAt).Before(time.Now().UTC()) {
+		switch sess.Status {
+		case "pending":
+			sess.Status = "expired"
+			// Update in DB lazily
+			_, _ = s.db.Exec(s.q(`
+				UPDATE cli_auth_sessions SET status = 'expired' WHERE code = ? AND status = 'pending'
+			`), code)
+		case "approved":
+			// An approved code past its TTL must not hand out its minted
+			// token (BUG-4836). Claim it, then revoke (see revokeClaimedCLIAuthToken).
+			mintedToken := sess.Token
+			sess.Status = "expired"
+			sess.Token = ""
+			res, err := s.db.Exec(s.q(`
+				UPDATE cli_auth_sessions SET status = 'expired'
+				WHERE code = ? AND status = 'approved'
+			`), code)
+			if err == nil && mintedToken != "" {
+				if n, rErr := res.RowsAffected(); rErr == nil && n == 1 {
+					_ = s.revokeClaimedCLIAuthToken(mintedToken)
+				}
+			}
+		}
 	}
 
 	return &sess, nil
@@ -187,11 +204,17 @@ func (s *Store) ApproveCLIAuthSession(code, sessionToken, userID string) error {
 		return ErrCLIAuthNotPending
 	}
 
+	// The expiry filter refuses a row that expired after the read above.
+	// It is strict because expires_at has second precision: a code is not
+	// approvable in its final second. It does not by itself protect the
+	// token from the expiry sweep (this write can land after the sweep read
+	// the clock); the sweep never deletes an approved row, see
+	// the comment above revokeClaimedCLIAuthToken.
 	result, err := s.db.Exec(s.q(`
 		UPDATE cli_auth_sessions
 		SET status = 'approved', token = ?, user_id = ?
-		WHERE code = ? AND status = 'pending'
-	`), sessionToken, userID, code)
+		WHERE code = ? AND status = 'pending' AND expires_at > ?
+	`), sessionToken, userID, code, now())
 	if err != nil {
 		return fmt.Errorf("approve cli auth session: %w", err)
 	}
@@ -231,6 +254,29 @@ func (s *Store) DenyCLIAuthSession(code string) error {
 	return ErrCLIAuthNotPending
 }
 
+// CollectCLIAuthToken hands an approved session's token to its poller at
+// most once (BUG-4836). It deletes the row only while it is still approved,
+// still holds this token and has not expired, and reports whether it did:
+// only then may the caller return the token. A row the expiry sweep or
+// another poll got to first, or one that expired since it was read, is not
+// collected, so no poller is handed a token that is being revoked. The
+// expiry filter is strict, as in ApproveCLIAuthSession: expires_at has second
+// precision, so a code is not collectable in its final second.
+func (s *Store) CollectCLIAuthToken(code, token string) (bool, error) {
+	res, err := s.db.Exec(s.q(`
+		DELETE FROM cli_auth_sessions
+		WHERE code = ? AND status = 'approved' AND token = ? AND expires_at > ?
+	`), code, token, now())
+	if err != nil {
+		return false, fmt.Errorf("collect cli auth token: %w", err)
+	}
+	rows, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("collect cli auth token: %w", err)
+	}
+	return rows == 1, nil
+}
+
 // DeleteCLIAuthSession removes a CLI auth session by code.
 func (s *Store) DeleteCLIAuthSession(code string) error {
 	_, err := s.db.Exec(s.q(`DELETE FROM cli_auth_sessions WHERE code = ?`), code)
@@ -240,10 +286,88 @@ func (s *Store) DeleteCLIAuthSession(code string) error {
 	return nil
 }
 
-// CleanExpiredCLIAuthSessions removes all expired CLI auth sessions.
+// CleanExpiredCLIAuthSessions revokes minted sessions for expired approved
+// rows and removes all expired CLI auth sessions.
 func (s *Store) CleanExpiredCLIAuthSessions() error {
-	_, err := s.db.Exec(s.q(`DELETE FROM cli_auth_sessions WHERE expires_at < ?`), now())
+	return s.cleanExpiredCLIAuthSessions()
+}
+
+// How a minted token leaves cli_auth_sessions (BUG-4836). There are two
+// ways, and each starts with a write conditional on status = 'approved', so
+// exactly one of them wins for a given row:
+//
+//   - Collect (CollectCLIAuthToken): the poll deletes the still-live
+//     approved row and only then returns the token.
+//   - Claim: an expired approved row is flipped to 'expired' (keeping its
+//     token), the minted session is revoked, and only then is the token
+//     cleared (revokeClaimedCLIAuthToken).
+//
+// A claimed row whose revoke did not complete still holds its token, so the
+// sweep revokes every expired row that holds one. The sweep never deletes an
+// approved row or a row still holding a token: an approval can land after the
+// sweep read the clock (its own clock read came earlier), and deleting that
+// row would orphan a live session. Such a row waits for the next read or
+// sweep.
+
+// revokeClaimedCLIAuthToken revokes the session minted for a claimed
+// (expired) row, then clears the token from it.
+func (s *Store) revokeClaimedCLIAuthToken(token string) error {
+	if err := s.DeleteSession(token); err != nil {
+		return fmt.Errorf("revoke expired cli auth session: %w", err)
+	}
+	if _, err := s.db.Exec(s.q(`
+		UPDATE cli_auth_sessions SET token = NULL WHERE status = 'expired' AND token = ?
+	`), token); err != nil {
+		return fmt.Errorf("clear expired cli auth token: %w", err)
+	}
+	return nil
+}
+
+// cleanExpiredCLIAuthSessions claims expired approved rows, revokes the
+// session of every expired row still holding a token, and deletes the
+// expired rows that hold none.
+func (s *Store) cleanExpiredCLIAuthSessions() error {
+	cutoff := now()
+	if _, err := s.db.Exec(s.q(`
+		UPDATE cli_auth_sessions SET status = 'expired'
+		WHERE status = 'approved' AND expires_at < ?
+	`), cutoff); err != nil {
+		return fmt.Errorf("claim expired cli auth sessions: %w", err)
+	}
+	rows, err := s.db.Query(s.q(`
+		SELECT token FROM cli_auth_sessions
+		WHERE status = 'expired' AND token IS NOT NULL
+	`))
 	if err != nil {
+		return fmt.Errorf("select expired approved cli auth sessions: %w", err)
+	}
+	var tokens []string
+	for rows.Next() {
+		var token string
+		if err := rows.Scan(&token); err != nil {
+			_ = rows.Close()
+			return fmt.Errorf("scan expired approved cli auth session: %w", err)
+		}
+		if token != "" {
+			tokens = append(tokens, token)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return fmt.Errorf("iterate expired approved cli auth sessions: %w", err)
+	}
+	_ = rows.Close()
+
+	for _, token := range tokens {
+		if err := s.revokeClaimedCLIAuthToken(token); err != nil {
+			return err
+		}
+	}
+
+	if _, err := s.db.Exec(s.q(`
+		DELETE FROM cli_auth_sessions
+		WHERE expires_at < ? AND status <> 'approved' AND token IS NULL
+	`), cutoff); err != nil {
 		return fmt.Errorf("clean expired cli auth sessions: %w", err)
 	}
 	return nil
