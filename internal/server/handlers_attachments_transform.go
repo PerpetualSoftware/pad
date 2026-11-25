@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"log/slog"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -245,6 +246,14 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 	}
 	defer body.Close()
 
+	releaseDecode, err := s.acquireImageDecode(r.Context())
+	if err != nil {
+		// The client went away while waiting for a decode slot; nobody to answer.
+		slog.Debug("transform: decode wait cancelled", "attachment_id", parent.ID, "error", err)
+		return
+	}
+	defer releaseDecode()
+
 	srcImg, srcFormat, err := s.imageProcessor.Decode(body)
 	if err != nil {
 		switch {
@@ -274,6 +283,10 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		writeInternalError(w, fmt.Errorf("encode transformed image: %w", err))
 		return
 	}
+	bounds := transformed.Bounds()
+	tw := bounds.Dx()
+	th := bounds.Dy()
+	releaseDecode()
 	hash := sha256Hex(buf.Bytes())
 
 	dstStore, err := s.attachments.Resolve(attachments.FSPrefix + ":" + hash)
@@ -291,10 +304,6 @@ func (s *Server) handleTransformAttachment(w http.ResponseWriter, r *http.Reques
 		writeInternalError(w, fmt.Errorf("put transformed blob: %w", err))
 		return
 	}
-
-	bounds := transformed.Bounds()
-	tw := bounds.Dx()
-	th := bounds.Dy()
 
 	// Inherit attribution + item linkage from the parent. The new
 	// row is a peer (NOT a derived/variant row — that's only for

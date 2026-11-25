@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -651,7 +652,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		// Renderable image-attachment refs embedded in the item's content
 		// (BUG-2389 2b / TASK-2637). Omitted entirely when nothing is
 		// renderable, so the page falls back to the honest placeholder.
-		if refs := s.mintShareAttachmentRefs(link, item.Content); refs != nil {
+		if refs := s.mintShareAttachmentRefs(r.Context(), link, item.Content); refs != nil {
 			resp["attachment_refs"] = refs
 		}
 		// Beside the item, not inside it: the item DTO's key set is pinned
@@ -806,7 +807,7 @@ func (s *Server) handleResolveShareLink(w http.ResponseWriter, r *http.Request) 
 		for _, it := range items {
 			contents = append(contents, it.Content)
 		}
-		if refs := s.mintShareAttachmentRefs(link, contents...); refs != nil {
+		if refs := s.mintShareAttachmentRefs(r.Context(), link, contents...); refs != nil {
 			collResp["attachment_refs"] = refs
 		}
 		writeJSON(w, http.StatusOK, collResp)
@@ -849,7 +850,7 @@ type shareAttachmentRef struct {
 // Anchoring reuses shareAttachmentAnchors — the SAME predicate the byte
 // endpoint enforces — so the mint side can never advertise a ref the serve
 // side would reject, and vice-versa.
-func (s *Server) mintShareAttachmentRefs(link *models.ShareLink, contents ...string) map[string]shareAttachmentRef {
+func (s *Server) mintShareAttachmentRefs(ctx context.Context, link *models.ShareLink, contents ...string) map[string]shareAttachmentRef {
 	seen := make(map[string]struct{})
 	var uuids []string
 	for _, content := range contents {
@@ -888,7 +889,7 @@ func (s *Server) mintShareAttachmentRefs(link *models.ShareLink, contents ...str
 			// idempotent and bounded; new uploads already have the row and pay
 			// nothing here (TASK-2637 / fork-3 Option C: a share viewer must
 			// never receive an original, so we derive rather than fall back).
-			s.deriveThumbnails(att.ID)
+			s.deriveThumbnailsCtx(ctx, att.ID)
 			variant, err = s.store.GetAttachmentVariant(link.WorkspaceID, att.ID, shareAssetVariant)
 		}
 		if err != nil || variant == nil {

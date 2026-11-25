@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -541,5 +542,206 @@ func TestOrphanGC_ReclaimsLeakedLiveVariant(t *testing.T) {
 	}
 	if att, _ := srv.store.GetAttachment(leakID); att != nil {
 		t.Errorf("leaked live variant survived the sweep")
+	}
+}
+
+func TestAcquireImageDecode_BlocksUntilRelease(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	srv.decodeSem = make(chan struct{}, 1)
+
+	release1, err := srv.acquireImageDecode(context.Background())
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+
+	type acquireResult struct {
+		release func()
+		err     error
+	}
+	resCh := make(chan acquireResult, 1)
+	go func() {
+		rel, err := srv.acquireImageDecode(context.Background())
+		resCh <- acquireResult{release: rel, err: err}
+	}()
+
+	select {
+	case res := <-resCh:
+		if res.release != nil {
+			res.release()
+		}
+		release1()
+		t.Fatalf("second acquire returned before first release (err=%v)", res.err)
+	case <-time.After(50 * time.Millisecond):
+		// Still blocked while first holder holds the only slot.
+	}
+
+	release1()
+
+	select {
+	case res := <-resCh:
+		if res.err != nil {
+			t.Fatalf("second acquire error: %v", res.err)
+		}
+		if res.release == nil {
+			t.Fatal("second acquire returned nil release")
+		}
+		res.release()
+	case <-time.After(2 * time.Second):
+		t.Fatal("second acquire did not return within 2s after first release")
+	}
+}
+
+func TestAcquireImageDecode_CancelledContextReturns(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	srv.decodeSem = make(chan struct{}, 1)
+
+	release1, err := srv.acquireImageDecode(context.Background())
+	if err != nil {
+		t.Fatalf("first acquire: %v", err)
+	}
+	defer release1()
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	errCh := make(chan error, 1)
+	go func() {
+		rel, err := srv.acquireImageDecode(cancelledCtx)
+		if rel != nil {
+			rel()
+		}
+		errCh <- err
+	}()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancelled acquire err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("cancelled acquire did not return promptly")
+	}
+
+	if got := len(srv.decodeSem); got != 1 {
+		t.Fatalf("slot count while first held = %d, want 1", got)
+	}
+
+	release1()
+
+	if got := len(srv.decodeSem); got != 0 {
+		t.Fatalf("slot count after first release = %d, want 0", got)
+	}
+
+	freshCh := make(chan error, 1)
+	go func() {
+		rel, err := srv.acquireImageDecode(context.Background())
+		if rel != nil {
+			rel()
+		}
+		freshCh <- err
+	}()
+	select {
+	case err := <-freshCh:
+		if err != nil {
+			t.Fatalf("fresh acquire after release: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fresh acquire did not succeed immediately after releasing the first slot")
+	}
+}
+
+func TestThumbnails_DeriveWaitsForDecodeSlot(t *testing.T) {
+	t.Parallel()
+	srv, slug := testServerWithAttachments(t)
+	srv.decodeSem = make(chan struct{}, 1)
+
+	wsID := workspaceIDForSlug(t, srv, slug)
+	att := putBlob(t, srv, &models.Attachment{
+		WorkspaceID: wsID,
+		Filename:    "wait-slot.png",
+	}, makeIntegrationPNG(t, 400, 300))
+
+	if row, err := variantRow(t, srv, att.ID, models.AttachmentVariantThumbMd); err != nil || row != nil {
+		t.Fatalf("precondition failed: thumb-md row=%v err=%v", row, err)
+	}
+
+	release, err := srv.acquireImageDecode(context.Background())
+	if err != nil {
+		t.Fatalf("hold decode slot: %v", err)
+	}
+	defer release()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		srv.deriveThumbnails(att.ID)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("deriveThumbnails finished while decode slot was held")
+	case <-time.After(100 * time.Millisecond):
+		// Still blocked waiting on the decode slot.
+	}
+
+	if row, err := variantRow(t, srv, att.ID, models.AttachmentVariantThumbMd); err != nil {
+		t.Fatalf("variantRow while blocked: %v", err)
+	} else if row != nil {
+		t.Fatal("thumb-md variant exists while decode slot is still held")
+	}
+
+	release()
+
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("deriveThumbnails did not finish within 5s after slot release")
+	}
+
+	row, err := variantRow(t, srv, att.ID, models.AttachmentVariantThumbMd)
+	if err != nil {
+		t.Fatalf("variantRow after release: %v", err)
+	}
+	if row == nil {
+		t.Fatal("thumb-md variant missing after decode slot release")
+	}
+}
+
+func TestThumbnails_DeriveCtxCancelledWhileWaiting(t *testing.T) {
+	t.Parallel()
+	srv, slug := testServerWithAttachments(t)
+	srv.decodeSem = make(chan struct{}, 1)
+
+	wsID := workspaceIDForSlug(t, srv, slug)
+	att := putBlob(t, srv, &models.Attachment{
+		WorkspaceID: wsID,
+		Filename:    "cancelled-slot.png",
+	}, makeIntegrationPNG(t, 400, 300))
+
+	release, err := srv.acquireImageDecode(context.Background())
+	if err != nil {
+		t.Fatalf("hold decode slot: %v", err)
+	}
+	defer release()
+
+	cancelledCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	start := time.Now()
+	srv.deriveThumbnailsCtx(cancelledCtx, att.ID)
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("deriveThumbnailsCtx took %v with cancelled ctx", elapsed)
+	}
+
+	for _, variant := range []string{models.AttachmentVariantThumbSm, models.AttachmentVariantThumbMd} {
+		row, err := variantRow(t, srv, att.ID, variant)
+		if err != nil {
+			t.Fatalf("variantRow(%s): %v", variant, err)
+		}
+		if row != nil {
+			t.Errorf("variant %q exists after cancelled deriveThumbnailsCtx", variant)
+		}
 	}
 }

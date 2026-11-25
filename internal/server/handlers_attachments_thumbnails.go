@@ -12,11 +12,44 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/attachments"
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
+
+// maxConcurrentImageDecodes caps process-wide concurrent full-image decodes
+// across thumbnail derivation and attachment transforms. Each decode is
+// bounded at about 256 MiB (MaxPixelsDefault 8000*8000 in
+// internal/attachments/processor.go), so 2 caps peak decode memory near
+// 512 MiB while still letting one large image proceed beside another;
+// uploads are async, so waiting costs latency of thumbnail appearance, not
+// upload latency.
+const maxConcurrentImageDecodes = 2
+
+// acquireImageDecode acquires a slot from the process-wide decode semaphore,
+// blocking until one is free or ctx is done. When ctx is done before a slot
+// is acquired it takes no slot and returns ctx.Err(). The returned release
+// function is idempotent and safe to defer.
+func (s *Server) acquireImageDecode(ctx context.Context) (release func(), err error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	sem := s.decodeSem
+	if sem == nil {
+		return func() {}, nil
+	}
+	select {
+	case sem <- struct{}{}:
+		var once sync.Once
+		return func() {
+			once.Do(func() { <-sem })
+		}, nil
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
 
 // thumbnailSpecs declares the variants the upload pipeline derives.
 // Keep in sync with the AttachmentVariant constants in
@@ -56,11 +89,21 @@ var thumbnailSpecs = []struct {
 // Each successfully-derived variant becomes its own attachments row
 // with parent_id = parentID and variant = "thumb-sm" / "thumb-md".
 // Variants count toward workspace storage usage (DOC-865 explicit).
+//
+// Full-image decoding is gated by the server's process-wide decode slot
+// (acquireImageDecode) and held across the variant loop so concurrent
+// derivations cannot pin unbounded decoded pixel buffers in memory.
 func (s *Server) deriveThumbnails(parentID string) {
+	s.deriveThumbnailsCtx(context.Background(), parentID)
+}
+
+// deriveThumbnailsCtx is the context-aware implementation of deriveThumbnails.
+// Synchronous HTTP callers (such as share-link resolution) pass their request
+// context so a disconnected client stops waiting on the decode slot.
+func (s *Server) deriveThumbnailsCtx(ctx context.Context, parentID string) {
 	if s.imageProcessor == nil || s.attachments == nil {
 		return
 	}
-	ctx := context.Background()
 
 	parent, err := s.store.GetAttachment(parentID)
 	if err != nil {
@@ -84,6 +127,13 @@ func (s *Server) deriveThumbnails(parentID string) {
 		return
 	}
 	defer src.Close()
+
+	releaseDecode, err := s.acquireImageDecode(ctx)
+	if err != nil {
+		slog.Debug("thumbnails: decode wait cancelled", "attachment_id", parent.ID, "error", err)
+		return
+	}
+	defer releaseDecode()
 
 	img, format, err := s.imageProcessor.Decode(src)
 	if err != nil {
@@ -132,6 +182,7 @@ func (s *Server) deriveThumbnails(parentID string) {
 			continue
 		}
 	}
+	releaseDecode()
 
 	// Derived rows count toward workspace storage usage. Drop the
 	// cached summary so the next storage/usage GET reflects the new
