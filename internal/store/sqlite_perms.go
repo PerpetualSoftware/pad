@@ -7,6 +7,8 @@ import (
 	"os"
 	"runtime"
 	"strings"
+
+	"github.com/PerpetualSoftware/pad/internal/fsperm"
 )
 
 // isSQLiteFilesystemPath reports whether dbPath names an on-disk SQLite file
@@ -49,7 +51,7 @@ func secureSQLiteFiles(dbPath string) error {
 // chmod to another file. A missing path, a symlink or a non-regular file is
 // left alone; a failed chmod logs a warning.
 func tightenSQLiteFile(p string) {
-	f, err := os.OpenFile(p, sqliteTightenOpenFlags, 0)
+	f, err := os.OpenFile(p, fsperm.NoFollowFile, 0)
 	if err != nil {
 		return
 	}
@@ -64,7 +66,7 @@ func tightenSQLiteFile(p string) {
 	}
 	if err := f.Chmod(perm &^ 0o077); err != nil {
 		slog.Warn("failed to tighten sqlite file permissions",
-			"path", p,
+			"file", p,
 			"mode", fmt.Sprintf("%04o", perm),
 			"error", err,
 		)

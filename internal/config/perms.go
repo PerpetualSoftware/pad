@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+
+	"github.com/PerpetualSoftware/pad/internal/fsperm"
 )
 
 // tightenDir ensures an existing directory has no group or other permission
@@ -19,7 +21,7 @@ func tightenDir(path string) {
 	clean := filepath.Clean(path)
 	// Open without following a symlink and chmod through the descriptor, so a
 	// symlink swapped in at the path cannot redirect the mode change.
-	d, err := os.OpenFile(clean, dirTightenOpenFlags, 0)
+	d, err := os.OpenFile(clean, fsperm.NoFollowDir, 0)
 	if err != nil {
 		return
 	}
@@ -43,7 +45,7 @@ func tightenDir(path string) {
 	}
 	if err := d.Chmod(0o700); err != nil {
 		slog.Warn("failed to tighten directory permissions",
-			"path", clean,
+			"file", clean,
 			"mode", fmt.Sprintf("%04o", perm),
 			"error", err,
 		)
