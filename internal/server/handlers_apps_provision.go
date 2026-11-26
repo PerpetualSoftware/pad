@@ -94,7 +94,7 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	res, err := s.store.ProvisionAppInstall(*req, derive)
+	res, err := s.store.ProvisionAppInstall(*req, derive, s.workspaceLimitMintOpts()...)
 	if err != nil {
 		var pc *store.ProvisionConflictError
 		var ae *appInstallError
@@ -119,6 +119,7 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusNotFound, "not_found", "Pending install not found")
 		case errors.Is(err, store.ErrPendingManifestChanged):
 			writeError(w, http.StatusConflict, "install_review_mismatch", "This pending install is not the manifest you reviewed; preview it again")
+		case writeStorePlanLimitError(w, r, err, "The install was not applied, and nothing was written."):
 		default:
 			writeInternalError(w, err)
 		}

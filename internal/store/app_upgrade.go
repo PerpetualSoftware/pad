@@ -118,7 +118,12 @@ type UpgradeDeriveFunc func(q Queryer, install *InstallUpgradeState) (*UpgradePl
 // UPDATE (a consistent read for the derivation, and this transaction updates
 // some of them). SQLite: BEGIN IMMEDIATE. The lock rule is ProvisionAppInstall's:
 // locks break dependency cycles, they do not cover every read.
-func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) ([]*models.Item, error) {
+//
+// With WithPlanLimit(), every artifact insert enforces the workspace's
+// items_per_workspace cap under the workspace seq lock; a refusal rolls back
+// the whole transaction and surfaces as *PlanLimitError. Cloud only, chosen by
+// the server; callers that pass no options are unlimited.
+func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc, opts ...MintOption) ([]*models.Item, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("upgrade app: begin: %w", err)
@@ -326,6 +331,7 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 
 	// Changed and added artifacts land as NEW drafts; the installed item is
 	// never overwritten.
+	mint := resolveMintOptions(opts)
 	var items []*models.Item
 	for _, a := range plan.Artifacts {
 		fieldsJSON, err := json.Marshal(a.Fields)
@@ -335,7 +341,7 @@ func (s *Store) UpgradeAppInstall(req UpgradeRequest, derive UpgradeDeriveFunc) 
 		item, err := s.createItemTxWithID(tx, newID(), req.WorkspaceID, a.CollectionID, models.ItemCreate{
 			Title: a.Title, Content: a.Content, Fields: string(fieldsJSON),
 			CreatedBy: "user", Source: "web", ActorUserID: req.OwnerID, Append: true,
-		}, mintOptions{})
+		}, mint)
 		if err != nil {
 			if isUniqueViolation(err) {
 				return nil, &ProvisionConflictError{Artifact: a.Key, Detail: "it collides with an existing item (duplicate slug or invocation slug)"}
