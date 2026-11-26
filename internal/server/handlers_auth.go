@@ -1300,9 +1300,13 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var input struct {
 		Email    string        `json:"email"`
 		Password secret.Secret `json:"password"`
-		// LinkPending: link the provider of this browser's pending link
-		// once the sign-in completes (TASK-4745). Absent links nothing.
+		// LinkPending: link the provider of the pending link once the sign-in
+		// completes (TASK-4745). Absent links nothing.
 		LinkPending bool `json:"link_pending"`
+		// PendingLinkToken: body-supplied pending-link token for native
+		// clients that cannot hold the browser cookie; takes precedence over
+		// the cookie when present.
+		PendingLinkToken secret.Secret `json:"pending_link_token"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -1383,7 +1387,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	// Only a completed sign-in reaches here: with 2FA on, the token waits
 	// for login-verify (TASK-4745).
-	if pl := s.completePendingLinkFromCookie(w, r, user, input.LinkPending); pl != nil {
+	if pl := s.completePendingLinkFor(w, r, user, input.PendingLinkToken, input.LinkPending); pl != nil {
 		resp["pending_link"] = pl
 	}
 	writeJSON(w, http.StatusOK, resp)

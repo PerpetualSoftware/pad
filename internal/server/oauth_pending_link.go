@@ -43,11 +43,18 @@ const (
 // for a later link. Only an account that proved its address (an unverified
 // one goes through the claim path, or nowhere, BUG-3348), live, not a bot,
 // and only when the provider vouches for the address as GitHub does for a
-// primary one (providerVouchesForClaim). An address alone never links: the
-// link still needs the account's own sign-in.
+// primary one (providerVouchesForClaim). Apple private-relay addresses
+// (@privaterelay.appleid.com) are ineligible for provider "apple". An
+// address alone never links: the link still needs the account's own sign-in.
 func pendingLinkEligible(user *models.User, provider string, emailPrimary *bool) bool {
-	return user != nil && user.IsEmailVerified() && !user.IsDisabled() && !user.IsApp() &&
-		providerVouchesForClaim(provider, emailPrimary)
+	if user == nil || !user.IsEmailVerified() || user.IsDisabled() || user.IsApp() ||
+		!providerVouchesForClaim(provider, emailPrimary) {
+		return false
+	}
+	if provider == "apple" && strings.HasSuffix(strings.ToLower(user.Email), "@privaterelay.appleid.com") {
+		return false
+	}
+	return true
 }
 
 // pendingLinkCookie returns the browser's pending-link token, if any.
@@ -73,13 +80,21 @@ func clearPendingLinkCookie(w http.ResponseWriter) {
 	})
 }
 
-// completePendingLinkFromCookie runs completePendingLink for a password or 2FA
-// sign-in, whose token is the browser's cookie. Consent is the request's
-// link_pending. The cookie is cleared whatever the outcome. Returns nil when
-// the server is not in cloud mode or the browser holds no token.
-func (s *Server) completePendingLinkFromCookie(w http.ResponseWriter, r *http.Request, user *models.User, consent bool) map[string]interface{} {
+// completePendingLinkFor runs completePendingLink for a password or 2FA
+// sign-in. When bodyTok is non-zero it wins over the browser's cookie: if the
+// request also carries the pending-link cookie, the cookie is cleared without
+// consuming its token. When bodyTok is zero it reads and clears the cookie.
+// Consent is the request's link_pending. Returns nil when the server is not in
+// cloud mode or neither body nor cookie carries a token.
+func (s *Server) completePendingLinkFor(w http.ResponseWriter, r *http.Request, user *models.User, bodyTok secret.Secret, consent bool) map[string]interface{} {
 	if !s.cloudMode {
 		return nil
+	}
+	if !bodyTok.IsZero() {
+		if _, ok := cookieSecret(r, pendingLinkCookieName); ok {
+			clearPendingLinkCookie(w)
+		}
+		return s.completePendingLink(r, user, bodyTok, consent)
 	}
 	tok, ok := pendingLinkCookie(r)
 	if !ok {
@@ -163,21 +178,44 @@ func (s *Server) sendProviderLinkedNotice(user *models.User, provider string) {
 	})
 }
 
-// handlePendingLink handles GET /api/v1/auth/pending-link (cloud mode only):
-// what the login page needs to offer the link. With a live token in the
-// browser's cookie: {pending: true, provider, email, password, providers}
-// (whether the account has a password, and its other linked providers).
-// Anything else is a byte-identical {"pending": false}. Never cached, and
-// never readable cross-origin with credentials.
+// pendingLinkPostMaxBodyBytes caps the JSON body accepted by POST /api/v1/auth/pending-link.
+const pendingLinkPostMaxBodyBytes = 8192
+
+// handlePendingLink handles GET /api/v1/auth/pending-link (cloud mode only),
+// peeking the pending-link token held in the browser's cookie.
 func (s *Server) handlePendingLink(w http.ResponseWriter, r *http.Request) {
+	tok, _ := pendingLinkCookie(r)
+	s.writePendingLinkPeek(w, tok)
+}
+
+// handlePendingLinkPost handles POST /api/v1/auth/pending-link (cloud mode
+// only), peeking a pending-link token supplied in the JSON body. It never
+// reads the pending-link cookie, and any absent, oversized, or undecodable
+// body answers the same {"pending": false} reply as an unknown token.
+func (s *Server) handlePendingLinkPost(w http.ResponseWriter, r *http.Request) {
+	var input struct {
+		PendingLinkToken secret.Secret `json:"pending_link_token"`
+	}
+	if err := decodeJSONWithLimit(r, &input, pendingLinkPostMaxBodyBytes); err != nil {
+		s.writePendingLinkPeek(w, secret.Secret{})
+		return
+	}
+	s.writePendingLinkPeek(w, input.PendingLinkToken)
+}
+
+// writePendingLinkPeek writes what a login client needs to offer a pending
+// link. With a live, eligible token: {pending: true, provider, email,
+// password, providers} (whether the account has a password, and its other
+// linked providers). Anything else is a byte-identical {"pending": false}.
+// Never cached, and never readable cross-origin with credentials.
+func (s *Server) writePendingLinkPeek(w http.ResponseWriter, tok secret.Secret) {
 	h := w.Header()
 	h.Set("Cache-Control", "no-store")
 	h.Del("Access-Control-Allow-Origin")
 	h.Del("Access-Control-Allow-Credentials")
 	none := func() { writeJSON(w, http.StatusOK, map[string]interface{}{"pending": false}) }
 
-	tok, ok := pendingLinkCookie(r)
-	if !ok {
+	if tok.IsZero() {
 		none()
 		return
 	}

@@ -80,6 +80,7 @@ var authCSRFUnconditionalExemptPaths = map[string]bool{
 	"/api/v1/auth/2fa/login-verify":    true,
 	"/api/v1/auth/oauth-login":         true,
 	"/api/v1/auth/oauth-link":          true,
+	"/api/v1/auth/pending-link":        true, // authority is the body token only; reads no session or cookie
 	"/api/v1/auth/cli/sessions":        true,
 }
 
