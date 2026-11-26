@@ -126,8 +126,9 @@
 		if (!viewport.isMobile) void homeOverview.load('/');
 		else void pendingInvitations.refresh();
 		void loadWorkspaces();
-		// A home_changed hint refetches Needs you and Today; the Agents panel registers its own.
-		return homeLive.register(() => homeOverview.load('/', true));
+		// A home_changed hint follows the same policy: Needs you and Today on
+		// desktop, the invitations refresh on phone. The Agents panel registers its own.
+		return homeLive.register(() => (viewport.isMobile ? pendingInvitations.refresh() : homeOverview.load('/', true)));
 	});
 	const needsLimit = $derived(viewport.isMobile ? 2 : 4);
 	async function snooze(row: NeedsRow, body: NeedsSnoozeRequest) {

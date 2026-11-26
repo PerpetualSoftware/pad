@@ -803,6 +803,10 @@
 	const unchanged = (entry: AgendaEntry, to: string) => sameTarget(entry.roles?.target ?? entry.at, to, zone);
 	function clearDrag() {
 		dragSerial++; dragging = null; dragImpact = null; hoverDay = ''; dragCache.clear();
+	}
+	// A drag that ends (drop or dragend) runs the refetch a hint left owed; a drag start does not.
+	function endDrag() {
+		clearDrag();
 		if (liveOwed) { liveOwed = false; void load(day, zone, true); }
 	}
 	function startDrag(entry: AgendaEntry, event: DragEvent) {
@@ -846,7 +850,7 @@
 		hoverDay = date;
 		const to = targetOnDay(entry, date, zone);
 		if (!unchanged(entry, to)) void moveTarget(entry, to);
-		clearDrag();
+		endDrag();
 	}
 	async function moveError(error: unknown, series?: boolean) {
 		const code = (error as { code?: string })?.code;
@@ -1075,7 +1079,7 @@
 							<AgendaDayGroup {audience} {isAgent} day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
 								deadlines={markers.get(date)?.deadlines} forecasts={markers.get(date)?.forecasts} {zone} {now} complete={!dayIncomplete(date)}
 								{pending} {saved} compact={mobile} movable={mode === 'week' && !mobile} {dragging} hover={hoverDay === date} impact={dragImpact} titles={linkedTitles}
-								onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />
+								onaction={action} ondragstart={startDrag} ondragend={endDrag} onenter={enterDay} ondrop={dropDay} />
 						{/each}
 					{/if}
 					{#if dragNote && !mobile}
