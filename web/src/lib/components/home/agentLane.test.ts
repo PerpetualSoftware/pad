@@ -1,5 +1,5 @@
 import { expect, it } from 'vitest';
-import { doNextOrder, laneView, lineLabel, lineRequest, parkedLabel, planLane, stepOrder } from './agentLane';
+import { boundLane, doNextOrder, laneView, lineLabel, lineRequest, parkedLabel, planLane, stepOrder } from './agentLane';
 import type { RoleQueueResponse } from '$lib/types';
 
 const item = (ref: string, sort: number, can_edit = true) => ({ ref, title: ref, status: 'open', priority: '', role_sort_order: sort, blocked: false, ready: true, can_edit });
@@ -53,4 +53,42 @@ it('labels parked lanes and the line', () => {
 	expect(parkedLabel([lane(topPark)])).toBe('parked');
 	expect(parkedLabel([lane()])).toBe('');
 	expect(lineLabel('Dave', '2026-11-26T15:04:00Z', 'UTC', new Date('2026-11-26T18:00:00Z'))).toBe('Stop here. Set by Dave 15:04');
+});
+
+it('a truncated lane bounds the last shown slot by the first item not loaded', () => {
+	const l = lane(undefined, { queue_more: true, queue_total: 4 });
+	const hidden = item('D', 3100);
+	const next = { refs: ['B', 'C', 'A'], line: null };
+	const plan = planLane(l, next, 'A', null, hidden);
+	expect(plan.ok).toBe(true);
+	const a = plan.ok ? plan.writes.find(w => w.id === 'A')!.sort_order : Infinity;
+	expect(a).toBeGreaterThan(3072);
+	expect(a).toBeLessThan(3100);
+});
+
+it('a truncated lane with its line hidden keeps the last shown slot above the line', () => {
+	// The line (P = 3080) sits past the loaded prefix, between C and the hidden D.
+	const l = lane(linePark(null), { queue_more: true, queue_total: 4 });
+	const hidden = item('D', 3500);
+	const next = { refs: ['B', 'C', 'A'], line: null };
+	const plan = planLane(l, next, 'A', 3080, hidden);
+	expect(plan.ok).toBe(true);
+	const a = plan.ok ? plan.writes.find(w => w.id === 'A')!.sort_order : Infinity;
+	expect(a).toBeGreaterThan(3072);
+	expect(a).toBeLessThan(3080);
+	// The bound alone also holds when the hidden item sits before the line.
+	const below = planLane(l, next, 'A', 4000, item('D', 3090));
+	const b = below.ok ? below.writes.find(w => w.id === 'A')!.sort_order : Infinity;
+	expect(b).toBeLessThan(3090);
+});
+
+it('a fresh read bounds the lane with its next item and prefers its values; a changed prefix refuses', () => {
+	const l = lane(undefined, { queue_more: true, queue_total: 4 });
+	const fresh = lane(undefined, { queue: [item('A', 1000), item('B', 2048), item('C', 3072), item('D', 3100)], queue_more: false, queue_total: 4 });
+	const bounded = boundLane(l, ['A', 'B', 'C'], fresh);
+	expect(bounded.ok && bounded.bound?.ref).toBe('D');
+	expect(bounded.ok && bounded.lane.queue.map(i => i.role_sort_order)).toEqual([1000, 2048, 3072]);
+	const moved = lane(undefined, { queue: [item('B', 1000), item('A', 2048), item('C', 3072), item('D', 3100)] });
+	expect(boundLane(l, ['A', 'B', 'C'], moved)).toEqual({ ok: false });
+	expect(boundLane(l, ['A', 'B', 'C'], lane(undefined, { queue: [item('A', 1024), item('B', 2048)] }))).toEqual({ ok: false });
 });

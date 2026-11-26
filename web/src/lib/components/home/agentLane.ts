@@ -84,17 +84,48 @@ export function lineRequest(refs: readonly string[], line: number): RoleParkRequ
  * line, is a view-only card just below its position P, so the items above it
  * stay below P and the items at or past it stay parked. In mode top the line
  * holds no position: every item is parked whatever its order.
+ *
+ * A truncated lane (queue_more) has items past the shown ones, so its end is
+ * not open: `bound`, the first item not shown, closes it as a frozen card, and
+ * a line beyond the shown items (next.line null) is placed beside it by value.
+ * Without them a move to the last slot could tie or pass the hidden item, or
+ * cross the line unseen.
  */
 export function planLane(
 	lane: RoleQueueResponse,
 	next: LaneOverlay,
 	movedRef: string,
-	lineSort: number | null
+	lineSort: number | null,
+	bound: RoleQueueItem | null = null
 ): LanePlan {
 	const byRef = new Map(lane.queue.map(item => [item.ref, item]));
 	const cards: { id: string; sort_order: number }[] = next.refs.map(ref => ({ id: ref, sort_order: byRef.get(ref)?.role_sort_order ?? 0 }));
-	if (lane.park?.mode === 'line' && lineSort !== null && next.line !== null) cards.splice(next.line, 0, { id: LINE, sort_order: lineSort - 1 });
-	return planLaneOrder(cards, card => card.id !== LINE && lane.can_reorder && !!byRef.get(card.id)?.can_edit, movedRef);
+	const line = lane.park?.mode === 'line' && lineSort !== null ? { id: LINE, sort_order: lineSort - 1 } : null;
+	const tail: { id: string; sort_order: number }[] = [];
+	if (line && next.line !== null) cards.splice(next.line, 0, line);
+	else if (line) tail.push(line);
+	if (bound) tail.push({ id: LINE + bound.ref, sort_order: bound.role_sort_order });
+	tail.sort((a, b) => a.sort_order - b.sort_order);
+	cards.push(...tail);
+	return planLaneOrder(cards, card => !card.id.startsWith(LINE) && lane.can_reorder && !!byRef.get(card.id)?.can_edit, movedRef);
+}
+
+export type BoundedLane = { ok: true; lane: RoleQueueResponse; bound: RoleQueueItem | null } | { ok: false };
+
+/**
+ * A truncated lane read again at write time with `shown + 1` items: the shown
+ * items take the fresh values, and the next item becomes the bound. Not ok when
+ * the fresh prefix no longer matches what the user saw (someone reordered).
+ */
+export function boundLane(lane: RoleQueueResponse, shownRefs: readonly string[], fresh: RoleQueueResponse): BoundedLane {
+	const prefix = fresh.queue.slice(0, shownRefs.length);
+	if (prefix.length !== shownRefs.length || prefix.some((item, i) => item.ref !== shownRefs[i])) return { ok: false };
+	const byRef = new Map(prefix.map(item => [item.ref, item]));
+	return {
+		ok: true,
+		lane: { ...lane, queue: lane.queue.map(item => byRef.get(item.ref) ?? item) },
+		bound: fresh.queue[shownRefs.length] ?? null
+	};
 }
 
 /** "parked", "parked k/n" across an agent's lanes, or '' when none is. */

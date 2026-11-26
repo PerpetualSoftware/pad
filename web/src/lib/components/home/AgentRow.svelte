@@ -11,11 +11,11 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
-	import { agentsOverview, laneKey, type LaneOverlay } from '$lib/stores/agentsOverview.svelte';
+	import { AGENTS_SHOW_ALL_LIMIT, agentsOverview, laneKey, type LaneOverlay } from '$lib/stores/agentsOverview.svelte';
 	import { avatarColor } from '$lib/utils/avatar';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
-	import { LINE, age, doNextOrder, fromTokens, laneView, lineLabel, lineRequest, moveToken, parkedLabel, planLane, stepOrder, tokens, type LaneView } from './agentLane';
+	import { LINE, age, boundLane, doNextOrder, fromTokens, laneView, lineLabel, lineRequest, moveToken, parkedLabel, planLane, stepOrder, tokens, type LaneView } from './agentLane';
 	import type { AgentRole, MeAgent, RoleParkRequest, RoleQueueItem, RoleQueueResponse } from '$lib/types';
 
 	interface Props {
@@ -64,14 +64,34 @@
 
 	async function reorder(lane: RoleQueueResponse, next: LaneOverlay, movedRef: string, notice?: string) {
 		const key = laneKey(lane);
+		const shownRefs = viewOf(lane).items.map(item => item.ref);
+		// A truncated lane's end is not open: at the queue read limit there is no
+		// next item to bound it, so the last slot is left to the Roles board.
+		if (lane.queue_more && shownRefs.length >= AGENTS_SHOW_ALL_LIMIT && next.refs.indexOf(movedRef) === next.refs.length - 1) {
+			fail('This queue is longer than shown here. Use the Roles board to move an item to the end.');
+			return;
+		}
 		const sameIdentity = authStore.identityFence();
 		const release = hold();
 		agentsOverview.setOverlay(key, next);
 		try {
+			let planned = lane;
+			let bound: RoleQueueItem | null = null;
+			if (lane.queue_more && shownRefs.length < AGENTS_SHOW_ALL_LIMIT) {
+				const fresh = boundLane(lane, shownRefs, await api.agentRoles.queue(lane.workspace, lane.role.slug, shownRefs.length + 1));
+				if (!sameIdentity()) return;
+				if (!fresh.ok) {
+					agentsOverview.clearOverlay(key);
+					toastStore.show('The queue changed meanwhile. Showing the latest.', 'info');
+					return;
+				}
+				planned = fresh.lane;
+				bound = fresh.bound;
+			}
 			let lineSort: number | null = null;
 			if (lane.park?.mode === 'line') lineSort = (await api.agentRoles.get(lane.workspace, lane.role.slug)).park?.sort_order ?? null;
 			if (!sameIdentity()) return;
-			const plan = planLane(lane, next, movedRef, lineSort);
+			const plan = planLane(planned, next, movedRef, lineSort, bound);
 			if (!plan.ok) {
 				agentsOverview.clearOverlay(key);
 				fail("Couldn't keep that order: an item you can only view is in the way.");

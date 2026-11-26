@@ -210,3 +210,41 @@ it('an identity change closes what was open', async () => {
 	await settle();
 	expect(screen.queryByRole('region', { name: 'Implementer in Pad' })).not.toBeInTheDocument();
 });
+
+it('a truncated lane reads the next item at write time and keeps Move down below it', async () => {
+	h.agents.mockResolvedValue(answer([lane({ park: undefined, queue_more: true, queue_total: 4, parked_total: 0 })]));
+	h.queue.mockResolvedValue(lane({ park: undefined, queue: [item('TASK-1', 1024), item('TASK-2', 2048), item('TASK-3', 3072), item('TASK-4', 3100)], queue_total: 4 }));
+	await open();
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-2' }));
+	await fireEvent.click(await screen.findByRole('menuitem', { name: /Move down/ }));
+	await settle();
+	expect(h.queue).toHaveBeenCalledWith('pad', 'impl', 4);
+	const [[, writes]] = h.reorder.mock.calls as [[string, { item_id: string; role_sort_order: number }[]]];
+	const moved = writes.find(w => w.item_id === 'id-TASK-2')!;
+	expect(moved.role_sort_order).toBeGreaterThan(3072);
+	expect(moved.role_sort_order).toBeLessThan(3100);
+});
+
+it('a truncated lane whose prefix changed meanwhile writes nothing and refetches', async () => {
+	h.agents.mockResolvedValue(answer([lane({ park: undefined, queue_more: true, queue_total: 4, parked_total: 0 })]));
+	h.queue.mockResolvedValue(lane({ park: undefined, queue: [item('TASK-2', 1024), item('TASK-1', 2048), item('TASK-3', 3072), item('TASK-4', 3100)], queue_total: 4 }));
+	await open();
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-2' }));
+	await fireEvent.click(await screen.findByRole('menuitem', { name: /Move down/ }));
+	await settle();
+	expect(h.reorder).not.toHaveBeenCalled();
+	expect(h.toast).toHaveBeenCalledWith('The queue changed meanwhile. Showing the latest.', 'info');
+	expect(h.agents).toHaveBeenCalledTimes(2);
+});
+
+it('at the read limit a truncated lane refuses a move to the last shown slot', async () => {
+	const fifty = Array.from({ length: 50 }, (_, i) => item(`TASK-${i + 1}`, (i + 1) * 1024));
+	h.agents.mockResolvedValue(answer([lane({ park: undefined, queue: fifty, queue_more: true, queue_total: 60, parked_total: 0 })]));
+	await open();
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-49' }));
+	await fireEvent.click(await screen.findByRole('menuitem', { name: /Move down/ }));
+	await settle();
+	expect(h.queue).not.toHaveBeenCalled();
+	expect(h.reorder).not.toHaveBeenCalled();
+	expect(h.toast).toHaveBeenCalledWith(expect.stringContaining('Roles board'), 'error');
+});
