@@ -99,6 +99,7 @@ func TestComposeForwardsDocumentedEnvSettings(t *testing.T) {
 		"PAD_PORT":         true,
 		"PAD_DB_DRIVER":    true,
 		"PAD_DATABASE_URL": true,
+		"PGPASSWORD":       true, // carries POSTGRES_PASSWORD, kept out of the DSN
 		"PAD_REDIS_URL":    true,
 		"PAD_DATA_DIR":     true,
 	}
