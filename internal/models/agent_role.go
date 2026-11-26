@@ -122,6 +122,21 @@ type RoleQueueResponse struct {
 	QueueMore   bool               `json:"queue_more"`
 }
 
+// UnreadMayHoldReady reports whether queue entries past the returned prefix
+// could still be ready. Parking is monotone in lane order (every entry at or
+// below the line is parked), so once the first parked entry is inside the
+// prefix or directly after it, nothing unread can be ready even when
+// QueueMore is true.
+func (q *RoleQueueResponse) UnreadMayHoldReady() bool {
+	if !q.QueueMore {
+		return false
+	}
+	if q.Park != nil && q.Park.Index != nil && *q.Park.Index <= len(q.Queue) {
+		return false
+	}
+	return true
+}
+
 // RoleParkSetRequest is the request body for PUT .../agent-roles/{role}/park.
 type RoleParkSetRequest struct {
 	At              *string `json:"at,omitempty"`

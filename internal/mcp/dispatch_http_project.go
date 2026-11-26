@@ -186,7 +186,7 @@ func (d *HTTPHandlerDispatcher) dispatchProjectRoleQueue(
 		"role":        q.Role.Slug,
 		"now":         nowItems,
 		"queue_total": q.QueueTotal,
-		"queue_more":  q.QueueMore,
+		"queue_more":  q.UnreadMayHoldReady(),
 	}
 	if q.Park != nil {
 		payload["park"] = q.Park

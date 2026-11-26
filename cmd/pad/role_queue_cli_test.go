@@ -19,6 +19,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
+	"github.com/spf13/cobra"
 )
 
 func TestReadyRole_JSONAndStopMessage(t *testing.T) {
@@ -239,6 +240,7 @@ func TestReadyRole_QueueMoreSuppressesStopLine(t *testing.T) {
 	cli.SetDisplayLocationResolver(func() *time.Location { return time.UTC })
 
 	setAt := time.Date(2026, 11, 25, 14, 30, 0, 0, time.UTC)
+	// The first 50 entries are blocked; the park line sits further down.
 	queueItems := make([]map[string]any, 50)
 	for i := range queueItems {
 		queueItems[i] = map[string]any{
@@ -247,18 +249,20 @@ func TestReadyRole_QueueMoreSuppressesStopLine(t *testing.T) {
 			"status":          "open",
 			"priority":        "medium",
 			"role_sort_order": (i + 1) * 1024,
-			"blocked":         false,
+			"blocked":         true,
 			"ready":           false,
 			"can_edit":        true,
 		}
 	}
-	parkObj := map[string]any{
-		"mode":             "top",
-		"index":            0,
-		"first_parked_ref": "TASK-1",
-		"set_by":           "Alice",
-		"set_at":           setAt,
-		"park_seq":         1,
+	lineBelowRead := func(index int) map[string]any {
+		return map[string]any{
+			"mode":             "line",
+			"index":            index,
+			"first_parked_ref": fmt.Sprintf("TASK-%d", index+1),
+			"set_by":           "Alice",
+			"set_at":           setAt,
+			"park_seq":         1,
+		}
 	}
 	queuePayload := map[string]any{
 		"workspace":   "demo",
@@ -266,12 +270,12 @@ func TestReadyRole_QueueMoreSuppressesStopLine(t *testing.T) {
 		"can_reorder": true,
 		"can_park":    true,
 		"now": []map[string]any{
-			{"ref": "TASK-10", "title": "In flight", "status": "in_progress", "since": setAt, "lease": nil, "live": "unknown"},
+			{"ref": "TASK-100", "title": "In flight", "status": "in_progress", "since": setAt, "lease": nil, "live": "unknown"},
 		},
 		"queue":        queueItems,
-		"park":         parkObj,
+		"park":         lineBelowRead(60),
 		"queue_total":  73,
-		"parked_total": 73,
+		"parked_total": 13,
 		"queue_more":   true,
 	}
 
@@ -282,80 +286,108 @@ func TestReadyRole_QueueMoreSuppressesStopLine(t *testing.T) {
 	})
 	setupFormatRoutingTest(t, mux)
 
-	const wantPartial = "Nothing ready in the first 50 of 73 items in implementer's queue; the rest was not read.\n"
-
-	// 1. table format, ready --role with park present and queue_more=true.
-	formatFlag = "table"
-	var runErr error
-	cmd := readyCmd()
-	cmd.SetArgs([]string{"--role", "implementer"})
-	out := captureStdout(t, func() { runErr = cmd.Execute() })
-	if runErr != nil {
-		t.Fatalf("ready --role partial table: %v", runErr)
+	run := func(t *testing.T, mk func() *cobra.Command) string {
+		t.Helper()
+		var runErr error
+		cmd := mk()
+		cmd.SetArgs([]string{"--role", "implementer"})
+		out := captureStdout(t, func() { runErr = cmd.Execute() })
+		if runErr != nil {
+			t.Fatalf("--role run: %v", runErr)
+		}
+		return out
 	}
-	if out != wantPartial {
-		t.Fatalf("ready --role partial:\n got: %q\nwant: %q", out, wantPartial)
-	}
-
-	// 2. table format, next --role with park present and queue_more=true.
-	ncmd := nextCmd()
-	ncmd.SetArgs([]string{"--role", "implementer"})
-	out = captureStdout(t, func() { runErr = ncmd.Execute() })
-	if runErr != nil {
-		t.Fatalf("next --role partial table: %v", runErr)
-	}
-	if out != wantPartial {
-		t.Fatalf("next --role partial:\n got: %q\nwant: %q", out, wantPartial)
-	}
-
-	// 3. table format, unparked and queue_more=true.
-	delete(queuePayload, "park")
-	cmd = readyCmd()
-	cmd.SetArgs([]string{"--role", "implementer"})
-	out = captureStdout(t, func() { runErr = cmd.Execute() })
-	if runErr != nil {
-		t.Fatalf("ready --role unparked partial table: %v", runErr)
-	}
-	if out != wantPartial {
-		t.Fatalf("ready --role unparked partial:\n got: %q\nwant: %q", out, wantPartial)
-	}
-
-	// 4. json format, park present and queue_more=true.
-	queuePayload["park"] = parkObj
-	formatFlag = "json"
-	cmd = readyCmd()
-	cmd.SetArgs([]string{"--role", "implementer"})
-	out = captureStdout(t, func() { runErr = cmd.Execute() })
-	if runErr != nil {
-		t.Fatalf("ready --role partial json: %v", runErr)
-	}
-	var gotJSON struct {
+	type readyJSON struct {
 		Count      int              `json:"count"`
 		Results    []map[string]any `json:"results"`
 		QueueTotal int              `json:"queue_total"`
-		QueueMore  bool             `json:"queue_more"`
+		QueueMore  *bool            `json:"queue_more"`
 		Park       map[string]any   `json:"park"`
 	}
-	if err := json.Unmarshal([]byte(out), &gotJSON); err != nil {
-		t.Fatalf("unmarshal partial json: %v\n%s", err, out)
-	}
-	if gotJSON.Count != 0 || len(gotJSON.Results) != 0 || gotJSON.QueueTotal != 73 || !gotJSON.QueueMore || gotJSON.Park == nil {
-		t.Fatalf("unexpected partial JSON: %+v", gotJSON)
+	decode := func(t *testing.T, out string) readyJSON {
+		t.Helper()
+		var got readyJSON
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, out)
+		}
+		if got.QueueMore == nil {
+			t.Fatalf("queue_more missing:\n%s", out)
+		}
+		return got
 	}
 
-	// 5. queue_more=false and queue_total=50 -> existing park stop line.
+	const wantPartial = "Nothing ready in the first 50 of 73 items in implementer's queue; the rest was not read.\n"
+	const wantStop = "Parked by Alice at 14:30: finish TASK-100, then stop.\n"
+
+	// 1. Line below the read, unread entries above it: no stop line on ready or next.
+	formatFlag = "table"
+	if out := run(t, readyCmd); out != wantPartial {
+		t.Fatalf("ready --role partial:\n got: %q\nwant: %q", out, wantPartial)
+	}
+	if out := run(t, nextCmd); out != wantPartial {
+		t.Fatalf("next --role partial:\n got: %q\nwant: %q", out, wantPartial)
+	}
+	formatFlag = "json"
+	if got := decode(t, run(t, readyCmd)); got.Count != 0 || len(got.Results) != 0 || got.QueueTotal != 73 || !*got.QueueMore || got.Park == nil {
+		t.Fatalf("partial ready JSON: %+v", got)
+	}
+	if got := decode(t, run(t, nextCmd)); got.Count != 0 || got.QueueTotal != 73 || !*got.QueueMore {
+		t.Fatalf("partial next JSON: %+v", got)
+	}
+
+	// 2. Unparked, partial read: same partial line.
+	delete(queuePayload, "park")
+	formatFlag = "table"
+	if out := run(t, readyCmd); out != wantPartial {
+		t.Fatalf("ready --role unparked partial:\n got: %q\nwant: %q", out, wantPartial)
+	}
+
+	// 3. Park line directly after the read (index 50 = len(queue)): every unread
+	// entry is parked, so the stop line prints and queue_more reads false.
+	queuePayload["park"] = lineBelowRead(50)
+	if out := run(t, readyCmd); out != wantStop {
+		t.Fatalf("ready --role line at read boundary:\n got: %q\nwant: %q", out, wantStop)
+	}
+	formatFlag = "json"
+	if got := decode(t, run(t, readyCmd)); *got.QueueMore || got.QueueTotal != 73 {
+		t.Fatalf("line at boundary JSON: %+v", got)
+	}
+
+	// 4. Park at top on a lane longer than the read: everything is parked, so
+	// the stop line prints even though the endpoint reported queue_more.
+	parked := make([]map[string]any, len(queueItems))
+	for i, it := range queueItems {
+		cp := map[string]any{}
+		for k, v := range it {
+			cp[k] = v
+		}
+		cp["blocked"] = false
+		parked[i] = cp
+	}
+	queuePayload["queue"] = parked
+	queuePayload["park"] = map[string]any{
+		"mode": "top", "index": 0, "first_parked_ref": "TASK-1",
+		"set_by": "Alice", "set_at": setAt, "park_seq": 2,
+	}
+	formatFlag = "table"
+	if out := run(t, readyCmd); out != wantStop {
+		t.Fatalf("ready --role top park, long lane:\n got: %q\nwant: %q", out, wantStop)
+	}
+	if out := run(t, nextCmd); out != wantStop {
+		t.Fatalf("next --role top park, long lane:\n got: %q\nwant: %q", out, wantStop)
+	}
+	formatFlag = "json"
+	if got := decode(t, run(t, readyCmd)); *got.QueueMore || got.Count != 0 {
+		t.Fatalf("top park JSON: %+v", got)
+	}
+
+	// 5. Whole queue read (queue_more false): the existing stop line.
+	queuePayload["queue"] = queueItems
+	queuePayload["park"] = lineBelowRead(60)
 	queuePayload["queue_more"] = false
 	queuePayload["queue_total"] = 50
-	queuePayload["parked_total"] = 50
 	formatFlag = "table"
-	cmd = readyCmd()
-	cmd.SetArgs([]string{"--role", "implementer"})
-	out = captureStdout(t, func() { runErr = cmd.Execute() })
-	if runErr != nil {
-		t.Fatalf("ready --role complete parked table: %v", runErr)
-	}
-	const wantStop = "Parked by Alice at 14:30: finish TASK-10, then stop.\n"
-	if out != wantStop {
+	if out := run(t, readyCmd); out != wantStop {
 		t.Fatalf("ready --role complete parked:\n got: %q\nwant: %q", out, wantStop)
 	}
 }

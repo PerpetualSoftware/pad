@@ -321,48 +321,81 @@ func TestHTTPDispatcher_ProjectRoleQueue_QueueMore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sortUpdates := make([]store.RoleSortUpdate, 0, 51)
-	for i := 0; i < 51; i++ {
+	// 52 queue items; an open blocker outside the role blocks the first 50, so
+	// the limit=50 read sees nothing ready while item 51 is ready below it.
+	blocker, err := st.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Blocker", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	items := make([]*models.Item, 0, 52)
+	sortUpdates := make([]store.RoleSortUpdate, 0, 52)
+	for i := 0; i < 52; i++ {
 		it, err := st.CreateItem(ws.ID, coll.ID, models.ItemCreate{
 			Title: "Task", Fields: `{"status":"open"}`, AgentRoleID: &role.ID,
 		})
 		if err != nil {
 			t.Fatal(err)
 		}
+		items = append(items, it)
 		sortUpdates = append(sortUpdates, store.RoleSortUpdate{ItemID: it.ID, RoleSortOrder: (i + 1) * 1024})
+		if i < 50 {
+			if _, err := st.CreateItemLink(ws.ID, models.ItemLinkCreate{TargetID: it.ID, LinkType: "blocks", UserID: user.ID}, blocker.ID); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
 	if err := st.UpdateRoleSortOrder(ws.ID, sortUpdates); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.SetRolePark(ws.ID, role.ID, store.ParkAtTop(), nil, user.ID); err != nil {
-		t.Fatal(err)
-	}
 
 	disp := &HTTPHandlerDispatcher{Handler: srv, UserResolver: fixedUserResolver(user)}
-	ctx := WithDispatchInput(context.Background(), map[string]any{"workspace": ws.Slug, "role": "implementer"})
-	res, err := disp.Dispatch(ctx, []string{"project", "ready"}, nil)
-	if err != nil || res == nil || res.IsError {
-		t.Fatalf("HTTP project ready --role failed: err=%v res=%s", err, textOf(res))
-	}
-	var body struct {
+	type readyBody struct {
 		Count      int              `json:"count"`
 		Results    []map[string]any `json:"results"`
 		Role       string           `json:"role"`
 		QueueTotal int              `json:"queue_total"`
-		QueueMore  bool             `json:"queue_more"`
+		QueueMore  *bool            `json:"queue_more"`
 		Park       map[string]any   `json:"park"`
 	}
-	if err := json.Unmarshal([]byte(textOf(res)), &body); err != nil {
-		t.Fatalf("decode HTTP ready --role: %v\n%s", err, textOf(res))
+	ready := func(t *testing.T) readyBody {
+		t.Helper()
+		ctx := WithDispatchInput(context.Background(), map[string]any{"workspace": ws.Slug, "role": "implementer"})
+		res, err := disp.Dispatch(ctx, []string{"project", "ready"}, nil)
+		if err != nil || res == nil || res.IsError {
+			t.Fatalf("HTTP project ready --role failed: err=%v res=%s", err, textOf(res))
+		}
+		var body readyBody
+		if err := json.Unmarshal([]byte(textOf(res)), &body); err != nil {
+			t.Fatalf("decode HTTP ready --role: %v\n%s", err, textOf(res))
+		}
+		if body.QueueMore == nil {
+			t.Fatalf("queue_more missing: %s", textOf(res))
+		}
+		return body
 	}
-	if body.Count != 0 || len(body.Results) != 0 {
-		t.Fatalf("count=%d len(results)=%d, want 0", body.Count, len(body.Results))
+	setPark := func(t *testing.T, spec store.ParkSpec) {
+		t.Helper()
+		if _, err := st.SetRolePark(ws.ID, role.ID, spec, nil, user.ID); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if body.QueueTotal != 51 || !body.QueueMore {
-		t.Fatalf("queue_total=%d queue_more=%v, want 51, true", body.QueueTotal, body.QueueMore)
+
+	// Line before item 52: item 51 is unread and ready, so queue_more is true.
+	setPark(t, store.ParkBefore(items[51].ID))
+	if b := ready(t); b.Count != 0 || len(b.Results) != 0 || b.QueueTotal != 52 || !*b.QueueMore || b.Park == nil {
+		t.Fatalf("line below read: %+v (want count 0, queue_total 52, queue_more true, park set)", b)
 	}
-	if body.Park == nil || body.Park["mode"] != "top" {
-		t.Fatalf("park = %v, want mode=top", body.Park)
+
+	// Line before item 51, right after the read: every unread entry is parked.
+	setPark(t, store.ParkBefore(items[50].ID))
+	if b := ready(t); b.Count != 0 || b.QueueTotal != 52 || *b.QueueMore {
+		t.Fatalf("line at read boundary: %+v (want count 0, queue_total 52, queue_more false)", b)
+	}
+
+	// Park at top: everything parked, queue_more false although the lane is longer than the read.
+	setPark(t, store.ParkAtTop())
+	if b := ready(t); b.Count != 0 || b.QueueTotal != 52 || *b.QueueMore || b.Park == nil || b.Park["mode"] != "top" {
+		t.Fatalf("top park: %+v (want count 0, queue_total 52, queue_more false, mode top)", b)
 	}
 }
 

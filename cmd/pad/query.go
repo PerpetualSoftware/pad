@@ -47,7 +47,8 @@ Blocked items are never listed; 'pad project stale' shows them.
 
 With --role <slug>, reads that role's canonical queue instead of the dashboard,
 returning only unblocked, unparked items in lane order. JSON carries queue_total
-and queue_more; an empty result is final only when queue_more is false.`,
+and queue_more (true when entries past the read could still be ready); an
+empty result is final only when queue_more is false.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			if err := applyWorkerID(client, workerIDFlag); err != nil {
@@ -137,7 +138,7 @@ func renderRoleQueueReady(q *models.RoleQueueResponse, capResults int) error {
 			"role":        q.Role.Slug,
 			"now":         nowItems,
 			"queue_total": q.QueueTotal,
-			"queue_more":  q.QueueMore,
+			"queue_more":  q.UnreadMayHoldReady(),
 		}
 		if q.Park != nil {
 			payload["park"] = q.Park
@@ -146,7 +147,7 @@ func renderRoleQueueReady(q *models.RoleQueueResponse, capResults int) error {
 	}
 
 	if len(readyItems) == 0 {
-		if q.QueueMore {
+		if q.UnreadMayHoldReady() {
 			fmt.Printf("Nothing ready in the first %d of %d items in %s's queue; the rest was not read.\n", len(q.Queue), q.QueueTotal, q.Role.Slug)
 			return nil
 		}
