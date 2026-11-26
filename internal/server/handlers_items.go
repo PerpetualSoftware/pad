@@ -3647,6 +3647,12 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 		}
 		moved.Warnings.NotUnique = notUnique
 	}
+	if discarded := items.StillDropped(result.DiscardedDefaults, result.Fields); len(discarded) > 0 {
+		if moved.Warnings == nil {
+			moved.Warnings = &models.ItemWriteWarnings{}
+		}
+		moved.Warnings.DroppedFields = discarded
+	}
 
 	writeJSON(w, http.StatusOK, moved)
 }

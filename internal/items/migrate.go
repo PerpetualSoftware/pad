@@ -14,6 +14,10 @@ type MigrateResult struct {
 	Fields map[string]any
 	// Dropped lists field keys that were dropped during migration (no matching target field or incompatible types).
 	Dropped []string
+	// DiscardedDefaults lists destination defaults not injected because they fail
+	// the same validateFieldType check a supplied value takes (BUG-3696); the
+	// validator's own default pass then leaves the key absent.
+	DiscardedDefaults []string
 	// Errors lists required target fields that have no value after migration.
 	Errors []string
 }
@@ -52,8 +56,10 @@ func ScopeFor(sourceWorkspaceID, targetWorkspaceID string) MigrateScope {
 
 // MigrateFields maps field values from a source schema to a target schema.
 // Fields with matching keys and compatible types are transferred.
-// Incompatible or missing fields are dropped. Required target fields without
-// values after migration are reported as errors.
+// Incompatible or missing fields are dropped. Destination defaults are applied
+// for absent fields unless they fail validateFieldType, in which case they are
+// recorded in DiscardedDefaults rather than injected (BUG-3696). Required
+// target fields without values after migration are reported as errors.
 //
 // Reserved system metadata (models.IsReservedItemField) bypasses schema
 // matching entirely — it is declared by no schema, so matching it against one
@@ -134,7 +140,8 @@ func MigrateFields(
 		}
 	}
 
-	// Apply defaults for target fields not yet present
+	// Apply defaults for target fields not yet present, skipping any default
+	// that fails validateFieldType (BUG-3696).
 	for _, f := range targetSchema {
 		// A GRANDFATHERED schema can still declare a reserved key (the gate
 		// added in BUG-2674 refuses new ones but keeps existing collections
@@ -152,6 +159,13 @@ func MigrateFields(
 			continue
 		}
 		if f.Default != nil && f.Default != "" {
+			if validateFieldType(f, f.Default) != nil {
+				result.DiscardedDefaults = append(result.DiscardedDefaults, f.Key)
+				if f.Required {
+					result.Errors = append(result.Errors, fmt.Sprintf("required field %q has no value", f.Key))
+				}
+				continue
+			}
 			result.Fields[f.Key] = f.Default
 		} else if f.Required {
 			result.Errors = append(result.Errors, fmt.Sprintf("required field %q has no value", f.Key))
@@ -168,15 +182,11 @@ func migrateValue(value any, sourceType string, target models.FieldDef) (any, bo
 
 	// Same type — validate further for select fields
 	if sourceType == targetType {
-		if targetType == "select" && target.Options != nil {
-			strVal := fmt.Sprintf("%v", value)
-			for _, opt := range target.Options {
-				if opt == strVal {
-					return value, true
-				}
+		if targetType == "select" {
+			if validateFieldType(target, value) != nil {
+				return nil, false
 			}
-			// Value not in target options — drop it
-			return nil, false
+			return value, true
 		}
 		return value, true
 	}
