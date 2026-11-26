@@ -1,8 +1,6 @@
 package server
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -61,12 +59,8 @@ func (s *Server) handleStampCollabWatermark(w http.ResponseWriter, r *http.Reque
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
-	if input.OpLogCursor < 1 {
-		writeError(w, http.StatusBadRequest, "bad_request", store.ErrWatermarkStampBadInput.Error()+": op_log_cursor must be a positive op-log id")
-		return
-	}
-	if b, err := hex.DecodeString(input.ContentSHA256); err != nil || len(b) != sha256.Size {
-		writeError(w, http.StatusBadRequest, "bad_request", store.ErrWatermarkStampBadInput.Error()+": content_sha256 must be 64 hex characters")
+	if err := store.ValidateWatermarkStampInput(input.OpLogCursor, input.ContentSHA256); err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
 		return
 	}
 	if door := writeDoor(r); door != writeDoorWeb {
