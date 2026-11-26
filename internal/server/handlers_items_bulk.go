@@ -1156,9 +1156,18 @@ func (s *Server) bulkMoveCollection(r *http.Request, workspaceID string, item *m
 	// Snapshotting before the pass would treat that key as already examined
 	// and skip it, which is the arrangement that hid it.
 	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), result.Fields)
-	if err := items.ValidateFields(result.Fields, items.SchemaForMigratedFields(targetSchema)); err != nil {
+	// A destination default that fails its own type check is left out by
+	// MigrateFields and dropped again by the validator (BUG-3696); both lists
+	// join result.Dropped so the item's activity row names it in
+	// dropped_fields, as bulkFieldUpdate does with its default drops.
+	// StillDropped below lists each key once. Neither list holds a source value,
+	// so CarriedSourceValues below is unchanged by them.
+	defaultDrops, err := items.ValidateFieldsWithDrops(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	if err != nil {
 		return nil, &bulkOpError{message: err.Error(), code: "validation_error"}
 	}
+	result.Dropped = append(result.Dropped, result.DiscardedDefaults...)
+	result.Dropped = append(result.Dropped, defaultDrops...)
 	items.DropBlankRelations(result.Fields, items.SchemaForMigratedFields(targetSchema), nil)
 	// Relation defaults ValidateFields just injected. After
 	// validation for the reason ResolveLateRelationDefaults documents.

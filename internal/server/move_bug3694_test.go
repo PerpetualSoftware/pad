@@ -182,3 +182,61 @@ func TestMoveItem_ValidatorDefaultDropsNamed_BUG3696(t *testing.T) {
 		}
 	}
 }
+
+// Bulk move: an invalid optional destination default is left absent and named
+// in the item's activity row, never silently lost.
+func TestBulkMove_InvalidOptionalDefaultNamedInActivity_BUG3696(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSForTest(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug(%s): %v", slug, err)
+	}
+	src := mustSchemaCollection(t, srv, ws.ID, "BD Src", `{"fields":[{"key":"note","label":"Note","type":"text"}]}`)
+	dst := bug3079Collection(t, srv, slug, "BD Dst",
+		`{"fields":[{"key":"note","label":"Note","type":"text"},{"key":"status","label":"Status","type":"multi_select","options":["open","done"],"default":"open"}]}`)
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{"title": "Bulk lacks status", "fields": `{"note":"hi"}`})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/bulk",
+		map[string]any{"ids": []string{item.ID}, "op": "move", "collection": dst.Slug})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("bulk: %d %s", rr.Code, rr.Body.String())
+	}
+	var resp struct {
+		Updated []any `json:"updated"`
+		Failed  []any `json:"failed"`
+	}
+	parseJSON(t, rr, &resp)
+	if len(resp.Failed) != 0 || len(resp.Updated) != 1 {
+		t.Fatalf("want one updated row, got %s", rr.Body.String())
+	}
+
+	got := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+item.Slug, nil)
+	var stored struct {
+		Fields string `json:"fields"`
+	}
+	parseJSON(t, got, &stored)
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(stored.Fields), &fields); err != nil {
+		t.Fatalf("stored fields: %v (%q)", err, stored.Fields)
+	}
+	if v, ok := fields["status"]; ok {
+		t.Errorf("invalid optional default was stored: status = %#v", v)
+	}
+
+	act := doRequest(srv, "GET", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/activity", nil)
+	var activities []models.Activity
+	parseJSON(t, act, &activities)
+	named := false
+	for _, a := range activities {
+		var meta map[string]any
+		_ = json.Unmarshal([]byte(a.Metadata), &meta)
+		if s, ok := meta["dropped_fields"].(string); ok && s == "status" {
+			named = true
+		}
+	}
+	if !named {
+		t.Errorf("no activity row names status in dropped_fields: %+v", activities)
+	}
+}
