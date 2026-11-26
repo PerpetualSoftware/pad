@@ -91,6 +91,10 @@ import type {
 	AgentRoleCreate,
 	AgentRoleUpdate,
 	RoleBoardLane,
+	RoleQueueResponse,
+	RoleParkRequest,
+	RoleParkDetail,
+	MeAgentsResponse,
 	ChangesResponse,
 	CollectionGrant,
 	ItemGrant,
@@ -2035,6 +2039,24 @@ export const api = {
 			request<void>(`/workspaces/${ws}/roles/board/lane-order`, {
 				method: 'PUT',
 				body: JSON.stringify(updates)
+			}),
+
+		/** One role lane: Now, the queue prefix (limit 1..50, default 5), park state and capabilities. */
+		queue: (ws: string, idOrSlug: string, limit?: number) =>
+			request<RoleQueueResponse>(`/workspaces/${ws}/agent-roles/${encodeURIComponent(idOrSlug)}/queue${limit === undefined ? '' : `?limit=${limit}`}`),
+
+		/** Set or move the lane's park line. A stale expected_park_seq answers 409 park_conflict. */
+		park: (ws: string, idOrSlug: string, body: RoleParkRequest) =>
+			request<{ park: RoleParkDetail }>(`/workspaces/${ws}/agent-roles/${encodeURIComponent(idOrSlug)}/park`, {
+				method: 'PUT',
+				body: JSON.stringify(body)
+			}),
+
+		/** Clear the lane's park line (idempotent). */
+		unpark: (ws: string, idOrSlug: string, expectedParkSeq?: number) =>
+			request<{ park: null; park_seq: number }>(`/workspaces/${ws}/agent-roles/${encodeURIComponent(idOrSlug)}/park`, {
+				method: 'DELETE',
+				...(expectedParkSeq === undefined ? {} : { body: JSON.stringify({ expected_park_seq: expectedParkSeq }) })
 			})
 	},
 
@@ -3978,6 +4000,16 @@ export const api = {
 		if (include !== undefined) query.set('include', include.join(','));
 		if (counts !== undefined) query.set('counts', counts);
 		return request<AgendaResponse>(`/me/agenda?${query}`);
+	},
+
+	/** Cross-workspace agents overview (GET /me/agents). */
+	getMyAgents: (params: { finished?: number; queue?: number; workspace?: string } = {}) => {
+		const query = new URLSearchParams();
+		if (params.finished !== undefined) query.set('finished', String(params.finished));
+		if (params.queue !== undefined) query.set('queue', String(params.queue));
+		if (params.workspace !== undefined) query.set('workspace', params.workspace);
+		const qs = query.toString();
+		return request<MeAgentsResponse>(`/me/agents${qs ? `?${qs}` : ''}`);
 	},
 
 	getMyAgendaCounts: (from: string, to: string, tz?: string, selection?: AgendaWorkspaceSelection) => {

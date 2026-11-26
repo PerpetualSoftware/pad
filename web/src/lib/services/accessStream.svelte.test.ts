@@ -27,6 +27,7 @@ const h = vi.hoisted(() => {
 		highlight: vi.fn(),
 		chatHint: vi.fn(),
 		chatResync: vi.fn(),
+		homeHint: vi.fn(),
 		// GET /workspaces/{slug}: resolves = still reachable.
 		getWs: vi.fn(async () => ({}))
 	};
@@ -63,6 +64,7 @@ vi.mock('$lib/stores/workspace.svelte', () => ({
 vi.mock('$lib/stores/chat.svelte', () => ({
 	chatStore: { onHint: h.chatHint, resync: h.chatResync }
 }));
+vi.mock('./homeLive', () => ({ homeLive: { hint: h.homeHint } }));
 vi.mock('$lib/stores/ui.svelte', () => ({ uiStore: { highlightAddWorkspace: h.highlight } }));
 vi.mock('$lib/utils/workspace-route', () => ({
 	workspaceRestoreTarget: (ws: { slug: string; owner_username?: string }) => `/${ws.owner_username}/${ws.slug}`
@@ -139,6 +141,7 @@ beforeEach(() => {
 	h.highlight.mockClear();
 	h.chatHint.mockClear();
 	h.chatResync.mockClear();
+	h.homeHint.mockClear();
 	h.getWs.mockReset();
 	h.getWs.mockResolvedValue({});
 });
@@ -155,7 +158,7 @@ describe('accessStream (TASK-3275)', () => {
 		s.start();
 		s.start();
 		expect(sources).toHaveLength(1);
-		expect(sources[0].url).toBe('/api/v1/events/stream?access=true&chat_inbox=true');
+		expect(sources[0].url).toBe('/api/v1/events/stream?access=true&chat_inbox=true&home=true');
 	});
 
 	it('refetches the open set and the workspace list on a hint, and applies nothing from it', async () => {
@@ -187,6 +190,17 @@ describe('accessStream (TASK-3275)', () => {
 		expect(h.load).not.toHaveBeenCalled();
 		expect(h.loadAll).not.toHaveBeenCalled();
 		expect(h.goto).not.toHaveBeenCalled();
+	});
+
+	it('hands a home_changed hint to homeLive and refetches no workspace read', async () => {
+		const s = await freshStream();
+		s.start();
+		sources[0].fire('notification', { id: 0, ts: '2026-11-26T10:00:00Z', workspace: 'a', kind: 'home_changed' });
+		await flush();
+		expect(h.homeHint).toHaveBeenCalledTimes(1);
+		expect(h.chatHint).not.toHaveBeenCalled();
+		expect(h.load).not.toHaveBeenCalled();
+		expect(h.loadAll).not.toHaveBeenCalled();
 	});
 
 	it('does not hand an access hint or an unknown kind to the chat store', async () => {

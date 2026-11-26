@@ -706,7 +706,116 @@ export interface AgentRole {
 	sort_order: number;
 	created_at: string;
 	updated_at: string;
+	/** Present only when the lane is parked (mode top or line). */
+	park?: AgentRolePark;
 	item_count?: number;
+}
+
+/** A role lane's park line, as GET agent-roles projects it. */
+export interface AgentRolePark {
+	mode: 'top' | 'line';
+	/** The line's position in role_sort_order space; null in mode top. */
+	sort_order: number | null;
+	set_at: string | null;
+	set_by: string | null;
+	park_seq: number;
+}
+
+/** `live` is self-scoped: busy, idle or offline only for the caller's own lease. */
+export type RoleQueueLive = 'busy' | 'idle' | 'offline' | 'unknown';
+
+export interface RoleQueueLease {
+	holder: string;
+	expires_at: string;
+}
+
+/** A lane item that is leased or active: not in the queue. */
+export interface RoleQueueNowItem {
+	ref: string;
+	title: string;
+	status: string;
+	since: string;
+	lease: RoleQueueLease | null;
+	live: RoleQueueLive;
+}
+
+/** One queued item, in canonical lane order. */
+export interface RoleQueueItem {
+	ref: string;
+	title: string;
+	status: string;
+	priority: string;
+	role_sort_order: number;
+	blocked: boolean;
+	ready: boolean;
+	can_edit: boolean;
+}
+
+/** The park line relative to the caller's visible queue; omitted when unparked. */
+export interface RoleQueuePark {
+	mode: 'top' | 'line';
+	/** Index of the first parked visible queue item; null when none is parked. */
+	index: number | null;
+	first_parked_ref: string | null;
+	set_by: string | null;
+	set_at: string | null;
+	park_seq: number;
+}
+
+/** GET /workspaces/{ws}/agent-roles/{role}/queue, and each lane of GET /me/agents. */
+export interface RoleQueueResponse {
+	/** Workspace slug. */
+	workspace: string;
+	role: { slug: string; name: string; icon: string };
+	can_reorder: boolean;
+	can_park: boolean;
+	now: RoleQueueNowItem[];
+	queue: RoleQueueItem[];
+	park?: RoleQueuePark;
+	queue_total: number;
+	parked_total: number;
+	queue_more: boolean;
+}
+
+export interface MeAgentFinished {
+	workspace: string;
+	ref: string;
+	title: string;
+	value: string;
+	completed_at: string;
+}
+
+export interface MeAgentSummary {
+	now_count: number;
+	queue_total: number;
+	parked: 'none' | 'some' | 'all';
+}
+
+export interface MeAgent {
+	slug: string;
+	name: string;
+	icon: string;
+	lanes: RoleQueueResponse[];
+	finished: MeAgentFinished[];
+	summary: MeAgentSummary;
+}
+
+/** GET /me/agents. */
+export interface MeAgentsResponse {
+	agents: MeAgent[];
+	degraded: string[];
+}
+
+/** PUT .../agent-roles/{role}/park: exactly one of at, before or after. */
+export type RoleParkRequest = ({ at: 'top' } | { before: string } | { after: string }) & { expected_park_seq?: number };
+
+export interface RoleParkDetail {
+	mode: 'top' | 'line';
+	sort_order: number | null;
+	first_parked_ref: string | null;
+	set_by: string | null;
+	set_at: string | null;
+	park_seq: number;
 }
 
 export interface AgentRoleCreate {

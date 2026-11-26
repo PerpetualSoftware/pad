@@ -4,6 +4,9 @@
 // `workspace_access_changed` (TASK-3272) and refetch. It also carries the chat
 // inbox hints (`chat_inbox=true`, TASK-4044), which it hands to the chat store
 // and never to refetch(): a chat hint says nothing about workspace access.
+// It also carries `home_changed` (`home=true`, DOC-4851), which it hands to
+// homeLive, never to refetch(): Home, the agenda and Needs refetch their own
+// reads.
 //
 // The event is a REFETCH HINT and is never applied as state. Correctness lives
 // on the read-filtered GET /me/workspace-tabs and the workspace list, so a
@@ -41,11 +44,13 @@ import { uiStore } from '$lib/stores/ui.svelte';
 import { tabLanding } from '$lib/utils/tabLanding';
 import { workspaceRestoreTarget } from '$lib/utils/workspace-route';
 import { probeRefusal, reconnectDelayMs } from './sseReconnect';
+import { homeLive } from './homeLive';
 
-export const ACCESS_STREAM_URL = '/api/v1/events/stream?access=true&chat_inbox=true';
+export const ACCESS_STREAM_URL = '/api/v1/events/stream?access=true&chat_inbox=true&home=true';
 
 const ACCESS_KIND = 'workspace_access_changed';
 const CHAT_KIND = 'chat';
+const HOME_KIND = 'home_changed';
 // Changes after which the workspace no longer reaches this user.
 const GONE_CHANGES = new Set(['lost', 'deleted', 'purged']);
 
@@ -112,6 +117,7 @@ function createAccessStream() {
 	type Relay =
 		| { kind: 'hint'; hint: AccessHint }
 		| { kind: 'chat'; notice: ChatNotice }
+		| { kind: 'home' }
 		| { kind: 'resync' };
 
 	// Act on a hint here, and relay it to the other tabs, which act on it for
@@ -131,6 +137,11 @@ function createAccessStream() {
 		if (msg.kind === 'resync') {
 			void refetch();
 			chatStore.resync();
+			homeLive.hint();
+			return;
+		}
+		if (msg.kind === 'home') {
+			homeLive.hint();
 			return;
 		}
 		if (msg.kind === 'chat') {
@@ -315,6 +326,11 @@ function createAccessStream() {
 			}
 			if (hint?.kind === CHAT_KIND) {
 				deliver({ kind: 'chat', notice: hint as ChatNotice });
+				return;
+			}
+			// A refetch hint with no content: relay the kind only.
+			if (hint?.kind === HOME_KIND) {
+				deliver({ kind: 'home' });
 				return;
 			}
 			if (hint?.kind !== ACCESS_KIND) return;

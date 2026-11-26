@@ -1,5 +1,6 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
+	import { homeLive } from '$lib/services/homeLive';
 	import { api } from '$lib/api/client';
 	import Button from '$lib/components/common/Button.svelte';
 	import PageHeader from '$lib/components/common/PageHeader.svelte';
@@ -73,6 +74,9 @@
 	// a cursor remains (H-F1). They all go through here; `refetchedFor` records
 	// the actionsDone a refetch was issued for, so whichever fires first wins.
 	// A refetch starts after the action completed, so it is never stale itself.
+	// A home_changed hint refetches quietly, like an automatic correction.
+	onMount(() => homeLive.register(() => load(sort, view, true)));
+
 	let refetchedFor = -1;
 	function requestRefetch() {
 		if (refetchedFor >= actionsDone) return;
