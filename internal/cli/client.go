@@ -1200,11 +1200,19 @@ func (c *Client) GetBacklinks(wsSlug, itemSlug string, limit, offset int) ([]mod
 
 // ListAllBacklinks pages through GET .../backlinks from startOffset at 300
 // rows per page until X-Pad-Has-More is false (BUG-4026). A server without
-// paging headers returns its single response as the complete list.
+// paging headers (one older than BUG-4026) still honours limit and offset
+// but never says whether more exist, and the item-list pager's rule for that
+// case (one response is everything) does not hold here: this endpoint was
+// always bounded. So a header-less page that came back full is read as
+// "there may be more" and the next offset is requested; a short page ends it.
 func (c *Client) ListAllBacklinks(wsSlug, itemSlug string, startOffset int) ([]models.Backlink, error) {
 	rows, _, err := listAllPages(nil, startOffset, func(q url.Values) ([]models.Backlink, ItemListPage, error) {
 		offset, _ := strconv.Atoi(q.Get("offset"))
-		return c.GetBacklinksPage(wsSlug, itemSlug, backlinksAutoPageSize, offset)
+		page, info, err := c.GetBacklinksPage(wsSlug, itemSlug, backlinksAutoPageSize, offset)
+		if err == nil && !info.Known && len(page) >= backlinksAutoPageSize {
+			info = ItemListPage{Known: true, HasMore: true, NextOffset: offset + len(page)}
+		}
+		return page, info, err
 	})
 	if err != nil {
 		return nil, err

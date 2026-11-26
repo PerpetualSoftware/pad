@@ -378,3 +378,39 @@ func TestBUG4026_BacklinksOlderServerWithoutHeaderReturnsSinglePage(t *testing.T
 		t.Fatalf("unexpected stderr: %q", errOut)
 	}
 }
+
+// A server older than BUG-4026 sends no paging headers but still honours
+// limit and offset. Its backlinks were always bounded, so a full header-less
+// page must not be read as the whole list: the CLI keeps asking until a short
+// page comes back.
+func TestBUG4026_BacklinksOlderServerFullPagesKeepPaging(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		total    int
+		requests int
+	}{
+		{"several pages", 617, 3},
+		{"exactly one full page", 300, 2},
+		{"empty", 0, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &pagedBacklinksServer{total: tc.total, serverPage: 300, noHeaders: true}
+			setupFormatRoutingTest(t, p.handler())
+
+			out, errOut, err := runItemBacklinks(t, "json", "TASK-5")
+			if err != nil {
+				t.Fatal(err)
+			}
+			rows := decodeSummaries(t, out)
+			if len(rows) != tc.total {
+				t.Fatalf("got %d backlinks, want all %d", len(rows), tc.total)
+			}
+			if qs := p.queryValues(t); len(qs) != tc.requests {
+				t.Fatalf("got %d requests (%v), want %d", len(qs), qs, tc.requests)
+			}
+			if strings.TrimSpace(errOut) != "" {
+				t.Fatalf("unexpected stderr: %q", errOut)
+			}
+		})
+	}
+}
