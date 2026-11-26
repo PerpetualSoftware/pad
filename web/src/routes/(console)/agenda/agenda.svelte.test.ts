@@ -21,6 +21,7 @@ vi.mock('$lib/stores/auth.svelte', async () => {
  } };
 });
 import Agenda from './+page.svelte';
+import { homeLive } from '$lib/services/homeLive';
 import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
 
 const row = (extra: Partial<AgendaEntry> = {}): AgendaEntry => ({ type: 'schedule', at: '2026-11-05T14:00:00Z', day: '2026-11-05', wall: '2026-11-05T09:00:00', floating: true, item_ref: 'EX-30', item_title: 'First item', collection: 'tasks', workspace: 'work', workspace_name: 'First workspace', owner_username: 'alice', state: 'outstanding', roles: { target: null, earliest: null, deadline: null, deadline_behavior: null, occupied_until: null, outcome: '', roles_origin: 'native' }, schedule_id: 'schedule-1', ...extra });
@@ -993,6 +994,20 @@ describe('target move failure and drag fences', () => {
   await fireEvent.dragEnd(source); p.resolve(preview(undefined, { changes: [...preview().changes, { item_id: 'linked', role: 'target', to: '2026-11-07T14:00:00Z' }] }));
   await settle(); expect(screen.queryByText(/proposed/)).toBeNull(); expect(h.move).not.toHaveBeenCalled();
   await drop(); await waitFor(() => expect(h.move).toHaveBeenCalledTimes(1)); expect(h.preview).toHaveBeenCalledTimes(2);
+ });
+ it('a home_changed hint during a drag waits for the drag to end, not for the next drag to start', async () => {
+  const live: Array<() => unknown> = [];
+  vi.spyOn(homeLive, 'register').mockImplementation(cb => { live.push(cb); return () => {}; });
+  await mount(); const loads = h.agenda.mock.calls.length; const source = card();
+  await fireEvent.dragStart(source); for (const cb of live) void cb(); await settle();
+  expect(h.agenda.mock.calls.length).toBe(loads);
+  await fireEvent.dragStart(source); await settle();
+  expect(h.agenda.mock.calls.length).toBe(loads);
+  await fireEvent.dragEnd(source); await settle();
+  expect(h.agenda.mock.calls.length).toBe(loads + 1);
+  await fireEvent.dragStart(source); for (const cb of live) void cb(); await settle();
+  await fireEvent.drop(daySection('2026-11-05')); await settle(); expect(h.move).not.toHaveBeenCalled();
+  expect(h.agenda.mock.calls.length).toBe(loads + 2);
  });
 });
 

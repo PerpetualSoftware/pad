@@ -23,6 +23,12 @@ export const EACH_KEY_REASONS = {
 export type EachKeyReason = keyof typeof EACH_KEY_REASONS;
 
 export const EACH_KEY_CENSUS: Record<string, { reason: EachKeyReason; note: string }> = {
+	"lib/components/home/AgentRow.svelte :: each lanes as lane, laneIndex (laneKey(lane))": { reason: 'grouped-by-key', note: 'GET /me/agents groups lanes under one role slug, one lane per (workspace, role); laneKey is workspace slug plus role slug.' },
+	"lib/components/home/AgentRow.svelte :: each lane.now.slice(0, 3) as item (item.ref)": { reason: 'db-primary-key', note: 'One lane answer lists each Now item once; refs are unique within the lane workspace.' },
+	"lib/components/home/AgentRow.svelte :: each view.items as item, i (item.ref)": { reason: 'db-primary-key', note: 'The lane queue lists each item once by ref; an overlay is a permutation of those refs (moveToken over unique tokens), mapped back through a Map by ref.' },
+	"lib/components/home/AgentRow.svelte :: each reassigning.roles as role (role.id)": { reason: 'db-primary-key', note: 'GET agent-roles answers one row per role primary key.' },
+	"lib/components/home/AgentRow.svelte :: each finished as f (f.ref)": { reason: 'db-primary-key', note: 'GET /me/agents lists one finished entry per item; filtered to one workspace, refs cannot repeat.' },
+	"lib/components/home/AgentsPanel.svelte :: each agents as agent (agent.slug)": { reason: 'grouped-by-key', note: 'GET /me/agents builds one agent entry per role slug.' },
 	"lib/components/home/DesktopHome.svelte :: each homeOverview.needs?.rows.slice(0, needsLimit) ?? [] as row (needKey(row))": { reason: 'db-primary-key', note: 'One Needs response has one row per workspace and item reference; slicing preserves uniqueness.' },
 	"routes/login/+page.svelte :: each pendingLinkProviders as p (p)": { reason: 'deduped', note: 'pendingLinkProviders passes the provider names through a Set (TASK-4745).' },
 	"lib/components/home/DesktopHome.svelte :: each attention as entry (entryKey(entry))": { reason: 'deduped', note: 'attentionEntries builds a Map; additional overdue entries are appended only when entryKey is absent.' },

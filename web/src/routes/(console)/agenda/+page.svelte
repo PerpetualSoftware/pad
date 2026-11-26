@@ -8,6 +8,7 @@
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
+	import { homeLive } from '$lib/services/homeLive';
 	import { agendaUndoContext, resolutionLabel, type AgendaUndo } from '$lib/calendar/undo';
 	import { toastStore, type ToastAction } from '$lib/stores/toast.svelte';
 	import { browserZone } from '$lib/timezone';
@@ -312,8 +313,14 @@
 		const update = (event: MediaQueryListEvent) => { mobile = event.matches; };
 		query.addEventListener('change', update);
 		const clock = setInterval(() => { now = new Date(Date.now()); }, 60_000);
-		return () => { query.removeEventListener('change', update); clearInterval(clock); };
+		// A home_changed hint refetches quietly; one arriving mid-drag waits for the drag to end.
+		const offLive = homeLive.register(() => {
+			if (dragging) { liveOwed = true; return; }
+			void load(day, zone, true);
+		});
+		return () => { query.removeEventListener('change', update); clearInterval(clock); offLive(); };
 	});
+	let liveOwed = false;
 	// An action error with no dialog open to show it goes to the toast container, once.
 	$effect(() => {
 		const message = actionError;
@@ -797,6 +804,11 @@
 	function clearDrag() {
 		dragSerial++; dragging = null; dragImpact = null; hoverDay = ''; dragCache.clear();
 	}
+	// A drag that ends (drop or dragend) runs the refetch a hint left owed; a drag start does not.
+	function endDrag() {
+		clearDrag();
+		if (liveOwed) { liveOwed = false; void load(day, zone, true); }
+	}
 	function startDrag(entry: AgendaEntry, event: DragEvent) {
 		if (!canMove(entry) || pending[entryKey(entry)] || saved[entryKey(entry)]) { event.preventDefault(); return; }
 		clearDrag(); dragging = entry;
@@ -838,7 +850,7 @@
 		hoverDay = date;
 		const to = targetOnDay(entry, date, zone);
 		if (!unchanged(entry, to)) void moveTarget(entry, to);
-		clearDrag();
+		endDrag();
 	}
 	async function moveError(error: unknown, series?: boolean) {
 		const code = (error as { code?: string })?.code;
@@ -1067,7 +1079,7 @@
 							<AgendaDayGroup {audience} {isAgent} day={date} {today} entries={dayRows(date).filter(entry => !lifted.has(entryKey(entry)))} lifted={dayRows(date).filter(entry => lifted.has(entryKey(entry))).length} summary={summary(date)}
 								deadlines={markers.get(date)?.deadlines} forecasts={markers.get(date)?.forecasts} {zone} {now} complete={!dayIncomplete(date)}
 								{pending} {saved} compact={mobile} movable={mode === 'week' && !mobile} {dragging} hover={hoverDay === date} impact={dragImpact} titles={linkedTitles}
-								onaction={action} ondragstart={startDrag} ondragend={clearDrag} onenter={enterDay} ondrop={dropDay} />
+								onaction={action} ondragstart={startDrag} ondragend={endDrag} onenter={enterDay} ondrop={dropDay} />
 						{/each}
 					{/if}
 					{#if dragNote && !mobile}

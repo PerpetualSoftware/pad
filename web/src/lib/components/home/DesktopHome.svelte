@@ -11,6 +11,8 @@
 	import PendingInvitations from '$lib/components/layout/PendingInvitations.svelte';
 	import TutorialSuggestion from '$lib/components/tutorials/TutorialSuggestion.svelte';
 	import { showHomeTutorial } from './homeTutorial';
+	import AgentsPanel from './AgentsPanel.svelte';
+	import { homeLive } from '$lib/services/homeLive';
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -124,6 +126,9 @@
 		if (!viewport.isMobile) void homeOverview.load('/');
 		else void pendingInvitations.refresh();
 		void loadWorkspaces();
+		// A home_changed hint follows the same policy: Needs you and Today on
+		// desktop, the invitations refresh on phone. The Agents panel registers its own.
+		return homeLive.register(() => (viewport.isMobile ? pendingInvitations.refresh() : homeOverview.load('/', true)));
 	});
 	const needsLimit = $derived(viewport.isMobile ? 2 : 4);
 	async function snooze(row: NeedsRow, body: NeedsSnoozeRequest) {
@@ -226,6 +231,7 @@
 			<footer><span>Agents: {agents.length} {agents.length === 1 ? 'reminder' : 'reminders'} today, {agentCounts.owed} owed, {agentCounts.missed} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
 	</div>
+	<AgentsPanel compact={viewport.isMobile} />
 	<section class="workspaces" aria-label="Workspaces">
 		<header>
 			<h2>Workspaces</h2>
