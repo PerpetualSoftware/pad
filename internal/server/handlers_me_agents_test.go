@@ -1157,3 +1157,145 @@ func TestMeAgents_ParamsValidation(t *testing.T) {
 		t.Errorf("finished = %+v, want empty when finished=0", got.Agents[0].Finished)
 	}
 }
+
+func TestMeAgents_FinishedRestrictedNotCutByHiddenRows(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+
+	owner := mkAgentsUser(t, srv, "fin-vis-owner@example.com", "Fin Owner")
+	guest := mkAgentsUser(t, srv, "fin-vis-guest@example.com", "Fin Guest")
+	restricted := mkAgentsUser(t, srv, "fin-vis-restricted@example.com", "Fin Restricted")
+
+	guestTok := mkAgentsPAT(t, srv, guest.ID, "")
+	restrictedTok := mkAgentsPAT(t, srv, restricted.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{
+		Name: "Fin Vis WS", Slug: "fin-vis-ws", OwnerID: owner.ID,
+	})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member owner: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, restricted.ID, "editor"); err != nil {
+		t.Fatalf("member restricted: %v", err)
+	}
+
+	visColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Visible", Slug: "visible", Prefix: "VIS", Schema: meAgentsStdSchema,
+	})
+	if err != nil {
+		t.Fatalf("visColl: %v", err)
+	}
+	hidColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Hidden", Slug: "hidden", Prefix: "HID", Schema: meAgentsStdSchema,
+	})
+	if err != nil {
+		t.Fatalf("hidColl: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, restricted.ID, "specific", []string{visColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	role, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Builder", Slug: "builder"})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+
+	insertTransition := func(id, itemID, collID string, at time.Time) {
+		t.Helper()
+		if _, err := srv.store.DB().Exec(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, 'status', 'open', 'done', ?)`,
+			id, itemID, ws.ID, collID, at.UTC().Format(time.RFC3339),
+		); err != nil {
+			t.Fatalf("insert transition %s: %v", id, err)
+		}
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// 1. One completed item in hidColl granted individually to guest (oldest of all).
+	guestItem, err := srv.store.CreateItem(ws.ID, hidColl.ID, models.ItemCreate{
+		Title: "Guest Granted Done", Fields: `{"status":"done"}`, AgentRoleID: &role.ID,
+	})
+	if err != nil {
+		t.Fatalf("guestItem: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, guestItem.ID); err != nil {
+		t.Fatalf("clear guestItem transitions: %v", err)
+	}
+	insertTransition("tr-guest-done", guestItem.ID, hidColl.ID, now.Add(-20*time.Hour))
+	guestItem, _ = srv.store.GetItem(guestItem.ID)
+	if _, err := srv.store.CreateItemGrant(ws.ID, guestItem.ID, guest.ID, "view", owner.ID); err != nil {
+		t.Fatalf("CreateItemGrant: %v", err)
+	}
+
+	// 2. Five completed items in visColl (older than the hidden ones, newer than guestItem).
+	var visRefs []string
+	for i := 0; i < 5; i++ {
+		it, err := srv.store.CreateItem(ws.ID, visColl.ID, models.ItemCreate{
+			Title: fmt.Sprintf("Visible Done %d", i), Fields: `{"status":"done"}`, AgentRoleID: &role.ID,
+		})
+		if err != nil {
+			t.Fatalf("visItem %d: %v", i, err)
+		}
+		if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, it.ID); err != nil {
+			t.Fatalf("clear visItem transitions: %v", err)
+		}
+		insertTransition(fmt.Sprintf("tr-vis-done-%d", i), it.ID, visColl.ID, now.Add(-time.Duration(10+i)*time.Hour))
+		it, _ = srv.store.GetItem(it.ID)
+		visRefs = append(visRefs, it.Ref)
+	}
+
+	// 3. Six newer completed items in hidColl (newest of all, invisible to both guest and restricted).
+	for i := 0; i < 6; i++ {
+		it, err := srv.store.CreateItem(ws.ID, hidColl.ID, models.ItemCreate{
+			Title: fmt.Sprintf("Hidden Newer Done %d", i), Fields: `{"status":"done"}`, AgentRoleID: &role.ID,
+		})
+		if err != nil {
+			t.Fatalf("hidItem %d: %v", i, err)
+		}
+		if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, it.ID); err != nil {
+			t.Fatalf("clear hidItem transitions: %v", err)
+		}
+		insertTransition(fmt.Sprintf("tr-hid-done-%d", i), it.ID, hidColl.ID, now.Add(-time.Duration(1+i)*time.Minute))
+	}
+
+	// Guest with finished=5 must still see their 1 granted completed item despite 6 newer hidden completions.
+	rrGuest := doRequestWithHeaders(srv, http.MethodGet, "/api/v1/me/agents?finished=5", nil, bearerHdr(guestTok))
+	if rrGuest.Code != http.StatusOK {
+		t.Fatalf("guest GET /me/agents: %d %s", rrGuest.Code, rrGuest.Body.String())
+	}
+	var gotGuest meAgentsTestResponse
+	parseJSON(t, rrGuest, &gotGuest)
+	if len(gotGuest.Agents) != 1 {
+		t.Fatalf("guest agents len = %d, want 1: %+v", len(gotGuest.Agents), gotGuest.Agents)
+	}
+	if len(gotGuest.Agents[0].Finished) != 1 {
+		t.Fatalf("guest finished len = %d, want 1: %+v", len(gotGuest.Agents[0].Finished), gotGuest.Agents[0].Finished)
+	}
+	if gotGuest.Agents[0].Finished[0].Ref != guestItem.Ref {
+		t.Errorf("guest finished[0].Ref = %q, want %q", gotGuest.Agents[0].Finished[0].Ref, guestItem.Ref)
+	}
+
+	// Restricted member with one visible collection gets all N=5 visible completions despite 6 newer hidden ones.
+	rrRest := doRequestWithHeaders(srv, http.MethodGet, "/api/v1/me/agents?finished=5", nil, bearerHdr(restrictedTok))
+	if rrRest.Code != http.StatusOK {
+		t.Fatalf("restricted GET /me/agents: %d %s", rrRest.Code, rrRest.Body.String())
+	}
+	var gotRest meAgentsTestResponse
+	parseJSON(t, rrRest, &gotRest)
+	if len(gotRest.Agents) != 1 {
+		t.Fatalf("restricted agents len = %d, want 1: %+v", len(gotRest.Agents), gotRest.Agents)
+	}
+	if len(gotRest.Agents[0].Finished) != 5 {
+		t.Fatalf("restricted finished len = %d, want 5: %+v", len(gotRest.Agents[0].Finished), gotRest.Agents[0].Finished)
+	}
+	for i, wantRef := range visRefs {
+		if gotRest.Agents[0].Finished[i].Ref != wantRef {
+			t.Errorf("restricted finished[%d].Ref = %q, want %q", i, gotRest.Agents[0].Finished[i].Ref, wantRef)
+		}
+	}
+}

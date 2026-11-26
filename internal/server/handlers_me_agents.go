@@ -270,7 +270,12 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 		var finishedRows []store.WorkspaceRoleFinishedRow
 		if finishedLimit > 0 {
 			finishedFilters := buildFinishedCollectionFilters(collsByID)
-			finishedRows, err = s.store.ListWorkspaceRoleFinishedItemsQ(q, ws.ID, roleIDs, finishedFilters, finishedSince, finishedLimit, meAgentsFinishedSQLCap)
+			finishedVis := store.FinishedVisibility{
+				Unrestricted:  vis.unrestricted,
+				CollectionIDs: fullCollIDs,
+				ItemIDs:       grantedItemIDs,
+			}
+			finishedRows, err = s.store.ListWorkspaceRoleFinishedItemsQ(q, ws.ID, roleIDs, finishedFilters, finishedVis, finishedSince, finishedLimit, meAgentsFinishedSQLCap)
 			if err != nil {
 				slog.Error("me/agents: finished items failed; workspace degraded", "workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", err)
 				degraded = append(degraded, ws.Slug)
@@ -309,8 +314,8 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		collMetaCache := make(map[string]finishedCollMeta)
 		seenFinished := make(map[string]bool)
-		// Visibility is applied in Go after the SQL per-role cap (finishedLimit),
-		// so a restricted viewer can see fewer than finishedLimit items for a role.
+		// Go-side visibility check is kept as a second guard (and filters rows
+		// when the store falls back to 4x over-fetch for >500 visibility IDs).
 		for _, row := range finishedRows {
 			if seenFinished[row.ItemID] {
 				continue

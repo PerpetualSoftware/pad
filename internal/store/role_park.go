@@ -396,9 +396,25 @@ type FinishedCollectionFilter struct {
 	Values       []string
 }
 
+const (
+	maxFinishedVisibilityIDs          = 500
+	finishedVisibilityOverfetchFactor = 4
+)
+
+// FinishedVisibility scopes ListWorkspaceRoleFinishedItemsQ to items visible
+// to the caller before the per-role cap is applied. When Unrestricted is true,
+// no visibility predicate is added. Otherwise an item is eligible when its
+// collection_id is in CollectionIDs or its id is in ItemIDs; when both slices
+// are empty, no query is issued.
+type FinishedVisibility struct {
+	Unrestricted  bool
+	CollectionIDs []string
+	ItemIDs       []string
+}
+
 // WorkspaceRoleFinishedRow is one candidate status-transition row returned by
-// ListWorkspaceRoleFinishedItemsQ for post-visibility, done-key, current-value
-// matching and per-item deduplication.
+// ListWorkspaceRoleFinishedItemsQ for done-key, current-value matching,
+// defense-in-depth visibility checking, and per-item deduplication.
 type WorkspaceRoleFinishedRow struct {
 	ItemID       string
 	FieldKey     string
@@ -415,14 +431,20 @@ type WorkspaceRoleFinishedRow struct {
 
 // ListWorkspaceRoleFinishedItemsQ returns candidate completion transitions for
 // live items in workspaceID assigned to one of roleIDs at or after since,
-// matching on each item's current collection against filters. It keeps only the
-// newest matching transition per item, at most perRole rows per role, and at
-// most limit rows overall, ordered newest first (created_at DESC, id DESC).
+// matching on each item's current collection against filters and applying vis
+// before the per-role cap. It keeps only the newest matching transition per
+// item, at most perRole rows per role, and at most limit rows overall, ordered
+// newest first (created_at DESC, id DESC).
+//
+// If either visibility ID list exceeds 500 entries, it falls back to omitting
+// the SQL visibility predicate and over-fetching 4x per role (and 4x overall)
+// so the caller's Go-side visibility filter can drop hidden rows.
 func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 	q Queryer,
 	workspaceID string,
 	roleIDs []string,
 	filters []FinishedCollectionFilter,
+	vis FinishedVisibility,
 	since time.Time,
 	perRole int,
 	limit int,
@@ -431,7 +453,38 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 		return nil, nil
 	}
 
-	args := make([]any, 0, 3+len(roleIDs)+len(filters)*6+2)
+	effectivePerRole := perRole
+	effectiveLimit := limit
+	var visSQL string
+	var visArgs []any
+	if !vis.Unrestricted {
+		if len(vis.CollectionIDs) == 0 && len(vis.ItemIDs) == 0 {
+			return nil, nil
+		}
+		if len(vis.CollectionIDs) > maxFinishedVisibilityIDs || len(vis.ItemIDs) > maxFinishedVisibilityIDs {
+			// Guard against oversized IN lists: fall back to the caller's
+			// Go-side visibility filter with a 4x per-role over-fetch.
+			effectivePerRole = perRole * finishedVisibilityOverfetchFactor
+			effectiveLimit = limit * finishedVisibilityOverfetchFactor
+		} else {
+			var parts []string
+			if len(vis.CollectionIDs) > 0 {
+				parts = append(parts, "i.collection_id IN ("+placeholders(len(vis.CollectionIDs))+")")
+				for _, cid := range vis.CollectionIDs {
+					visArgs = append(visArgs, cid)
+				}
+			}
+			if len(vis.ItemIDs) > 0 {
+				parts = append(parts, "i.id IN ("+placeholders(len(vis.ItemIDs))+")")
+				for _, iid := range vis.ItemIDs {
+					visArgs = append(visArgs, iid)
+				}
+			}
+			visSQL = "\n\t\t\t  AND (" + strings.Join(parts, " OR ") + ")"
+		}
+	}
+
+	args := make([]any, 0, 3+len(roleIDs)+len(filters)*6+len(visArgs)+2)
 	args = append(args, workspaceID, since.UTC().Format(time.RFC3339), workspaceID)
 	for _, rid := range roleIDs {
 		args = append(args, rid)
@@ -484,7 +537,8 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 	if len(filterClauses) == 0 {
 		return nil, nil
 	}
-	args = append(args, perRole, limit)
+	args = append(args, visArgs...)
+	args = append(args, effectivePerRole, effectiveLimit)
 
 	rows, err := q.Query(s.q(`
 		WITH item_ranked AS (
@@ -501,7 +555,7 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 			  AND i.deleted_at IS NULL
 			  AND c.deleted_at IS NULL
 			  AND i.agent_role_id IN (`+placeholders(len(roleIDs))+`)
-			  AND (`+strings.Join(filterClauses, " OR ")+`)
+			  AND (`+strings.Join(filterClauses, " OR ")+`)`+visSQL+`
 		),
 		role_ranked AS (
 			SELECT id, item_id, field_key, to_status, created_at,

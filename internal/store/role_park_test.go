@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -702,8 +704,10 @@ func TestListWorkspaceRoleFinishedItemsQ_WindowPerItemAndPerRole(t *testing.T) {
 		Values:       []string{"done"},
 	}}
 
+	unrestricted := FinishedVisibility{Unrestricted: true}
+
 	// perRole=1 keeps at most 1 item per role (newest per item, newest per role).
-	rows1, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, now.Add(-24*time.Hour), 1, 200)
+	rows1, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, unrestricted, now.Add(-24*time.Hour), 1, 200)
 	if err != nil {
 		t.Fatalf("ListWorkspaceRoleFinishedItemsQ perRole=1: %v", err)
 	}
@@ -718,11 +722,135 @@ func TestListWorkspaceRoleFinishedItemsQ_WindowPerItemAndPerRole(t *testing.T) {
 	}
 
 	// perRole=2 returns both items for each role (deduped to 1 row per item).
-	rows2, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, now.Add(-24*time.Hour), 2, 200)
+	rows2, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, unrestricted, now.Add(-24*time.Hour), 2, 200)
 	if err != nil {
 		t.Fatalf("ListWorkspaceRoleFinishedItemsQ perRole=2: %v", err)
 	}
 	if len(rows2) != 4 {
 		t.Fatalf("perRole=2 got %d rows, want 4: %+v", len(rows2), rows2)
+	}
+}
+
+type failOnQueryQueryer struct {
+	t *testing.T
+}
+
+func (f failOnQueryQueryer) Query(query string, args ...any) (*sql.Rows, error) {
+	f.t.Fatalf("unexpected Query call: %s", query)
+	return nil, nil
+}
+
+func (f failOnQueryQueryer) QueryRow(query string, args ...any) *sql.Row {
+	f.t.Fatalf("unexpected QueryRow call: %s", query)
+	return nil
+}
+
+func TestListWorkspaceRoleFinishedItemsQ_VisibilityAndFallback(t *testing.T) {
+	t.Parallel()
+	s, ws, visCol, roleA, _, items := seedRoleParkFixture(t)
+
+	hidCol, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Hidden",
+		Slug:   "hidden",
+		Prefix: "HID",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"terminal_options":["done"],"default":"open"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection hidCol: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	insertTr := func(id, itemID, collID string, at time.Time) {
+		t.Helper()
+		if _, err := s.db.Exec(s.q(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, 'status', 'open', 'done', ?)
+		`), id, itemID, ws.ID, collID, at.UTC().Format(time.RFC3339)); err != nil {
+			t.Fatalf("insert transition %s: %v", id, err)
+		}
+	}
+
+	// Mark items[0] in visCol done (older).
+	doneFields := `{"status":"done"}`
+	if _, err := s.UpdateItem(items[0].ID, models.ItemUpdate{Fields: &doneFields}); err != nil {
+		t.Fatalf("done items[0]: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id = ?`), items[0].ID); err != nil {
+		t.Fatalf("clear items[0] transitions: %v", err)
+	}
+	insertTr("vis-old", items[0].ID, visCol.ID, now.Add(-10*time.Hour))
+
+	// Create 5 newer done items in hidCol (first one will be granted individually in one check).
+	var hidIDs []string
+	for i := 0; i < 5; i++ {
+		it, err := s.CreateItem(ws.ID, hidCol.ID, models.ItemCreate{
+			Title: fmt.Sprintf("Hid %d", i), Fields: `{"status":"done"}`, AgentRoleID: &roleA.ID,
+		})
+		if err != nil {
+			t.Fatalf("create hid %d: %v", i, err)
+		}
+		if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id = ?`), it.ID); err != nil {
+			t.Fatalf("clear hid %d transitions: %v", i, err)
+		}
+		insertTr(fmt.Sprintf("hid-%d", i), it.ID, hidCol.ID, now.Add(-time.Duration(5-i)*time.Minute))
+		hidIDs = append(hidIDs, it.ID)
+	}
+
+	filters := []FinishedCollectionFilter{
+		{CollectionID: visCol.ID, FieldKey: "status", Values: []string{"done"}},
+		{CollectionID: hidCol.ID, FieldKey: "status", Values: []string{"done"}},
+	}
+
+	// 1. Restricted with empty sets: returns nil without executing any SQL query.
+	emptyRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		failOnQueryQueryer{t: t}, ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{}, now.Add(-24*time.Hour), 2, 200,
+	)
+	if err != nil {
+		t.Fatalf("empty vis: %v", err)
+	}
+	if len(emptyRows) != 0 {
+		t.Fatalf("empty vis got %d rows, want 0", len(emptyRows))
+	}
+
+	// 2. Restricted to visCol only: gets items[0] despite 5 newer hidCol items with perRole=1.
+	colRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		s.Q(), ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{CollectionIDs: []string{visCol.ID}}, now.Add(-24*time.Hour), 1, 200,
+	)
+	if err != nil {
+		t.Fatalf("collection vis: %v", err)
+	}
+	if len(colRows) != 1 || colRows[0].ItemID != items[0].ID {
+		t.Fatalf("collection vis = %+v, want [%s]", colRows, items[0].ID)
+	}
+
+	// 3. Restricted to oldest hid item by ItemID: gets hidIDs[0] despite 4 newer hid items with perRole=1.
+	itemRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		s.Q(), ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{ItemIDs: []string{hidIDs[0]}}, now.Add(-24*time.Hour), 1, 200,
+	)
+	if err != nil {
+		t.Fatalf("item vis: %v", err)
+	}
+	if len(itemRows) != 1 || itemRows[0].ItemID != hidIDs[0] {
+		t.Fatalf("item vis = %+v, want [%s]", itemRows, hidIDs[0])
+	}
+
+	// 4. Fallback when >500 IDs: omits SQL IN clause and over-fetches 4x per role (perRole=1 -> up to 4 rows).
+	bigIDs := make([]string, maxFinishedVisibilityIDs+1)
+	for i := range bigIDs {
+		bigIDs[i] = fmt.Sprintf("synthetic-id-%d", i)
+	}
+	bigIDs[0] = items[0].ID
+	fallbackRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		s.Q(), ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{ItemIDs: bigIDs}, now.Add(-24*time.Hour), 1, 200,
+	)
+	if err != nil {
+		t.Fatalf("fallback vis: %v", err)
+	}
+	if len(fallbackRows) != 4 {
+		t.Fatalf("fallback vis (>500 IDs, perRole=1) got %d rows, want 4 (4x over-fetch)", len(fallbackRows))
 	}
 }
