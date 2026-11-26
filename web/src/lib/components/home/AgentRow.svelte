@@ -7,6 +7,10 @@
 	// Display = server lane + the store's optimistic overlay. Only the handlers
 	// below and a published load write the overlay; the dragged token is a
 	// plain let, never state an effect reads.
+	//
+	// One write per lane at a time: while the store marks a lane pending (a
+	// write in flight, or landed and not yet shown by a reload) its handles,
+	// drops and row actions are off, so no write is planned on stale values.
 	import { api } from '$lib/api/client';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
@@ -40,6 +44,8 @@
 	const wsName = (slug: string) => workspaceStore.workspaces.find(ws => ws.slug === slug)?.name ?? slug;
 	const views = $derived(new Map(lanes.map(lane => [laneKey(lane), laneView(lane, agentsOverview.overlay[laneKey(lane)])])));
 	const viewOf = (lane: RoleQueueResponse): LaneView => views.get(laneKey(lane)) ?? laneView(lane);
+	const locked = (lane: RoleQueueResponse) => agentsOverview.isPending(laneKey(lane));
+	const anyLocked = $derived(lanes.some(lane => agentsOverview.isPending(laneKey(lane))));
 	const extraNow = $derived.by(() => {
 		const rest = nowItems.length - 1;
 		if (rest < 1 || !first) return '';
@@ -64,25 +70,30 @@
 
 	async function reorder(lane: RoleQueueResponse, next: LaneOverlay, movedRef: string, notice?: string) {
 		const key = laneKey(lane);
-		const shownRefs = viewOf(lane).items.map(item => item.ref);
+		if (locked(lane)) return;
+		const shown = lane.queue.length;
 		// A truncated lane's end is not open: at the queue read limit there is no
 		// next item to bound it, so the last slot is left to the Roles board.
-		if (lane.queue_more && shownRefs.length >= AGENTS_SHOW_ALL_LIMIT && next.refs.indexOf(movedRef) === next.refs.length - 1) {
+		if (lane.queue_more && shown >= AGENTS_SHOW_ALL_LIMIT && next.refs.indexOf(movedRef) === next.refs.length - 1) {
 			fail('This queue is longer than shown here. Use the Roles board to move an item to the end.');
 			return;
 		}
 		const sameIdentity = authStore.identityFence();
 		const release = hold();
+		agentsOverview.beginWrite(key);
 		agentsOverview.setOverlay(key, next);
+		// ok: the lane stays pending until a reload shows the server state.
+		let ok = false;
 		try {
 			let planned = lane;
 			let bound: RoleQueueItem | null = null;
-			if (lane.queue_more && shownRefs.length < AGENTS_SHOW_ALL_LIMIT) {
-				const fresh = boundLane(lane, shownRefs, await api.agentRoles.queue(lane.workspace, lane.role.slug, shownRefs.length + 1));
+			if (lane.queue_more && shown < AGENTS_SHOW_ALL_LIMIT) {
+				const fresh = boundLane(lane, await api.agentRoles.queue(lane.workspace, lane.role.slug, shown + 1));
 				if (!sameIdentity()) return;
 				if (!fresh.ok) {
 					agentsOverview.clearOverlay(key);
 					toastStore.show('The queue changed meanwhile. Showing the latest.', 'info');
+					ok = true;
 					return;
 				}
 				planned = fresh.lane;
@@ -103,54 +114,75 @@
 				await api.agentRoles.reorder(lane.workspace, plan.writes.map((w, i) => ({ item_id: ids[i].id, role_sort_order: w.sort_order })));
 				if (!sameIdentity()) return;
 			}
+			ok = true;
 			if (notice) toastStore.show(notice, 'info');
 		} catch {
 			if (!sameIdentity()) return;
 			agentsOverview.clearOverlay(key);
 			fail("Couldn't save the queue order.");
 		} finally {
-			if (sameIdentity()) release(true);
+			if (sameIdentity()) {
+				agentsOverview.endWrite(key, ok);
+				release(true);
+			}
 		}
 	}
 
 	async function park(lane: RoleQueueResponse, body: RoleParkRequest, next?: LaneOverlay) {
 		const key = laneKey(lane);
+		if (locked(lane)) return;
 		const sameIdentity = authStore.identityFence();
 		const release = hold();
+		agentsOverview.beginWrite(key);
 		if (next) agentsOverview.setOverlay(key, next);
+		let ok = false;
 		try {
 			await api.agentRoles.park(lane.workspace, lane.role.slug, lane.park ? { ...body, expected_park_seq: lane.park.park_seq } : body);
+			ok = true;
 		} catch (err) {
 			if (!sameIdentity()) return;
 			agentsOverview.clearOverlay(key);
 			fail(codeOf(err) === 'park_conflict' ? 'The stop line moved meanwhile. Showing the latest.' : "Couldn't move the stop line.");
 		} finally {
-			if (sameIdentity()) release(true);
+			if (sameIdentity()) {
+				agentsOverview.endWrite(key, ok);
+				release(true);
+			}
 		}
 	}
 
 	async function unpark(lane: RoleQueueResponse) {
+		const key = laneKey(lane);
+		if (locked(lane)) return;
 		const sameIdentity = authStore.identityFence();
 		const release = hold();
+		agentsOverview.beginWrite(key);
+		let ok = false;
 		try {
 			await api.agentRoles.unpark(lane.workspace, lane.role.slug, lane.park?.park_seq);
+			ok = true;
 		} catch (err) {
 			if (sameIdentity()) fail(codeOf(err) === 'park_conflict' ? 'The stop line moved meanwhile. Showing the latest.' : "Couldn't unpark this lane.");
 		} finally {
-			if (sameIdentity()) release(true);
+			if (sameIdentity()) {
+				agentsOverview.endWrite(key, ok);
+				release(true);
+			}
 		}
 	}
 
 	async function parkAfterCurrent() {
-		if (busy) return;
+		if (busy || anyLocked) return;
 		const sameIdentity = authStore.identityFence();
 		const release = hold();
 		busy = true;
 		const target = lanes.filter(lane => lane.can_park);
 		const skipped = lanes.filter(lane => !lane.can_park).map(lane => wsName(lane.workspace));
+		for (const lane of target) agentsOverview.beginWrite(laneKey(lane));
 		const results = await Promise.allSettled(target.map(lane => api.agentRoles.park(lane.workspace, lane.role.slug, lane.park ? { at: 'top', expected_park_seq: lane.park.park_seq } : { at: 'top' })));
 		if (!sameIdentity()) return;
 		busy = false;
+		target.forEach((lane, i) => agentsOverview.endWrite(laneKey(lane), results[i].status === 'fulfilled'));
 		const failed = target.filter((_, i) => results[i].status === 'rejected').map(lane => wsName(lane.workspace));
 		const done = target.length - failed.length;
 		const parts = [`${agent.name} parked after current work on ${done} ${done === 1 ? 'lane' : 'lanes'}.`];
@@ -161,14 +193,16 @@
 	}
 
 	async function unparkAll() {
-		if (busy) return;
+		if (busy || anyLocked) return;
 		const sameIdentity = authStore.identityFence();
 		const release = hold();
 		busy = true;
 		const target = lanes.filter(lane => lane.can_park && lane.park);
+		for (const lane of target) agentsOverview.beginWrite(laneKey(lane));
 		const results = await Promise.allSettled(target.map(lane => api.agentRoles.unpark(lane.workspace, lane.role.slug, lane.park?.park_seq)));
 		if (!sameIdentity()) return;
 		busy = false;
+		target.forEach((lane, i) => agentsOverview.endWrite(laneKey(lane), results[i].status === 'fulfilled'));
 		if (results.some(r => r.status === 'rejected')) fail(`Couldn't unpark every lane of ${agent.name}.`);
 		release(true);
 	}
@@ -198,16 +232,24 @@
 
 	async function reassign(lane: RoleQueueResponse, ref: string, role: AgentRole) {
 		closeMenu();
+		const key = laneKey(lane);
+		if (locked(lane)) return;
 		const sameIdentity = authStore.identityFence();
 		const release = hold();
+		agentsOverview.beginWrite(key);
+		let ok = false;
 		try {
 			// The Roles board's cross-lane move; the server lands it at the bottom of the target lane.
 			await api.items.update(lane.workspace, ref, { agent_role_id: role.id });
+			ok = true;
 			if (sameIdentity()) toastStore.show(`${ref} moved to ${role.name}.`, 'success');
 		} catch {
 			if (sameIdentity()) fail(`Couldn't move ${ref} to ${role.name}.`);
 		} finally {
-			if (sameIdentity()) release(true);
+			if (sameIdentity()) {
+				agentsOverview.endWrite(key, ok);
+				release(true);
+			}
 		}
 	}
 
@@ -240,15 +282,23 @@
 		r?.();
 	}
 
+	/** Whether this lane takes the dragged token now: the line where can_park, an item where it may move. */
+	function accepts(lane: RoleQueueResponse, token: string) {
+		if (locked(lane)) return false;
+		if (token === LINE) return lane.can_park;
+		const item = lane.queue.find(i => i.ref === token);
+		return !!item && canMove(lane, item);
+	}
+
 	function dragOver(e: DragEvent, lane: RoleQueueResponse, target: string) {
-		if (!dragToken || dragLane !== laneKey(lane)) return;
+		if (!dragToken || dragLane !== laneKey(lane) || !accepts(lane, dragToken)) return;
 		e.preventDefault();
 		dropAt = `${laneKey(lane)}#${target}`;
 	}
 
 	/** Drop the dragged token before `target` (an item ref, LINE, or '' for the end). */
 	function drop(e: DragEvent, lane: RoleQueueResponse, target: string) {
-		if (!dragToken || dragLane !== laneKey(lane)) return;
+		if (!dragToken || dragLane !== laneKey(lane) || !accepts(lane, dragToken)) return;
 		e.preventDefault();
 		const token = dragToken;
 		const view = viewOf(lane);
@@ -276,7 +326,7 @@
 </script>
 
 {#snippet lineRule(lane: RoleQueueResponse, view: LaneView)}
-	{@const draggable = !compact && lane.can_park}
+	{@const draggable = !compact && lane.can_park && !locked(lane)}
 	<li class="line" class:drop={dropAt === `${laneKey(lane)}#${LINE}`} role="separator" aria-label={`${lineLabel(lane.park?.set_by ?? null, lane.park?.set_at ?? null, zone)}${view.mode === 'top' ? ', before every queued item' : ''}`}
 		draggable={draggable ? 'true' : undefined}
 		ondragstart={draggable ? (e) => dragStart(e, lane, LINE) : undefined}
@@ -284,8 +334,8 @@
 		ondragover={(e) => dragOver(e, lane, LINE)}
 		ondrop={(e) => drop(e, lane, LINE)}>
 		<span class="rule" aria-hidden="true"></span>
-		<span class="stop" class:grab={draggable}>{#if draggable}<span class="handle" aria-hidden="true">⠿</span>{/if}<strong>Stop here.</strong> {lineLabel(lane.park?.set_by ?? null, lane.park?.set_at ?? null, zone).replace(/^Stop here\.? ?/, '')}
-			{#if lane.can_park}<button type="button" class="unpark-x" aria-label={`Unpark ${lane.role.name} in ${wsName(lane.workspace)}`} onclick={() => unpark(lane)}>×</button>{/if}
+		<span class="stop" class:grab={draggable}>{#if !compact && lane.can_park}<span class="handle" aria-hidden="true">⠿</span>{/if}<strong>Stop here.</strong> {lineLabel(lane.park?.set_by ?? null, lane.park?.set_at ?? null, zone).replace(/^Stop here\.? ?/, '')}
+			{#if lane.can_park}<button type="button" class="unpark-x" aria-label={`Unpark ${lane.role.name} in ${wsName(lane.workspace)}`} disabled={locked(lane)} onclick={() => unpark(lane)}>×</button>{/if}
 		</span>
 		<span class="rule" aria-hidden="true"></span>
 	</li>
@@ -313,8 +363,8 @@
 		<div class="detail">
 			{#if canParkAny || canUnparkAny}
 				<div class="actions">
-					{#if canParkAny}<button type="button" class="action" disabled={busy} onclick={parkAfterCurrent}>❙❙ Park after current</button>{/if}
-					{#if canUnparkAny}<button type="button" class="action" disabled={busy} onclick={unparkAll}>▶ Unpark</button>{/if}
+					{#if canParkAny}<button type="button" class="action" disabled={busy || anyLocked} onclick={parkAfterCurrent}>❙❙ Park after current</button>{/if}
+					{#if canUnparkAny}<button type="button" class="action" disabled={busy || anyLocked} onclick={unparkAll}>▶ Unpark</button>{/if}
 					<span class="lanes-count">{lanes.length} {lanes.length === 1 ? 'lane' : 'lanes'}</span>
 				</div>
 			{/if}
@@ -354,7 +404,8 @@
 							<ul class="queue">
 								{#if view.line === 0}{@render lineRule(lane, view)}{/if}
 								{#each view.items as item, i (item.ref)}
-									{@const movable = !compact && canMove(lane, item)}
+									{@const lk = locked(lane)}
+									{@const movable = !compact && canMove(lane, item) && !lk}
 									{@const isParked = view.line !== null && i >= view.line}
 									{@const mk = `${key}#${item.ref}`}
 									<li class="row" class:parked={isParked} class:drop={dropAt === mk}
@@ -363,7 +414,7 @@
 										ondragend={movable ? dragEnd : undefined}
 										ondragover={(e) => dragOver(e, lane, item.ref)}
 										ondrop={(e) => drop(e, lane, item.ref)}>
-										<span class="handle" aria-hidden="true">{movable ? '⠿' : ''}</span>
+										<span class="handle" aria-hidden="true">{!compact && canMove(lane, item) ? '⠿' : ''}</span>
 										<span class="pos">{i + 1}</span><span class="ref">{item.ref}</span><span class="title">{item.title}</span>
 										{#if item.blocked}<span class="chip blocked">blocked</span>{/if}
 										{#if isParked}<em class="parked-tag">parked</em>{/if}
@@ -378,14 +429,14 @@
 													{:else}{#each reassigning.roles as role (role.id)}<MenuItem icon={role.icon || undefined} onclick={() => reassign(lane, item.ref, role)}>{role.name}</MenuItem>{/each}{/if}
 												{:else}
 													{#if canMove(lane, item)}
-														<MenuItem icon="⤒" disabled={i === 0 && (view.mode === 'top' || view.line !== 0)} onclick={() => { closeMenu(); doNext(lane, item.ref); }}>Do next</MenuItem>
-														<MenuItem icon="↑" disabled={!stepOrder(view, item.ref, -1)} onclick={() => { closeMenu(); step(lane, item.ref, -1); }}>Move up</MenuItem>
-														<MenuItem icon="↓" disabled={!stepOrder(view, item.ref, 1)} onclick={() => { closeMenu(); step(lane, item.ref, 1); }}>Move down</MenuItem>
-														<MenuItem icon="⇄" onclick={() => openReassign(lane, item.ref)}>Reassign…</MenuItem>
+														<MenuItem icon="⤒" disabled={lk || (i === 0 && (view.mode === 'top' || view.line !== 0))} onclick={() => { closeMenu(); doNext(lane, item.ref); }}>Do next</MenuItem>
+														<MenuItem icon="↑" disabled={lk || !stepOrder(view, item.ref, -1)} onclick={() => { closeMenu(); step(lane, item.ref, -1); }}>Move up</MenuItem>
+														<MenuItem icon="↓" disabled={lk || !stepOrder(view, item.ref, 1)} onclick={() => { closeMenu(); step(lane, item.ref, 1); }}>Move down</MenuItem>
+														<MenuItem icon="⇄" disabled={lk} onclick={() => openReassign(lane, item.ref)}>Reassign…</MenuItem>
 													{/if}
 													{#if lane.can_park}
-														<MenuItem icon="❙❙" onclick={() => { closeMenu(); void park(lane, { before: item.ref }); }}>Park before this</MenuItem>
-														{#if lane.park}<MenuItem icon="▶" onclick={() => { closeMenu(); void unpark(lane); }}>Unpark</MenuItem>{/if}
+														<MenuItem icon="❙❙" disabled={lk} onclick={() => { closeMenu(); void park(lane, { before: item.ref }); }}>Park before this</MenuItem>
+														{#if lane.park}<MenuItem icon="▶" disabled={lk} onclick={() => { closeMenu(); void unpark(lane); }}>Unpark</MenuItem>{/if}
 													{/if}
 												{/if}
 											</Menu>
@@ -393,7 +444,7 @@
 									</li>
 									{#if view.line === i + 1}{@render lineRule(lane, view)}{/if}
 								{/each}
-								{#if !compact && lane.can_reorder && view.items.length}
+								{#if !compact && (lane.can_reorder || lane.can_park) && view.items.length}
 									<li class="end-drop" class:drop={dropAt === `${key}#`} aria-hidden="true" ondragover={(e) => dragOver(e, lane, '')} ondrop={(e) => drop(e, lane, '')}></li>
 								{/if}
 							</ul>

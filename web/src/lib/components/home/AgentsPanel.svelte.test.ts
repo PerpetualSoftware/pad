@@ -28,6 +28,7 @@ vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/services/homeLive', () => ({ homeLive: { register: (cb: () => unknown) => { h.live.push(cb); return () => { h.live = h.live.filter(c => c !== cb); }; } } }));
 
 import AgentsPanel from './AgentsPanel.svelte';
+import { agentsOverview } from '$lib/stores/agentsOverview.svelte';
 
 const item = (ref: string, sort: number, can_edit = true) => ({ ref, title: `Title ${ref}`, status: 'open', priority: 'high', role_sort_order: sort, blocked: false, ready: true, can_edit });
 function lane(over: Partial<RoleQueueResponse> = {}): RoleQueueResponse {
@@ -42,6 +43,7 @@ function lane(over: Partial<RoleQueueResponse> = {}): RoleQueueResponse {
 function answer(lanes: RoleQueueResponse[]): MeAgentsResponse {
 	return { agents: [{ slug: 'impl', name: 'Implementer', icon: '🛠', lanes, finished: [], summary: { now_count: lanes.reduce((n, l) => n + l.now.length, 0), queue_total: lanes.reduce((n, l) => n + l.queue_total, 0), parked: 'some' } }], degraded: [] };
 }
+function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 async function settle() { for (let i = 0; i < 6; i++) { await Promise.resolve(); await tick(); } }
 async function open() {
 	render(AgentsPanel, { compact: h.mobile });
@@ -247,4 +249,85 @@ it('at the read limit a truncated lane refuses a move to the last shown slot', a
 	expect(h.queue).not.toHaveBeenCalled();
 	expect(h.reorder).not.toHaveBeenCalled();
 	expect(h.toast).toHaveBeenCalledWith(expect.stringContaining('Roles board'), 'error');
+});
+
+it('with can_park but not can_reorder the line can be dropped after the last item', async () => {
+	h.agents.mockResolvedValue(answer([lane({ can_reorder: false })]));
+	await open();
+	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
+	const line = within(padLane).getByRole('separator');
+	const end = padLane.querySelector('li.end-drop');
+	expect(end).not.toBeNull();
+	await fireEvent.dragStart(line);
+	await fireEvent.dragOver(end!);
+	await fireEvent.drop(end!);
+	await settle();
+	expect(h.park).toHaveBeenCalledWith('pad', 'impl', { after: 'TASK-3', expected_park_seq: 4 });
+	expect(h.reorder).not.toHaveBeenCalled();
+});
+
+it('a second lane write waits for the reload after the first, then plans against the new values', async () => {
+	h.agents.mockResolvedValue(answer([lane({ park: undefined, parked_total: 0 })]));
+	await open();
+	const reload = deferred<MeAgentsResponse>();
+	h.agents.mockReturnValueOnce(reload.promise);
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-3' }));
+	await fireEvent.click(await screen.findByRole('menuitem', { name: /Do next/ }));
+	await settle();
+	expect(h.reorder).toHaveBeenCalledTimes(1);
+	expect(h.agents).toHaveBeenCalledTimes(2);
+
+	// The write landed but its reload has not published: the lane stays locked.
+	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
+	expect(within(padLane).getByText('Title TASK-2').closest('li')).not.toHaveAttribute('draggable');
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-1' }));
+	for (const name of [/Do next/, /Move up/, /Move down/, /Reassign/, /Park before this/]) {
+		expect(await screen.findByRole('menuitem', { name })).toBeDisabled();
+	}
+	await fireEvent.click(screen.getByRole('menuitem', { name: /Move up/ }));
+	await settle();
+	expect(h.reorder).toHaveBeenCalledTimes(1);
+	await fireEvent.keyDown(document.activeElement ?? document.body, { key: 'Escape' });
+	await settle();
+
+	const values: Record<string, number> = { 'TASK-3': 0, 'TASK-1': 1024, 'TASK-2': 2048 };
+	reload.resolve(answer([lane({ park: undefined, parked_total: 0, queue: [item('TASK-3', 0), item('TASK-1', 1024), item('TASK-2', 2048)] })]));
+	await settle();
+	if (!screen.queryByRole('menuitem', { name: /Move up/ })) await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-1' }));
+	const up = await screen.findByRole('menuitem', { name: /Move up/ });
+	expect(up).not.toBeDisabled();
+	await fireEvent.click(up);
+	await settle();
+	expect(h.reorder).toHaveBeenCalledTimes(2);
+	const writes = h.reorder.mock.calls[1][1] as { item_id: string; role_sort_order: number }[];
+	for (const w of writes) values[w.item_id.replace(/^id-/, '')] = w.role_sort_order;
+	expect(values['TASK-1']).toBeLessThan(values['TASK-3']);
+	expect(values['TASK-3']).toBeLessThan(values['TASK-2']);
+});
+
+it('a failed lane write unlocks the lane', async () => {
+	h.agents.mockResolvedValue(answer([lane({ park: undefined, parked_total: 0 })]));
+	h.reorder.mockRejectedValueOnce(new Error('boom'));
+	await open();
+	h.agents.mockReturnValueOnce(new Promise(() => {}));
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-3' }));
+	await fireEvent.click(await screen.findByRole('menuitem', { name: /Do next/ }));
+	await settle();
+	expect(h.toast).toHaveBeenCalledWith("Couldn't save the queue order.", 'error');
+	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
+	expect(within(padLane).getByText('Title TASK-2').closest('li')).toHaveAttribute('draggable', 'true');
+});
+
+it('a truncated lane checks the fresh prefix against the server order, not the shown overlay', async () => {
+	h.agents.mockResolvedValue(answer([lane({ park: undefined, queue_more: true, queue_total: 4, parked_total: 0 })]));
+	h.queue.mockResolvedValue(lane({ park: undefined, queue: [item('TASK-1', 1024), item('TASK-2', 2048), item('TASK-3', 3072), item('TASK-4', 3100)], queue_total: 4 }));
+	await open();
+	agentsOverview.setOverlay('pad/impl', { refs: ['TASK-2', 'TASK-1', 'TASK-3'], line: null });
+	await settle();
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-1' }));
+	await fireEvent.click(await screen.findByRole('menuitem', { name: /Move down/ }));
+	await settle();
+	expect(h.queue).toHaveBeenCalledWith('pad', 'impl', 4);
+	expect(h.toast).not.toHaveBeenCalledWith('The queue changed meanwhile. Showing the latest.', 'info');
+	expect(h.reorder).toHaveBeenCalledTimes(1);
 });

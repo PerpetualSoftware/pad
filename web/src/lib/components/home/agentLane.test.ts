@@ -85,10 +85,10 @@ it('a truncated lane with its line hidden keeps the last shown slot above the li
 it('a fresh read bounds the lane with its next item and prefers its values; a changed prefix refuses', () => {
 	const l = lane(undefined, { queue_more: true, queue_total: 4 });
 	const fresh = lane(undefined, { queue: [item('A', 1000), item('B', 2048), item('C', 3072), item('D', 3100)], queue_more: false, queue_total: 4 });
-	const bounded = boundLane(l, ['A', 'B', 'C'], fresh);
+	const bounded = boundLane(l, fresh);
 	expect(bounded.ok && bounded.bound?.ref).toBe('D');
 	expect(bounded.ok && bounded.lane.queue.map(i => i.role_sort_order)).toEqual([1000, 2048, 3072]);
 	const moved = lane(undefined, { queue: [item('B', 1000), item('A', 2048), item('C', 3072), item('D', 3100)] });
-	expect(boundLane(l, ['A', 'B', 'C'], moved)).toEqual({ ok: false });
-	expect(boundLane(l, ['A', 'B', 'C'], lane(undefined, { queue: [item('A', 1024), item('B', 2048)] }))).toEqual({ ok: false });
+	expect(boundLane(l, moved)).toEqual({ ok: false });
+	expect(boundLane(l, lane(undefined, { queue: [item('A', 1024), item('B', 2048)] }))).toEqual({ ok: false });
 });

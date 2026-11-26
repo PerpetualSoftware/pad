@@ -56,3 +56,26 @@ it('a failed read shows an error without dropping what was loaded', async () => 
 	expect(agentsOverview.error).not.toBe('');
 	expect(agentsOverview.data?.agents).toHaveLength(1);
 });
+
+it('a lane write stays pending until a load started after it publishes; a failure or identity change clears it', async () => {
+	await agentsOverview.load();
+	const older = deferred<ReturnType<typeof answer>>(); h.agents.mockReturnValueOnce(older.promise);
+	const stale = agentsOverview.load();
+	agentsOverview.beginWrite('ws/impl');
+	expect(agentsOverview.isPending('ws/impl')).toBe(true);
+	agentsOverview.endWrite('ws/impl', true);
+	older.resolve(answer('before the write')); await stale;
+	expect(agentsOverview.isPending('ws/impl')).toBe(true);
+	await agentsOverview.load();
+	expect(agentsOverview.isPending('ws/impl')).toBe(false);
+
+	agentsOverview.beginWrite('ws/impl');
+	await agentsOverview.load();
+	expect(agentsOverview.isPending('ws/impl')).toBe(true);
+	agentsOverview.endWrite('ws/impl', false);
+	expect(agentsOverview.isPending('ws/impl')).toBe(false);
+
+	agentsOverview.beginWrite('ws/impl');
+	h.epoch++; h.reset();
+	expect(agentsOverview.isPending('ws/impl')).toBe(false);
+});
