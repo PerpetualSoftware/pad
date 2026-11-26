@@ -35,6 +35,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/config"
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/homehint"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/needs"
@@ -228,6 +229,12 @@ type Server struct {
 	accessKickTransport   accesskick.Transport
 	accessKickStop        func()
 	accessKickWorker      *kickPublisher
+	homeHintOnce          sync.Once
+	homeHint              *homeHintHub
+	homeHintTransportMu   sync.Mutex
+	homeHintTransport     homehint.Transport
+	homeHintStop          func()
+	homeHintWorker        *homeHintPublisher
 	sessionPresence       SessionPresence      // live event-stream connections per user (optional, PLAN-2558 S1)
 	redisHealth           *RedisHealth         // cached Redis reachability, reported by /api/v1/health/ready and pad_redis_up (optional, BUG-2727)
 	collab                *collab.RoomManager  // Yjs collab room manager (PLAN-1248); optional
@@ -861,8 +868,10 @@ func (s *Server) Stop() {
 	s.bg.Wait()
 	// The worker PROCESS goes after bg.Wait, when nothing can hand it a job.
 	s.closeMaterializer()
-	// Stop any pending home_changed coalescing timers before closing the watch bus.
+	// Stop any pending home_changed coalescing timers and cross-instance hint
+	// transport before closing the watch bus.
 	s.stopHomeHintCoalescer()
+	s.SetHomeHintTransport(nil)
 	// Watch/nudge bus (BUG-2651). Closed AFTER bg.Wait() so a background
 	// producer cannot publish into a bus that is already tearing down; both
 	// implementations are safe if one does anyway (MemoryBus finds no

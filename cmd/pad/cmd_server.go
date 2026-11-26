@@ -33,6 +33,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/collab"
 	"github.com/PerpetualSoftware/pad/internal/email"
 	"github.com/PerpetualSoftware/pad/internal/events"
+	"github.com/PerpetualSoftware/pad/internal/homehint"
 	"github.com/PerpetualSoftware/pad/internal/logging"
 	mcpserver "github.com/PerpetualSoftware/pad/internal/mcp"
 	"github.com/PerpetualSoftware/pad/internal/metrics"
@@ -781,6 +782,7 @@ func serveCmd() *cobra.Command {
 			// Without Redis there is one instance and kicks stay local.
 			if watchRedis != nil {
 				srv.SetAccessKickTransport(accesskick.NewRedisTransport(watchRedis, redisKeys))
+				srv.SetHomeHintTransport(homehint.NewRedisTransport(watchRedis, redisKeys))
 			}
 
 			// Live-session presence registry (PLAN-2558 S1), on the SAME

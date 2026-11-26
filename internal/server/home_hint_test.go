@@ -240,23 +240,7 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 	remItem := mkItem("Reminder Item")
 	remAckItem := mkItem("Reminder Ack Item")
 
-	latestBusID := func() int64 {
-		evs := srv.watchEvents.EventsSince(0)
-		if len(evs) == 0 {
-			return 0
-		}
-		return evs[len(evs)-1].ID
-	}
-
-	homeHintsSince := func(sinceID int64) []watchevents.Notification {
-		var out []watchevents.Notification
-		for _, n := range srv.watchEvents.EventsSince(sinceID) {
-			if n.Kind == watchevents.KindHomeChanged {
-				out = append(out, n)
-			}
-		}
-		return out
-	}
+	rec := recordHomeHints(t, srv)
 
 	wsBase := "/api/v1/workspaces/" + ws.Slug
 	var reopenResolutionID string
@@ -1040,34 +1024,34 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 				tc.setup(t)
 			}
 			// 1. Refused request must publish NO home_changed.
-			beforeRefused := latestBusID()
+			beforeRefused := rec.mark()
 			rrRef := tc.runRefused(t)
 			if rrRef.Code < 400 {
 				t.Fatalf("refused request unexpectedly succeeded: %d %s", rrRef.Code, rrRef.Body.String())
 			}
-			if hints := homeHintsSince(beforeRefused); len(hints) != 0 {
+			if hints := rec.since(beforeRefused); len(hints) != 0 {
 				t.Fatalf("refused request published %d home_changed hint(s): %+v", len(hints), hints)
 			}
 
 			// 1b. Preview request (when present) must succeed and publish NO home_changed.
 			if tc.runPreview != nil {
-				beforePrev := latestBusID()
+				beforePrev := rec.mark()
 				rrPrev := tc.runPreview(t)
 				if rrPrev.Code != http.StatusOK {
 					t.Fatalf("preview request got %d %s, want 200", rrPrev.Code, rrPrev.Body.String())
 				}
-				if hints := homeHintsSince(beforePrev); len(hints) != 0 {
+				if hints := rec.since(beforePrev); len(hints) != 0 {
 					t.Fatalf("preview request published %d home_changed hint(s): %+v", len(hints), hints)
 				}
 			}
 
 			// 2. Successful request must publish >= 1 home_changed with right workspace (and item(s) when itemLevel).
-			beforeOK := latestBusID()
+			beforeOK := rec.mark()
 			rrOK := tc.runOK(t)
 			if rrOK.Code != tc.wantOKCode {
 				t.Fatalf("ok request got %d %s, want %d", rrOK.Code, rrOK.Body.String(), tc.wantOKCode)
 			}
-			hints := homeHintsSince(beforeOK)
+			hints := rec.since(beforeOK)
 			if len(hints) == 0 {
 				t.Fatalf("successful request published 0 home_changed hints")
 			}
@@ -1183,9 +1167,11 @@ func TestHomeHint_CoalescesBurstPerKey(t *testing.T) {
 	itemA := "item-a"
 	itemB := "item-b"
 
+	rec := recordHomeHints(t, srv)
+
 	countFor := func(itemID string) int {
 		n := 0
-		for _, ev := range srv.watchEvents.EventsSince(0) {
+		for _, ev := range rec.since(0) {
 			if ev.Kind == watchevents.KindHomeChanged && ev.WorkspaceID == wsID && ev.CollectionID == collID && ev.ItemID == itemID {
 				n++
 			}
@@ -1256,9 +1242,11 @@ func TestHomeHint_TrailingAfterLastWrite(t *testing.T) {
 	collID := "coll-trail"
 	itemID := "item-trail"
 
+	rec := recordHomeHints(t, srv)
+
 	hintsFor := func() []watchevents.Notification {
 		var out []watchevents.Notification
-		for _, ev := range srv.watchEvents.EventsSince(0) {
+		for _, ev := range rec.since(0) {
 			if ev.Kind == watchevents.KindHomeChanged && ev.WorkspaceID == wsID && ev.CollectionID == collID && ev.ItemID == itemID {
 				out = append(out, ev)
 			}
@@ -1281,28 +1269,35 @@ func TestHomeHint_TrailingAfterLastWrite(t *testing.T) {
 		t.Fatalf("during burst inside window: %d hints, want 1 (further hints must wait for trailing edge)", got)
 	}
 
-	// Publish a sentinel event on the bus AFTER the last write call so we can
-	// prove ordering strictly by monotonic bus ID (not just wall clock).
+	// Publish a sentinel hint AFTER the last write call so we can prove
+	// ordering strictly by recorder position (not just wall clock).
 	srv.publishHomeChanged(wsID, collID, "sentinel-after-last-write")
-	var sentinelID int64
-	for _, ev := range srv.watchEvents.EventsSince(0) {
+	sentinelIdx := -1
+	for i, ev := range rec.since(0) {
 		if ev.ItemID == "sentinel-after-last-write" {
-			sentinelID = ev.ID
+			sentinelIdx = i
 		}
 	}
-	if sentinelID == 0 {
+	if sentinelIdx < 0 {
 		t.Fatal("sentinel event was not published")
 	}
 
 	// Close the window: trailing hint must be published strictly after the last write.
 	sched.fireAll()
-	got := hintsFor()
+	var got []watchevents.Notification
+	trailingIdx := -1
+	for i, ev := range rec.since(0) {
+		if ev.Kind == watchevents.KindHomeChanged && ev.WorkspaceID == wsID && ev.CollectionID == collID && ev.ItemID == itemID {
+			got = append(got, ev)
+			trailingIdx = i
+		}
+	}
 	if len(got) != 2 {
 		t.Fatalf("after window: %d hints, want 2", len(got))
 	}
 	trailing := got[1]
-	if trailing.ID <= sentinelID {
-		t.Errorf("trailing hint ID %d <= sentinel ID %d; trailing hint must be published after the last write", trailing.ID, sentinelID)
+	if trailingIdx <= sentinelIdx {
+		t.Errorf("trailing hint index %d <= sentinel index %d; trailing hint must be published after the last write", trailingIdx, sentinelIdx)
 	}
 	if trailing.Timestamp < afterLastWrite {
 		t.Errorf("trailing hint timestamp %d < afterLastWrite %d", trailing.Timestamp, afterLastWrite)
@@ -1337,64 +1332,49 @@ func TestHomeHint_LeaseRenewalAndNoopReleasePublishNone(t *testing.T) {
 
 	wsBase := "/api/v1/workspaces/" + ws.Slug
 
-	latestBusID := func() int64 {
-		evs := srv.watchEvents.EventsSince(0)
-		if len(evs) == 0 {
-			return 0
-		}
-		return evs[len(evs)-1].ID
-	}
-	homeHintsSince := func(sinceID int64) []watchevents.Notification {
-		var out []watchevents.Notification
-		for _, n := range srv.watchEvents.EventsSince(sinceID) {
-			if n.Kind == watchevents.KindHomeChanged {
-				out = append(out, n)
-			}
-		}
-		return out
-	}
+	rec := recordHomeHints(t, srv)
 
 	// 1. Initial claim (unclaimed -> held): publishes 1 hint.
-	before := latestBusID()
+	before := rec.mark()
 	rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/claim",
 		map[string]any{"holder": "agent-1"}, bearerHdr(ownerTok))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("initial claim: %d %s", rr.Code, rr.Body.String())
 	}
-	if hints := homeHintsSince(before); len(hints) != 1 {
+	if hints := rec.since(before); len(hints) != 1 {
 		t.Fatalf("initial claim published %d hints, want 1", len(hints))
 	}
 
 	// 2. Renewal / extension by the same holder while live: publishes 0 hints.
-	before = latestBusID()
+	before = rec.mark()
 	rr = doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/claim",
 		map[string]any{"holder": "agent-1", "ttl_seconds": 1800}, bearerHdr(ownerTok))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("renewal claim: %d %s", rr.Code, rr.Body.String())
 	}
-	if hints := homeHintsSince(before); len(hints) != 0 {
+	if hints := rec.since(before); len(hints) != 0 {
 		t.Fatalf("lease renewal published %d hint(s), want 0: %+v", len(hints), hints)
 	}
 
 	// 3. Release of held lease (released=true): publishes 1 hint.
-	before = latestBusID()
+	before = rec.mark()
 	rr = doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/release",
 		map[string]any{"holder": "agent-1"}, bearerHdr(ownerTok))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("release: %d %s", rr.Code, rr.Body.String())
 	}
-	if hints := homeHintsSince(before); len(hints) != 1 {
+	if hints := rec.since(before); len(hints) != 1 {
 		t.Fatalf("active release published %d hints, want 1", len(hints))
 	}
 
 	// 4. Second release when already released (released=false): publishes 0 hints.
-	before = latestBusID()
+	before = rec.mark()
 	rr = doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/release",
 		map[string]any{"holder": "agent-1"}, bearerHdr(ownerTok))
 	if rr.Code != http.StatusOK {
 		t.Fatalf("noop release: %d %s", rr.Code, rr.Body.String())
 	}
-	if hints := homeHintsSince(before); len(hints) != 0 {
+	if hints := rec.since(before); len(hints) != 0 {
 		t.Fatalf("noop release published %d hint(s), want 0: %+v", len(hints), hints)
 	}
 }
@@ -1527,36 +1507,21 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 			}
 		}
 	}
-	latestBusID := func() int64 {
-		evs := srv.watchEvents.EventsSince(0)
-		if len(evs) == 0 {
-			return 0
-		}
-		return evs[len(evs)-1].ID
-	}
-	homeHintsSince := func(sinceID int64) []watchevents.Notification {
-		var out []watchevents.Notification
-		for _, n := range srv.watchEvents.EventsSince(sinceID) {
-			if n.Kind == watchevents.KindHomeChanged {
-				out = append(out, n)
-			}
-		}
-		return out
-	}
+	rec := recordHomeHints(t, srv)
 
 	wsBase := "/api/v1/workspaces/" + ws.Slug
 
 	// 1. Content-only PATCH: publishes activity event and NO home_changed.
 	t.Run("content_only", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
 			map[string]any{"content": "Updated body text.\n\n## Acceptance criteria\n\n- AC-1: works\n"}, bearerHdr(ownerTok))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("PATCH content-only: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 0 {
+		if hints := rec.since(before); len(hints) != 0 {
 			t.Fatalf("content-only PATCH published %d home_changed hint(s), want 0: %+v", len(hints), hints)
 		}
 	})
@@ -1564,7 +1529,7 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 	// 2. Content + equivalent fields JSON (different key ordering): publishes activity event and NO home_changed.
 	t.Run("content_with_reordered_identical_fields", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
 			map[string]any{
 				"content": "Another body edit.\n\n## Acceptance criteria\n\n- AC-1: works\n",
@@ -1574,7 +1539,7 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 			t.Fatalf("PATCH reordered fields: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 0 {
+		if hints := rec.since(before); len(hints) != 0 {
 			t.Fatalf("content + identical fields PATCH published %d home_changed hint(s), want 0: %+v", len(hints), hints)
 		}
 	})
@@ -1582,14 +1547,14 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 	// 3. Status change: publishes activity event and 1 home_changed.
 	t.Run("status_change", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
 			map[string]any{"fields_patch": map[string]any{"status": "in_progress"}}, bearerHdr(ownerTok))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("PATCH status: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 1 {
+		if hints := rec.since(before); len(hints) != 1 {
 			t.Fatalf("status PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
 		}
 	})
@@ -1597,14 +1562,14 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 	// 4. Title change: publishes activity event and 1 home_changed.
 	t.Run("title_change", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
 			map[string]any{"title": "Renamed Body Test Item"}, bearerHdr(ownerTok))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("PATCH title: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 1 {
+		if hints := rec.since(before); len(hints) != 1 {
 			t.Fatalf("title PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
 		}
 	})
@@ -1612,14 +1577,14 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 	// 5. Non-status field change: publishes activity event and 1 home_changed.
 	t.Run("field_change", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
 			map[string]any{"fields_patch": map[string]any{"priority": "high"}}, bearerHdr(ownerTok))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("PATCH field: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 1 {
+		if hints := rec.since(before); len(hints) != 1 {
 			t.Fatalf("field PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
 		}
 	})
@@ -1627,14 +1592,14 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 	// 6. Role change: publishes activity event and 1 home_changed.
 	t.Run("role_change", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
 			map[string]any{"agent_role_id": roleB.ID}, bearerHdr(ownerTok))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("PATCH role: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 1 {
+		if hints := rec.since(before); len(hints) != 1 {
 			t.Fatalf("role PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
 		}
 	})
@@ -1642,14 +1607,14 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 	// 7. Assignee change: publishes activity event and 1 home_changed.
 	t.Run("assignee_change", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
 			map[string]any{"assigned_user_id": owner.ID}, bearerHdr(ownerTok))
 		if rr.Code != http.StatusOK {
 			t.Fatalf("PATCH assignee: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 1 {
+		if hints := rec.since(before); len(hints) != 1 {
 			t.Fatalf("assignee PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
 		}
 	})
@@ -1657,7 +1622,7 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 	// 8. Criterion verdicts (handlers_verifications.go): publishes activity event and NO home_changed.
 	t.Run("verifications_send_no_hint", func(t *testing.T) {
 		drainActivity()
-		before := latestBusID()
+		before := rec.mark()
 		rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/verifications",
 			map[string]any{
 				"code_revision": strings.Repeat("ab", 20),
@@ -1667,7 +1632,7 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 			t.Fatalf("POST verifications: %d %s", rr.Code, rr.Body.String())
 		}
 		waitActivity(t, sseItemUpdated, item.ID)
-		if hints := homeHintsSince(before); len(hints) != 0 {
+		if hints := rec.since(before); len(hints) != 0 {
 			t.Fatalf("verifications POST published %d home_changed hint(s), want 0: %+v", len(hints), hints)
 		}
 	})
@@ -1680,6 +1645,7 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 		f.srv.SetEventBus(bus)
 		f.srv.SetWatchEventsBus(watch)
 		f.srv.homeHintCoalesceForTesting = &homeHintCoalesceConfig{disabled: true}
+		appRec := recordHomeHints(t, f.srv)
 
 		appActCh, _, _ := bus.Subscribe(context.Background(), f.ws.ID)
 		t.Cleanup(func() { bus.Unsubscribe(appActCh) })
@@ -1698,44 +1664,28 @@ func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
 				}
 			}
 		}
-		appLatestID := func() int64 {
-			evs := watch.EventsSince(0)
-			if len(evs) == 0 {
-				return 0
-			}
-			return evs[len(evs)-1].ID
-		}
-		appHintsSince := func(sinceID int64) []watchevents.Notification {
-			var out []watchevents.Notification
-			for _, n := range watch.EventsSince(sinceID) {
-				if n.Kind == watchevents.KindHomeChanged {
-					out = append(out, n)
-				}
-			}
-			return out
-		}
 
 		// No-op fields_patch (size is already "L"): activity event yes, home_changed no.
-		before := appLatestID()
+		before := appRec.mark()
 		rr := appDo(f.srv, http.MethodPatch, f.path("/items/"+f.item.ID), f.token,
 			map[string]any{"fields_patch": map[string]any{"size": "L"}, "expected_etag": f.etag(t, f.item.ID)})
 		if rr.Code != http.StatusOK {
 			t.Fatalf("app no-op PATCH: %d %s", rr.Code, rr.Body.String())
 		}
 		waitAppAct(t)
-		if hints := appHintsSince(before); len(hints) != 0 {
+		if hints := appRec.since(before); len(hints) != 0 {
 			t.Fatalf("app no-op PATCH published %d home_changed hint(s), want 0: %+v", len(hints), hints)
 		}
 
 		// Real field change (size "L" -> "M"): activity event yes, 1 home_changed.
-		before = appLatestID()
+		before = appRec.mark()
 		rr = appDo(f.srv, http.MethodPatch, f.path("/items/"+f.item.ID), f.token,
 			map[string]any{"fields_patch": map[string]any{"size": "M"}, "expected_etag": f.etag(t, f.item.ID)})
 		if rr.Code != http.StatusOK {
 			t.Fatalf("app field PATCH: %d %s", rr.Code, rr.Body.String())
 		}
 		waitAppAct(t)
-		if hints := appHintsSince(before); len(hints) != 1 {
+		if hints := appRec.since(before); len(hints) != 1 {
 			t.Fatalf("app field PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
 		}
 	})

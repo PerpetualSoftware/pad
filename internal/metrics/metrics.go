@@ -552,7 +552,7 @@ type Metrics struct {
 	FirstWritesTotal     *prometheus.CounterVec   // kind, client
 	FirstWriteAgeSeconds *prometheus.HistogramVec // client
 
-	// HomeHintsTotal counts home_changed refetch hints published onto the watch event bus.
+	// HomeHintsTotal counts home_changed refetch hints published.
 	HomeHintsTotal prometheus.Counter
 }
 
@@ -931,7 +931,7 @@ func New() *Metrics {
 
 	homeHintsTotal := prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "pad_home_hints_total",
-		Help: "Total home_changed refetch hints published onto the watch event bus.",
+		Help: "Total home_changed refetch hints published.",
 	})
 
 	reg.MustRegister(
