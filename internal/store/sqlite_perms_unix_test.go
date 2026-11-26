@@ -137,3 +137,43 @@ func TestNewSQLiteInMemoryCreatesNoFile(t *testing.T) {
 		t.Fatalf("expected no file %q in cwd, got err=%v", memFile, err)
 	}
 }
+
+// A symlink at a sidecar path is never followed: the file it points at keeps
+// its mode, while the regular main file is still tightened.
+func TestSecureSQLiteFilesLeavesSymlinkTargets(t *testing.T) {
+	setUmask022(t)
+
+	dir := t.TempDir()
+	outside := filepath.Join(dir, "unrelated.txt")
+	if err := os.WriteFile(outside, []byte("x"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(outside, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	dbPath := filepath.Join(dir, "pad.db")
+	if err := os.WriteFile(dbPath, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile(db): %v", err)
+	}
+	if err := os.Chmod(dbPath, 0o644); err != nil {
+		t.Fatalf("Chmod(db): %v", err)
+	}
+	if err := os.Symlink(outside, dbPath+"-wal"); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	if err := secureSQLiteFiles(dbPath); err != nil {
+		t.Fatalf("secureSQLiteFiles: %v", err)
+	}
+
+	if info, err := os.Stat(outside); err != nil {
+		t.Fatalf("Stat(outside): %v", err)
+	} else if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("symlink target mode = %04o, want 0644 (untouched)", got)
+	}
+	if info, err := os.Lstat(dbPath); err != nil {
+		t.Fatalf("Lstat(db): %v", err)
+	} else if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("mode(db) = %04o, want 0600", got)
+	}
+}

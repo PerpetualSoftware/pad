@@ -38,26 +38,35 @@ func secureSQLiteFiles(dbPath string) error {
 	}
 
 	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
-		p := dbPath + suffix
-		info, err := os.Lstat(p)
-		if err != nil {
-			continue
-		}
-		mode := info.Mode()
-		if !mode.IsRegular() {
-			continue
-		}
-		perm := mode.Perm()
-		if perm&0o077 == 0 {
-			continue
-		}
-		if err := os.Chmod(p, perm&^0o077); err != nil {
-			slog.Warn("failed to tighten sqlite file permissions",
-				"path", p,
-				"mode", fmt.Sprintf("%04o", perm),
-				"error", err,
-			)
-		}
+		tightenSQLiteFile(dbPath + suffix)
 	}
 	return nil
+}
+
+// tightenSQLiteFile clears group and other bits on p when it is a regular
+// file. It opens p without following symlinks and changes the mode through
+// that descriptor, so a symlink swapped in after a check cannot redirect the
+// chmod to another file. A missing path, a symlink or a non-regular file is
+// left alone; a failed chmod logs a warning.
+func tightenSQLiteFile(p string) {
+	f, err := os.OpenFile(p, sqliteTightenOpenFlags, 0)
+	if err != nil {
+		return
+	}
+	defer func() { _ = f.Close() }()
+	info, err := f.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		return
+	}
+	perm := info.Mode().Perm()
+	if perm&0o077 == 0 {
+		return
+	}
+	if err := f.Chmod(perm &^ 0o077); err != nil {
+		slog.Warn("failed to tighten sqlite file permissions",
+			"path", p,
+			"mode", fmt.Sprintf("%04o", perm),
+			"error", err,
+		)
+	}
 }
