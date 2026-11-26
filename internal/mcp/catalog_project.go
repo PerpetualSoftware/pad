@@ -62,7 +62,7 @@ const padProjectToolDescription = `Project intelligence — computed views over 
 Actions (all require workspace):
   dashboard  — Overview: collections, active items, plans, attention, blockers, suggested next.
   next       — Top recommended items (same rank as ready). Optional: role (role queue, max 3 ready).
-  ready      — Ranked actionable items (blocked and parked excluded; see stale). Optional: role (role queue with now/park).
+  ready      — Ranked actionable items (blocked and parked excluded; see stale). Optional: role (role queue with now/park; with park set, an empty result means stop only when queue_more is false).
   stale      — Stalled, blocked, overdue, or orphaned items.
   standup    — Daily standup (done, in-progress, blockers). Optional: days (default 1).
   changelog  — Completed items. Optional: days (default 7), since, parent.

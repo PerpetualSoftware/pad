@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -18,6 +19,7 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/server"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/store/storetest"
+	"github.com/spf13/cobra"
 )
 
 func TestReadyRole_JSONAndStopMessage(t *testing.T) {
@@ -88,17 +90,22 @@ func TestReadyRole_JSONAndStopMessage(t *testing.T) {
 		t.Fatalf("requested %s?%s, want .../queue?limit=50", gotPath, gotQuery)
 	}
 	var readyJSON struct {
-		Count   int              `json:"count"`
-		Results []map[string]any `json:"results"`
-		Role    string           `json:"role"`
-		Now     []map[string]any `json:"now"`
-		Park    map[string]any   `json:"park"`
+		Count      int              `json:"count"`
+		Results    []map[string]any `json:"results"`
+		Role       string           `json:"role"`
+		Now        []map[string]any `json:"now"`
+		Park       map[string]any   `json:"park"`
+		QueueTotal int              `json:"queue_total"`
+		QueueMore  *bool            `json:"queue_more"`
 	}
 	if err := json.Unmarshal([]byte(out), &readyJSON); err != nil {
 		t.Fatalf("unmarshal ready --role json: %v\n%s", err, out)
 	}
 	if readyJSON.Count != 4 || len(readyJSON.Results) != 4 || readyJSON.Role != "implementer" || len(readyJSON.Now) != 1 || readyJSON.Park["mode"] != "line" {
 		t.Fatalf("unexpected ready --role JSON: %+v", readyJSON)
+	}
+	if readyJSON.QueueTotal != 5 || readyJSON.QueueMore == nil || *readyJSON.QueueMore {
+		t.Fatalf("ready --role queue_total=%d queue_more=%v, want 5, false", readyJSON.QueueTotal, readyJSON.QueueMore)
 	}
 
 	// next --role caps results to 3 with the same shape.
@@ -109,17 +116,22 @@ func TestReadyRole_JSONAndStopMessage(t *testing.T) {
 		t.Fatalf("next --role json: %v", runErr)
 	}
 	var nextJSON struct {
-		Count   int              `json:"count"`
-		Results []map[string]any `json:"results"`
-		Role    string           `json:"role"`
-		Now     []map[string]any `json:"now"`
-		Park    map[string]any   `json:"park"`
+		Count      int              `json:"count"`
+		Results    []map[string]any `json:"results"`
+		Role       string           `json:"role"`
+		Now        []map[string]any `json:"now"`
+		Park       map[string]any   `json:"park"`
+		QueueTotal int              `json:"queue_total"`
+		QueueMore  *bool            `json:"queue_more"`
 	}
 	if err := json.Unmarshal([]byte(out), &nextJSON); err != nil {
 		t.Fatalf("unmarshal next --role json: %v\n%s", err, out)
 	}
 	if nextJSON.Count != 3 || len(nextJSON.Results) != 3 || nextJSON.Role != "implementer" {
 		t.Fatalf("next --role JSON should cap to 3: %+v", nextJSON)
+	}
+	if nextJSON.QueueTotal != 5 || nextJSON.QueueMore == nil || *nextJSON.QueueMore {
+		t.Fatalf("next --role queue_total=%d queue_more=%v, want 5, false", nextJSON.QueueTotal, nextJSON.QueueMore)
 	}
 
 	// 2. Parked and empty with Now items -> exact stop message.
@@ -187,6 +199,16 @@ func TestReadyRole_JSONAndStopMessage(t *testing.T) {
 	if strings.Contains(out, `"park"`) {
 		t.Fatalf("unparked ready --role JSON must omit park:\n%s", out)
 	}
+	var unparkedJSON map[string]any
+	if err := json.Unmarshal([]byte(out), &unparkedJSON); err != nil {
+		t.Fatalf("unmarshal unparked ready --role json: %v\n%s", err, out)
+	}
+	if _, ok := unparkedJSON["queue_total"]; !ok {
+		t.Fatalf("unparked ready --role JSON missing queue_total:\n%s", out)
+	}
+	if _, ok := unparkedJSON["queue_more"]; !ok {
+		t.Fatalf("unparked ready --role JSON missing queue_more:\n%s", out)
+	}
 
 	// 5. Without --role, output is unchanged (uses dashboard).
 	dashPayload = `{"suggested_next":[{"item_slug":"task-1","item_ref":"TASK-1","item_title":"Dash Task","collection":"tasks","reason":"High priority"}]}`
@@ -206,6 +228,167 @@ func TestReadyRole_JSONAndStopMessage(t *testing.T) {
 	}
 	if plainReady["count"] != float64(1) {
 		t.Fatalf("plain ready count = %v, want 1", plainReady["count"])
+	}
+}
+
+func TestReadyRole_QueueMoreSuppressesStopLine(t *testing.T) {
+	prevFormat := formatFlag
+	t.Cleanup(func() {
+		formatFlag = prevFormat
+		cli.SetDisplayLocationResolver(nil)
+	})
+	cli.SetDisplayLocationResolver(func() *time.Location { return time.UTC })
+
+	setAt := time.Date(2026, 11, 25, 14, 30, 0, 0, time.UTC)
+	// The first 50 entries are blocked; the park line sits further down.
+	queueItems := make([]map[string]any, 50)
+	for i := range queueItems {
+		queueItems[i] = map[string]any{
+			"ref":             fmt.Sprintf("TASK-%d", i+1),
+			"title":           fmt.Sprintf("Item %d", i+1),
+			"status":          "open",
+			"priority":        "medium",
+			"role_sort_order": (i + 1) * 1024,
+			"blocked":         true,
+			"ready":           false,
+			"can_edit":        true,
+		}
+	}
+	lineBelowRead := func(index int) map[string]any {
+		return map[string]any{
+			"mode":             "line",
+			"index":            index,
+			"first_parked_ref": fmt.Sprintf("TASK-%d", index+1),
+			"set_by":           "Alice",
+			"set_at":           setAt,
+			"park_seq":         1,
+		}
+	}
+	queuePayload := map[string]any{
+		"workspace":   "demo",
+		"role":        map[string]any{"slug": "implementer", "name": "Implementer", "icon": "🔨"},
+		"can_reorder": true,
+		"can_park":    true,
+		"now": []map[string]any{
+			{"ref": "TASK-100", "title": "In flight", "status": "in_progress", "since": setAt, "lease": nil, "live": "unknown"},
+		},
+		"queue":        queueItems,
+		"park":         lineBelowRead(60),
+		"queue_total":  73,
+		"parked_total": 13,
+		"queue_more":   true,
+	}
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/workspaces/demo/agent-roles/implementer/queue", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(queuePayload)
+	})
+	setupFormatRoutingTest(t, mux)
+
+	run := func(t *testing.T, mk func() *cobra.Command) string {
+		t.Helper()
+		var runErr error
+		cmd := mk()
+		cmd.SetArgs([]string{"--role", "implementer"})
+		out := captureStdout(t, func() { runErr = cmd.Execute() })
+		if runErr != nil {
+			t.Fatalf("--role run: %v", runErr)
+		}
+		return out
+	}
+	type readyJSON struct {
+		Count      int              `json:"count"`
+		Results    []map[string]any `json:"results"`
+		QueueTotal int              `json:"queue_total"`
+		QueueMore  *bool            `json:"queue_more"`
+		Park       map[string]any   `json:"park"`
+	}
+	decode := func(t *testing.T, out string) readyJSON {
+		t.Helper()
+		var got readyJSON
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatalf("unmarshal: %v\n%s", err, out)
+		}
+		if got.QueueMore == nil {
+			t.Fatalf("queue_more missing:\n%s", out)
+		}
+		return got
+	}
+
+	const wantPartial = "Nothing ready in the first 50 of 73 items in implementer's queue; the rest was not read.\n"
+	const wantStop = "Parked by Alice at 14:30: finish TASK-100, then stop.\n"
+
+	// 1. Line below the read, unread entries above it: no stop line on ready or next.
+	formatFlag = "table"
+	if out := run(t, readyCmd); out != wantPartial {
+		t.Fatalf("ready --role partial:\n got: %q\nwant: %q", out, wantPartial)
+	}
+	if out := run(t, nextCmd); out != wantPartial {
+		t.Fatalf("next --role partial:\n got: %q\nwant: %q", out, wantPartial)
+	}
+	formatFlag = "json"
+	if got := decode(t, run(t, readyCmd)); got.Count != 0 || len(got.Results) != 0 || got.QueueTotal != 73 || !*got.QueueMore || got.Park == nil {
+		t.Fatalf("partial ready JSON: %+v", got)
+	}
+	if got := decode(t, run(t, nextCmd)); got.Count != 0 || got.QueueTotal != 73 || !*got.QueueMore {
+		t.Fatalf("partial next JSON: %+v", got)
+	}
+
+	// 2. Unparked, partial read: same partial line.
+	delete(queuePayload, "park")
+	formatFlag = "table"
+	if out := run(t, readyCmd); out != wantPartial {
+		t.Fatalf("ready --role unparked partial:\n got: %q\nwant: %q", out, wantPartial)
+	}
+
+	// 3. Park line directly after the read (index 50 = len(queue)): every unread
+	// entry is parked, so the stop line prints and queue_more reads false.
+	queuePayload["park"] = lineBelowRead(50)
+	if out := run(t, readyCmd); out != wantStop {
+		t.Fatalf("ready --role line at read boundary:\n got: %q\nwant: %q", out, wantStop)
+	}
+	formatFlag = "json"
+	if got := decode(t, run(t, readyCmd)); *got.QueueMore || got.QueueTotal != 73 {
+		t.Fatalf("line at boundary JSON: %+v", got)
+	}
+
+	// 4. Park at top on a lane longer than the read: everything is parked, so
+	// the stop line prints even though the endpoint reported queue_more.
+	parked := make([]map[string]any, len(queueItems))
+	for i, it := range queueItems {
+		cp := map[string]any{}
+		for k, v := range it {
+			cp[k] = v
+		}
+		cp["blocked"] = false
+		parked[i] = cp
+	}
+	queuePayload["queue"] = parked
+	queuePayload["park"] = map[string]any{
+		"mode": "top", "index": 0, "first_parked_ref": "TASK-1",
+		"set_by": "Alice", "set_at": setAt, "park_seq": 2,
+	}
+	formatFlag = "table"
+	if out := run(t, readyCmd); out != wantStop {
+		t.Fatalf("ready --role top park, long lane:\n got: %q\nwant: %q", out, wantStop)
+	}
+	if out := run(t, nextCmd); out != wantStop {
+		t.Fatalf("next --role top park, long lane:\n got: %q\nwant: %q", out, wantStop)
+	}
+	formatFlag = "json"
+	if got := decode(t, run(t, readyCmd)); *got.QueueMore || got.Count != 0 {
+		t.Fatalf("top park JSON: %+v", got)
+	}
+
+	// 5. Whole queue read (queue_more false): the existing stop line.
+	queuePayload["queue"] = queueItems
+	queuePayload["park"] = lineBelowRead(60)
+	queuePayload["queue_more"] = false
+	queuePayload["queue_total"] = 50
+	formatFlag = "table"
+	if out := run(t, readyCmd); out != wantStop {
+		t.Fatalf("ready --role complete parked:\n got: %q\nwant: %q", out, wantStop)
 	}
 }
 
