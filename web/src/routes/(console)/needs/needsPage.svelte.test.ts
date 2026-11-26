@@ -36,6 +36,19 @@ vi.mock('$lib/api/client', () => ({
 	isUpdateConflictError: (e: unknown) => (e as { code?: string } | null)?.code === 'update_conflict'
 }));
 
+// The page's home_changed callback, captured so a test can deliver a hint directly.
+const homeHint = vi.hoisted(() => ({ fn: null as null | (() => unknown) }));
+vi.mock('$lib/services/homeLive', () => ({
+	homeLive: {
+		register: (fn: () => unknown) => {
+			homeHint.fn = fn;
+			return () => {
+				if (homeHint.fn === fn) homeHint.fn = null;
+			};
+		}
+	}
+}));
+
 const { toastStore } = await import('$lib/stores/toast.svelte');
 
 const { default: Page } = await import('./+page.svelte');
@@ -374,6 +387,42 @@ describe('needs page: degraded, empty, paging', () => {
 		expect(list).toHaveBeenLastCalledWith({ sort: 'age', view: 'active', cursor: 'cur-1' });
 		expect(refs()).toEqual(['TASK-1', 'TASK-2']);
 		expect(host.textContent).not.toContain('Load more');
+	});
+
+	it('a home_changed hint reloads page 1 quietly while only page 1 is shown', async () => {
+		await mountWith(resp([row('alpha', 'TASK-1')], { next_cursor: 'cur-1' }));
+		list.mockResolvedValue(resp([row('alpha', 'TASK-1'), row('alpha', 'TASK-3')], { next_cursor: 'cur-2' }));
+		homeHint.fn?.();
+		await settle();
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(list).toHaveBeenLastCalledWith({ sort: 'age', view: 'active' });
+		expect(refs()).toEqual(['TASK-1', 'TASK-3']);
+	});
+
+	it('a home_changed hint keeps the rows loaded with Load more', async () => {
+		await mountWith(resp([row('alpha', 'TASK-1')], { next_cursor: 'cur-1' }));
+		list.mockResolvedValue(resp([row('alpha', 'TASK-2')], { next_cursor: 'cur-2' }));
+		await click(btn('Load more'));
+		expect(refs()).toEqual(['TASK-1', 'TASK-2']);
+		list.mockResolvedValue(resp([row('alpha', 'TASK-1')], { next_cursor: 'cur-1' }));
+		homeHint.fn?.();
+		await settle();
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(refs()).toEqual(['TASK-1', 'TASK-2']);
+	});
+
+	it('a home_changed hint does not cancel a Load more in flight', async () => {
+		await mountWith(resp([row('alpha', 'TASK-1')], { next_cursor: 'cur-1' }));
+		let finish!: (v: unknown) => void;
+		list.mockReturnValueOnce(new Promise((r) => (finish = r)));
+		btn('Load more').click();
+		flushSync();
+		homeHint.fn?.();
+		await settle();
+		finish(resp([row('alpha', 'TASK-2')]));
+		await settle();
+		expect(list).toHaveBeenCalledTimes(2);
+		expect(refs()).toEqual(['TASK-1', 'TASK-2']);
 	});
 
 	it('shows a load failure', async () => {

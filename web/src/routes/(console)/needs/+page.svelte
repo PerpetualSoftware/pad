@@ -74,9 +74,6 @@
 	// a cursor remains (H-F1). They all go through here; `refetchedFor` records
 	// the actionsDone a refetch was issued for, so whichever fires first wins.
 	// A refetch starts after the action completed, so it is never stale itself.
-	// A home_changed hint refetches quietly, like an automatic correction.
-	onMount(() => homeLive.register(() => load(sort, view, true)));
-
 	let refetchedFor = -1;
 	function requestRefetch() {
 		if (refetchedFor >= actionsDone) return;
@@ -84,8 +81,8 @@
 		void load(sort, view, true);
 	}
 
-	// `quiet` is used ONLY by requestRefetch (TASK-3923): an automatic
-	// correction must not look like a page reload. It leaves `loading`, the
+	// `quiet` is used by requestRefetch (TASK-3923) and the home_changed hint
+	// below: an automatic correction must not look like a page reload. It leaves `loading`, the
 	// errors and the rendered list alone until its response lands (through the
 	// ticket guard, as any load), and a FAILED quiet load changes nothing on
 	// screen. Mount, sort and view toggles and Try again are not quiet.
@@ -112,6 +109,7 @@
 			workspaces = res.workspaces ?? [];
 			degraded = res.degraded ?? [];
 			nextCursor = res.next_cursor ?? '';
+			pagedPastFirst = false;
 			loadError = '';
 		} catch (e) {
 			if (mine !== ticket) return;
@@ -166,6 +164,7 @@
 			const have = new Set(rows.map(keyOf));
 			rows = [...rows, ...trusted(res.rows ?? [], v, startedAt).filter((r) => !have.has(keyOf(r)))];
 			nextCursor = res.next_cursor ?? '';
+			pagedPastFirst = true;
 		} catch (e) {
 			if (mine !== ticket) return;
 			actionError = e instanceof Error ? e.message : 'Failed to load more';
@@ -179,6 +178,18 @@
 		// counts are authoritative.
 		if (stale) requestRefetch();
 	}
+
+	// A home_changed hint refetches page 1 quietly, but only while page 1 is all
+	// that is shown: a reload would drop the rows Load more added and cancel a
+	// Load more in flight. Past page 1 the hint is skipped; the next action,
+	// sort or view change reloads as before. A plain let: no effect reads it.
+	let pagedPastFirst = false;
+	onMount(() =>
+		homeLive.register(() => {
+			if (loadingMore || pagedPastFirst) return;
+			void load(sort, view, true);
+		})
+	);
 
 	// The one effect: refetch whenever the sort or the view changes.
 	$effect(() => {
