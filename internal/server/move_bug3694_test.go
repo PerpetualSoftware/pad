@@ -103,3 +103,35 @@ func TestMoveItem_InvalidOptionalDefaultDiscarded_BUG3696(t *testing.T) {
 		t.Errorf("warnings.dropped_fields = %#v, want it to contain \"status\"", got)
 	}
 }
+
+// Once a move writes warnings.dropped_fields it keeps ItemWriteWarnings'
+// contract that not_unique keys are in it too.
+func TestMoveItem_DroppedFieldsIncludesNotUnique_BUG3696(t *testing.T) {
+	t.Parallel()
+	f := newB2367Fixture(t)
+	dst := bug3079Collection(t, f.srv, f.ws, "Dst Both", `{"fields":[
+		{"key":"status","label":"Status","type":"select","options":["open","done"]},
+		{"key":"invocation_slug","label":"Slug","type":"text","unique_scope":"workspace_collection"},
+		{"key":"tags2","label":"Tags","type":"multi_select","options":["a","b"],"default":"a"}
+	]}`)
+	f.item(f.ws, dst.Slug, "Both Holder", map[string]any{"status": "open", "invocation_slug": "day"})
+
+	rr := doRequest(f.srv, "POST", "/api/v1/workspaces/"+f.ws+"/items/"+f.source["slug"].(string)+"/move",
+		map[string]any{"target_collection": dst.Slug})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var moved models.Item
+	parseJSON(t, rr, &moved)
+	if moved.Warnings == nil {
+		t.Fatalf("no warnings on a move that dropped two keys")
+	}
+	for _, k := range []string{"tags2", "invocation_slug"} {
+		if !slices.Contains(moved.Warnings.DroppedFields, k) {
+			t.Errorf("warnings.dropped_fields = %#v, want it to contain %q", moved.Warnings.DroppedFields, k)
+		}
+	}
+	if len(moved.Warnings.NotUnique) != 1 || moved.Warnings.NotUnique[0].Key != "invocation_slug" {
+		t.Errorf("warnings.not_unique = %+v, want one invocation_slug row", moved.Warnings.NotUnique)
+	}
+}
