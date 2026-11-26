@@ -2,13 +2,13 @@ import { expect, it } from 'vitest';
 import { boundLane, doNextOrder, laneView, lineLabel, lineRequest, parkedLabel, planLane, stepOrder } from './agentLane';
 import type { RoleQueueResponse } from '$lib/types';
 
-const item = (ref: string, sort: number, can_edit = true) => ({ ref, title: ref, status: 'open', priority: '', role_sort_order: sort, blocked: false, ready: true, can_edit });
+const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, title: ref, status: 'open', priority: '', role_sort_order: sort, blocked: false, ready: true, can_edit });
 const lane = (park?: RoleQueueResponse['park'], over: Partial<RoleQueueResponse> = {}): RoleQueueResponse => ({
 	workspace: 'ws', role: { slug: 'impl', name: 'Implementer', icon: '' }, can_reorder: true, can_park: true, now: [],
 	queue: [item('A', 1024), item('B', 2048), item('C', 3072)], park, queue_total: 3, parked_total: 0, queue_more: false, ...over
 });
-const linePark = (index: number | null) => ({ mode: 'line' as const, index, first_parked_ref: null, set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 });
-const topPark = { mode: 'top' as const, index: 0, first_parked_ref: 'A', set_by: 'Dave', set_at: null, park_seq: 2 };
+const linePark = (index: number | null, sort_order = 3072) => ({ mode: 'line' as const, sort_order, index, first_parked_ref: null, set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 });
+const topPark = { mode: 'top' as const, sort_order: null, index: 0, first_parked_ref: 'A', set_by: 'Dave', set_at: null, park_seq: 2 };
 
 it('Do next puts the item first and writes it below the first item', () => {
 	const l = lane();
@@ -91,4 +91,17 @@ it('a fresh read bounds the lane with its next item and prefers its values; a ch
 	const moved = lane(undefined, { queue: [item('B', 1000), item('A', 2048), item('C', 3072), item('D', 3100)] });
 	expect(boundLane(l, moved)).toEqual({ ok: false });
 	expect(boundLane(l, lane(undefined, { queue: [item('A', 1024), item('B', 2048)] }))).toEqual({ ok: false });
+});
+
+it('boundLane takes the fresh lane park so write-time sort_order is current', () => {
+	const stalePark = linePark(2, 3072);
+	const freshPark = { ...linePark(2, 3500), park_seq: 5 };
+	const l = lane(stalePark, { queue_more: true, queue_total: 4 });
+	const fresh = lane(freshPark, { queue: [item('A', 1024), item('B', 2048), item('C', 3500), item('D', 4000)], queue_more: false, queue_total: 4 });
+	const bounded = boundLane(l, fresh);
+	expect(bounded.ok).toBe(true);
+	expect(bounded.ok && bounded.lane.park).toEqual(freshPark);
+	const unparked = boundLane(l, lane(undefined, { queue: [item('A', 1024), item('B', 2048), item('C', 3072), item('D', 4000)], queue_more: false, queue_total: 4 }));
+	expect(unparked.ok).toBe(true);
+	expect(unparked.ok && unparked.lane.park).toBeUndefined();
 });

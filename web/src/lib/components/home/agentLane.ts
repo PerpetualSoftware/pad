@@ -114,9 +114,10 @@ export type BoundedLane = { ok: true; lane: RoleQueueResponse; bound: RoleQueueI
 
 /**
  * A truncated lane read again at write time with `shown + 1` items: the shown
- * items take the fresh values, and the next item becomes the bound. Not ok when
- * the fresh prefix no longer matches the server order the planner starts from
- * (lane.queue, not an optimistic order), which means someone reordered.
+ * items take the fresh values, the lane takes the fresh park, and the next item
+ * becomes the bound. Not ok when the fresh prefix no longer matches the server
+ * order the planner starts from (lane.queue, not an optimistic order), which
+ * means someone reordered.
  */
 export function boundLane(lane: RoleQueueResponse, fresh: RoleQueueResponse): BoundedLane {
 	const shownRefs = lane.queue.map(item => item.ref);
@@ -125,7 +126,7 @@ export function boundLane(lane: RoleQueueResponse, fresh: RoleQueueResponse): Bo
 	const byRef = new Map(prefix.map(item => [item.ref, item]));
 	return {
 		ok: true,
-		lane: { ...lane, queue: lane.queue.map(item => byRef.get(item.ref) ?? item) },
+		lane: { ...lane, park: fresh.park, queue: lane.queue.map(item => byRef.get(item.ref) ?? item) },
 		bound: fresh.queue[shownRefs.length] ?? null
 	};
 }

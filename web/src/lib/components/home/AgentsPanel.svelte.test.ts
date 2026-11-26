@@ -30,13 +30,13 @@ vi.mock('$lib/services/homeLive', () => ({ homeLive: { register: (cb: () => unkn
 import AgentsPanel from './AgentsPanel.svelte';
 import { agentsOverview } from '$lib/stores/agentsOverview.svelte';
 
-const item = (ref: string, sort: number, can_edit = true) => ({ ref, title: `Title ${ref}`, status: 'open', priority: 'high', role_sort_order: sort, blocked: false, ready: true, can_edit });
+const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, title: `Title ${ref}`, status: 'open', priority: 'high', role_sort_order: sort, blocked: false, ready: true, can_edit });
 function lane(over: Partial<RoleQueueResponse> = {}): RoleQueueResponse {
 	return {
 		workspace: 'pad', role: { slug: 'impl', name: 'Implementer', icon: '🛠' }, can_reorder: true, can_park: true,
 		now: [{ ref: 'TASK-9', title: 'Export check-only mode', status: 'in-progress', since: new Date(Date.now() - 2 * 3600_000).toISOString(), lease: { holder: 'w1', expires_at: '2030-01-01T00:00:00Z' }, live: 'busy' }],
 		queue: [item('TASK-1', 1024), item('TASK-2', 2048), item('TASK-3', 3072)],
-		park: { mode: 'line', index: 2, first_parked_ref: 'TASK-3', set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 },
+		park: { mode: 'line', sort_order: 3072, index: 2, first_parked_ref: 'TASK-3', set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 },
 		queue_total: 3, parked_total: 1, queue_more: false, ...over
 	};
 }
@@ -126,10 +126,12 @@ it('Do next writes the item below the first one, through the role-board reorder'
 	await fireEvent.click(await screen.findByRole('menuitem', { name: /Do next/ }));
 	await settle();
 	expect(h.reorder).toHaveBeenCalledWith('pad', [{ item_id: 'id-TASK-3', role_sort_order: 0 }]);
+	expect(h.itemGet).not.toHaveBeenCalled();
+	expect(h.roleGet).not.toHaveBeenCalled();
 });
 
 it('Do next never crosses a top line and says so', async () => {
-	h.agents.mockResolvedValue(answer([lane({ park: { mode: 'top', index: 0, first_parked_ref: 'TASK-1', set_by: 'Dave', set_at: null, park_seq: 2 } })]));
+	h.agents.mockResolvedValue(answer([lane({ park: { mode: 'top', sort_order: null, index: 0, first_parked_ref: 'TASK-1', set_by: 'Dave', set_at: null, park_seq: 2 } })]));
 	await open();
 	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
 	const list = within(padLane).getAllByRole('listitem').map(li => li.getAttribute('role') === 'separator' ? 'LINE' : li.textContent);

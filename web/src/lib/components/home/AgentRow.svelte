@@ -102,8 +102,7 @@
 				bound = fresh.bound;
 			}
 			let lineSort: number | null = null;
-			if (lane.park?.mode === 'line') lineSort = (await api.agentRoles.get(lane.workspace, lane.role.slug)).park?.sort_order ?? null;
-			if (!sameIdentity()) return;
+			if (planned.park?.mode === 'line') lineSort = planned.park.sort_order ?? null;
 			const plan = planLane(planned, next, movedRef, lineSort, bound);
 			if (!plan.ok) {
 				agentsOverview.clearOverlay(key);
@@ -111,9 +110,8 @@
 				return;
 			}
 			if (plan.writes.length) {
-				const ids = await Promise.all(plan.writes.map(w => api.items.get(lane.workspace, w.id)));
-				if (!sameIdentity()) return;
-				await api.agentRoles.reorder(lane.workspace, plan.writes.map((w, i) => ({ item_id: ids[i].id, role_sort_order: w.sort_order })));
+				const idByRef = new Map(planned.queue.map(item => [item.ref, item.id]));
+				await api.agentRoles.reorder(lane.workspace, plan.writes.map(w => ({ item_id: idByRef.get(w.id) ?? w.id, role_sort_order: w.sort_order })));
 				if (!sameIdentity()) return;
 			}
 			ok = true;
