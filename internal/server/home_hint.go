@@ -1,10 +1,12 @@
 package server
 
 import (
+	"log/slog"
 	"reflect"
 	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/homehint"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
@@ -36,9 +38,10 @@ func defaultHomeHintAfterFunc(d time.Duration, f func()) homeHintTimer {
 	return time.AfterFunc(d, f)
 }
 
-// publishHomeChanged publishes a home_changed refetch hint onto the watch
-// event bus (opt-in via ?home=true) and increments pad_home_hints_total.
-// Call only after the underlying write has committed.
+// publishHomeChanged publishes a home_changed refetch hint onto the home-hint
+// fan-out (delivered to ?home=true watch streams without entering the watch
+// bus replay ring) and increments pad_home_hints_total. Call only after the
+// underlying write has committed.
 //
 // Hints are coalesced per (workspaceID, collectionID, itemID) key: the first
 // hint for an idle key publishes immediately and opens a 500 ms window; any
@@ -162,19 +165,42 @@ func (s *Server) emitHomeChanged(workspaceID, collectionID, itemID string) {
 	if s.metrics != nil {
 		s.metrics.HomeHintsTotal.Inc()
 	}
-	s.publishWatchNotification(watchevents.Notification{
+	ts := time.Now().UnixMilli()
+	n := watchevents.Notification{
 		WorkspaceID:  workspaceID,
 		CollectionID: collectionID,
 		ItemID:       itemID,
 		Kind:         watchevents.KindHomeChanged,
-	})
+		Timestamp:    ts,
+	}
+	hub := s.homeHints()
+	hub.deliver(n)
+
+	s.homeHintTransportMu.Lock()
+	w := s.homeHintWorker
+	s.homeHintTransportMu.Unlock()
+	if w == nil {
+		return
+	}
+	select {
+	case w.ch <- homehint.Message{
+		Origin:       hub.origin,
+		WorkspaceID:  workspaceID,
+		CollectionID: collectionID,
+		ItemID:       itemID,
+		Timestamp:    ts,
+	}:
+	case <-w.done:
+	default:
+		slog.Debug("home hint publisher queue full", "workspace_id", workspaceID)
+	}
 }
 
 // itemUpdateAffectsHome reports whether an item update changed any field that
 // the home or agents views read (title, collection, schema fields, agent role,
 // role_sort_order, assigned user, or parent link). Body-only edits return false
-// so they publish the activity event without crowding the watch bus replay ring
-// with home_changed hints.
+// so they publish the activity event without emitting unnecessary home_changed
+// refetch hints.
 func itemUpdateAffectsHome(before, after *models.Item, parentLinkChanged bool) bool {
 	if before == nil || after == nil {
 		return true

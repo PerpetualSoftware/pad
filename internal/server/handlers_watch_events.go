@@ -283,6 +283,12 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 		prefs.agentKey = ""
 	}
 	prefs.chatInbox = chatInboxPref(r, user)
+	var hintCh <-chan watchevents.Notification
+	if prefs.home {
+		c, unreg := s.homeHints().register(homeHintStreamBuffer)
+		defer unreg()
+		hintCh = c
+	}
 	// sessionID hoisted out of the if-block (PLAN-2558 S5, TASK-2588): a
 	// targeted push's predicate (Notification.TargetSessionID) is
 	// evaluated in the select loop below, which needs this connection's
@@ -461,6 +467,16 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 			}
 			if err := writeSSEEvent(w, "notification", n.ID, watchEventPayloadFor(visCache, n)); err != nil {
 				slog.Debug("watch-events: notification write failed, closing", "user_id", user.ID, "error", err)
+				return
+			}
+			flusher.Flush()
+
+		case n := <-hintCh:
+			if !visCache.delivers(watches, user.ID, sessionID, prefs, n) {
+				continue
+			}
+			if err := writeSSEEvent(w, "notification", 0, watchEventPayloadFor(visCache, n)); err != nil {
+				slog.Debug("watch-events: home hint write failed, closing", "user_id", user.ID, "error", err)
 				return
 			}
 			flusher.Flush()
