@@ -125,3 +125,25 @@ func TestMigrateFields_ValidDefaultStillInjected_BUG3696(t *testing.T) {
 		t.Errorf("expected no Errors, got %#v", result.Errors)
 	}
 }
+
+// A default stored as text that the migrate doors' CoerceFields turns into its
+// declared type is judged on that coerced form, so it is still injected.
+func TestMigrateFields_CoercibleTextDefaultsStillInjected_BUG3696(t *testing.T) {
+	target := []models.FieldDef{
+		{Key: "n", Type: "number", Default: "5", Required: true},
+		{Key: "c", Type: "checkbox", Default: "true"},
+		{Key: "tags", Type: "multi_select", Options: []string{"a", "b"}, Default: `["a"]`},
+	}
+	result := MigrateFields(map[string]any{}, nil, target, SameWorkspace)
+	for _, k := range []string{"n", "c", "tags"} {
+		if _, ok := result.Fields[k]; !ok {
+			t.Errorf("coercible default %q was not injected: %#v", k, result.Fields)
+		}
+	}
+	if len(result.DiscardedDefaults) != 0 {
+		t.Errorf("DiscardedDefaults = %#v, want none", result.DiscardedDefaults)
+	}
+	if len(result.Errors) != 0 {
+		t.Errorf("Errors = %#v, want none (n is required and its default coerces)", result.Errors)
+	}
+}

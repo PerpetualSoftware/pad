@@ -135,3 +135,50 @@ func TestMoveItem_DroppedFieldsIncludesNotUnique_BUG3696(t *testing.T) {
 		t.Errorf("warnings.not_unique = %+v, want one invocation_slug row", moved.Warnings.NotUnique)
 	}
 }
+
+// The validator's own default drops are named too: an empty-string default
+// MigrateFields never offers, and a default re-offered after a null override.
+func TestMoveItem_ValidatorDefaultDropsNamed_BUG3696(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSForTest(t, srv)
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("GetWorkspaceBySlug(%s): %v", slug, err)
+	}
+	src := mustSchemaCollection(t, srv, ws.ID, "VD Src",
+		`{"fields":[{"key":"note","label":"Note","type":"text"},{"key":"labels","label":"Labels","type":"multi_select","options":["x","y"]}]}`)
+	dst := bug3079Collection(t, srv, slug, "VD Dst", `{"fields":[
+		{"key":"note","label":"Note","type":"text"},
+		{"key":"empty","label":"Empty","type":"multi_select","options":["a"],"default":""},
+		{"key":"labels","label":"Labels","type":"multi_select","options":["x","y"],"default":"x"}
+	]}`)
+	item := createItem(t, srv, slug, src.Slug, map[string]interface{}{
+		"title":  "Has labels",
+		"fields": `{"note":"hi","labels":["y"]}`,
+	})
+
+	rr := doRequest(srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/move",
+		map[string]interface{}{"target_collection": dst.Slug, "field_overrides": map[string]any{"labels": nil}})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+	var moved models.Item
+	parseJSON(t, rr, &moved)
+	var movedFields map[string]any
+	if err := json.Unmarshal([]byte(moved.Fields), &movedFields); err != nil {
+		t.Fatalf("unmarshal moved fields: %v (%s)", err, moved.Fields)
+	}
+	for _, k := range []string{"empty", "labels"} {
+		if v, ok := movedFields[k]; ok {
+			t.Errorf("invalid default stored for %q: %#v", k, v)
+		}
+		if moved.Warnings == nil || !slices.Contains(moved.Warnings.DroppedFields, k) {
+			var got []string
+			if moved.Warnings != nil {
+				got = moved.Warnings.DroppedFields
+			}
+			t.Errorf("warnings.dropped_fields = %#v, want it to contain %q", got, k)
+		}
+	}
+}

@@ -159,7 +159,13 @@ func MigrateFields(
 			continue
 		}
 		if f.Default != nil && f.Default != "" {
-			if validateFieldType(f, f.Default) != nil {
+			// Judged on its COERCED form: every migrate door runs CoerceFields
+			// after this, so a default stored as text ("5", "true", the JSON
+			// text of a list) has always reached the item as its declared type.
+			// Checking the raw text would discard those (store
+			// relation_referents.go, coerceRelationValue). The raw default is
+			// still what is injected; the door's own coercion converts it.
+			if validateFieldType(f, coerceValue(f, f.Default)) != nil {
 				result.DiscardedDefaults = append(result.DiscardedDefaults, f.Key)
 				if f.Required {
 					result.Errors = append(result.Errors, fmt.Sprintf("required field %q has no value", f.Key))
