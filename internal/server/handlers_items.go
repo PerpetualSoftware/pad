@@ -3639,17 +3639,24 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(notUnique) > 0 {
-		// The move's only drop the response names: for invocation_slug the
-		// item has stopped answering to that slug, and the caller has to
-		// learn that from the answer to its own request (BUG-2367).
+		// For invocation_slug the item has stopped answering to that slug, and
+		// the caller has to learn that from the answer to its own request
+		// (BUG-2367). Values the target schema has no home for are named in
+		// the audit row instead, not here.
 		if moved.Warnings == nil {
 			moved.Warnings = &models.ItemWriteWarnings{}
 		}
 		moved.Warnings.NotUnique = notUnique
 	}
+	// A destination default that failed its own type check is named here, as
+	// item create names it (BUG-3696). Once DroppedFields is written it keeps
+	// ItemWriteWarnings' contract that NotUnique keys are in it too.
 	if discarded := items.StillDropped(result.DiscardedDefaults, result.Fields); len(discarded) > 0 {
 		if moved.Warnings == nil {
 			moved.Warnings = &models.ItemWriteWarnings{}
+		}
+		for _, d := range notUnique {
+			discarded = append(discarded, d.Key)
 		}
 		moved.Warnings.DroppedFields = discarded
 	}
