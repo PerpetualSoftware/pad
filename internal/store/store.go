@@ -486,6 +486,11 @@ func (s *Store) BeginSnapshot() (*sql.Tx, error) { return s.db.Begin() }
 //     setting (stored in the file header), so it persists across
 //     connections after the first one applies it.
 func New(dbPath string) (*Store, error) {
+	if isSQLiteFilesystemPath(dbPath) {
+		if err := secureSQLiteFiles(dbPath); err != nil {
+			return nil, err
+		}
+	}
 	dsn := dbPath + "?_pragma=busy_timeout(30000)&_pragma=foreign_keys(on)&_txlock=immediate"
 	// The NUL invariant's Layer A rides the DRIVER, not the call sites — see
 	// nulguard.go for why that is the only shape whose completeness nobody has

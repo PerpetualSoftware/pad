@@ -93,6 +93,10 @@ func serverStartCommand(exePath string) *exec.Cmd {
 	return cmd
 }
 
+func openServerLog(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+}
+
 func startBackgroundServer(cfg *config.Config) error {
 	// Start server as background process
 	exePath, err := os.Executable()
@@ -104,7 +108,7 @@ func startBackgroundServer(cfg *config.Config) error {
 	setSysProcAttr(cmd)
 
 	// Redirect stdout/stderr to log file
-	logFile, err := os.OpenFile(cfg.LogFile(), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	logFile, err := openServerLog(cfg.LogFile())
 	if err != nil {
 		return fmt.Errorf("open log file: %w", err)
 	}

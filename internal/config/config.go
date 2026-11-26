@@ -487,14 +487,18 @@ func Load() (*Config, error) {
 	}
 
 	// Ensure data directory exists
-	if err := os.MkdirAll(cfg.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
 		return nil, err
 	}
 
 	// Ensure logs directory exists
-	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "logs"), 0755); err != nil {
+	logsDir := filepath.Join(cfg.DataDir, "logs")
+	if err := os.MkdirAll(logsDir, 0700); err != nil {
 		return nil, err
 	}
+
+	tightenDir(cfg.DataDir)
+	tightenDir(logsDir)
 
 	// Load config file if it exists
 	if _, err := os.Stat(cfg.ConfigPath); err == nil {
@@ -857,10 +861,10 @@ func (c *Config) persistView() configFile {
 // variable supplied at Load is not written: the field keeps what config.toml
 // had, unless the caller changed it after Load.
 func (c *Config) Save() error {
-	if err := os.MkdirAll(c.DataDir, 0755); err != nil {
+	if err := os.MkdirAll(c.DataDir, 0700); err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Join(c.DataDir, "logs"), 0755); err != nil {
+	if err := os.MkdirAll(filepath.Join(c.DataDir, "logs"), 0700); err != nil {
 		return err
 	}
 
