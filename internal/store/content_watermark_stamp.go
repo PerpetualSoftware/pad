@@ -11,6 +11,20 @@ import (
 // never honour (a cursor below 1, a hash that is not 64 hex characters).
 var ErrWatermarkStampBadInput = errors.New("watermark stamp: bad input")
 
+// ValidateWatermarkStampInput reports, wrapping ErrWatermarkStampBadInput, a
+// stamp request the server could never honour. The HTTP door calls it before
+// deciding whether to stamp at all, so malformed input is a 400 from every
+// door, including the ones whose stamps are ignored.
+func ValidateWatermarkStampInput(cursor int64, contentSHA256 string) error {
+	if cursor < 1 {
+		return fmt.Errorf("%w: op_log_cursor must be a positive op-log id", ErrWatermarkStampBadInput)
+	}
+	if b, err := hex.DecodeString(contentSHA256); err != nil || len(b) != sha256.Size {
+		return fmt.Errorf("%w: content_sha256 must be 64 hex characters", ErrWatermarkStampBadInput)
+	}
+	return nil
+}
+
 // StampContentWatermarkIfCaughtUp advances items.content_flushed_op_log_id to
 // cursor WITHOUT writing content, when a browser tab proves that the stored body
 // already is the live document (BUG-3124 unit B).
@@ -85,11 +99,8 @@ type WatermarkStampResult struct {
 // for a measurement. Behaviour is otherwise identical.
 func (s *Store) StampContentWatermarkIfCaughtUpCounted(itemID string, cursor int64, contentSHA256 string) (WatermarkStampResult, error) {
 	var none WatermarkStampResult
-	if cursor < 1 {
-		return none, fmt.Errorf("%w: op_log_cursor must be a positive op-log id", ErrWatermarkStampBadInput)
-	}
-	if b, err := hex.DecodeString(contentSHA256); err != nil || len(b) != sha256.Size {
-		return none, fmt.Errorf("%w: content_sha256 must be 64 hex characters", ErrWatermarkStampBadInput)
+	if err := ValidateWatermarkStampInput(cursor, contentSHA256); err != nil {
+		return none, err
 	}
 
 	tx, err := s.db.Begin()
