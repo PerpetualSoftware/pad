@@ -633,5 +633,16 @@ func (s *Server) handleRenegotiateItemCommitment(w http.ResponseWriter, r *http.
 		fields = append(fields, "remove_deadline")
 	}
 	s.recordScheduleWrite(r, workspaceID, item, "schedule_updated", scheduleActivityMeta(sc.Kind, fields))
+	if result != nil && result.Cascade != nil && len(result.Cascade.ChangedItemIDs) > 0 {
+		var otherChanged []string
+		for _, id := range result.Cascade.ChangedItemIDs {
+			if id != item.ID {
+				otherChanged = append(otherChanged, id)
+			}
+		}
+		if len(otherChanged) > 0 {
+			s.publishCommitmentGraphWrite(r, workspaceID, otherChanged)
+		}
+	}
 	s.writeItemCommitment(w, r, workspaceID, item, http.StatusOK, "")
 }

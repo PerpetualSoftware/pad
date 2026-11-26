@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -177,11 +180,27 @@ func buildRolePark(mode string, sortOrder sql.NullInt64, setAt, setByUserID, set
 }
 
 type roleLaneCollectionInfo struct {
-	schema     models.CollectionSchema
-	settings   models.CollectionSettings
-	prefix     string
-	doneKey    string
-	tracksWork bool
+	schema      models.CollectionSchema
+	settings    models.CollectionSettings
+	rawSchema   string
+	rawSettings string
+	prefix      string
+	doneKey     string
+	tracksWork  bool
+}
+
+// RoleLaneCollectionInfo describes one live workspace collection loaded during
+// LoadWorkspaceRoleLanesQ so callers can build follow-up queries without
+// re-reading collections.
+type RoleLaneCollectionInfo struct {
+	ID          string
+	Schema      models.CollectionSchema
+	Settings    models.CollectionSettings
+	RawSchema   string
+	RawSettings string
+	Prefix      string
+	DoneKey     string
+	TracksWork  bool
 }
 
 type roleLaneEntry struct {
@@ -192,6 +211,7 @@ type roleLaneEntry struct {
 	tracksWork    bool
 	leaseWorkerID string
 	leaseUserID   string
+	lease         *models.ItemLease
 }
 
 // RoleLaneEntry is one live, non-terminal item in a role's canonical lane.
@@ -204,6 +224,84 @@ type RoleLaneEntry struct {
 	TracksWork    bool
 	LeaseWorkerID string
 	LeaseUserID   string
+	Lease         *models.ItemLease
+}
+
+// toPublicRoleLaneEntry converts an internal roleLaneEntry into the exported RoleLaneEntry.
+func toPublicRoleLaneEntry(e roleLaneEntry) RoleLaneEntry {
+	return RoleLaneEntry{
+		Item:          e.item,
+		InQueue:       e.inQueue,
+		IsNow:         e.isNow,
+		DoneKey:       e.doneKey,
+		TracksWork:    e.tracksWork,
+		LeaseWorkerID: e.leaseWorkerID,
+		LeaseUserID:   e.leaseUserID,
+		Lease:         e.lease,
+	}
+}
+
+// buildRoleLaneEntry converts raw scanned item/lease columns into a roleLaneEntry,
+// returning ok=false when the item's collection is absent or the item is terminal.
+func buildRoleLaneEntry(
+	it models.Item,
+	createdAt, updatedAt string,
+	itemNum sql.NullInt64,
+	leaseHolder, leaseWorkerID, leaseUserID, leaseAcquiredAt, leaseExpiresAt sql.NullString,
+	colls map[string]roleLaneCollectionInfo,
+	nowStr string,
+) (roleLaneEntry, bool) {
+	it.CreatedAt = parseTime(createdAt)
+	it.UpdatedAt = parseTime(updatedAt)
+	if itemNum.Valid {
+		n := int(itemNum.Int64)
+		it.ItemNumber = &n
+	}
+
+	cinfo, ok := colls[it.CollectionID]
+	if !ok {
+		return roleLaneEntry{}, false
+	}
+	if cinfo.prefix != "" && it.ItemNumber != nil {
+		it.Ref = cinfo.prefix + "-" + strconv.Itoa(*it.ItemNumber)
+	}
+
+	var fieldsMap map[string]any
+	if it.Fields != "" && it.Fields != "{}" {
+		_ = json.Unmarshal([]byte(it.Fields), &fieldsMap)
+	}
+	if models.IsTerminalItem(fieldsMap, cinfo.schema, cinfo.settings) {
+		return roleLaneEntry{}, false
+	}
+
+	hasLiveLease := leaseHolder.Valid && leaseExpiresAt.Valid && leaseExpiresAt.String > nowStr
+	isNow := IsItemNow(&it, cinfo.doneKey, hasLiveLease)
+	var lWorker, lUser string
+	var lease *models.ItemLease
+	if hasLiveLease {
+		if leaseWorkerID.Valid {
+			lWorker = leaseWorkerID.String
+		}
+		if leaseUserID.Valid {
+			lUser = leaseUserID.String
+		}
+		lease = &models.ItemLease{
+			Holder:     leaseHolder.String,
+			Worker:     models.ShortWorkerID(lWorker),
+			AcquiredAt: parseTime(leaseAcquiredAt.String),
+			ExpiresAt:  parseTime(leaseExpiresAt.String),
+		}
+	}
+	return roleLaneEntry{
+		item:          it,
+		inQueue:       cinfo.tracksWork && !isNow,
+		isNow:         isNow,
+		doneKey:       cinfo.doneKey,
+		tracksWork:    cinfo.tracksWork,
+		leaseWorkerID: lWorker,
+		leaseUserID:   lUser,
+		lease:         lease,
+	}, true
 }
 
 // LoadRoleLane returns the canonical full lane for (workspaceID, roleID) in a
@@ -215,17 +313,300 @@ func (s *Store) LoadRoleLane(workspaceID, roleID string) ([]RoleLaneEntry, error
 	}
 	out := make([]RoleLaneEntry, len(entries))
 	for i, e := range entries {
-		out[i] = RoleLaneEntry{
-			Item:          e.item,
-			InQueue:       e.inQueue,
-			IsNow:         e.isNow,
-			DoneKey:       e.doneKey,
-			TracksWork:    e.tracksWork,
-			LeaseWorkerID: e.leaseWorkerID,
-			LeaseUserID:   e.leaseUserID,
-		}
+		out[i] = toPublicRoleLaneEntry(e)
 	}
 	return out, nil
+}
+
+// LoadWorkspaceRoleLanesQ returns the canonical full lanes for every role in
+// workspaceID in a single query pair (collections + workspace role items),
+// keyed by role ID and sorted with SortRoleLane, together with the live
+// collection metadata already read in the first query.
+func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[string][]RoleLaneEntry, map[string]RoleLaneCollectionInfo, error) {
+	colls, err := s.loadRoleLaneCollectionsQ(q, workspaceID)
+	if err != nil {
+		return nil, nil, err
+	}
+
+	rows, err := q.Query(s.q(`
+		SELECT i.agent_role_id, i.id, i.collection_id, i.title, i.fields, i.role_sort_order, i.created_at, i.updated_at, i.item_number,
+		       i.lease_holder, i.lease_worker_id, i.lease_user_id, i.lease_acquired_at, i.lease_expires_at
+		FROM items i
+		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
+		WHERE i.workspace_id = ? AND i.agent_role_id IS NOT NULL AND i.agent_role_id <> '' AND i.deleted_at IS NULL
+	`), workspaceID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("load workspace role lanes: %w", err)
+	}
+	defer rows.Close()
+
+	nowStr := now()
+	byRole := make(map[string][]RoleLaneEntry)
+	for rows.Next() {
+		var roleID string
+		var it models.Item
+		var createdAt, updatedAt string
+		var itemNum sql.NullInt64
+		var leaseHolder, leaseWorkerID, leaseUserID, leaseAcquiredAt, leaseExpiresAt sql.NullString
+		if err := rows.Scan(
+			&roleID, &it.ID, &it.CollectionID, &it.Title, &it.Fields, &it.RoleSortOrder, &createdAt, &updatedAt, &itemNum,
+			&leaseHolder, &leaseWorkerID, &leaseUserID, &leaseAcquiredAt, &leaseExpiresAt,
+		); err != nil {
+			return nil, nil, err
+		}
+		entry, ok := buildRoleLaneEntry(it, createdAt, updatedAt, itemNum, leaseHolder, leaseWorkerID, leaseUserID, leaseAcquiredAt, leaseExpiresAt, colls, nowStr)
+		if !ok {
+			continue
+		}
+		byRole[roleID] = append(byRole[roleID], toPublicRoleLaneEntry(entry))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+
+	for roleID := range byRole {
+		lane := byRole[roleID]
+		sort.SliceStable(lane, func(i, j int) bool {
+			return roleLaneLess(lane[i].Item, lane[j].Item)
+		})
+		byRole[roleID] = lane
+	}
+
+	collInfos := make(map[string]RoleLaneCollectionInfo, len(colls))
+	for id, ci := range colls {
+		collInfos[id] = RoleLaneCollectionInfo{
+			ID:          id,
+			Schema:      ci.schema,
+			Settings:    ci.settings,
+			RawSchema:   ci.rawSchema,
+			RawSettings: ci.rawSettings,
+			Prefix:      ci.prefix,
+			DoneKey:     ci.doneKey,
+			TracksWork:  ci.tracksWork,
+		}
+	}
+	return byRole, collInfos, nil
+}
+
+// FinishedCollectionFilter identifies one work-tracking collection's done field
+// and its allowed completed-work to_status spellings (including schema option
+// spellings so SQLite's ASCII-only LOWER does not miss non-ASCII case variants).
+type FinishedCollectionFilter struct {
+	CollectionID string
+	FieldKey     string
+	Values       []string
+}
+
+// maxFinishedVisibilityIDs bounds the visibility IN lists the finished query
+// sends. Above it the query applies neither visibility nor its caps; see
+// ListWorkspaceRoleFinishedItemsQ.
+const maxFinishedVisibilityIDs = 500
+
+// finishedUncapped stands in for the per-role and overall caps when the
+// visibility predicate cannot be sent.
+const finishedUncapped = math.MaxInt32
+
+// FinishedVisibility scopes ListWorkspaceRoleFinishedItemsQ to items visible
+// to the caller before the per-role cap is applied. When Unrestricted is true,
+// no visibility predicate is added. Otherwise an item is eligible when its
+// collection_id is in CollectionIDs or its id is in ItemIDs; when both slices
+// are empty, no query is issued.
+type FinishedVisibility struct {
+	Unrestricted  bool
+	CollectionIDs []string
+	ItemIDs       []string
+}
+
+// WorkspaceRoleFinishedRow is one candidate status-transition row returned by
+// ListWorkspaceRoleFinishedItemsQ for done-key, current-value matching,
+// defense-in-depth visibility checking, and per-item deduplication.
+type WorkspaceRoleFinishedRow struct {
+	ItemID       string
+	FieldKey     string
+	ToStatus     string
+	CreatedAt    time.Time
+	CollectionID string
+	AgentRoleID  string
+	Ref          string
+	Title        string
+	Fields       string
+	Schema       string
+	Settings     string
+}
+
+// ListWorkspaceRoleFinishedItemsQ returns candidate completion transitions for
+// live items in workspaceID assigned to one of roleIDs at or after since,
+// matching on each item's current collection against filters and applying vis
+// before the per-role cap. It keeps only the newest matching transition per
+// item, at most perRole rows per role, and at most limit rows overall, ordered
+// newest first (created_at DESC, id DESC).
+//
+// If either visibility ID list exceeds maxFinishedVisibilityIDs, the query
+// sends no visibility predicate and applies neither cap, so hidden rows can
+// never use up a role's cap before its visible ones. The caller then filters
+// visibility and caps per role in Go. The result is still bounded: one row per
+// item completed in the window.
+func (s *Store) ListWorkspaceRoleFinishedItemsQ(
+	q Queryer,
+	workspaceID string,
+	roleIDs []string,
+	filters []FinishedCollectionFilter,
+	vis FinishedVisibility,
+	since time.Time,
+	perRole int,
+	limit int,
+) ([]WorkspaceRoleFinishedRow, error) {
+	if len(roleIDs) == 0 || len(filters) == 0 || perRole <= 0 || limit <= 0 {
+		return nil, nil
+	}
+
+	effectivePerRole := perRole
+	effectiveLimit := limit
+	var visSQL string
+	var visArgs []any
+	if !vis.Unrestricted {
+		if len(vis.CollectionIDs) == 0 && len(vis.ItemIDs) == 0 {
+			return nil, nil
+		}
+		if len(vis.CollectionIDs) > maxFinishedVisibilityIDs || len(vis.ItemIDs) > maxFinishedVisibilityIDs {
+			// Oversized IN lists: no SQL visibility, so no SQL caps either
+			// (a cap applied before visibility would let hidden rows crowd
+			// out visible ones). The caller filters and caps in Go.
+			effectivePerRole = finishedUncapped
+			effectiveLimit = finishedUncapped
+		} else {
+			var parts []string
+			if len(vis.CollectionIDs) > 0 {
+				parts = append(parts, "i.collection_id IN ("+placeholders(len(vis.CollectionIDs))+")")
+				for _, cid := range vis.CollectionIDs {
+					visArgs = append(visArgs, cid)
+				}
+			}
+			if len(vis.ItemIDs) > 0 {
+				parts = append(parts, "i.id IN ("+placeholders(len(vis.ItemIDs))+")")
+				for _, iid := range vis.ItemIDs {
+					visArgs = append(visArgs, iid)
+				}
+			}
+			visSQL = "\n\t\t\t  AND (" + strings.Join(parts, " OR ") + ")"
+		}
+	}
+
+	args := make([]any, 0, 3+len(roleIDs)+len(filters)*6+len(visArgs)+2)
+	args = append(args, workspaceID, since.UTC().Format(time.RFC3339), workspaceID)
+	for _, rid := range roleIDs {
+		args = append(args, rid)
+	}
+
+	var filterClauses []string
+	for _, f := range filters {
+		if f.CollectionID == "" || f.FieldKey == "" || len(f.Values) == 0 {
+			continue
+		}
+		trimmed := make([]string, 0, len(f.Values))
+		lowered := make([]string, 0, len(f.Values))
+		seenTrim := make(map[string]bool, len(f.Values))
+		seenLow := make(map[string]bool, len(f.Values))
+		for _, v := range f.Values {
+			tv := strings.TrimSpace(v)
+			if tv == "" {
+				continue
+			}
+			if !seenTrim[tv] {
+				seenTrim[tv] = true
+				trimmed = append(trimmed, tv)
+			}
+			lv := strings.ToLower(tv)
+			if !seenLow[lv] {
+				seenLow[lv] = true
+				lowered = append(lowered, lv)
+			}
+		}
+		if len(trimmed) == 0 {
+			continue
+		}
+		clause := "(i.collection_id = ? AND st.field_key = ? AND (TRIM(st.to_status) IN (" +
+			placeholders(len(trimmed)) + ") OR LOWER(TRIM(st.to_status)) IN (" +
+			placeholders(len(lowered)) + "))"
+		args = append(args, f.CollectionID, f.FieldKey)
+		for _, v := range trimmed {
+			args = append(args, v)
+		}
+		for _, v := range lowered {
+			args = append(args, v)
+		}
+		if validFieldKey.MatchString(f.FieldKey) {
+			curVal := "TRIM(" + s.dialect.JSONExtractText("i.fields", f.FieldKey) + ")"
+			clause += " AND (" + curVal + " = TRIM(st.to_status) OR LOWER(" + curVal + ") = LOWER(TRIM(st.to_status)))"
+		}
+		clause += ")"
+		filterClauses = append(filterClauses, clause)
+	}
+	if len(filterClauses) == 0 {
+		return nil, nil
+	}
+	args = append(args, visArgs...)
+	args = append(args, effectivePerRole, effectiveLimit)
+
+	rows, err := q.Query(s.q(`
+		WITH item_ranked AS (
+			SELECT st.id, st.item_id, st.field_key, st.to_status, st.created_at,
+			       i.collection_id, i.agent_role_id, i.title, i.fields, i.item_number,
+			       c.prefix, c.schema, c.settings,
+			       ROW_NUMBER() OVER (PARTITION BY st.item_id ORDER BY st.created_at DESC, st.id DESC) AS item_rn
+			FROM status_transitions st
+			JOIN items i ON i.id = st.item_id
+			JOIN collections c ON c.id = i.collection_id
+			WHERE st.workspace_id = ?
+			  AND st.created_at >= ?
+			  AND i.workspace_id = ?
+			  AND i.deleted_at IS NULL
+			  AND c.deleted_at IS NULL
+			  AND i.agent_role_id IN (`+placeholders(len(roleIDs))+`)
+			  AND (`+strings.Join(filterClauses, " OR ")+`)`+visSQL+`
+		),
+		role_ranked AS (
+			SELECT id, item_id, field_key, to_status, created_at,
+			       collection_id, agent_role_id, title, fields, item_number,
+			       prefix, schema, settings,
+			       ROW_NUMBER() OVER (PARTITION BY agent_role_id ORDER BY created_at DESC, id DESC) AS role_rn
+			FROM item_ranked
+			WHERE item_rn = 1
+		)
+		SELECT item_id, field_key, to_status, created_at,
+		       collection_id, agent_role_id, title, fields, item_number,
+		       prefix, schema, settings
+		FROM role_ranked
+		WHERE role_rn <= ?
+		ORDER BY created_at DESC, id DESC
+		LIMIT ?
+	`), args...)
+	if err != nil {
+		return nil, fmt.Errorf("list workspace role finished items: %w", err)
+	}
+	defer rows.Close()
+
+	var out []WorkspaceRoleFinishedRow
+	for rows.Next() {
+		var r WorkspaceRoleFinishedRow
+		var itemNum sql.NullInt64
+		var prefix, createdAt string
+		if err := rows.Scan(
+			&r.ItemID, &r.FieldKey, &r.ToStatus, &createdAt,
+			&r.CollectionID, &r.AgentRoleID, &r.Title, &r.Fields, &itemNum,
+			&prefix, &r.Schema, &r.Settings,
+		); err != nil {
+			return nil, err
+		}
+		if prefix != "" && itemNum.Valid {
+			r.Ref = prefix + "-" + strconv.Itoa(int(itemNum.Int64))
+		} else {
+			r.Ref = r.ItemID
+		}
+		r.CreatedAt = parseTime(createdAt)
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) loadRoleLaneCollectionsQ(q Queryer, workspaceID string) (map[string]roleLaneCollectionInfo, error) {
@@ -247,6 +628,8 @@ func (s *Store) loadRoleLaneCollectionsQ(q Queryer, workspaceID string) (map[str
 		}
 		var info roleLaneCollectionInfo
 		info.prefix = prefix
+		info.rawSchema = rawSchema
+		info.rawSettings = rawSettings
 		if rawSchema != "" {
 			if err := models.UnmarshalItemFieldSchema([]byte(rawSchema), &info.schema); err != nil {
 				info.schema = models.CollectionSchema{}
@@ -274,7 +657,7 @@ func (s *Store) loadRoleLaneQ(q Queryer, workspaceID, roleID, nowStr string) ([]
 
 	rows, err := q.Query(s.q(`
 		SELECT i.id, i.collection_id, i.title, i.fields, i.role_sort_order, i.created_at, i.updated_at, i.item_number,
-		       i.lease_holder, i.lease_worker_id, i.lease_user_id, i.lease_expires_at
+		       i.lease_holder, i.lease_worker_id, i.lease_user_id, i.lease_acquired_at, i.lease_expires_at
 		FROM items i
 		JOIN collections c ON c.id = i.collection_id AND c.deleted_at IS NULL
 		WHERE i.workspace_id = ? AND i.agent_role_id = ? AND i.deleted_at IS NULL
@@ -289,56 +672,18 @@ func (s *Store) loadRoleLaneQ(q Queryer, workspaceID, roleID, nowStr string) ([]
 		var it models.Item
 		var createdAt, updatedAt string
 		var itemNum sql.NullInt64
-		var leaseHolder, leaseWorkerID, leaseUserID, leaseExpiresAt sql.NullString
+		var leaseHolder, leaseWorkerID, leaseUserID, leaseAcquiredAt, leaseExpiresAt sql.NullString
 		if err := rows.Scan(
 			&it.ID, &it.CollectionID, &it.Title, &it.Fields, &it.RoleSortOrder, &createdAt, &updatedAt, &itemNum,
-			&leaseHolder, &leaseWorkerID, &leaseUserID, &leaseExpiresAt,
+			&leaseHolder, &leaseWorkerID, &leaseUserID, &leaseAcquiredAt, &leaseExpiresAt,
 		); err != nil {
 			return nil, err
 		}
-		it.CreatedAt = parseTime(createdAt)
-		it.UpdatedAt = parseTime(updatedAt)
-		if itemNum.Valid {
-			n := int(itemNum.Int64)
-			it.ItemNumber = &n
-		}
-
-		cinfo, ok := colls[it.CollectionID]
+		entry, ok := buildRoleLaneEntry(it, createdAt, updatedAt, itemNum, leaseHolder, leaseWorkerID, leaseUserID, leaseAcquiredAt, leaseExpiresAt, colls, nowStr)
 		if !ok {
 			continue
 		}
-		if cinfo.prefix != "" && it.ItemNumber != nil {
-			it.Ref = cinfo.prefix + "-" + strconv.Itoa(*it.ItemNumber)
-		}
-
-		var fieldsMap map[string]any
-		if it.Fields != "" && it.Fields != "{}" {
-			_ = json.Unmarshal([]byte(it.Fields), &fieldsMap)
-		}
-		if models.IsTerminalItem(fieldsMap, cinfo.schema, cinfo.settings) {
-			continue
-		}
-
-		hasLiveLease := leaseHolder.Valid && leaseExpiresAt.Valid && leaseExpiresAt.String > nowStr
-		isNow := IsItemNow(&it, cinfo.doneKey, hasLiveLease)
-		var lWorker, lUser string
-		if hasLiveLease {
-			if leaseWorkerID.Valid {
-				lWorker = leaseWorkerID.String
-			}
-			if leaseUserID.Valid {
-				lUser = leaseUserID.String
-			}
-		}
-		entries = append(entries, roleLaneEntry{
-			item:          it,
-			inQueue:       cinfo.tracksWork && !isNow,
-			isNow:         isNow,
-			doneKey:       cinfo.doneKey,
-			tracksWork:    cinfo.tracksWork,
-			leaseWorkerID: lWorker,
-			leaseUserID:   lUser,
-		})
+		entries = append(entries, entry)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err

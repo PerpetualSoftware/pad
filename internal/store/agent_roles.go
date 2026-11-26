@@ -119,6 +119,48 @@ func (s *Store) ListAgentRoles(workspaceID string) ([]models.AgentRole, error) {
 	return roles, rows.Err()
 }
 
+// ListAgentRolesForOverviewQ returns the workspace's agent roles and their raw
+// park state (without item_count or park setter display names) in one query.
+func (s *Store) ListAgentRolesForOverviewQ(q Queryer, workspaceID string) ([]models.AgentRole, error) {
+	rows, err := q.Query(s.q(`
+		SELECT id, workspace_id, slug, name, description, icon, tools, sort_order,
+		       created_at, updated_at,
+		       park_mode, park_sort_order, park_set_at, park_set_by_user_id, park_seq
+		FROM agent_roles
+		WHERE workspace_id = ?
+		ORDER BY sort_order ASC, name ASC
+	`), workspaceID)
+	if err != nil {
+		return nil, fmt.Errorf("list agent roles for overview: %w", err)
+	}
+	defer rows.Close()
+
+	var roles []models.AgentRole
+	for rows.Next() {
+		var role models.AgentRole
+		var createdAt, updatedAt string
+		var parkMode string
+		var parkSortOrder sql.NullInt64
+		var parkSetAt, parkSetByUserID sql.NullString
+		var parkSeq int
+		if err := rows.Scan(
+			&role.ID, &role.WorkspaceID, &role.Slug, &role.Name, &role.Description,
+			&role.Icon, &role.Tools, &role.SortOrder, &createdAt, &updatedAt,
+			&parkMode, &parkSortOrder, &parkSetAt, &parkSetByUserID, &parkSeq,
+		); err != nil {
+			return nil, err
+		}
+		role.CreatedAt = parseTime(createdAt)
+		role.UpdatedAt = parseTime(updatedAt)
+		role.Park = buildRolePark(parkMode, parkSortOrder, parkSetAt, parkSetByUserID, sql.NullString{}, parkSeq)
+		roles = append(roles, role)
+	}
+	if roles == nil {
+		roles = []models.AgentRole{}
+	}
+	return roles, rows.Err()
+}
+
 func (s *Store) UpdateAgentRole(workspaceID, id string, input models.AgentRoleUpdate) (*models.AgentRole, error) {
 	existing, err := s.GetAgentRole(workspaceID, id)
 	if err != nil {

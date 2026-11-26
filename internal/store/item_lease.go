@@ -60,21 +60,59 @@ func (e *LeaseHeldError) Error() string {
 // name-only caller; leaseOurs says what it matches. A claim stamps it, so a
 // worker refreshing a name-only lease of its own label binds that lease.
 func (s *Store) ClaimItemLease(itemID, holder, workerID, userID string, ttl time.Duration) (*models.ItemLease, error) {
+	lease, _, err := s.ClaimItemLeaseStatus(itemID, holder, workerID, userID, ttl)
+	return lease, err
+}
+
+// ClaimItemLeaseStatus is ClaimItemLease plus acquired: true when the claim
+// gave the item to a holder that did not already hold a live lease on it,
+// false when it refreshed or extended the caller's existing live lease.
+func (s *Store) ClaimItemLeaseStatus(itemID, holder, workerID, userID string, ttl time.Duration) (lease *models.ItemLease, acquired bool, err error) {
 	ours, oursArgs, err := leaseOurs(holder, workerID, userID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	nowStr := now()
 	expiresStr := time.Now().UTC().Add(ttl).Format(time.RFC3339)
 	uid := leaseUserArg(userID)
+	wArg := leaseWorkerArg(workerID)
 
-	// The predicate is the arbiter: unclaimed, expired, or already ours.
+	// Fast path: renew an existing live lease already held by this caller.
+	// Preserves lease_acquired_at untouched and reports acquired=false.
+	renewArgs := make([]any, 0, 6+len(oursArgs))
+	renewArgs = append(renewArgs, holder, wArg, uid, expiresStr, itemID, nowStr)
+	renewArgs = append(renewArgs, oursArgs...)
+	res, err := s.db.Exec(s.q(`
+		UPDATE items SET
+			lease_holder = ?,
+			lease_worker_id = ?,
+			lease_user_id = ?,
+			lease_expires_at = ?
+		WHERE id = ?
+		  AND lease_holder IS NOT NULL
+		  AND lease_expires_at IS NOT NULL
+		  AND lease_expires_at > ?
+		  AND `+ours+`
+	`), renewArgs...)
+	if err != nil {
+		return nil, false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if n == 1 {
+		lease, err := s.readItemLeaseRow(itemID)
+		return lease, false, err
+	}
+
+	// Acquisition path: unclaimed, expired, or (under race) already ours.
 	// All SET expressions read the PRE-update row (standard SQL, both
 	// dialects), so the CASE sees the old holder/expiry.
 	args := append([]any{}, oursArgs...)
-	args = append(args, nowStr, nowStr, holder, leaseWorkerArg(workerID), uid, expiresStr, itemID, nowStr)
+	args = append(args, nowStr, nowStr, holder, wArg, uid, expiresStr, itemID, nowStr)
 	args = append(args, oursArgs...)
-	res, err := s.db.Exec(s.q(`
+	res, err = s.db.Exec(s.q(`
 		UPDATE items SET
 			lease_acquired_at = CASE
 				WHEN `+ours+` AND lease_expires_at > ? THEN lease_acquired_at
@@ -88,27 +126,28 @@ func (s *Store) ClaimItemLease(itemID, holder, workerID, userID string, ttl time
 		  AND (lease_holder IS NULL OR lease_expires_at IS NULL OR lease_expires_at <= ? OR `+ours+`)
 	`), args...)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	n, err := res.RowsAffected()
+	n, err = res.RowsAffected()
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if n == 1 {
-		return s.readItemLeaseRow(itemID)
+		lease, err := s.readItemLeaseRow(itemID)
+		return lease, true, err
 	}
 
 	// Lost the race (or the item id doesn't exist). Read the live lease
 	// for the refusal; if it expired or was released between our UPDATE
 	// and this read, the caller's retry will win — say so.
-	lease, err := s.GetItemLease(itemID)
+	lease, err = s.GetItemLease(itemID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if lease == nil {
-		return nil, fmt.Errorf("claim on item %s did not apply and no live lease exists — item missing or lease released mid-claim; retry", itemID)
+		return nil, false, fmt.Errorf("claim on item %s did not apply and no live lease exists — item missing or lease released mid-claim; retry", itemID)
 	}
-	return nil, &LeaseHeldError{Holder: lease.Holder, Worker: lease.Worker, AcquiredAt: lease.AcquiredAt, ExpiresAt: lease.ExpiresAt}
+	return nil, false, &LeaseHeldError{Holder: lease.Holder, Worker: lease.Worker, AcquiredAt: lease.AcquiredAt, ExpiresAt: lease.ExpiresAt}
 }
 
 // ReleaseItemLease clears the caller's lease on an item. Idempotent:
@@ -166,7 +205,12 @@ func (s *Store) GetItemLease(itemID string) (*models.ItemLease, error) {
 // id. Expired leases are filtered in SQL so the map carries only what a
 // list rendering should decorate.
 func (s *Store) ListItemLeases(workspaceID string) (map[string]models.ItemLease, error) {
-	rows, err := s.db.Query(s.q(`
+	return s.ListItemLeasesQ(s.db, workspaceID)
+}
+
+// ListItemLeasesQ is ListItemLeases parameterized over its executor (see Queryer).
+func (s *Store) ListItemLeasesQ(q Queryer, workspaceID string) (map[string]models.ItemLease, error) {
+	rows, err := q.Query(s.q(`
 		SELECT id, lease_holder, lease_worker_id, lease_acquired_at, lease_expires_at
 		FROM items
 		WHERE workspace_id = ? AND lease_holder IS NOT NULL AND lease_expires_at > ?

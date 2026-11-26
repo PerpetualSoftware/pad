@@ -85,6 +85,11 @@ type watchAccessVisibility struct {
 	// collection access (CollectionAccess != "specific"). true means "no
 	// filtering" — every notification in this workspace passes.
 	fullAccess bool
+	// reachesWorkspace is true when the caller currently reaches the workspace
+	// as a member (even a specific-access member with zero collections) or via
+	// at least one live grant, and was not denied. Used by workspace-level
+	// home_changed hints that carry no item ID.
+	reachesWorkspace bool
 	// visibleCollIDs is the set of collection IDs the caller GENUINELY has
 	// full access to — a member's own assigned collections, system
 	// collections, or a guest's direct collection_grants (nil/empty when
@@ -112,6 +117,10 @@ func (v watchAccessVisibility) allows(collectionID, itemID string) bool {
 		return true
 	}
 	return v.grantedItemIDs[itemID]
+}
+
+func (v watchAccessVisibility) reaches() bool {
+	return v.reachesWorkspace || v.fullAccess || len(v.visibleCollIDs) > 0 || len(v.grantedItemIDs) > 0
 }
 
 // computeWatchAccessVisibility resolves a user's current access within
@@ -211,7 +220,7 @@ func (s *Server) computeWatchAccessVisibility(bearerAuth bool, user *models.User
 // workspace id, a user id or a store error, can call it.
 func (s *Server) resolveWatchAccessVisibility(bearerAuth bool, user *models.User, workspaceID string) (watchAccessVisibility, string, error) {
 	if user.Role == "admin" && !bearerAuth {
-		return watchAccessVisibility{fullAccess: true}, "", nil
+		return watchAccessVisibility{fullAccess: true, reachesWorkspace: true}, "", nil
 	}
 
 	member, err := s.store.GetWorkspaceMember(workspaceID, user.ID)
@@ -225,7 +234,7 @@ func (s *Server) resolveWatchAccessVisibility(bearerAuth bool, user *models.User
 		// member of this specific workspace legitimately sees it in
 		// full; the gate above only denies the platform-wide, not-a-
 		// member-here bypass.
-		return watchAccessVisibility{fullAccess: true}, "", nil
+		return watchAccessVisibility{fullAccess: true, reachesWorkspace: true}, "", nil
 	}
 
 	// From here: either a "specific"-access member, a non-member guest,
@@ -263,7 +272,8 @@ func (s *Server) resolveWatchAccessVisibility(bearerAuth bool, user *models.User
 	}
 
 	return watchAccessVisibility{
-		visibleCollIDs: fullCollSet,
-		grantedItemIDs: grantedSet,
+		reachesWorkspace: member != nil || len(fullCollSet) > 0 || len(grantedSet) > 0,
+		visibleCollIDs:   fullCollSet,
+		grantedItemIDs:   grantedSet,
 	}, "", nil
 }

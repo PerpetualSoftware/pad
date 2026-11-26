@@ -258,7 +258,7 @@ func scheduleActivityMeta(kind string, fields []string) string {
 // event rides the existing type; a schedule write does not bump the item seq.
 func (s *Server) recordScheduleWrite(r *http.Request, workspaceID string, item *models.Item, action, meta string) {
 	s.logActivityWithMeta(workspaceID, item.ID, action, r, meta)
-	s.publishItemVerified(workspaceID, item, r)
+	s.publishItemUpdatedFromRequest(workspaceID, item, r, true)
 }
 
 func isJSONNull(raw json.RawMessage) bool { return string(raw) == "null" }

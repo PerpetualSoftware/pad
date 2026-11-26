@@ -127,6 +127,13 @@ const (
 	// into an agent session. It is a refetch hint: the read-filtered
 	// GET /me/workspace-tabs is where correctness lives.
 	KindWorkspaceAccessChanged = "workspace_access_changed"
+	// KindHomeChanged tells a stream opted in with ?home=true that state
+	// backing the cross-workspace home/agents overview may have changed. It
+	// is a refetch hint with no item content, title, ref, summary, or actor.
+	// It reaches only streams that opted in with ?home=true
+	// (server.watchStreamDelivers), because an installed `pad watch --stream`
+	// prints any kind it does not know as an item line into an agent session.
+	KindHomeChanged = "home_changed"
 )
 
 // AccessChange values for KindWorkspaceAccessChanged. Gained and lost are

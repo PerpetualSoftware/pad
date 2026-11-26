@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -1152,7 +1153,7 @@ func (s *Server) createItemChecked(r *http.Request, workspaceID string, coll *mo
 	} else {
 		s.logActivityWithMeta(workspaceID, item.ID, "created", r, stampSeqChain("", 0, item.Seq, ""))
 	}
-	s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
+	s.publishItemEventWithCollectionID(r.Context(), sseItemCreated, workspaceID, item.ID, coll.ID, item.Title, coll.Slug, actor, actorNameForCreate, source, item.Seq)
 
 	// Assignment-at-creation (TASK-2533): unlike an update, a freshly
 	// created item has no "before" state to diff — LastMutation doesn't
@@ -2901,7 +2902,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			"item_id", updated.ID, "workspace_id", workspaceID, "error", activityErr)
 	}
 	actorNameForUpdate := actorNameFromRequest(r)
-	s.publishItemEventWithName(sseItemUpdated, workspaceID, updated.ID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
+	hintHome := itemUpdateAffectsHome(before, updated, parentLink != nil && parentLink.Provided)
+	s.publishItemEventWithHint(r.Context(), sseItemUpdated, workspaceID, updated.ID, updated.CollectionID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq, hintHome)
 	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)
 
 	// If a comment was attached to this update (e.g. explaining a status change),
@@ -3071,7 +3073,7 @@ func (s *Server) handleDeleteItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, item.ID, "archived", r)
-	s.publishItemEventWithName(sseItemArchived, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
+	s.publishItemEventWithCollectionID(r.Context(), sseItemArchived, workspaceID, item.ID, item.CollectionID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, deleteSeq)
 
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -3143,7 +3145,7 @@ func (s *Server) handleRestoreItem(w http.ResponseWriter, r *http.Request) {
 
 	actor, source := actorFromRequest(r)
 	s.logActivity(workspaceID, restored.ID, "restored", r)
-	s.publishItemEventWithName(sseItemRestored, workspaceID, restored.ID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
+	s.publishItemEventWithCollectionID(r.Context(), sseItemRestored, workspaceID, restored.ID, restored.CollectionID, restored.Title, restored.CollectionSlug, actor, actorNameFromRequest(r), source, restored.Seq)
 
 	if err := s.enrichItemForResponse(r, restored, restoreVisIDs); err != nil {
 		writeInternalError(w, err)
@@ -3624,7 +3626,10 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 
 	// Publish events for both old and new collections
 	actorNameForMove := actorNameFromRequest(r)
-	s.publishItemEventWithName(sseItemMoved, workspaceID, moved.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
+	s.publishItemEventWithCollectionID(r.Context(), sseItemMoved, workspaceID, moved.ID, targetColl.ID, moved.Title, targetColl.Slug, actor, actorNameForMove, source, moved.Seq)
+	if sourceColl.ID != "" && sourceColl.ID != targetColl.ID {
+		s.publishHomeChanged(workspaceID, sourceColl.ID, moved.ID)
+	}
 	s.publishWatchNotifications(workspaceID, moved, actor, actorNameForMove)
 
 	// The visibility checked before the write (BUG-3334).
@@ -3658,27 +3663,43 @@ func notUniqueSummary(drops []models.NotUniqueDrop, collectionName string) strin
 	return strings.Join(msgs, "; ")
 }
 
-// publishItemEventWithName publishes a real-time event for item changes with actor name.
-// `seq` is the item's workspace-scoped monotonic mutation cursor at the
-// time of the event (PLAN-1343 / TASK-1358), so SSE consumers can
-// reason about ordering and contiguity. Callers that don't have the
-// item's current seq handy may pass 0; downstream consumers fall back
-// to a /items-changes backfill in that case.
-func (s *Server) publishItemEventWithName(eventType, workspaceID, itemID, title, collection, actor, actorName, source string, seq int64) {
-	if s.events == nil {
-		return
+// publishItemEventWithCollectionID publishes a real-time event for item changes
+// with actor name and a home_changed hint. Callers that already hold the item's
+// collection ID pass it directly; when empty, it falls back to a context-bound
+// store lookup. `seq` is the item's workspace-scoped monotonic mutation cursor
+// at the time of the event (PLAN-1343 / TASK-1358).
+func (s *Server) publishItemEventWithCollectionID(ctx context.Context, eventType, workspaceID, itemID, collectionID, title, collection, actor, actorName, source string, seq int64) {
+	s.publishItemEventWithHint(ctx, eventType, workspaceID, itemID, collectionID, title, collection, actor, actorName, source, seq, true)
+}
+
+// publishItemEventWithHint always publishes the activity SSE event and
+// optionally publishes a home_changed watch-bus refetch hint when hintHome is
+// true. Callers whose write cannot change what the home or agents views show
+// (such as body-only edits, op-log materialization recovery, and criterion
+// verdicts) pass hintHome=false.
+func (s *Server) publishItemEventWithHint(ctx context.Context, eventType, workspaceID, itemID, collectionID, title, collection, actor, actorName, source string, seq int64, hintHome bool) {
+	if s.events != nil {
+		s.publishActivityEvent(events.Event{
+			Type:        eventType,
+			WorkspaceID: workspaceID,
+			ItemID:      itemID,
+			Collection:  collection,
+			Title:       title,
+			Actor:       actor,
+			ActorName:   actorName,
+			Source:      source,
+			Seq:         seq,
+		})
 	}
-	s.publishActivityEvent(events.Event{
-		Type:        eventType,
-		WorkspaceID: workspaceID,
-		ItemID:      itemID,
-		Collection:  collection,
-		Title:       title,
-		Actor:       actor,
-		ActorName:   actorName,
-		Source:      source,
-		Seq:         seq,
-	})
+	if hintHome && s.watchEvents != nil && itemID != "" {
+		collID := collectionID
+		if collID == "" {
+			if resolved, err := s.store.GetItemCollectionIDContext(ctx, workspaceID, itemID); err == nil {
+				collID = resolved
+			}
+		}
+		s.publishHomeChanged(workspaceID, collID, itemID)
+	}
 }
 
 // handleCollectionCheckboxProgress returns per-item markdown-checkbox

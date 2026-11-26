@@ -82,10 +82,11 @@ var lifecycleSites = map[string]string{
 	"internal/server/handlers_dashboard.go::buildDashboardResponse::childProgressState": "exclude: active-plan progress, childProgressState",
 
 	// Dashboard open-work sections.
-	"internal/server/handlers_item_context.go::handleGetItemContext::isItemDone": "exclude: item-context conflicts (PLAN-3598) mirror the dashboard: the subject item checks isReferenceCollection first; a blocker keeps a reference BLOCKER, an explicit link; a closed parent of any collection is an anomaly (the close guard skips only reference children)",
-	"internal/server/handlers_dashboard.go::buildDashboardResponse::isItemDone":  "exclude: overdue, blocked, suggested_next and by_role read workItems; orphaned_task checks isReferenceCollection; the blocker check keeps a reference BLOCKER, an explicit link",
-	"internal/server/handlers_dashboard.go::firstActiveBlockers::isItemDone":     "keep: the done check on a BLOCKER, moved out of buildDashboardResponse (TASK-3615); a reference blocker is an explicit link and still blocks",
-	"internal/server/handlers_catch_up.go::catchUpNeedsYou::isItemDone":          "exclude: needs_you's blocked items skip isReferenceCollection first, as the dashboard's blocked attention reads workItems (TASK-3615)",
+	"internal/server/handlers_item_context.go::handleGetItemContext::isItemDone":            "exclude: item-context conflicts (PLAN-3598) mirror the dashboard: the subject item checks isReferenceCollection first; a blocker keeps a reference BLOCKER, an explicit link; a closed parent of any collection is an anomaly (the close guard skips only reference children)",
+	"internal/server/handlers_dashboard.go::buildDashboardResponse::isItemDone":             "exclude: overdue, blocked, suggested_next and by_role read workItems; orphaned_task checks isReferenceCollection; the blocker check keeps a reference BLOCKER, an explicit link",
+	"internal/server/handlers_dashboard.go::firstActiveBlockers::isItemDone":                "keep: the done check on a BLOCKER, moved out of buildDashboardResponse (TASK-3615); a reference blocker is an explicit link and still blocks",
+	"internal/server/handlers_dashboard.go::firstActiveBlockersWithVisibilityQ::isItemDone": "keep: Queryer variant of firstActiveBlockers; a reference blocker is an explicit link and still blocks",
+	"internal/server/handlers_catch_up.go::catchUpNeedsYou::isItemDone":                     "exclude: needs_you's blocked items skip isReferenceCollection first, as the dashboard's blocked attention reads workItems (TASK-3615)",
 
 	// Close guard.
 	"internal/server/handlers_items_open_children_guard.go::runOpenChildrenGuard::isItemDone": "exclude: a reference child is skipped before the done check",
@@ -93,12 +94,14 @@ var lifecycleSites = map[string]string{
 	// Role breakdown.
 	"internal/store/agent_roles.go::GetRoleBreakdown::doneFiltersForWorkspace": "exclude: AND NOT buildReferenceExpr",
 	"internal/store/agent_roles.go::GetRoleBreakdown::buildChildrenDoneExpr":   "exclude: AND NOT buildReferenceExpr",
-	"internal/store/role_park.go::loadRoleLaneQ::IsTerminalItem":               "exclude: queue entries require cinfo.tracksWork (models.CollectionTracksWork); canonical lane respace preserves order of all non-terminal items",
+	"internal/store/role_park.go::buildRoleLaneEntry::IsTerminalItem":          "exclude: queue entries require cinfo.tracksWork (models.CollectionTracksWork); canonical lane respace preserves order of all non-terminal items",
 	"internal/store/role_park.go::IsItemInRoleQueue::IsTerminalItem":           "exclude: returns false before IsTerminalItem when !cinfo.tracksWork",
 
-	// Completed work (standup, changelog).
-	"internal/server/handlers_project_intel.go::listTerminalItemsSince::CollectionCompletedWorkValues": "exclude: a reference collection contributes no values",
-	"cmd/pad/cmd_project.go::listCompletedWorkSince::CollectionCompletedWorkValues":                    "exclude: a reference collection contributes no values (CLI twin)",
+	// Completed work (standup, changelog, agents overview).
+	"internal/server/handlers_project_intel.go::listTerminalItemsSince::CollectionCompletedWorkValues":     "exclude: a reference collection contributes no values",
+	"cmd/pad/cmd_project.go::listCompletedWorkSince::CollectionCompletedWorkValues":                        "exclude: a reference collection contributes no values (CLI twin)",
+	"internal/server/handlers_me_agents.go::handleMeAgents::CollectionCompletedWorkValues":                 "exclude: skips !models.CollectionTracksWorkJSON(row.Settings) before completed-work matching",
+	"internal/server/handlers_me_agents.go::buildFinishedCollectionFilters::CollectionCompletedWorkValues": "exclude: skips !ci.TracksWork (models.CollectionTracksWork) before building finished-item SQL filters",
 
 	// Decisions.
 	"internal/decision/attention.go::attentionEligible::IsTerminalItem": "exclude: ineligible when !CollectionTracksWork",

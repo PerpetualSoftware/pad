@@ -73,7 +73,7 @@ func (s *Server) handleClaimItem(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	lease, err := s.store.ClaimItemLease(item.ID, holder, worker, currentUserID(r), ttl)
+	lease, acquired, err := s.store.ClaimItemLeaseStatus(item.ID, holder, worker, currentUserID(r), ttl)
 	if err != nil {
 		var held *store.LeaseHeldError
 		if errors.As(err, &held) {
@@ -97,6 +97,9 @@ func (s *Server) handleClaimItem(w http.ResponseWriter, r *http.Request) {
 	if worker != "" {
 		body["worker_id"] = worker
 	}
+	if acquired {
+		s.publishHomeChanged(item.WorkspaceID, item.Item.CollectionID, item.ID)
+	}
 	writeJSON(w, http.StatusOK, body)
 }
 
@@ -119,6 +122,9 @@ func (s *Server) handleReleaseItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if released {
+		s.publishHomeChanged(item.WorkspaceID, item.Item.CollectionID, item.ID)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"ref":      item.Ref,
 		"released": released,

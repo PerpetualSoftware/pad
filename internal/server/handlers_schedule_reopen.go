@@ -51,7 +51,7 @@ func (s *Server) handleReopenItemCommitment(w http.ResponseWriter, r *http.Reque
 	if s.writeScheduleItemGone(w, r, workspaceID, err) || s.writeResolveError(w, r, err) {
 		return
 	}
-	s.publishItemVerified(workspaceID, item, r)
+	s.publishItemUpdatedFromRequest(workspaceID, item, r, true)
 	sc, rev, err := s.store.GetScheduleRevision(workspaceID, item.ID)
 	if err != nil {
 		writeInternalError(w, err)

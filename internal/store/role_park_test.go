@@ -1,7 +1,9 @@
 package store
 
 import (
+	"database/sql"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -633,5 +635,232 @@ func TestRoleArrival_RespaceCoversFastPathPopulation(t *testing.T) {
 	}
 	if a2.RoleSortOrder != 6144 {
 		t.Fatalf("second arrival role_sort_order = %d, want 6144 (fast path)", a2.RoleSortOrder)
+	}
+}
+
+func TestListWorkspaceRoleFinishedItemsQ_WindowPerItemAndPerRole(t *testing.T) {
+	t.Parallel()
+	s, ws, col, roleA, _, items := seedRoleParkFixture(t)
+
+	roleB, err := s.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Role B", Slug: "role-b"})
+	if err != nil {
+		t.Fatalf("CreateAgentRole roleB: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	insertTr := func(id, itemID, fieldKey, from, to string, at time.Time) {
+		t.Helper()
+		if _, err := s.db.Exec(s.q(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`), id, itemID, ws.ID, col.ID, fieldKey, from, to, at.UTC().Format(time.RFC3339)); err != nil {
+			t.Fatalf("insert transition %s: %v", id, err)
+		}
+	}
+
+	// Mark items[0] (roleA) done with multiple repeated completions, and items[1] (roleA) done earlier.
+	doneFields := `{"status":"done"}`
+	if _, err := s.UpdateItem(items[0].ID, models.ItemUpdate{Fields: &doneFields}); err != nil {
+		t.Fatalf("done items[0]: %v", err)
+	}
+	if _, err := s.UpdateItem(items[1].ID, models.ItemUpdate{Fields: &doneFields}); err != nil {
+		t.Fatalf("done items[1]: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id IN (?, ?)`), items[0].ID, items[1].ID); err != nil {
+		t.Fatalf("clear transitions: %v", err)
+	}
+	insertTr("a0-done-old", items[0].ID, "status", "open", "done", now.Add(-3*time.Hour))
+	insertTr("a0-reopen", items[0].ID, "status", "done", "open", now.Add(-2*time.Hour))
+	insertTr("a0-done-new", items[0].ID, "status", "open", "done", now.Add(-1*time.Hour))
+	insertTr("a1-done", items[1].ID, "status", "open", "done", now.Add(-4*time.Hour))
+
+	// Create 2 completions on roleB.
+	b1, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "B1", Fields: `{"status":"done"}`, AgentRoleID: &roleB.ID})
+	if err != nil {
+		t.Fatalf("create b1: %v", err)
+	}
+	b2, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "B2", Fields: `{"status":"done"}`, AgentRoleID: &roleB.ID})
+	if err != nil {
+		t.Fatalf("create b2: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id IN (?, ?)`), b1.ID, b2.ID); err != nil {
+		t.Fatalf("clear roleB transitions: %v", err)
+	}
+	insertTr("b1-done", b1.ID, "status", "open", "done", now.Add(-5*time.Hour))
+	insertTr("b2-done", b2.ID, "status", "open", "done", now.Add(-6*time.Hour))
+
+	_, colls, err := s.LoadWorkspaceRoleLanesQ(s.Q(), ws.ID)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRoleLanesQ: %v", err)
+	}
+	ci, ok := colls[col.ID]
+	if !ok || !ci.TracksWork {
+		t.Fatalf("expected tracks-work collection info for %s, got %+v (ok=%v)", col.ID, ci, ok)
+	}
+
+	filters := []FinishedCollectionFilter{{
+		CollectionID: col.ID,
+		FieldKey:     "status",
+		Values:       []string{"done"},
+	}}
+
+	unrestricted := FinishedVisibility{Unrestricted: true}
+
+	// perRole=1 keeps at most 1 item per role (newest per item, newest per role).
+	rows1, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, unrestricted, now.Add(-24*time.Hour), 1, 200)
+	if err != nil {
+		t.Fatalf("ListWorkspaceRoleFinishedItemsQ perRole=1: %v", err)
+	}
+	if len(rows1) != 2 {
+		t.Fatalf("perRole=1 got %d rows, want 2: %+v", len(rows1), rows1)
+	}
+	if rows1[0].ItemID != items[0].ID || !rows1[0].CreatedAt.Equal(now.Add(-1*time.Hour)) {
+		t.Errorf("rows1[0] = (%s, %v), want (%s, %v)", rows1[0].ItemID, rows1[0].CreatedAt, items[0].ID, now.Add(-1*time.Hour))
+	}
+	if rows1[1].ItemID != b1.ID {
+		t.Errorf("rows1[1].ItemID = %s, want %s", rows1[1].ItemID, b1.ID)
+	}
+
+	// perRole=2 returns both items for each role (deduped to 1 row per item).
+	rows2, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, unrestricted, now.Add(-24*time.Hour), 2, 200)
+	if err != nil {
+		t.Fatalf("ListWorkspaceRoleFinishedItemsQ perRole=2: %v", err)
+	}
+	if len(rows2) != 4 {
+		t.Fatalf("perRole=2 got %d rows, want 4: %+v", len(rows2), rows2)
+	}
+}
+
+type failOnQueryQueryer struct {
+	t *testing.T
+}
+
+func (f failOnQueryQueryer) Query(query string, args ...any) (*sql.Rows, error) {
+	f.t.Fatalf("unexpected Query call: %s", query)
+	return nil, nil
+}
+
+func (f failOnQueryQueryer) QueryRow(query string, args ...any) *sql.Row {
+	f.t.Fatalf("unexpected QueryRow call: %s", query)
+	return nil
+}
+
+func TestListWorkspaceRoleFinishedItemsQ_VisibilityAndFallback(t *testing.T) {
+	t.Parallel()
+	s, ws, visCol, roleA, _, items := seedRoleParkFixture(t)
+
+	hidCol, err := s.CreateCollection(ws.ID, models.CollectionCreate{
+		Name:   "Hidden",
+		Slug:   "hidden",
+		Prefix: "HID",
+		Schema: `{"fields":[{"key":"status","type":"select","options":["open","done"],"terminal_options":["done"],"default":"open"}]}`,
+	})
+	if err != nil {
+		t.Fatalf("CreateCollection hidCol: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	insertTr := func(id, itemID, collID string, at time.Time) {
+		t.Helper()
+		if _, err := s.db.Exec(s.q(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, 'status', 'open', 'done', ?)
+		`), id, itemID, ws.ID, collID, at.UTC().Format(time.RFC3339)); err != nil {
+			t.Fatalf("insert transition %s: %v", id, err)
+		}
+	}
+
+	// Mark items[0] in visCol done (older).
+	doneFields := `{"status":"done"}`
+	if _, err := s.UpdateItem(items[0].ID, models.ItemUpdate{Fields: &doneFields}); err != nil {
+		t.Fatalf("done items[0]: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id = ?`), items[0].ID); err != nil {
+		t.Fatalf("clear items[0] transitions: %v", err)
+	}
+	insertTr("vis-old", items[0].ID, visCol.ID, now.Add(-10*time.Hour))
+
+	// Create 5 newer done items in hidCol (first one will be granted individually in one check).
+	var hidIDs []string
+	for i := 0; i < 5; i++ {
+		it, err := s.CreateItem(ws.ID, hidCol.ID, models.ItemCreate{
+			Title: fmt.Sprintf("Hid %d", i), Fields: `{"status":"done"}`, AgentRoleID: &roleA.ID,
+		})
+		if err != nil {
+			t.Fatalf("create hid %d: %v", i, err)
+		}
+		if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id = ?`), it.ID); err != nil {
+			t.Fatalf("clear hid %d transitions: %v", i, err)
+		}
+		insertTr(fmt.Sprintf("hid-%d", i), it.ID, hidCol.ID, now.Add(-time.Duration(5-i)*time.Minute))
+		hidIDs = append(hidIDs, it.ID)
+	}
+
+	filters := []FinishedCollectionFilter{
+		{CollectionID: visCol.ID, FieldKey: "status", Values: []string{"done"}},
+		{CollectionID: hidCol.ID, FieldKey: "status", Values: []string{"done"}},
+	}
+
+	// 1. Restricted with empty sets: returns nil without executing any SQL query.
+	emptyRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		failOnQueryQueryer{t: t}, ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{}, now.Add(-24*time.Hour), 2, 200,
+	)
+	if err != nil {
+		t.Fatalf("empty vis: %v", err)
+	}
+	if len(emptyRows) != 0 {
+		t.Fatalf("empty vis got %d rows, want 0", len(emptyRows))
+	}
+
+	// 2. Restricted to visCol only: gets items[0] despite 5 newer hidCol items with perRole=1.
+	colRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		s.Q(), ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{CollectionIDs: []string{visCol.ID}}, now.Add(-24*time.Hour), 1, 200,
+	)
+	if err != nil {
+		t.Fatalf("collection vis: %v", err)
+	}
+	if len(colRows) != 1 || colRows[0].ItemID != items[0].ID {
+		t.Fatalf("collection vis = %+v, want [%s]", colRows, items[0].ID)
+	}
+
+	// 3. Restricted to oldest hid item by ItemID: gets hidIDs[0] despite 4 newer hid items with perRole=1.
+	itemRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		s.Q(), ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{ItemIDs: []string{hidIDs[0]}}, now.Add(-24*time.Hour), 1, 200,
+	)
+	if err != nil {
+		t.Fatalf("item vis: %v", err)
+	}
+	if len(itemRows) != 1 || itemRows[0].ItemID != hidIDs[0] {
+		t.Fatalf("item vis = %+v, want [%s]", itemRows, hidIDs[0])
+	}
+
+	// 4. Fallback when >500 IDs: no SQL IN clause and no SQL caps, so the 5
+	// newer hidden rows cannot crowd out the visible items[0] (perRole=1).
+	bigIDs := make([]string, maxFinishedVisibilityIDs+1)
+	for i := range bigIDs {
+		bigIDs[i] = fmt.Sprintf("synthetic-id-%d", i)
+	}
+	bigIDs[0] = items[0].ID
+	fallbackRows, err := s.ListWorkspaceRoleFinishedItemsQ(
+		s.Q(), ws.ID, []string{roleA.ID}, filters,
+		FinishedVisibility{ItemIDs: bigIDs}, now.Add(-24*time.Hour), 1, 200,
+	)
+	if err != nil {
+		t.Fatalf("fallback vis: %v", err)
+	}
+	if len(fallbackRows) != 6 {
+		t.Fatalf("fallback vis (>500 IDs, perRole=1) got %d rows, want all 6 (no SQL caps)", len(fallbackRows))
+	}
+	foundVisible := false
+	for _, r := range fallbackRows {
+		if r.ItemID == items[0].ID {
+			foundVisible = true
+		}
+	}
+	if !foundVisible {
+		t.Fatalf("fallback vis dropped the visible item %s behind newer hidden rows: %+v", items[0].ID, fallbackRows)
 	}
 }

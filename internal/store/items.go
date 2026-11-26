@@ -6075,6 +6075,8 @@ type BlocksEdge struct {
 	SourceTitle        string
 	SourceCollectionID string
 	SourceFields       string
+	SourceSchema       string
+	SourceSettings     string
 	// TargetCollectionID and TargetFields are the blocked item's visibility
 	// and done-state inputs: the needs scorers walk blocks forward and count
 	// only targets the viewer may see and that are still open (TASK-3959).
@@ -6089,8 +6091,13 @@ type BlocksEdge struct {
 // per-item path did. Replaces the dashboard's per-non-done-item
 // GetItemLinks + per-link GetItem N+1 (BUG-2002).
 func (s *Store) GetBlocksEdges(workspaceID string) ([]BlocksEdge, error) {
-	rows, err := s.db.Query(s.q(`
-		SELECT l.target_id, l.source_id, s.title, s.collection_id, s.fields, t.collection_id, t.fields
+	return s.GetBlocksEdgesQ(s.db, workspaceID)
+}
+
+// GetBlocksEdgesQ is GetBlocksEdges parameterized over its executor (see Queryer).
+func (s *Store) GetBlocksEdgesQ(q Queryer, workspaceID string) ([]BlocksEdge, error) {
+	rows, err := q.Query(s.q(`
+		SELECT l.target_id, l.source_id, s.title, s.collection_id, s.fields, sc.schema, sc.settings, t.collection_id, t.fields
 		FROM item_links l
 		JOIN items s ON s.id = l.source_id AND s.deleted_at IS NULL AND s.workspace_id = l.workspace_id
 		JOIN items t ON t.id = l.target_id AND t.deleted_at IS NULL AND t.workspace_id = l.workspace_id
@@ -6107,12 +6114,37 @@ func (s *Store) GetBlocksEdges(workspaceID string) ([]BlocksEdge, error) {
 	var edges []BlocksEdge
 	for rows.Next() {
 		var e BlocksEdge
-		if err := rows.Scan(&e.TargetID, &e.SourceID, &e.SourceTitle, &e.SourceCollectionID, &e.SourceFields, &e.TargetCollectionID, &e.TargetFields); err != nil {
+		if err := rows.Scan(&e.TargetID, &e.SourceID, &e.SourceTitle, &e.SourceCollectionID, &e.SourceFields, &e.SourceSchema, &e.SourceSettings, &e.TargetCollectionID, &e.TargetFields); err != nil {
 			return nil, err
 		}
 		edges = append(edges, e)
 	}
 	return edges, rows.Err()
+}
+
+// GetItemCollectionID returns the collection_id for a single item (including
+// soft-deleted items), used by best-effort notification publishers that only
+// hold an item ID and collection slug.
+func (s *Store) GetItemCollectionID(workspaceID, itemID string) (string, error) {
+	return s.GetItemCollectionIDContext(context.Background(), workspaceID, itemID)
+}
+
+// GetItemCollectionIDContext is GetItemCollectionID bound to ctx.
+func (s *Store) GetItemCollectionIDContext(ctx context.Context, workspaceID, itemID string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	var collID string
+	err := s.db.QueryRowContext(ctx, s.q(`
+		SELECT collection_id FROM items WHERE id = ? AND workspace_id = ?
+	`), itemID, workspaceID).Scan(&collID)
+	if err == sql.ErrNoRows {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return collID, nil
 }
 
 // PopulateHasChildren sets HasChildren=true on items that have at least one

@@ -193,6 +193,54 @@ func (s *Store) GetUserQ(q Queryer, id string) (*models.User, error) {
 	return u, nil
 }
 
+// GetUserDisplayNamesQ resolves display names (name when non-empty, else username)
+// for a set of user IDs in a single chunked query.
+func (s *Store) GetUserDisplayNamesQ(q Queryer, userIDs []string) (map[string]string, error) {
+	out := make(map[string]string)
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	seen := make(map[string]bool, len(userIDs))
+	uniq := make([]string, 0, len(userIDs))
+	for _, id := range userIDs {
+		if id != "" && !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	for _, chunk := range chunkStrings(uniq, needsChunk) {
+		args := make([]any, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		rows, err := q.Query(s.q(`
+			SELECT id, CASE WHEN name <> '' THEN name ELSE username END
+			FROM users
+			WHERE id IN (`+placeholders(len(chunk))+`)
+		`), args...)
+		if err != nil {
+			return nil, fmt.Errorf("get user display names: %w", err)
+		}
+		for rows.Next() {
+			var id string
+			var name sql.NullString
+			if err := rows.Scan(&id, &name); err != nil {
+				rows.Close()
+				return nil, err
+			}
+			if name.Valid && name.String != "" {
+				out[id] = name.String
+			}
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		rows.Close()
+	}
+	return out, nil
+}
+
 // GetUserByEmail retrieves a user by email address (case-insensitive).
 func (s *Store) GetUserByEmail(email string) (*models.User, error) {
 	u, err := scanUser(s.db.QueryRow(s.q(`SELECT `+userColumns+` FROM users WHERE email = ?`),

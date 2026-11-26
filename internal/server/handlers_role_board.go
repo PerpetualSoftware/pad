@@ -52,6 +52,7 @@ func (s *Server) handleRoleBoardReorder(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
+	s.publishHomeChanged(workspaceID, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
@@ -76,6 +77,7 @@ func (s *Server) handleRoleBoardLaneReorder(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
+	s.publishHomeChanged(workspaceID, "", "")
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 

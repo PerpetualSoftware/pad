@@ -132,7 +132,7 @@ func (s *Server) handleConfirmAppInstall(w http.ResponseWriter, r *http.Request)
 	for i, item := range res.Items {
 		coll := reviewed.Artifacts[i].DestinationCollection
 		s.logActivity(workspaceID, item.ID, "created", r)
-		s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, coll, actor, actorName, source, item.Seq)
+		s.publishItemEventWithCollectionID(r.Context(), sseItemCreated, workspaceID, item.ID, item.CollectionID, item.Title, coll, actor, actorName, source, item.Seq)
 		out.Items = append(out.Items, confirmItem{Key: reviewed.Artifacts[i].Key, Ref: item.Ref, Status: itemStatus(item)})
 	}
 	s.logAuditEvent(models.ActionAppInstalled, r, auditMeta(map[string]string{

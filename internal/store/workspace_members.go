@@ -471,6 +471,91 @@ func (s *Store) GetWorkspaceMemberQ(q Queryer, workspaceID, userID string) (*mod
 	return &m, nil
 }
 
+// ListUserWorkspaceMembershipsMapQ loads every workspace_members row for userID
+// keyed by workspace_id in a single query.
+func (s *Store) ListUserWorkspaceMembershipsMapQ(q Queryer, userID string) (map[string]models.WorkspaceMember, error) {
+	rows, err := q.Query(s.q(`
+		SELECT workspace_id, user_id, role, collection_access, created_at
+		FROM workspace_members
+		WHERE user_id = ?
+	`), userID)
+	if err != nil {
+		return nil, fmt.Errorf("list user workspace memberships: %w", err)
+	}
+	defer rows.Close()
+
+	out := make(map[string]models.WorkspaceMember)
+	for rows.Next() {
+		var m models.WorkspaceMember
+		var createdAt string
+		if err := rows.Scan(&m.WorkspaceID, &m.UserID, &m.Role, &m.CollectionAccess, &createdAt); err != nil {
+			return nil, err
+		}
+		m.CreatedAt = parseTime(createdAt)
+		out[m.WorkspaceID] = m
+	}
+	return out, rows.Err()
+}
+
+// ListUserAdmittedWorkspacesAndMembershipsQ returns every live workspace that
+// userID may enter (via membership or a live collection/item grant) together
+// with the user's workspace_members rows keyed by workspace ID, in a single
+// query. Used by GET /me/agents to avoid per-workspace membership lookups and
+// separate member/guest workspace scans.
+func (s *Store) ListUserAdmittedWorkspacesAndMembershipsQ(q Queryer, userID string) ([]models.Workspace, map[string]models.WorkspaceMember, error) {
+	rows, err := q.Query(s.q(`
+		SELECT w.id, w.name, w.slug, wm.role, wm.collection_access
+		FROM workspaces w
+		LEFT JOIN workspace_members wm
+		  ON wm.workspace_id = w.id AND wm.user_id = ?
+		WHERE w.deleted_at IS NULL
+		  AND (
+		      wm.user_id IS NOT NULL
+		      OR EXISTS (
+		          SELECT 1 FROM collection_grants cg
+		          JOIN collections c ON c.id = cg.collection_id
+		          WHERE cg.workspace_id = w.id AND cg.user_id = ? AND c.deleted_at IS NULL
+		      )
+		      OR EXISTS (
+		          SELECT 1 FROM item_grants ig
+		          JOIN items i ON i.id = ig.item_id
+		          JOIN collections c ON c.id = i.collection_id
+		          WHERE ig.workspace_id = w.id AND ig.user_id = ? AND i.deleted_at IS NULL AND c.deleted_at IS NULL
+		      )
+		  )
+		ORDER BY COALESCE(wm.sort_order, 0) ASC, w.name ASC, w.id ASC
+	`), userID, userID, userID)
+	if err != nil {
+		return nil, nil, fmt.Errorf("list user admitted workspaces and memberships: %w", err)
+	}
+	defer rows.Close()
+
+	var workspaces []models.Workspace
+	memberships := make(map[string]models.WorkspaceMember)
+	for rows.Next() {
+		var ws models.Workspace
+		var role, collAccess sql.NullString
+		if err := rows.Scan(&ws.ID, &ws.Name, &ws.Slug, &role, &collAccess); err != nil {
+			return nil, nil, err
+		}
+		if role.Valid {
+			memberships[ws.ID] = models.WorkspaceMember{
+				WorkspaceID:      ws.ID,
+				UserID:           userID,
+				Role:             role.String,
+				CollectionAccess: collAccess.String,
+			}
+		} else {
+			ws.IsGuest = true
+		}
+		workspaces = append(workspaces, ws)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, nil, err
+	}
+	return workspaces, memberships, nil
+}
+
 // ListWorkspaceMembers returns all members of a workspace, enriched with
 // user name and email from a join.
 func (s *Store) ListWorkspaceMembers(workspaceID string) ([]models.WorkspaceMember, error) {

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -70,6 +71,28 @@ type watchEventPayload struct {
 	AuthorIsHuman  *bool  `json:"author_is_human,omitempty"`
 	TargetAgentKey string `json:"target_agent_key,omitempty"`
 	Deleted        bool   `json:"deleted,omitempty"`
+}
+
+// watchHomeHintPayload is the exact wire shape emitted for KindHomeChanged:
+// only id, ts, workspace (slug), kind — no item_ref, title, summary, or actor.
+type watchHomeHintPayload struct {
+	ID        int64  `json:"id"`
+	Ts        int64  `json:"ts"`
+	Workspace string `json:"workspace"`
+	Kind      string `json:"kind"`
+}
+
+func (p watchEventPayload) MarshalJSON() ([]byte, error) {
+	if p.Kind == watchevents.KindHomeChanged {
+		return json.Marshal(watchHomeHintPayload{
+			ID:        p.ID,
+			Ts:        p.Ts,
+			Workspace: p.Workspace,
+			Kind:      p.Kind,
+		})
+	}
+	type plain watchEventPayload
+	return json.Marshal(plain(p))
 }
 
 // handleWatchEventsStream streams the caller's watch/nudge notifications.
@@ -252,7 +275,8 @@ func (s *Server) handleWatchEventsStream(w http.ResponseWriter, r *http.Request)
 	// asks for it. Read here rather than into SessionIdentity because it is
 	// a delivery preference of this connection, not presence metadata.
 	access := r.URL.Query().Get(watchAccessQueryParam) == "true"
-	prefs := watchStreamPrefs{armed: armed, access: access, chat: r.URL.Query().Get(watchChatQueryParam) == "true", agentKey: normalizeAgentName(ident.Agent)}
+	home := r.URL.Query().Get(watchHomeQueryParam) == "true"
+	prefs := watchStreamPrefs{armed: armed, access: access, home: home, chat: r.URL.Query().Get(watchChatQueryParam) == "true", agentKey: normalizeAgentName(ident.Agent)}
 	// Like chatActor, cookie sessions have no agent identity for chat delivery.
 	// Keep the parsed identity intact for presence and all other stream behavior.
 	if !isBearerAuth(r) {
@@ -751,7 +775,9 @@ func (s *Server) loadWatchPredicates(r *http.Request, userID string) (map[string
 // channel.
 func watchNotificationVisible(watches map[string]string, vis watchAccessVisibility, userID string, sessionID string, armed bool, n watchevents.Notification) bool {
 	// TASK-4041: chat never falls through item or workspace visibility.
-	if n.Kind == watchevents.KindChat {
+	// home_changed is also handled exclusively by watchStreamDelivers and never
+	// matched against watches.
+	if n.Kind == watchevents.KindChat || n.Kind == watchevents.KindHomeChanged {
 		return false
 	}
 	// TASK-2533: the caller's CURRENT access to
@@ -866,6 +892,7 @@ func watchNotificationVisible(watches map[string]string, vis watchAccessVisibili
 // for the same reason: a browser EventSource cannot set headers. Only
 // "true" counts.
 const watchAccessQueryParam = "access"
+const watchHomeQueryParam = "home"
 const watchChatQueryParam = "chat"
 
 // watchChatInboxQueryParam opts a cookie stream into the ref-only chat
@@ -883,7 +910,7 @@ func chatInboxPref(r *http.Request, user *models.User) bool {
 }
 
 type watchStreamPrefs struct {
-	armed, access, chat bool
+	armed, access, home, chat bool
 	// chatInbox: TASK-4044, see chatInboxPref.
 	chatInbox bool
 	agentKey  string
@@ -896,12 +923,15 @@ func (c *watchVisCache) delivers(watches map[string]string, userID, sessionID st
 	if n.Kind == watchevents.KindChat {
 		return !c.denied() && watchStreamDelivers(watches, watchAccessVisibility{}, userID, sessionID, prefs, n)
 	}
+	if n.Kind == watchevents.KindHomeChanged && !prefs.home {
+		return false
+	}
 	return watchStreamDelivers(watches, c.forWorkspace(n.WorkspaceID), userID, sessionID, prefs, n)
 }
 
 // watchStreamDelivers is the stream's delivery decision. It answers
-// workspace_access_changed itself and hands every other kind to
-// watchNotificationVisible unchanged.
+// workspace_access_changed, chat, and home_changed itself and hands every
+// other kind to watchNotificationVisible unchanged.
 //
 // The access branch runs BEFORE the visibility check, deliberately: the
 // recipient of a "lost", "deleted" or "purged" event no longer reaches the
@@ -924,6 +954,15 @@ func watchStreamDelivers(watches map[string]string, vis watchAccessVisibility, u
 	}
 	if n.Kind == watchevents.KindWorkspaceAccessChanged {
 		return prefs.access && n.TargetUserID != "" && n.TargetUserID == userID
+	}
+	if n.Kind == watchevents.KindHomeChanged {
+		if !prefs.home {
+			return false
+		}
+		if n.ItemID != "" {
+			return vis.allows(n.CollectionID, n.ItemID)
+		}
+		return vis.reaches()
 	}
 	return watchNotificationVisible(watches, vis, userID, sessionID, prefs.armed, n)
 }
@@ -956,6 +995,14 @@ func parseWatchPredicate(raw string) (field, value string, ok bool) {
 // (e.g. a webhook or system-sourced mutation), rather than adding a
 // second field DOC-2479 doesn't specify.
 func watchEventPayloadFor(c *watchVisCache, n watchevents.Notification) watchEventPayload {
+	if n.Kind == watchevents.KindHomeChanged {
+		return watchEventPayload{
+			ID:        n.ID,
+			Ts:        n.Timestamp,
+			Workspace: c.workspaceSlug(n.WorkspaceID),
+			Kind:      n.Kind,
+		}
+	}
 	if n.Kind == watchevents.KindChat {
 		human := n.AuthorAgentKey == ""
 		return watchEventPayload{ID: n.ID, Ts: n.Timestamp, Kind: n.Kind,

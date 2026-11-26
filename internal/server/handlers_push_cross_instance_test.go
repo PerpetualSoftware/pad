@@ -69,13 +69,12 @@ func TestPushToItem_TargetedAtSessionOnAnotherInstance(t *testing.T) {
 	// Replica A: the one answering the POST. Its presence registry is
 	// Redis-backed and it has never seen the session.
 	srvA := testServer(t)
+	slug, item, tok, user := setupWatchTestUser(t, srvA)
 	busA := &recordingBus{}
 	srvA.SetWatchEventsBus(busA)
 	presenceA := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(presenceA.Close)
 	srvA.SetSessionPresence(presenceA)
-
-	slug, item, tok, user := setupWatchTestUser(t, srvA)
 
 	// Replica B: a different process, a different registry object, the same
 	// Redis. This is where the agent's stream is actually held.
@@ -119,11 +118,10 @@ func TestPushToItem_TargetedAtSessionOnAnotherInstance(t *testing.T) {
 func TestPushToItem_TargetedAtSessionOnAnotherInstance_MemoryRegistryDrops(t *testing.T) {
 	t.Parallel()
 	srvA := testServer(t)
+	slug, item, tok, user := setupWatchTestUser(t, srvA)
 	busA := &recordingBus{}
 	srvA.SetWatchEventsBus(busA)
 	srvA.SetSessionPresence(NewMemorySessionPresence())
-
-	slug, item, tok, user := setupWatchTestUser(t, srvA)
 
 	// "Replica B" — an entirely separate in-memory registry, which is what
 	// a second process has.
@@ -150,13 +148,12 @@ func TestPushToItem_BroadcastCountsSessionsOnEveryInstance(t *testing.T) {
 	mr := miniredis.RunT(t)
 
 	srvA := testServer(t)
+	slug, item, tok, user := setupWatchTestUser(t, srvA)
 	busA := &recordingBus{}
 	srvA.SetWatchEventsBus(busA)
 	presenceA := NewRedisSessionPresence(redis.NewClient(&redis.Options{Addr: mr.Addr()}))
 	t.Cleanup(presenceA.Close)
 	srvA.SetSessionPresence(presenceA)
-
-	slug, item, tok, user := setupWatchTestUser(t, srvA)
 
 	// One session on the answering replica, two on another.
 	presenceA.Add(user.ID, SessionIdentity{Label: "local", Armed: true}, SessionOrigin{})

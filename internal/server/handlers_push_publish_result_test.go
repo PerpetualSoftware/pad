@@ -71,9 +71,9 @@ func (b *stubBus) Close() {}
 func TestPushToItem_ClosedBusIsRefused(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &stubBus{err: watchevents.ErrBusClosed}
 	srv.SetWatchEventsBus(bus)
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this"})
@@ -121,9 +121,9 @@ func TestPushToItem_ClosedBusIsRefused(t *testing.T) {
 func TestPushToItem_UnconfirmedPublishIsNotReportedAsSent(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &stubBus{err: errors.New("redis publish: connection reset")}
 	srv.SetWatchEventsBus(bus)
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this"})
@@ -171,9 +171,9 @@ func TestPushToItem_UnconfirmedPublishIsNotReportedAsSent(t *testing.T) {
 func TestPushToItem_SucceedsWhenPublishAccepted(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &stubBus{err: nil}
 	srv.SetWatchEventsBus(bus)
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this"})
@@ -210,9 +210,9 @@ func TestPushToItem_SucceedsWhenPublishAccepted(t *testing.T) {
 func TestBestEffortProducerSucceedsWhenThePublishFails(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &stubBus{err: errors.New("redis publish: connection reset")}
 	srv.SetWatchEventsBus(bus)
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/comments", tok.Token,
 		map[string]interface{}{"body": "this comment must survive a failed notification"})

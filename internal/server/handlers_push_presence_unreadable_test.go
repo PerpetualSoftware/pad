@@ -44,10 +44,10 @@ func newUnreadablePresence() *unreadablePresence {
 func TestPushToItem_TargetedWithUnreadablePresenceIsRefused(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &recordingBus{}
 	srv.SetWatchEventsBus(bus)
 	srv.SetSessionPresence(newUnreadablePresence())
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this", "target_session_id": "some-session-id"})
@@ -74,10 +74,10 @@ func TestPushToItem_TargetedWithUnreadablePresenceIsRefused(t *testing.T) {
 func TestPushToItem_BroadcastWithUnreadablePresenceStillPublishes(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, _ := setupWatchTestUser(t, srv)
 	bus := &recordingBus{}
 	srv.SetWatchEventsBus(bus)
 	srv.SetSessionPresence(newUnreadablePresence())
-	slug, item, tok, _ := setupWatchTestUser(t, srv)
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,
 		map[string]interface{}{"message": "triage this"})
@@ -121,11 +121,11 @@ func TestPushToItem_BroadcastWithUnreadablePresenceStillPublishes(t *testing.T) 
 func TestPushToItem_ReadablePresenceStillReportsACount(t *testing.T) {
 	t.Parallel()
 	srv := testServer(t)
+	slug, item, tok, user := setupWatchTestUser(t, srv)
 	bus := &recordingBus{}
 	srv.SetWatchEventsBus(bus)
 	presence := NewMemorySessionPresence()
 	srv.SetSessionPresence(presence)
-	slug, item, tok, user := setupWatchTestUser(t, srv)
 	sessionID := presence.Add(user.ID, SessionIdentity{Armed: true}, SessionOrigin{})
 
 	rr := bearerJSON(t, srv, "POST", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"/push", tok.Token,

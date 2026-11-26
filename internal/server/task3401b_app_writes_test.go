@@ -341,6 +341,9 @@ func TestTask3401b_SSEAndWatchParity(t *testing.T) {
 				t.Errorf("SSE actor taken from X-Pad-Agent: %+v", e)
 			}
 		case n := <-notes:
+			if n.Kind == watchevents.KindHomeChanged {
+				continue
+			}
 			gotWatch[string(n.Kind)] = true
 			if strings.Contains(n.ActorName, "spoofed") {
 				t.Errorf("watch actor taken from X-Pad-Agent: %+v", n)
@@ -413,10 +416,17 @@ func TestTask3401b_AnotherWritersStatusChangeIsNotTheApps(t *testing.T) {
 	if body.r == nil {
 		t.Fatal("control: the handler never read the body, so the race did not run")
 	}
-	select {
-	case n := <-notes:
-		t.Errorf("a size-only app write published %+v", n)
-	case <-time.After(500 * time.Millisecond):
+	deadline := time.After(500 * time.Millisecond)
+	for {
+		select {
+		case n := <-notes:
+			if n.Kind == watchevents.KindHomeChanged {
+				continue
+			}
+			t.Errorf("a size-only app write published %+v", n)
+		case <-deadline:
+			return
+		}
 	}
 }
 
