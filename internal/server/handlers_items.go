@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"maps"
 	"net/http"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -3406,7 +3407,11 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	// Snapshotting before the pass would treat that key as already examined
 	// and skip it, which is the arrangement that hid it.
 	relBefore := store.RelationKeysPresent(items.SchemaForMigratedFields(targetSchema), result.Fields)
-	if issues := items.ValidateFieldsDetailed(result.Fields, items.SchemaForMigratedFields(targetSchema)); len(issues) > 0 {
+	// WithDrops: a key a null override or an earlier drop pass removed gets the
+	// destination default again here, and one that fails its type check is
+	// dropped and named in warnings.dropped_fields below, as on create.
+	issues, validatorDrops := items.ValidateFieldsDetailedWithDrops(result.Fields, items.SchemaForMigratedFields(targetSchema))
+	if len(issues) > 0 {
 		var missing, invalid []string
 		for _, iss := range issues {
 			if iss.Kind == items.IssueRequired {
@@ -3639,13 +3644,32 @@ func (s *Server) handleMoveItem(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if len(notUnique) > 0 {
-		// The move's only drop the response names: for invocation_slug the
-		// item has stopped answering to that slug, and the caller has to
-		// learn that from the answer to its own request (BUG-2367).
+		// For invocation_slug the item has stopped answering to that slug, and
+		// the caller has to learn that from the answer to its own request
+		// (BUG-2367). Values the target schema has no home for are named in
+		// the audit row instead, not here.
 		if moved.Warnings == nil {
 			moved.Warnings = &models.ItemWriteWarnings{}
 		}
 		moved.Warnings.NotUnique = notUnique
+	}
+	// A destination default that failed its own type check is named here, as
+	// item create names it (BUG-3696). Once DroppedFields is written it keeps
+	// ItemWriteWarnings' contract that NotUnique keys are in it too.
+	// Both passes can name one key (a default MigrateFields left out is
+	// offered again by the validator and dropped again); StillDropped lists
+	// each key once.
+	discarded := items.StillDropped(append(append([]string(nil), result.DiscardedDefaults...), validatorDrops...), result.Fields)
+	if len(discarded) > 0 {
+		if moved.Warnings == nil {
+			moved.Warnings = &models.ItemWriteWarnings{}
+		}
+		for _, d := range notUnique {
+			if !slices.Contains(discarded, d.Key) {
+				discarded = append(discarded, d.Key)
+			}
+		}
+		moved.Warnings.DroppedFields = discarded
 	}
 
 	writeJSON(w, http.StatusOK, moved)
