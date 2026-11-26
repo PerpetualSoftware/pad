@@ -72,7 +72,7 @@ docker compose -f docker-compose.yml -f docker-compose.build.yml up -d --build
 docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
 ```
 
-Edit `docker-compose.prod.yml` to set your domain and email credentials, and `.env` for the database password and `PAD_VERSION`.
+Set your domain (`PAD_URL`), email credentials, CORS origins, database password, `PAD_ENCRYPTION_KEY`, and `PAD_VERSION` in `.env` (`docker-compose.yml` forwards them to the `pad` service); `docker-compose.prod.yml` enables `PAD_SECURE_COOKIES=true`, Redis auth/`noeviction`, resource limits, and the `pad-net` network.
 
 ## Environment Variables
 
