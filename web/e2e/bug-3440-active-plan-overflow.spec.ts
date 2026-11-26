@@ -20,12 +20,16 @@ test.describe('BUG-3440: Active Plans cards hold long titles', () => {
 		const unbroken = `Plan${run}` + 'X'.repeat(160) + 'End';
 		const spaced = `Run ${run}: a deliberately long plan title with many ordinary words that would wrap on a narrow screen if it were allowed to and must never push the card wider`;
 
+		// Seeding and cleanup are API calls, not the page's own traffic, so
+		// they authenticate with the suite's token (the page's session cookie
+		// would also need the CSRF header).
+		const auth = { Authorization: `Bearer ${fixture.apiToken}` };
 		const created: string[] = [];
 		try {
 			for (const title of [unbroken, spaced]) {
 				const res = await page.request.post(
 					`/api/v1/workspaces/${fixture.workspaceSlug}/collections/plans/items`,
-					{ data: { title, fields: JSON.stringify({ status: 'active' }) } }
+					{ headers: auth, data: { title, fields: JSON.stringify({ status: 'active' }) } }
 				);
 				expect(res.status(), await res.text()).toBe(201);
 				created.push(((await res.json()) as { slug: string }).slug);
@@ -70,7 +74,9 @@ test.describe('BUG-3440: Active Plans cards hold long titles', () => {
 			// The fixture workspace is shared: active plans left behind would sit
 			// on every later spec's dashboard.
 			for (const slug of created) {
-				await page.request.delete(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slug}`);
+				await page.request.delete(`/api/v1/workspaces/${fixture.workspaceSlug}/items/${slug}`, {
+					headers: auth
+				});
 			}
 		}
 	});
