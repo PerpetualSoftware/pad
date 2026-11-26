@@ -236,7 +236,7 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		lanesByRole, err := s.store.LoadWorkspaceRoleLanesQ(q, ws.ID)
+		lanesByRole, collsByID, err := s.store.LoadWorkspaceRoleLanesQ(q, ws.ID)
 		if err != nil {
 			slog.Error("me/agents: load workspace role lanes failed; workspace degraded", "workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", err)
 			degraded = append(degraded, ws.Slug)
@@ -269,7 +269,8 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 
 		var finishedRows []store.WorkspaceRoleFinishedRow
 		if finishedLimit > 0 {
-			finishedRows, err = s.store.ListWorkspaceRoleFinishedItemsQ(q, ws.ID, roleIDs, finishedSince, meAgentsFinishedSQLCap)
+			finishedFilters := buildFinishedCollectionFilters(collsByID)
+			finishedRows, err = s.store.ListWorkspaceRoleFinishedItemsQ(q, ws.ID, roleIDs, finishedFilters, finishedSince, finishedLimit, meAgentsFinishedSQLCap)
 			if err != nil {
 				slog.Error("me/agents: finished items failed; workspace degraded", "workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", err)
 				degraded = append(degraded, ws.Slug)
@@ -308,6 +309,8 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 		}
 		collMetaCache := make(map[string]finishedCollMeta)
 		seenFinished := make(map[string]bool)
+		// Visibility is applied in Go after the SQL per-role cap (finishedLimit),
+		// so a restricted viewer can see fewer than finishedLimit items for a role.
 		for _, row := range finishedRows {
 			if seenFinished[row.ItemID] {
 				continue
@@ -536,6 +539,30 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 		Agents:   agents,
 		Degraded: degraded,
 	})
+}
+
+func buildFinishedCollectionFilters(colls map[string]store.RoleLaneCollectionInfo) []store.FinishedCollectionFilter {
+	ids := make([]string, 0, len(colls))
+	for id, ci := range colls {
+		if ci.TracksWork {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	filters := make([]store.FinishedCollectionFilter, 0, len(ids))
+	for _, id := range ids {
+		ci := colls[id]
+		doneKey, completedVals := models.CollectionCompletedWorkValues(ci.RawSchema, ci.RawSettings)
+		if doneKey == "" || len(completedVals) == 0 {
+			continue
+		}
+		filters = append(filters, store.FinishedCollectionFilter{
+			CollectionID: id,
+			FieldKey:     doneKey,
+			Values:       needsWaitingSpellings(ci.Schema, doneKey, completedVals),
+		})
+	}
+	return filters
 }
 
 func containsFoldValue(values []string, s string) bool {

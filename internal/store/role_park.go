@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -178,11 +179,27 @@ func buildRolePark(mode string, sortOrder sql.NullInt64, setAt, setByUserID, set
 }
 
 type roleLaneCollectionInfo struct {
-	schema     models.CollectionSchema
-	settings   models.CollectionSettings
-	prefix     string
-	doneKey    string
-	tracksWork bool
+	schema      models.CollectionSchema
+	settings    models.CollectionSettings
+	rawSchema   string
+	rawSettings string
+	prefix      string
+	doneKey     string
+	tracksWork  bool
+}
+
+// RoleLaneCollectionInfo describes one live workspace collection loaded during
+// LoadWorkspaceRoleLanesQ so callers can build follow-up queries without
+// re-reading collections.
+type RoleLaneCollectionInfo struct {
+	ID          string
+	Schema      models.CollectionSchema
+	Settings    models.CollectionSettings
+	RawSchema   string
+	RawSettings string
+	Prefix      string
+	DoneKey     string
+	TracksWork  bool
 }
 
 type roleLaneEntry struct {
@@ -302,11 +319,12 @@ func (s *Store) LoadRoleLane(workspaceID, roleID string) ([]RoleLaneEntry, error
 
 // LoadWorkspaceRoleLanesQ returns the canonical full lanes for every role in
 // workspaceID in a single query pair (collections + workspace role items),
-// keyed by role ID and sorted with SortRoleLane.
-func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[string][]RoleLaneEntry, error) {
+// keyed by role ID and sorted with SortRoleLane, together with the live
+// collection metadata already read in the first query.
+func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[string][]RoleLaneEntry, map[string]RoleLaneCollectionInfo, error) {
 	colls, err := s.loadRoleLaneCollectionsQ(q, workspaceID)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	rows, err := q.Query(s.q(`
@@ -317,7 +335,7 @@ func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[stri
 		WHERE i.workspace_id = ? AND i.agent_role_id IS NOT NULL AND i.agent_role_id <> '' AND i.deleted_at IS NULL
 	`), workspaceID)
 	if err != nil {
-		return nil, fmt.Errorf("load workspace role lanes: %w", err)
+		return nil, nil, fmt.Errorf("load workspace role lanes: %w", err)
 	}
 	defer rows.Close()
 
@@ -333,7 +351,7 @@ func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[stri
 			&roleID, &it.ID, &it.CollectionID, &it.Title, &it.Fields, &it.RoleSortOrder, &createdAt, &updatedAt, &itemNum,
 			&leaseHolder, &leaseWorkerID, &leaseUserID, &leaseAcquiredAt, &leaseExpiresAt,
 		); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		entry, ok := buildRoleLaneEntry(it, createdAt, updatedAt, itemNum, leaseHolder, leaseWorkerID, leaseUserID, leaseAcquiredAt, leaseExpiresAt, colls, nowStr)
 		if !ok {
@@ -342,7 +360,7 @@ func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[stri
 		byRole[roleID] = append(byRole[roleID], toPublicRoleLaneEntry(entry))
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	for roleID := range byRole {
@@ -352,7 +370,30 @@ func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[stri
 		})
 		byRole[roleID] = lane
 	}
-	return byRole, nil
+
+	collInfos := make(map[string]RoleLaneCollectionInfo, len(colls))
+	for id, ci := range colls {
+		collInfos[id] = RoleLaneCollectionInfo{
+			ID:          id,
+			Schema:      ci.schema,
+			Settings:    ci.settings,
+			RawSchema:   ci.rawSchema,
+			RawSettings: ci.rawSettings,
+			Prefix:      ci.prefix,
+			DoneKey:     ci.doneKey,
+			TracksWork:  ci.tracksWork,
+		}
+	}
+	return byRole, collInfos, nil
+}
+
+// FinishedCollectionFilter identifies one work-tracking collection's done field
+// and its allowed completed-work to_status spellings (including schema option
+// spellings so SQLite's ASCII-only LOWER does not miss non-ASCII case variants).
+type FinishedCollectionFilter struct {
+	CollectionID string
+	FieldKey     string
+	Values       []string
 }
 
 // WorkspaceRoleFinishedRow is one candidate status-transition row returned by
@@ -372,36 +413,110 @@ type WorkspaceRoleFinishedRow struct {
 	Settings     string
 }
 
-// ListWorkspaceRoleFinishedItemsQ returns up to limit status-transition rows
-// for live items in workspaceID assigned to one of roleIDs at or after since,
-// ordered newest first (st.created_at DESC, st.id DESC). Callers filter to
-// transitions matching each collection's done field and the item's current
-// completed-work value and dedupe by item.
-func (s *Store) ListWorkspaceRoleFinishedItemsQ(q Queryer, workspaceID string, roleIDs []string, since time.Time, limit int) ([]WorkspaceRoleFinishedRow, error) {
-	if len(roleIDs) == 0 || limit <= 0 {
+// ListWorkspaceRoleFinishedItemsQ returns candidate completion transitions for
+// live items in workspaceID assigned to one of roleIDs at or after since,
+// matching on each item's current collection against filters. It keeps only the
+// newest matching transition per item, at most perRole rows per role, and at
+// most limit rows overall, ordered newest first (created_at DESC, id DESC).
+func (s *Store) ListWorkspaceRoleFinishedItemsQ(
+	q Queryer,
+	workspaceID string,
+	roleIDs []string,
+	filters []FinishedCollectionFilter,
+	since time.Time,
+	perRole int,
+	limit int,
+) ([]WorkspaceRoleFinishedRow, error) {
+	if len(roleIDs) == 0 || len(filters) == 0 || perRole <= 0 || limit <= 0 {
 		return nil, nil
 	}
-	args := make([]any, 0, 3+len(roleIDs)+1)
+
+	args := make([]any, 0, 3+len(roleIDs)+len(filters)*6+2)
 	args = append(args, workspaceID, since.UTC().Format(time.RFC3339), workspaceID)
 	for _, rid := range roleIDs {
 		args = append(args, rid)
 	}
-	args = append(args, limit)
+
+	var filterClauses []string
+	for _, f := range filters {
+		if f.CollectionID == "" || f.FieldKey == "" || len(f.Values) == 0 {
+			continue
+		}
+		trimmed := make([]string, 0, len(f.Values))
+		lowered := make([]string, 0, len(f.Values))
+		seenTrim := make(map[string]bool, len(f.Values))
+		seenLow := make(map[string]bool, len(f.Values))
+		for _, v := range f.Values {
+			tv := strings.TrimSpace(v)
+			if tv == "" {
+				continue
+			}
+			if !seenTrim[tv] {
+				seenTrim[tv] = true
+				trimmed = append(trimmed, tv)
+			}
+			lv := strings.ToLower(tv)
+			if !seenLow[lv] {
+				seenLow[lv] = true
+				lowered = append(lowered, lv)
+			}
+		}
+		if len(trimmed) == 0 {
+			continue
+		}
+		clause := "(i.collection_id = ? AND st.field_key = ? AND (TRIM(st.to_status) IN (" +
+			placeholders(len(trimmed)) + ") OR LOWER(TRIM(st.to_status)) IN (" +
+			placeholders(len(lowered)) + "))"
+		args = append(args, f.CollectionID, f.FieldKey)
+		for _, v := range trimmed {
+			args = append(args, v)
+		}
+		for _, v := range lowered {
+			args = append(args, v)
+		}
+		if validFieldKey.MatchString(f.FieldKey) {
+			curVal := "TRIM(" + s.dialect.JSONExtractText("i.fields", f.FieldKey) + ")"
+			clause += " AND (" + curVal + " = TRIM(st.to_status) OR LOWER(" + curVal + ") = LOWER(TRIM(st.to_status)))"
+		}
+		clause += ")"
+		filterClauses = append(filterClauses, clause)
+	}
+	if len(filterClauses) == 0 {
+		return nil, nil
+	}
+	args = append(args, perRole, limit)
 
 	rows, err := q.Query(s.q(`
-		SELECT st.item_id, st.field_key, st.to_status, st.created_at,
-		       i.collection_id, i.agent_role_id, i.title, i.fields, i.item_number,
-		       c.prefix, c.schema, c.settings
-		FROM status_transitions st
-		JOIN items i ON i.id = st.item_id
-		JOIN collections c ON c.id = i.collection_id
-		WHERE st.workspace_id = ?
-		  AND st.created_at >= ?
-		  AND i.workspace_id = ?
-		  AND i.deleted_at IS NULL
-		  AND c.deleted_at IS NULL
-		  AND i.agent_role_id IN (`+placeholders(len(roleIDs))+`)
-		ORDER BY st.created_at DESC, st.id DESC
+		WITH item_ranked AS (
+			SELECT st.id, st.item_id, st.field_key, st.to_status, st.created_at,
+			       i.collection_id, i.agent_role_id, i.title, i.fields, i.item_number,
+			       c.prefix, c.schema, c.settings,
+			       ROW_NUMBER() OVER (PARTITION BY st.item_id ORDER BY st.created_at DESC, st.id DESC) AS item_rn
+			FROM status_transitions st
+			JOIN items i ON i.id = st.item_id
+			JOIN collections c ON c.id = i.collection_id
+			WHERE st.workspace_id = ?
+			  AND st.created_at >= ?
+			  AND i.workspace_id = ?
+			  AND i.deleted_at IS NULL
+			  AND c.deleted_at IS NULL
+			  AND i.agent_role_id IN (`+placeholders(len(roleIDs))+`)
+			  AND (`+strings.Join(filterClauses, " OR ")+`)
+		),
+		role_ranked AS (
+			SELECT id, item_id, field_key, to_status, created_at,
+			       collection_id, agent_role_id, title, fields, item_number,
+			       prefix, schema, settings,
+			       ROW_NUMBER() OVER (PARTITION BY agent_role_id ORDER BY created_at DESC, id DESC) AS role_rn
+			FROM item_ranked
+			WHERE item_rn = 1
+		)
+		SELECT item_id, field_key, to_status, created_at,
+		       collection_id, agent_role_id, title, fields, item_number,
+		       prefix, schema, settings
+		FROM role_ranked
+		WHERE role_rn <= ?
+		ORDER BY created_at DESC, id DESC
 		LIMIT ?
 	`), args...)
 	if err != nil {
@@ -451,6 +566,8 @@ func (s *Store) loadRoleLaneCollectionsQ(q Queryer, workspaceID string) (map[str
 		}
 		var info roleLaneCollectionInfo
 		info.prefix = prefix
+		info.rawSchema = rawSchema
+		info.rawSettings = rawSettings
 		if rawSchema != "" {
 			if err := models.UnmarshalItemFieldSchema([]byte(rawSchema), &info.schema); err != nil {
 				info.schema = models.CollectionSchema{}

@@ -754,6 +754,157 @@ func TestMeAgents_FinishedCompletedAtIsTheDoneTransition(t *testing.T) {
 	}
 }
 
+func TestMeAgents_FinishedNotCrowdedOut(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+
+	owner := mkAgentsUser(t, srv, "crowd-owner@example.com", "Crowd Owner")
+	tok := mkAgentsPAT(t, srv, owner.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Crowd WS", Slug: "crowd-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Slug: "tasks", Prefix: "CRD", Schema: meAgentsStdSchema})
+	if err != nil {
+		t.Fatalf("coll: %v", err)
+	}
+	roleA, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Role A", Slug: "role-a"})
+	if err != nil {
+		t.Fatalf("roleA: %v", err)
+	}
+	roleB, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Role B", Slug: "role-b"})
+	if err != nil {
+		t.Fatalf("roleB: %v", err)
+	}
+	roleC, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Role C", Slug: "role-c"})
+	if err != nil {
+		t.Fatalf("roleC: %v", err)
+	}
+
+	insertTransition := func(id, itemID, fieldKey, fromStatus, toStatus string, at time.Time) {
+		t.Helper()
+		if _, err := srv.store.DB().Exec(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, itemID, ws.ID, coll.ID, fieldKey, fromStatus, toStatus, at.UTC().Format(time.RFC3339),
+		); err != nil {
+			t.Fatalf("insert transition %s: %v", id, err)
+		}
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+
+	// Role B: 3 real completions (older than role A's 250 non-completion moves, still inside 30-day window).
+	var roleBRefs []string
+	for i := 0; i < 3; i++ {
+		it, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+			Title: fmt.Sprintf("B Done %d", i), Fields: `{"status":"done"}`, AgentRoleID: &roleB.ID,
+		})
+		if err != nil {
+			t.Fatalf("roleB item %d: %v", i, err)
+		}
+		if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, it.ID); err != nil {
+			t.Fatalf("clear transitions: %v", err)
+		}
+		insertTransition(fmt.Sprintf("b-done-%d", i), it.ID, "status", "open", "done", now.Add(-time.Duration(10+i)*time.Hour))
+		it, _ = srv.store.GetItem(it.ID)
+		roleBRefs = append(roleBRefs, it.Ref)
+	}
+
+	// Role A: 250 non-completion transitions on open items (more recent than Role B's completions).
+	roleAItem, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title: "A Churn", Fields: `{"status":"open"}`, AgentRoleID: &roleA.ID,
+	})
+	if err != nil {
+		t.Fatalf("roleA item: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, roleAItem.ID); err != nil {
+		t.Fatalf("clear roleA transitions: %v", err)
+	}
+	for i := 0; i < 250; i++ {
+		from, to := "open", "in_progress"
+		if i%2 == 1 {
+			from, to = "in_progress", "open"
+		}
+		insertTransition(fmt.Sprintf("a-churn-%03d", i), roleAItem.ID, "status", from, to, now.Add(-time.Duration(250-i)*time.Minute))
+	}
+
+	// Role C: item 1 completed/reopened 150 times (newest), item 2 completed once (older).
+	// Repeated completions of item 1 must not crowd out item 2.
+	roleCItem2, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title: "C Second Done", Fields: `{"status":"done"}`, AgentRoleID: &roleC.ID,
+	})
+	if err != nil {
+		t.Fatalf("roleC item2: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, roleCItem2.ID); err != nil {
+		t.Fatalf("clear roleC item2 transitions: %v", err)
+	}
+	insertTransition("c-item2-done", roleCItem2.ID, "status", "open", "done", now.Add(-12*time.Hour))
+	roleCItem2, _ = srv.store.GetItem(roleCItem2.ID)
+
+	roleCItem1, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title: "C Repeated Done", Fields: `{"status":"done"}`, AgentRoleID: &roleC.ID,
+	})
+	if err != nil {
+		t.Fatalf("roleC item1: %v", err)
+	}
+	if _, err := srv.store.DB().Exec(`DELETE FROM status_transitions WHERE item_id = ?`, roleCItem1.ID); err != nil {
+		t.Fatalf("clear roleC item1 transitions: %v", err)
+	}
+	baseC := now.Add(-6 * time.Hour)
+	for i := 0; i < 150; i++ {
+		if i > 0 {
+			insertTransition(fmt.Sprintf("c-reopen-%03d", i), roleCItem1.ID, "status", "done", "open", baseC.Add(time.Duration(2*i-1)*time.Minute))
+		}
+		insertTransition(fmt.Sprintf("c-done-%03d", i), roleCItem1.ID, "status", "open", "done", baseC.Add(time.Duration(2*i)*time.Minute))
+	}
+	roleCItem1, _ = srv.store.GetItem(roleCItem1.ID)
+
+	rr := doRequestWithHeaders(srv, http.MethodGet, "/api/v1/me/agents?finished=5", nil, bearerHdr(tok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /me/agents: %d %s", rr.Code, rr.Body.String())
+	}
+	var got meAgentsTestResponse
+	parseJSON(t, rr, &got)
+
+	bySlug := make(map[string]int, len(got.Agents))
+	for idx, a := range got.Agents {
+		bySlug[a.Slug] = idx
+	}
+
+	bIdx, ok := bySlug["role-b"]
+	if !ok {
+		t.Fatalf("role-b missing from response: %+v", got.Agents)
+	}
+	bGroup := got.Agents[bIdx]
+	if len(bGroup.Finished) != 3 {
+		t.Fatalf("role-b finished len = %d, want 3: %+v", len(bGroup.Finished), bGroup.Finished)
+	}
+	for i, wantRef := range roleBRefs {
+		if bGroup.Finished[i].Ref != wantRef {
+			t.Errorf("role-b finished[%d].Ref = %q, want %q", i, bGroup.Finished[i].Ref, wantRef)
+		}
+	}
+
+	cIdx, ok := bySlug["role-c"]
+	if !ok {
+		t.Fatalf("role-c missing from response: %+v", got.Agents)
+	}
+	cGroup := got.Agents[cIdx]
+	if len(cGroup.Finished) != 2 {
+		t.Fatalf("role-c finished len = %d, want 2: %+v", len(cGroup.Finished), cGroup.Finished)
+	}
+	if cGroup.Finished[0].Ref != roleCItem1.Ref || cGroup.Finished[1].Ref != roleCItem2.Ref {
+		t.Errorf("role-c finished refs = [%s, %s], want [%s, %s]",
+			cGroup.Finished[0].Ref, cGroup.Finished[1].Ref, roleCItem1.Ref, roleCItem2.Ref)
+	}
+}
+
 func TestMeAgents_QueryBudget(t *testing.T) {
 	t.Parallel()
 

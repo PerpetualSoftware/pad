@@ -635,3 +635,94 @@ func TestRoleArrival_RespaceCoversFastPathPopulation(t *testing.T) {
 		t.Fatalf("second arrival role_sort_order = %d, want 6144 (fast path)", a2.RoleSortOrder)
 	}
 }
+
+func TestListWorkspaceRoleFinishedItemsQ_WindowPerItemAndPerRole(t *testing.T) {
+	t.Parallel()
+	s, ws, col, roleA, _, items := seedRoleParkFixture(t)
+
+	roleB, err := s.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Role B", Slug: "role-b"})
+	if err != nil {
+		t.Fatalf("CreateAgentRole roleB: %v", err)
+	}
+
+	now := time.Now().UTC().Truncate(time.Second)
+	insertTr := func(id, itemID, fieldKey, from, to string, at time.Time) {
+		t.Helper()
+		if _, err := s.db.Exec(s.q(`
+			INSERT INTO status_transitions (id, item_id, workspace_id, collection_id, field_key, from_status, to_status, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`), id, itemID, ws.ID, col.ID, fieldKey, from, to, at.UTC().Format(time.RFC3339)); err != nil {
+			t.Fatalf("insert transition %s: %v", id, err)
+		}
+	}
+
+	// Mark items[0] (roleA) done with multiple repeated completions, and items[1] (roleA) done earlier.
+	doneFields := `{"status":"done"}`
+	if _, err := s.UpdateItem(items[0].ID, models.ItemUpdate{Fields: &doneFields}); err != nil {
+		t.Fatalf("done items[0]: %v", err)
+	}
+	if _, err := s.UpdateItem(items[1].ID, models.ItemUpdate{Fields: &doneFields}); err != nil {
+		t.Fatalf("done items[1]: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id IN (?, ?)`), items[0].ID, items[1].ID); err != nil {
+		t.Fatalf("clear transitions: %v", err)
+	}
+	insertTr("a0-done-old", items[0].ID, "status", "open", "done", now.Add(-3*time.Hour))
+	insertTr("a0-reopen", items[0].ID, "status", "done", "open", now.Add(-2*time.Hour))
+	insertTr("a0-done-new", items[0].ID, "status", "open", "done", now.Add(-1*time.Hour))
+	insertTr("a1-done", items[1].ID, "status", "open", "done", now.Add(-4*time.Hour))
+
+	// Create 2 completions on roleB.
+	b1, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "B1", Fields: `{"status":"done"}`, AgentRoleID: &roleB.ID})
+	if err != nil {
+		t.Fatalf("create b1: %v", err)
+	}
+	b2, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "B2", Fields: `{"status":"done"}`, AgentRoleID: &roleB.ID})
+	if err != nil {
+		t.Fatalf("create b2: %v", err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM status_transitions WHERE item_id IN (?, ?)`), b1.ID, b2.ID); err != nil {
+		t.Fatalf("clear roleB transitions: %v", err)
+	}
+	insertTr("b1-done", b1.ID, "status", "open", "done", now.Add(-5*time.Hour))
+	insertTr("b2-done", b2.ID, "status", "open", "done", now.Add(-6*time.Hour))
+
+	_, colls, err := s.LoadWorkspaceRoleLanesQ(s.Q(), ws.ID)
+	if err != nil {
+		t.Fatalf("LoadWorkspaceRoleLanesQ: %v", err)
+	}
+	ci, ok := colls[col.ID]
+	if !ok || !ci.TracksWork {
+		t.Fatalf("expected tracks-work collection info for %s, got %+v (ok=%v)", col.ID, ci, ok)
+	}
+
+	filters := []FinishedCollectionFilter{{
+		CollectionID: col.ID,
+		FieldKey:     "status",
+		Values:       []string{"done"},
+	}}
+
+	// perRole=1 keeps at most 1 item per role (newest per item, newest per role).
+	rows1, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, now.Add(-24*time.Hour), 1, 200)
+	if err != nil {
+		t.Fatalf("ListWorkspaceRoleFinishedItemsQ perRole=1: %v", err)
+	}
+	if len(rows1) != 2 {
+		t.Fatalf("perRole=1 got %d rows, want 2: %+v", len(rows1), rows1)
+	}
+	if rows1[0].ItemID != items[0].ID || !rows1[0].CreatedAt.Equal(now.Add(-1*time.Hour)) {
+		t.Errorf("rows1[0] = (%s, %v), want (%s, %v)", rows1[0].ItemID, rows1[0].CreatedAt, items[0].ID, now.Add(-1*time.Hour))
+	}
+	if rows1[1].ItemID != b1.ID {
+		t.Errorf("rows1[1].ItemID = %s, want %s", rows1[1].ItemID, b1.ID)
+	}
+
+	// perRole=2 returns both items for each role (deduped to 1 row per item).
+	rows2, err := s.ListWorkspaceRoleFinishedItemsQ(s.Q(), ws.ID, []string{roleA.ID, roleB.ID}, filters, now.Add(-24*time.Hour), 2, 200)
+	if err != nil {
+		t.Fatalf("ListWorkspaceRoleFinishedItemsQ perRole=2: %v", err)
+	}
+	if len(rows2) != 4 {
+		t.Fatalf("perRole=2 got %d rows, want 4: %+v", len(rows2), rows2)
+	}
+}

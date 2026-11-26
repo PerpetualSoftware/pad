@@ -98,9 +98,10 @@ var lifecycleSites = map[string]string{
 	"internal/store/role_park.go::IsItemInRoleQueue::IsTerminalItem":           "exclude: returns false before IsTerminalItem when !cinfo.tracksWork",
 
 	// Completed work (standup, changelog, agents overview).
-	"internal/server/handlers_project_intel.go::listTerminalItemsSince::CollectionCompletedWorkValues": "exclude: a reference collection contributes no values",
-	"cmd/pad/cmd_project.go::listCompletedWorkSince::CollectionCompletedWorkValues":                    "exclude: a reference collection contributes no values (CLI twin)",
-	"internal/server/handlers_me_agents.go::handleMeAgents::CollectionCompletedWorkValues":             "exclude: skips !models.CollectionTracksWorkJSON(row.Settings) before completed-work matching",
+	"internal/server/handlers_project_intel.go::listTerminalItemsSince::CollectionCompletedWorkValues":     "exclude: a reference collection contributes no values",
+	"cmd/pad/cmd_project.go::listCompletedWorkSince::CollectionCompletedWorkValues":                        "exclude: a reference collection contributes no values (CLI twin)",
+	"internal/server/handlers_me_agents.go::handleMeAgents::CollectionCompletedWorkValues":                 "exclude: skips !models.CollectionTracksWorkJSON(row.Settings) before completed-work matching",
+	"internal/server/handlers_me_agents.go::buildFinishedCollectionFilters::CollectionCompletedWorkValues": "exclude: skips !ci.TracksWork (models.CollectionTracksWork) before building finished-item SQL filters",
 
 	// Decisions.
 	"internal/decision/attention.go::attentionEligible::IsTerminalItem": "exclude: ineligible when !CollectionTracksWork",
