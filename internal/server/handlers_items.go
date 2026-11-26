@@ -2305,14 +2305,15 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// `source IN ('cli', 'mcp')` filter just because the user
 	// happened to open the editor and trigger a 5s auto-flush (TASK-1267).
 	//
-	// **Force-override** when the query param is set, even if the
-	// body sent a different VersionSource. Otherwise a buggy or
+	// **Force-override** when the request is a collab snapshot, even if
+	// the body sent a different VersionSource. Otherwise a buggy or
 	// malicious client could send `?source=collab-snapshot` (which
 	// triggers the applier-bypass) with `"version_source":"cli"`
 	// in the body, sneaking a stale browser snapshot through the
 	// op-log GC watermark check (TASK-1309 keys on
-	// VersionSource to gate watermark advancement). The query
-	// param is the trustworthy server-side signal; the body
+	// VersionSource to gate watermark advancement). The server-side
+	// signal is classifyCollabSnapshot's verdict (web door plus an
+	// op_log_cursor), never the query flag alone; the body
 	// VersionSource is client-attacker-controlled (TASK-1309).
 	// PLAN-2348 U2: the version row this update may write names its user.
 	// Internal-only field, so a body cannot set it.
