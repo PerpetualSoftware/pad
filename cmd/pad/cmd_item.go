@@ -1725,9 +1725,10 @@ Each row is a snapshot captured when the item's content changed (edits from
 the web editor, CLI, MCP, collab flushes, and version restores). This is a
 READ-ONLY view — use the web UI to restore a specific version.
 
-Shows the newest 50 by default; pass --limit 0 for the whole history. A
-collab-edited item records a version every few seconds while someone types, so
-histories get long.
+Shows the newest 50 by default; pass --limit 0 for the whole history. With
+--format json and no --limit, returns the whole history as a plain JSON array
+(pass an explicit --limit to bound it). A collab-edited item records a version
+every few seconds while someone types, so histories get long.
 
 A single request is capped server-side, so a very large --limit returns the
 cap rather than everything, and the "showing the newest N" notice cannot detect
@@ -1745,7 +1746,14 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 			ws := getWorkspace()
 			slug := args[0]
 
-			if limit < 0 {
+			// --format json with no --limit returns the whole history (BUG-4026):
+			// detection is whether the flag was passed, not its value, so an
+			// explicit --limit keeps bounded behaviour.
+			effectiveLimit := limit
+			if formatFlag == "json" && !cmd.Flags().Changed("limit") {
+				effectiveLimit = 0
+			}
+			if effectiveLimit < 0 {
 				return fmt.Errorf("--limit must be zero or positive")
 			}
 			// Ask for ONE MORE than we intend to show. That extra row is the
@@ -1757,9 +1765,9 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 			// Guarded against overflow: limit+1 at MaxInt wraps negative, the
 			// client then omits the parameter, and the "bounded" request comes
 			// back unbounded — the opposite of what was asked for.
-			ask := limit
+			ask := effectiveLimit
 			if ask > 0 && ask < math.MaxInt {
-				ask = limit + 1
+				ask = effectiveLimit + 1
 			}
 
 			// Resolve content only when it will actually be SHOWN. --full
@@ -1771,16 +1779,25 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 			if err != nil {
 				return err
 			}
-			truncated := limit > 0 && len(versions) > limit
+			truncated := effectiveLimit > 0 && len(versions) > effectiveLimit
 			if truncated {
-				versions = versions[:limit]
+				versions = versions[:effectiveLimit]
 			}
 
 			if formatFlag == "json" {
+				var printErr error
 				if full {
-					return cli.PrintJSON(versions)
+					printErr = cli.PrintJSON(versions)
+				} else {
+					printErr = cli.PrintJSON(toItemVersionSummaries(versions))
 				}
-				return cli.PrintJSON(toItemVersionSummaries(versions))
+				if printErr != nil {
+					return printErr
+				}
+				if truncated {
+					fmt.Fprintf(os.Stderr, "Showing the newest %d versions; pass --limit 0 for all, or --limit M for more.\n", effectiveLimit)
+				}
+				return nil
 			}
 
 			if len(versions) == 0 {
@@ -1813,7 +1830,7 @@ Items can be referenced by issue ID (e.g. TASK-5) or slug.`,
 			// hundreds of versions is already opting out of a bound, and a
 			// duplicated constant would go stale silently.
 			if truncated {
-				fmt.Printf("Showing the newest %d — pass --limit 0 for all, or --limit N for more.\n", limit)
+				fmt.Printf("Showing the newest %d — pass --limit 0 for all, or --limit N for more.\n", effectiveLimit)
 			}
 			return nil
 		},
@@ -3615,7 +3632,11 @@ Backlinks are the reverse of [[]] wiki-links: if BUG-5's body contains
 
 Code blocks (fenced and inline) are excluded — example refs in docs
 don't count as real links. Self-links (an item referencing its own
-ref in its own body) are hidden.`,
+ref in its own body) are hidden.
+
+Shows up to 50 backlinks by default (max 300 per page). With --format json
+and no --limit, pages to completion from --offset and returns the whole list
+as a plain JSON array; pass an explicit --limit to keep a single bounded page.`,
 		Example: `  pad item backlinks TASK-5
   pad item backlinks PLAN-42 --limit 10
   pad item backlinks IDEA-3 --format json`,
@@ -3633,13 +3654,30 @@ ref in its own body) are hidden.`,
 				return err
 			}
 
-			backlinks, err := client.GetBacklinks(ws, item.Slug, limitFlag, offsetFlag)
+			// --format json with no --limit pages to completion (BUG-4026),
+			// matching pad item list (BUG-4024): detection is whether the flag
+			// was passed, not its value.
+			autoPage := formatFlag == "json" && !cmd.Flags().Changed("limit")
+
+			var backlinks []models.Backlink
+			var page cli.ItemListPage
+			if autoPage {
+				backlinks, err = client.ListAllBacklinks(ws, item.Slug, offsetFlag)
+			} else {
+				backlinks, page, err = client.GetBacklinksPage(ws, item.Slug, limitFlag, offsetFlag)
+			}
 			if err != nil {
 				return err
 			}
 
 			if formatFlag == "json" {
-				return cli.PrintJSON(backlinks)
+				if err := cli.PrintJSON(backlinks); err != nil {
+					return err
+				}
+				if !autoPage && page.HasMore {
+					fmt.Fprintf(os.Stderr, "Showing %d backlinks; pass --offset %d for more, or --format json with no --limit for all.\n", len(backlinks), page.NextOffset)
+				}
+				return nil
 			}
 
 			ref := cli.ItemRef(*item)
@@ -3678,6 +3716,9 @@ ref in its own body) are hidden.`,
 				fmt.Println()
 			}
 			warnStaleDerivedText("snippet", staleBacklinks, "`pad item show <ref>`")
+			if page.HasMore {
+				fmt.Fprintf(os.Stderr, "Showing %d backlinks; pass --offset %d for more, or --format json with no --limit for all.\n", len(backlinks), page.NextOffset)
+			}
 			return nil
 		},
 	}

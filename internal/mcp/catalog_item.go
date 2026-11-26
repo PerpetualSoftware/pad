@@ -150,9 +150,10 @@ var padItemTool = ToolDef{
 		// Returns inbound `[[...]]` references to the given item.
 		// Same-workspace + cross-workspace rows are unioned in the
 		// response; cross-ws rows carry `source_workspace_slug`.
-		// The CLI command takes a ref and optional --limit/--offset
-		// flags; passThrough handles both. PLAN-1593 / TASK-1596.
-		"backlinks": passThrough([]string{"item", "backlinks"}),
+		// Bounded via actionItemBacklinks (BUG-4026) so stdio's
+		// `--format json` auto-paging does not dump an unbounded list
+		// into an agent's context when limit is omitted.
+		"backlinks": actionItemBacklinks,
 
 		// Version history ("what changed, when, by whom") — TASK-2022.
 		// Read-only: returns the item's recorded content-version metadata
@@ -992,6 +993,40 @@ func markItemListTruncation(res *CallToolResult, limit int) *CallToolResult {
 	out := structuredResult(marked, string(text))
 	out.Content = append(out.Content, mcp.NewTextContent(fmt.Sprintf(itemListTruncatedNote, mcpItemListMaxLimit)))
 	return out
+}
+
+// mcpItemBacklinksDefaultLimit / MaxLimit bound pad_item.action=backlinks on
+// both transports (BUG-4026): after `pad item backlinks --format json` began
+// auto-paging without --limit, omitting limit on stdio would return the whole
+// list. Same 50 / 300 pair as list and history.
+const (
+	mcpItemBacklinksDefaultLimit = 50
+	mcpItemBacklinksMaxLimit     = 300
+)
+
+// actionItemBacklinks handles pad_item.action=backlinks. Modelled on
+// actionItemHistory: injects the default limit when omitted and clamps an
+// oversized one, keeping both stdio and HTTP callers bounded.
+func actionItemBacklinks(ctx context.Context, input map[string]any, env ActionEnv) (*CallToolResult, error) {
+	out := make(map[string]any, len(input)+1)
+	for k, v := range input {
+		out[k] = v
+	}
+
+	limit := mcpItemBacklinksDefaultLimit
+	n, ok, err := intParam(input, "limit")
+	if err != nil {
+		return errStructured("pad_item.backlinks", err), nil
+	}
+	if ok && n > 0 {
+		limit = int(n)
+	}
+	if limit > mcpItemBacklinksMaxLimit {
+		limit = mcpItemBacklinksMaxLimit
+	}
+	out["limit"] = limit
+
+	return env.Dispatch(ctx, []string{"item", "backlinks"}, out)
 }
 
 // mcpItemHistoryDefaultLimit / MaxLimit bound pad_item.action=history the same

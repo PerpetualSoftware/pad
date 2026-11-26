@@ -143,43 +143,76 @@ func (s *Server) handleGetItemBacklinks(w http.ResponseWriter, r *http.Request) 
 	// page after same-ws fills (or when offset already exceeded
 	// same-ws). Cross-ws target ref needs the canonical
 	// PREFIX-NUMBER shape derived from the target item.
+	user := currentUser(r)
+	crossApplicable := item.CollectionPrefix != "" && item.ItemNumber != nil && user != nil
+	// crossOffset is the offset INTO the cross-ws tier — zero
+	// when same-ws filled some of the current page, or
+	// (offset - sameCount) when the offset already passed the
+	// same-ws tier entirely.
+	crossOffset := 0
+	if offset > sameCount {
+		crossOffset = offset - sameCount
+	}
+	var targetRef string
+	var allowedSlugs []string
+	bearer := isBearerAuth(r)
+	if crossApplicable {
+		targetRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+		// Propagate the OAuth/MCP token's workspace allow-list
+		// (TASK-952) into the cross-ws enumeration. nil → no
+		// token gate (unpinned PAT or pre-consent token, allow all
+		// enumerated workspaces; a pinned PAT carries [its slug],
+		// BUG-3982); a slice gates each source workspace by slug.
+		// Without this, an MCP token consented for workspace A could
+		// leak backlinks from workspace B that the user has
+		// independent access to. The has-more probe below uses the
+		// same allow-list, so it cannot count a row the page hides.
+		allowedSlugs = TokenAllowedWorkspacesFromContext(r.Context())
+	}
+
 	remaining := limit - len(sameWs)
-	if remaining > 0 && item.CollectionPrefix != "" && item.ItemNumber != nil {
-		// crossOffset is the offset INTO the cross-ws tier — zero
-		// when same-ws filled some of the current page, or
-		// (offset - sameCount) when the offset already passed the
-		// same-ws tier entirely.
-		crossOffset := 0
-		if offset > sameCount {
-			crossOffset = offset - sameCount
-		}
-		targetRef := item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
-		// Use currentUser from the request — guaranteed non-nil
-		// here because the middleware required workspace access.
-		user := currentUser(r)
-		if user != nil {
-			// Propagate the OAuth/MCP token's workspace allow-list
-			// (TASK-952) into the cross-ws enumeration. nil → no
-			// token gate (unpinned PAT or pre-consent token, allow all
-			// enumerated workspaces; a pinned PAT carries [its slug],
-			// BUG-3982); a slice gates each source
-			// workspace by slug. Without this, an MCP token
-			// consented for workspace A could leak backlinks from
-			// workspace B that the user has independent access to.
-			allowedSlugs := TokenAllowedWorkspacesFromContext(r.Context())
-			// Pass the bearer-auth signal so the store-layer admin
-			// bypass mirrors BUG-1616's policy: bearer-borne admin
-			// (CLI / PAT / MCP) enumerates only their member /
-			// grant workspaces; cookie admin keeps the global view.
-			crossWs, err = s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, allowedSlugs, remaining, crossOffset, isBearerAuth(r))
-			if err != nil {
-				writeInternalError(w, err)
-				return
-			}
+	if remaining > 0 && crossApplicable {
+		// Pass the bearer-auth signal so the store-layer admin
+		// bypass mirrors BUG-1616's policy: bearer-borne admin
+		// (CLI / PAT / MCP) enumerates only their member /
+		// grant workspaces; cookie admin keeps the global view.
+		crossWs, err = s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, allowedSlugs, remaining, crossOffset, bearer)
+		if err != nil {
+			writeInternalError(w, err)
+			return
 		}
 	}
 
 	combined := append(sameWs, crossWs...)
+
+	// Paging headers (BUG-4026), matching the item list contract:
+	// X-Pad-Has-More is "true"/"false" on every 200, and X-Pad-Next-Offset
+	// is set only when true (offset+len(page)). Invariant: has-more is true
+	// only when the page is full (len == limit).
+	//
+	// Never ask GetCrossWorkspaceBacklinks for remaining+1 rows: the store
+	// resets any limit > 300 to 50. Instead, when the page is full and the
+	// same-ws tier is exhausted, probe a single row at crossOffset+len(crossWs).
+	hasMore := false
+	if len(combined) == limit {
+		if offset+len(sameWs) < sameCount {
+			hasMore = true
+		} else if crossApplicable && len(crossWs) == remaining {
+			probe, err := s.store.GetCrossWorkspaceBacklinks(workspaceID, targetRef, user.ID, allowedSlugs, 1, crossOffset+len(crossWs), bearer)
+			if err != nil {
+				writeInternalError(w, err)
+				return
+			}
+			hasMore = len(probe) > 0
+		}
+	}
+	if hasMore {
+		w.Header().Set(itemListHasMoreHeader, "true")
+		w.Header().Set(itemListNextOffsetHeader, strconv.Itoa(offset+len(combined)))
+	} else {
+		w.Header().Set(itemListHasMoreHeader, "false")
+	}
+
 	if combined == nil {
 		// Always emit a JSON array, never null — easier for
 		// clients to consume without special-casing.
