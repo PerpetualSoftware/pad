@@ -1,6 +1,7 @@
 package server
 
 import (
+	"log/slog"
 	"net/http"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -67,4 +68,30 @@ func updateWriteKind(in *models.ItemUpdate) string {
 // nor the deliberate-overwrite opt-out.
 func updateIsUnguarded(in *models.ItemUpdate) bool {
 	return in.ExpectedSeq == nil && in.ExpectedUpdatedAt == "" && !in.Replace
+}
+
+// classifyCollabSnapshot decides whether r is a valid collab-snapshot flush.
+// The flag is honoured only on the web door when content is present and an
+// op_log_cursor is supplied (bounds are checked later against content_op_cursor
+// and MAX(item_yjs_updates.id)). On any non-web door the flag is ignored and
+// logged with identifiers only; on any non-snapshot or contentless update
+// input.OpLogCursor is cleared.
+func classifyCollabSnapshot(r *http.Request, itemID string, input *models.ItemUpdate) (snapshot, refuse bool) {
+	if r.URL.Query().Get("source") != "collab-snapshot" || input.Content == nil {
+		input.OpLogCursor = nil
+		return false, false
+	}
+	if door := writeDoor(r); door != writeDoorWeb {
+		input.OpLogCursor = nil
+		slog.Info("collab-snapshot: flag ignored on non-web door",
+			"door", door,
+			"item_id", itemID,
+			"actor_user_id", currentUserID(r),
+		)
+		return false, false
+	}
+	if input.OpLogCursor == nil {
+		return false, true
+	}
+	return true, false
 }
