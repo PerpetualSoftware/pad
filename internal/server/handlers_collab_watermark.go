@@ -1,6 +1,8 @@
 package server
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -19,6 +21,12 @@ import (
 // Edit permission, like the collab-snapshot flush it stands in for: moving the
 // watermark makes op-log rows eligible for GC, which is a write decision even
 // though the proof makes it safe.
+//
+// The stamp is honoured only on the web door (TASK-4871): only a browser tab
+// holds the live collaborative document it vouches for, and a token from
+// another door could otherwise advance the watermark and make op-log rows
+// eligible for GC. Requests from non-web doors are logged and answered with
+// 200 {"advanced": false} without touching the store.
 //
 // A stamp that does not apply is 200 {"advanced": false}, not an error: a
 // cursor behind MAX or a body that changed means the tab is not caught up, and
@@ -51,6 +59,23 @@ func (s *Server) handleStampCollabWatermark(w http.ResponseWriter, r *http.Reque
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	if input.OpLogCursor < 1 {
+		writeError(w, http.StatusBadRequest, "bad_request", store.ErrWatermarkStampBadInput.Error()+": op_log_cursor must be a positive op-log id")
+		return
+	}
+	if b, err := hex.DecodeString(input.ContentSHA256); err != nil || len(b) != sha256.Size {
+		writeError(w, http.StatusBadRequest, "bad_request", store.ErrWatermarkStampBadInput.Error()+": content_sha256 must be 64 hex characters")
+		return
+	}
+	if door := writeDoor(r); door != writeDoorWeb {
+		slog.Info("collab-watermark: stamp ignored on non-web door",
+			"door", door,
+			"item_id", item.ID,
+			"actor_user_id", currentUserID(r),
+		)
+		writeJSON(w, http.StatusOK, map[string]bool{"advanced": false})
 		return
 	}
 
