@@ -96,14 +96,16 @@ func serverStartCommand(exePath string) *exec.Cmd {
 
 // openServerLog opens the background server's log for appending, owner-only.
 // The mode argument applies only on create, so a log left 0644 by an earlier
-// version is tightened too.
+// version is tightened too, unless the log path is a symlink.
 func openServerLog(path string) (*os.File, error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
 		return nil, err
 	}
+	// Only a log that is itself a regular file is tightened: a symlinked log
+	// (to /dev/null, say) points at a file Pad does not own.
 	if runtime.GOOS != "windows" {
-		if info, serr := f.Stat(); serr == nil && info.Mode().Perm()&0o077 != 0 {
+		if info, serr := os.Lstat(path); serr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
 			_ = f.Chmod(info.Mode().Perm() &^ 0o077)
 		}
 	}

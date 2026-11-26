@@ -503,7 +503,9 @@ func Load() (*Config, error) {
 	// may be shared or not Pad's at all (PAD_DB_PATH=pad.db makes it the
 	// working directory), so it keeps its mode; the database files inside
 	// are still owner-only (store.New).
-	if !dataDirFromEnv {
+	// A symlinked default dir points somewhere Pad does not own, so neither it
+	// nor the logs dir reached through it is touched.
+	if !dataDirFromEnv && !isSymlink(cfg.DataDir) {
 		tightenDir(cfg.DataDir)
 		tightenDir(logsDir)
 	}

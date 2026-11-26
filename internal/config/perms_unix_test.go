@@ -151,6 +151,13 @@ func TestLoadLeavesSymlinkDataDirTargetUntouched(t *testing.T) {
 	if err := os.Chmod(target, 0o755); err != nil {
 		t.Fatalf("Chmod(target): %v", err)
 	}
+	targetLogs := filepath.Join(target, "logs")
+	if err := os.Mkdir(targetLogs, 0o755); err != nil {
+		t.Fatalf("Mkdir(target/logs): %v", err)
+	}
+	if err := os.Chmod(targetLogs, 0o755); err != nil {
+		t.Fatalf("Chmod(target/logs): %v", err)
+	}
 	home := filepath.Join(root, "home")
 	if err := os.MkdirAll(home, 0o700); err != nil {
 		t.Fatalf("MkdirAll(home): %v", err)
@@ -173,6 +180,9 @@ func TestLoadLeavesSymlinkDataDirTargetUntouched(t *testing.T) {
 	}
 	if got := modeOf(t, target).Perm(); got != 0o755 {
 		t.Errorf("symlink target mode = %04o, want 0755 (must remain untouched)", got)
+	}
+	if got := modeOf(t, targetLogs).Perm(); got != 0o755 {
+		t.Errorf("symlink target logs mode = %04o, want 0755 (must remain untouched)", got)
 	}
 }
 

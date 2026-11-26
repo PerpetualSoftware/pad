@@ -42,3 +42,9 @@ func tightenDir(path string) {
 		)
 	}
 }
+
+// isSymlink reports whether path itself is a symbolic link.
+func isSymlink(path string) bool {
+	info, err := os.Lstat(filepath.Clean(path))
+	return err == nil && info.Mode()&os.ModeSymlink != 0
+}

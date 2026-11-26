@@ -81,3 +81,41 @@ func TestOpenServerLogTightensExistingLog(t *testing.T) {
 		t.Errorf("mode(%q) = %04o, want 0600", logPath, got)
 	}
 }
+
+func TestOpenServerLogLeavesSymlinkTargetMode(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "elsewhere.log")
+	if err := os.WriteFile(target, nil, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(target, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	logPath := filepath.Join(dir, "server.log")
+	if err := os.Symlink(target, logPath); err != nil {
+		t.Fatalf("Symlink: %v", err)
+	}
+
+	f, err := openServerLog(logPath)
+	if err != nil {
+		t.Fatalf("openServerLog: %v", err)
+	}
+	if _, err := f.WriteString("line\n"); err != nil {
+		_ = f.Close()
+		t.Fatalf("write: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	info, err := os.Stat(target)
+	if err != nil {
+		t.Fatalf("Stat(target): %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o644 {
+		t.Errorf("symlink target mode = %04o, want 0644 (untouched)", got)
+	}
+	if got, _ := os.ReadFile(target); string(got) != "line\n" {
+		t.Errorf("target content = %q, want the written line", got)
+	}
+}
