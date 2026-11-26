@@ -240,7 +240,7 @@ func (s *Server) publishCommitmentGraphWrite(r *http.Request, workspaceID string
 		if item == nil || item.WorkspaceID != workspaceID || item.DeletedAt != nil {
 			continue
 		}
-		s.publishItemVerified(workspaceID, item, r)
+		s.publishItemUpdatedFromRequest(workspaceID, item, r, true)
 	}
 }
 

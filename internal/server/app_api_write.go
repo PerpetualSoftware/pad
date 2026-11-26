@@ -222,7 +222,8 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 	if collID == "" {
 		collID = before.CollectionID
 	}
-	s.publishItemEventWithCollectionID(r.Context(), sseItemUpdated, ac.WorkspaceID, after.ID, collID, after.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", after.Seq)
+	hintHome := itemUpdateAffectsHome(before, after, false)
+	s.publishItemEventWithHint(r.Context(), sseItemUpdated, ac.WorkspaceID, after.ID, collID, after.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", after.Seq, hintHome)
 	// Watchers hear about an app's status change as about anyone's. The signal is the fenced
 	// transaction's own, never a comparison with this handler's earlier read: a status another writer
 	// changed between that read and the commit is not this write's.

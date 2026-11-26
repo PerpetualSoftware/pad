@@ -397,16 +397,24 @@ func verificationActivityMeta(r *http.Request, runID string, rows []models.ItemV
 	return agentMeta(r, string(raw))
 }
 
-// publishItemVerified rides the existing item_updated SSE event rather than a
-// new type: every client already subscribes to it, and a new type would be
-// dropped by the web's ITEM_EVENTS allowlist until each consumer learned it.
-// The item's seq is unchanged by a verification, so a delta-syncing client
-// finds nothing new in the row itself, which is true.
-func (s *Server) publishItemVerified(workspaceID string, item *models.Item, r *http.Request) {
+// publishItemUpdatedFromRequest rides the existing item_updated SSE event
+// rather than a new type: every client already subscribes to it, and a new type
+// would be dropped by the web's ITEM_EVENTS allowlist until each consumer
+// learned it. Callers pass hintHome=true when the write can affect the home or
+// agents views (e.g. schedules/commitments/reminders) and hintHome=false when
+// it cannot (criterion verdicts).
+func (s *Server) publishItemUpdatedFromRequest(workspaceID string, item *models.Item, r *http.Request, hintHome bool) {
 	actor, source := actorFromRequest(r)
 	name := ""
 	if u := currentUser(r); u != nil {
 		name = u.Name
 	}
-	s.publishItemEventWithCollectionID(r.Context(), sseItemUpdated, workspaceID, item.ID, item.CollectionID, item.Title, item.CollectionSlug, actor, name, source, item.Seq)
+	s.publishItemEventWithHint(r.Context(), sseItemUpdated, workspaceID, item.ID, item.CollectionID, item.Title, item.CollectionSlug, actor, name, source, item.Seq, hintHome)
+}
+
+// publishItemVerified publishes an item_updated activity event for criterion
+// verdicts without a home_changed hint: verdicts do not affect the home or
+// agents views, and the item's seq is unchanged.
+func (s *Server) publishItemVerified(workspaceID string, item *models.Item, r *http.Request) {
+	s.publishItemUpdatedFromRequest(workspaceID, item, r, false)
 }

@@ -2902,7 +2902,8 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			"item_id", updated.ID, "workspace_id", workspaceID, "error", activityErr)
 	}
 	actorNameForUpdate := actorNameFromRequest(r)
-	s.publishItemEventWithCollectionID(r.Context(), sseItemUpdated, workspaceID, updated.ID, updated.CollectionID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq)
+	hintHome := itemUpdateAffectsHome(before, updated, parentLink != nil && parentLink.Provided)
+	s.publishItemEventWithHint(r.Context(), sseItemUpdated, workspaceID, updated.ID, updated.CollectionID, updated.Title, updated.CollectionSlug, actor, actorNameForUpdate, source, updated.Seq, hintHome)
 	s.publishWatchNotifications(workspaceID, updated, actor, actorNameForUpdate)
 
 	// If a comment was attached to this update (e.g. explaining a status change),
@@ -3668,6 +3669,15 @@ func notUniqueSummary(drops []models.NotUniqueDrop, collectionName string) strin
 // store lookup. `seq` is the item's workspace-scoped monotonic mutation cursor
 // at the time of the event (PLAN-1343 / TASK-1358).
 func (s *Server) publishItemEventWithCollectionID(ctx context.Context, eventType, workspaceID, itemID, collectionID, title, collection, actor, actorName, source string, seq int64) {
+	s.publishItemEventWithHint(ctx, eventType, workspaceID, itemID, collectionID, title, collection, actor, actorName, source, seq, true)
+}
+
+// publishItemEventWithHint always publishes the activity SSE event and
+// optionally publishes a home_changed watch-bus refetch hint when hintHome is
+// true. Callers whose write cannot change what the home or agents views show
+// (such as body-only edits, op-log materialization recovery, and criterion
+// verdicts) pass hintHome=false.
+func (s *Server) publishItemEventWithHint(ctx context.Context, eventType, workspaceID, itemID, collectionID, title, collection, actor, actorName, source string, seq int64, hintHome bool) {
 	if s.events != nil {
 		s.publishActivityEvent(events.Event{
 			Type:        eventType,
@@ -3681,7 +3691,7 @@ func (s *Server) publishItemEventWithCollectionID(ctx context.Context, eventType
 			Seq:         seq,
 		})
 	}
-	if s.watchEvents != nil && itemID != "" {
+	if hintHome && s.watchEvents != nil && itemID != "" {
 		collID := collectionID
 		if collID == "" {
 			if resolved, err := s.store.GetItemCollectionIDContext(ctx, workspaceID, itemID); err == nil {

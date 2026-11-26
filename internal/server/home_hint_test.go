@@ -7,10 +7,12 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/events"
 	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/store"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
@@ -1452,4 +1454,289 @@ func TestHomeHint_MoveNotifiesSourceCollectionViewer(t *testing.T) {
 	if got["workspace"] != ws.Slug || got["kind"] != watchevents.KindHomeChanged {
 		t.Errorf("source-only viewer hint = %+v, want workspace=%s kind=home_changed", got, ws.Slug)
 	}
+}
+
+func TestHomeHint_ContentOnlyUpdateSendsNone(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	srv.SetEventBus(events.New())
+	// Bypass coalescing so every single update's hint decision is observed directly.
+	srv.homeHintCoalesceForTesting = &homeHintCoalesceConfig{disabled: true}
+
+	owner := mkAgentsUser(t, srv, "content-hint-owner@example.com", "Content Owner")
+	ownerTok := mkAgentsPAT(t, srv, owner.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Content WS", Slug: "content-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{
+		Name: "Tasks", Slug: "tasks", Prefix: "CNT", Schema: meAgentsStdSchema,
+	})
+	if err != nil {
+		t.Fatalf("coll: %v", err)
+	}
+	roleA, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Role A", Slug: "role-a"})
+	if err != nil {
+		t.Fatalf("roleA: %v", err)
+	}
+	roleB, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Role B", Slug: "role-b"})
+	if err != nil {
+		t.Fatalf("roleB: %v", err)
+	}
+
+	item, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{
+		Title:       "Body Test Item",
+		Content:     "Initial body.\n\n## Acceptance criteria\n\n- AC-1: works\n",
+		Fields:      `{"status":"open","priority":"medium"}`,
+		AgentRoleID: &roleA.ID,
+	})
+	if err != nil {
+		t.Fatalf("item: %v", err)
+	}
+	item, _ = srv.store.GetItem(item.ID)
+
+	actCh, _, _ := srv.events.Subscribe(context.Background(), ws.ID)
+	t.Cleanup(func() { srv.events.Unsubscribe(actCh) })
+
+	drainActivity := func() []events.Event {
+		var out []events.Event
+		for {
+			select {
+			case ev := <-actCh:
+				out = append(out, ev)
+			default:
+				return out
+			}
+		}
+	}
+	waitActivity := func(t *testing.T, wantType, wantItemID string) {
+		t.Helper()
+		deadline := time.After(2 * time.Second)
+		for {
+			select {
+			case ev := <-actCh:
+				if ev.Type == wantType && ev.ItemID == wantItemID {
+					return
+				}
+			case <-deadline:
+				t.Fatalf("timed out waiting for activity event type=%q item=%q", wantType, wantItemID)
+			}
+		}
+	}
+	latestBusID := func() int64 {
+		evs := srv.watchEvents.EventsSince(0)
+		if len(evs) == 0 {
+			return 0
+		}
+		return evs[len(evs)-1].ID
+	}
+	homeHintsSince := func(sinceID int64) []watchevents.Notification {
+		var out []watchevents.Notification
+		for _, n := range srv.watchEvents.EventsSince(sinceID) {
+			if n.Kind == watchevents.KindHomeChanged {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+
+	wsBase := "/api/v1/workspaces/" + ws.Slug
+
+	// 1. Content-only PATCH: publishes activity event and NO home_changed.
+	t.Run("content_only", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
+			map[string]any{"content": "Updated body text.\n\n## Acceptance criteria\n\n- AC-1: works\n"}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH content-only: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 0 {
+			t.Fatalf("content-only PATCH published %d home_changed hint(s), want 0: %+v", len(hints), hints)
+		}
+	})
+
+	// 2. Content + equivalent fields JSON (different key ordering): publishes activity event and NO home_changed.
+	t.Run("content_with_reordered_identical_fields", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
+			map[string]any{
+				"content": "Another body edit.\n\n## Acceptance criteria\n\n- AC-1: works\n",
+				"fields":  `{"priority":"medium","status":"open"}`,
+			}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH reordered fields: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 0 {
+			t.Fatalf("content + identical fields PATCH published %d home_changed hint(s), want 0: %+v", len(hints), hints)
+		}
+	})
+
+	// 3. Status change: publishes activity event and 1 home_changed.
+	t.Run("status_change", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
+			map[string]any{"fields_patch": map[string]any{"status": "in_progress"}}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH status: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 1 {
+			t.Fatalf("status PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
+		}
+	})
+
+	// 4. Title change: publishes activity event and 1 home_changed.
+	t.Run("title_change", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
+			map[string]any{"title": "Renamed Body Test Item"}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH title: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 1 {
+			t.Fatalf("title PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
+		}
+	})
+
+	// 5. Non-status field change: publishes activity event and 1 home_changed.
+	t.Run("field_change", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
+			map[string]any{"fields_patch": map[string]any{"priority": "high"}}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH field: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 1 {
+			t.Fatalf("field PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
+		}
+	})
+
+	// 6. Role change: publishes activity event and 1 home_changed.
+	t.Run("role_change", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
+			map[string]any{"agent_role_id": roleB.ID}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH role: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 1 {
+			t.Fatalf("role PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
+		}
+	})
+
+	// 7. Assignee change: publishes activity event and 1 home_changed.
+	t.Run("assignee_change", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPatch, wsBase+"/items/"+item.Ref,
+			map[string]any{"assigned_user_id": owner.ID}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("PATCH assignee: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 1 {
+			t.Fatalf("assignee PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
+		}
+	})
+
+	// 8. Criterion verdicts (handlers_verifications.go): publishes activity event and NO home_changed.
+	t.Run("verifications_send_no_hint", func(t *testing.T) {
+		drainActivity()
+		before := latestBusID()
+		rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/verifications",
+			map[string]any{
+				"code_revision": strings.Repeat("ab", 20),
+				"results":       []map[string]any{{"criterion": "AC-1", "verdict": "pass", "evidence": "ok"}},
+			}, bearerHdr(ownerTok))
+		if rr.Code != http.StatusCreated {
+			t.Fatalf("POST verifications: %d %s", rr.Code, rr.Body.String())
+		}
+		waitActivity(t, sseItemUpdated, item.ID)
+		if hints := homeHintsSince(before); len(hints) != 0 {
+			t.Fatalf("verifications POST published %d home_changed hint(s), want 0: %+v", len(hints), hints)
+		}
+	})
+
+	// 9. App-API update path: no-op fields_patch sends activity event and NO hint; real change sends 1 hint.
+	t.Run("app_api_update", func(t *testing.T) {
+		f := appAPIFixture(t, "write")
+		bus := events.New()
+		watch := watchevents.New()
+		f.srv.SetEventBus(bus)
+		f.srv.SetWatchEventsBus(watch)
+		f.srv.homeHintCoalesceForTesting = &homeHintCoalesceConfig{disabled: true}
+
+		appActCh, _, _ := bus.Subscribe(context.Background(), f.ws.ID)
+		t.Cleanup(func() { bus.Unsubscribe(appActCh) })
+
+		waitAppAct := func(t *testing.T) {
+			t.Helper()
+			deadline := time.After(2 * time.Second)
+			for {
+				select {
+				case ev := <-appActCh:
+					if ev.Type == sseItemUpdated && ev.ItemID == f.item.ID {
+						return
+					}
+				case <-deadline:
+					t.Fatalf("timed out waiting for app item_updated activity event")
+				}
+			}
+		}
+		appLatestID := func() int64 {
+			evs := watch.EventsSince(0)
+			if len(evs) == 0 {
+				return 0
+			}
+			return evs[len(evs)-1].ID
+		}
+		appHintsSince := func(sinceID int64) []watchevents.Notification {
+			var out []watchevents.Notification
+			for _, n := range watch.EventsSince(sinceID) {
+				if n.Kind == watchevents.KindHomeChanged {
+					out = append(out, n)
+				}
+			}
+			return out
+		}
+
+		// No-op fields_patch (size is already "L"): activity event yes, home_changed no.
+		before := appLatestID()
+		rr := appDo(f.srv, http.MethodPatch, f.path("/items/"+f.item.ID), f.token,
+			map[string]any{"fields_patch": map[string]any{"size": "L"}, "expected_etag": f.etag(t, f.item.ID)})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("app no-op PATCH: %d %s", rr.Code, rr.Body.String())
+		}
+		waitAppAct(t)
+		if hints := appHintsSince(before); len(hints) != 0 {
+			t.Fatalf("app no-op PATCH published %d home_changed hint(s), want 0: %+v", len(hints), hints)
+		}
+
+		// Real field change (size "L" -> "M"): activity event yes, 1 home_changed.
+		before = appLatestID()
+		rr = appDo(f.srv, http.MethodPatch, f.path("/items/"+f.item.ID), f.token,
+			map[string]any{"fields_patch": map[string]any{"size": "M"}, "expected_etag": f.etag(t, f.item.ID)})
+		if rr.Code != http.StatusOK {
+			t.Fatalf("app field PATCH: %d %s", rr.Code, rr.Body.String())
+		}
+		waitAppAct(t)
+		if hints := appHintsSince(before); len(hints) != 1 {
+			t.Fatalf("app field PATCH published %d home_changed hint(s), want 1: %+v", len(hints), hints)
+		}
+	})
 }

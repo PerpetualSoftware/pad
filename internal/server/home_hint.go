@@ -1,8 +1,11 @@
 package server
 
 import (
+	"reflect"
+	"strings"
 	"time"
 
+	"github.com/PerpetualSoftware/pad/internal/models"
 	"github.com/PerpetualSoftware/pad/internal/watchevents"
 )
 
@@ -165,4 +168,56 @@ func (s *Server) emitHomeChanged(workspaceID, collectionID, itemID string) {
 		ItemID:       itemID,
 		Kind:         watchevents.KindHomeChanged,
 	})
+}
+
+// itemUpdateAffectsHome reports whether an item update changed any field that
+// the home or agents views read (title, collection, schema fields, agent role,
+// role_sort_order, assigned user, or parent link). Body-only edits return false
+// so they publish the activity event without crowding the watch bus replay ring
+// with home_changed hints.
+func itemUpdateAffectsHome(before, after *models.Item, parentLinkChanged bool) bool {
+	if before == nil || after == nil {
+		return true
+	}
+	if parentLinkChanged {
+		return true
+	}
+	if before.Title != after.Title ||
+		before.CollectionID != after.CollectionID ||
+		derefOrEmpty(before.AgentRoleID) != derefOrEmpty(after.AgentRoleID) ||
+		before.RoleSortOrder != after.RoleSortOrder ||
+		derefOrEmpty(before.AssignedUserID) != derefOrEmpty(after.AssignedUserID) ||
+		derefOrEmpty(before.ParentID) != derefOrEmpty(after.ParentID) ||
+		before.ParentLinkID != after.ParentLinkID ||
+		before.ParentRef != after.ParentRef ||
+		before.ParentTitle != after.ParentTitle ||
+		before.ParentSlug != after.ParentSlug ||
+		before.ParentCollectionSlug != after.ParentCollectionSlug {
+		return true
+	}
+	return !fieldsJSONEqual(before.Fields, after.Fields)
+}
+
+func fieldsJSONEqual(a, b string) bool {
+	ma, errA := decodeFieldsMapForCompare(a)
+	mb, errB := decodeFieldsMapForCompare(b)
+	if errA != nil || errB != nil {
+		return a == b
+	}
+	return reflect.DeepEqual(models.CanonicalJSONNumbers(ma), models.CanonicalJSONNumbers(mb))
+}
+
+func decodeFieldsMapForCompare(raw string) (map[string]any, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" || trimmed == "{}" || trimmed == "null" {
+		return map[string]any{}, nil
+	}
+	m, err := models.DecodeFieldsJSON([]byte(trimmed))
+	if err != nil {
+		return nil, err
+	}
+	if m == nil {
+		return map[string]any{}, nil
+	}
+	return m, nil
 }

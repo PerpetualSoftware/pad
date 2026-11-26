@@ -87,7 +87,7 @@ func (s *Server) handleDismissEndedCommitment(w http.ResponseWriter, r *http.Req
 	}
 	if changed {
 		s.recordScheduleEndDismissedActivity(r, workspaceID, item, sc.Kind)
-		s.publishItemVerified(workspaceID, item, r)
+		s.publishItemUpdatedFromRequest(workspaceID, item, r, true)
 	}
 	v, err := s.buildCommitmentView(r, workspaceID, item, sc, "")
 	if err != nil {
