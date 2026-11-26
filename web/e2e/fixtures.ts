@@ -2,6 +2,7 @@ import { test as base, type BrowserContext } from '@playwright/test';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { ADMIN_PASSWORD } from './global-setup';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -9,15 +10,17 @@ const HERE = dirname(fileURLToPath(import.meta.url));
  * Shared test fixtures.
  *
  * Specs import `test` from here (not `@playwright/test`) so every
- * BrowserContext is pre-authenticated with the admin's API token and
- * every test gets the resolved suite fixture (baseURL, workspace slug,
- * derived admin username).
+ * BrowserContext is signed in as the admin and every test gets the
+ * resolved suite fixture (baseURL, workspace slug, derived admin
+ * username).
  *
- * We use a Bearer token rather than a session cookie because the Pad
- * server binds sessions to the originating User-Agent (see
- * internal/server/middleware_auth.go). A session minted in node.js and
- * replayed from a headless Chromium context would be silently rejected;
- * tokens have no such binding.
+ * The context signs in with a session cookie, through the same
+ * /api/v1/auth/login a person uses, so the app's requests arrive the
+ * way a real browser's do: no Authorization header, cookie session,
+ * CSRF double-submit. The server treats a browser session differently
+ * from a token caller (a collab-snapshot flush is honoured only from a
+ * browser session), so a Bearer header here would test a client no
+ * real browser is.
  */
 
 export interface SuiteFixture {
@@ -37,10 +40,16 @@ function loadSuiteFixture(): SuiteFixture {
 	return JSON.parse(readFileSync(path, 'utf8')) as SuiteFixture;
 }
 
-async function applyTokenAuth(context: BrowserContext, fixture: SuiteFixture) {
-	await context.setExtraHTTPHeaders({
-		Authorization: `Bearer ${fixture.apiToken}`
+// Signs the context in as the admin. context.request shares the
+// context's cookie jar, so the session and CSRF cookies the login sets
+// are the ones the page then sends.
+async function applySessionAuth(context: BrowserContext, fixture: SuiteFixture) {
+	const res = await context.request.post(`${fixture.baseURL}/api/v1/auth/login`, {
+		data: { email: fixture.adminEmail, password: ADMIN_PASSWORD }
 	});
+	if (!res.ok()) {
+		throw new Error(`fixture login: ${res.status()} ${await res.text()}`);
+	}
 }
 
 /**
@@ -69,13 +78,29 @@ export function suiteFixture(): SuiteFixture {
 	return loadSuiteFixture();
 }
 
+// Sends the suite's API token on every request the page makes. Only for a
+// spec whose reader must have a token's reach: the admin's browser session
+// is an owner of every workspace, a token only of the ones it is a member of.
+async function applyTokenAuth(context: BrowserContext, fixture: SuiteFixture) {
+	await context.setExtraHTTPHeaders({
+		Authorization: `Bearer ${fixture.apiToken}`
+	});
+}
+
 // Extended test — use `import { test } from './fixtures'` in specs.
-// The `context` fixture override applies the Bearer header once per
-// context so downstream `page` navigation is authenticated.
-export const test = base.extend<{ fixture: SuiteFixture }>({
-	context: async ({ context }, run) => {
+// The `context` fixture override signs the context in once, so
+// downstream `page` navigation is authenticated. `pageAuth` picks how:
+// 'session' (the default, a real browser) or 'token'
+// (`test.use({ pageAuth: 'token' })`).
+export const test = base.extend<{ fixture: SuiteFixture; pageAuth: 'session' | 'token' }>({
+	pageAuth: ['session', { option: true }],
+	context: async ({ context, pageAuth }, run) => {
 		const fixture = loadSuiteFixture();
-		await applyTokenAuth(context, fixture);
+		if (pageAuth === 'token') {
+			await applyTokenAuth(context, fixture);
+		} else {
+			await applySessionAuth(context, fixture);
+		}
 		await quietCrossActorToasts(context);
 		await run(context);
 	},

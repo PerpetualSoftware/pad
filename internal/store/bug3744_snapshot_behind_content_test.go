@@ -159,3 +159,89 @@ func TestBUG3744_CursorlessSnapshotRefusedOnceACursorIsRecorded(t *testing.T) {
 		t.Fatalf("content = %q, want tracked", got)
 	}
 }
+
+func contentOpCursorOf(t *testing.T, s *Store, itemID string) int64 {
+	t.Helper()
+	var cursor int64
+	if err := s.DB().QueryRow(s.q(`SELECT content_op_cursor FROM items WHERE id = ?`), itemID).Scan(&cursor); err != nil {
+		t.Fatalf("read content_op_cursor: %v", err)
+	}
+	return cursor
+}
+
+// BUG-3558: a snapshot whose cursor exceeds MAX(item_yjs_updates.id) (or 0 on
+// an empty op-log) is refused with SnapshotAheadOfOpLogError and leaves content
+// and content_op_cursor untouched.
+func TestBUG3558_SnapshotAheadOfOpLogIsRefused(t *testing.T) {
+	t.Parallel()
+	t.Run("non-empty op-log", func(t *testing.T) {
+		t.Parallel()
+		s, itemID, ids := bug3744Item(t, 2)
+		err := snapshot(s, itemID, "forged", ids[1]+1000)
+		var ahead *SnapshotAheadOfOpLogError
+		if !errors.As(err, &ahead) {
+			t.Fatalf("ahead snapshot: err = %v, want SnapshotAheadOfOpLogError", err)
+		}
+		if ahead.Cursor != ids[1]+1000 || ahead.Max != ids[1] {
+			t.Fatalf("ahead = %+v, want Cursor=%d Max=%d", ahead, ids[1]+1000, ids[1])
+		}
+		if got := contentOf(t, s, itemID); got != "v0" {
+			t.Fatalf("content = %q, want v0 unchanged", got)
+		}
+		if got := contentOpCursorOf(t, s, itemID); got != 0 {
+			t.Fatalf("content_op_cursor = %d, want 0 unchanged", got)
+		}
+	})
+
+	t.Run("empty op-log", func(t *testing.T) {
+		t.Parallel()
+		s, itemID, _ := bug3744Item(t, 0)
+		err := snapshot(s, itemID, "forged", 1)
+		var ahead *SnapshotAheadOfOpLogError
+		if !errors.As(err, &ahead) {
+			t.Fatalf("ahead snapshot on empty op-log: err = %v, want SnapshotAheadOfOpLogError", err)
+		}
+		if ahead.Cursor != 1 || ahead.Max != 0 {
+			t.Fatalf("ahead = %+v, want Cursor=1 Max=0", ahead)
+		}
+		if got := contentOf(t, s, itemID); got != "v0" {
+			t.Fatalf("content = %q, want v0 unchanged", got)
+		}
+		if got := contentOpCursorOf(t, s, itemID); got != 0 {
+			t.Fatalf("content_op_cursor = %d, want 0 unchanged", got)
+		}
+	})
+}
+
+// BUG-3558: a snapshot whose cursor equals MAX(item_yjs_updates.id) (including
+// 0 on an empty op-log) is accepted.
+func TestBUG3558_SnapshotAtMaxOpLogIsAccepted(t *testing.T) {
+	t.Parallel()
+	t.Run("non-empty op-log", func(t *testing.T) {
+		t.Parallel()
+		s, itemID, ids := bug3744Item(t, 2)
+		if err := snapshot(s, itemID, "at-max", ids[1]); err != nil {
+			t.Fatalf("snapshot at MAX: %v", err)
+		}
+		if got := contentOf(t, s, itemID); got != "at-max" {
+			t.Fatalf("content = %q, want at-max", got)
+		}
+		if got := contentOpCursorOf(t, s, itemID); got != ids[1] {
+			t.Fatalf("content_op_cursor = %d, want %d", got, ids[1])
+		}
+	})
+
+	t.Run("empty op-log", func(t *testing.T) {
+		t.Parallel()
+		s, itemID, _ := bug3744Item(t, 0)
+		if err := snapshot(s, itemID, "at-zero", 0); err != nil {
+			t.Fatalf("snapshot at 0 on empty op-log: %v", err)
+		}
+		if got := contentOf(t, s, itemID); got != "at-zero" {
+			t.Fatalf("content = %q, want at-zero", got)
+		}
+		if got := contentOpCursorOf(t, s, itemID); got != 0 {
+			t.Fatalf("content_op_cursor = %d, want 0", got)
+		}
+	})
+}

@@ -82,7 +82,7 @@ func TestCollabSnapshotHTTPSourceStamping(t *testing.T) {
 	// bare {content} body, relying on the query param for routing).
 	rr = doRequest(srv, "PATCH",
 		"/api/v1/workspaces/"+slug+"/items/"+created.Slug+"?source=collab-snapshot",
-		map[string]interface{}{"content": v2},
+		map[string]interface{}{"content": v2, "op_log_cursor": 0},
 	)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("PATCH ?source=collab-snapshot: expected 200, got %d: %s", rr.Code, rr.Body.String())
@@ -186,6 +186,7 @@ func TestCollabSnapshotQueryOverridesBodyVersionSource(t *testing.T) {
 		map[string]interface{}{
 			"content":        "v2",
 			"version_source": "cli", // attacker / buggy override
+			"op_log_cursor":  0,
 		},
 	)
 	if rr.Code != http.StatusOK {

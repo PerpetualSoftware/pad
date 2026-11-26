@@ -2329,6 +2329,17 @@ func (e *SnapshotBehindContentError) Error() string {
 	return fmt.Sprintf("snapshot at op-log cursor %d is behind the stored content (cursor %d)", e.Cursor, e.Covered)
 }
 
+// SnapshotAheadOfOpLogError refuses a snapshot whose op-log cursor exceeds
+// MAX(item_yjs_updates.id) for the item. Nothing was written.
+type SnapshotAheadOfOpLogError struct {
+	Cursor int64
+	Max    int64
+}
+
+func (e *SnapshotAheadOfOpLogError) Error() string {
+	return fmt.Sprintf("snapshot at op-log cursor %d is ahead of op-log max %d", e.Cursor, e.Max)
+}
+
 type UpdateConflictError struct {
 	ItemID            string
 	ExpectedUpdatedAt string
@@ -3434,10 +3445,13 @@ func (s *Store) updateItemWithParentLinkOnce(
 		// above, so it is ordered against every other content writer.
 		//
 		// A snapshot with NO cursor cannot show what it covers, so once the
-		// stored body has recorded one it is refused too: its
-		// edits travelled as ops and are in the op-log, so nothing durable is
-		// lost. Before any cursor is recorded (0) it is written as it always
-		// was. Cursor -1 in the error marks the missing one.
+		// stored body has recorded one it is refused too: its edits travelled
+		// as ops and are in the op-log, so nothing durable is lost. Since
+		// BUG-3558 the HTTP handler refuses a cursorless snapshot, so the
+		// before-any-cursor-is-recorded (covered == 0) arm serves internal
+		// callers only. Cursor -1 in the error marks the missing one.
+		// A cursor above MAX(item_yjs_updates.id) (or above 0 on an empty
+		// op-log) is refused with SnapshotAheadOfOpLogError for every caller.
 		snapshotLike := input.VersionSource == "collab-snapshot" || input.Recovered
 		if snapshotLike {
 			var covered int64
@@ -3449,6 +3463,15 @@ func (s *Store) updateItemWithParentLinkOnce(
 				return nil, &SnapshotBehindContentError{Cursor: -1, Covered: covered}
 			case input.OpLogCursor != nil && *input.OpLogCursor < covered:
 				return nil, &SnapshotBehindContentError{Cursor: *input.OpLogCursor, Covered: covered}
+			}
+			if input.OpLogCursor != nil {
+				var maxID int64
+				if err := tx.QueryRow(s.q(`SELECT COALESCE(MAX(id), 0) FROM item_yjs_updates WHERE item_id = ?`), id).Scan(&maxID); err != nil {
+					return nil, fmt.Errorf("read max op-log id: %w", err)
+				}
+				if *input.OpLogCursor > maxID {
+					return nil, &SnapshotAheadOfOpLogError{Cursor: *input.OpLogCursor, Max: maxID}
+				}
 			}
 		}
 		sets = append(sets, "content = ?")

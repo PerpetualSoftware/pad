@@ -46,12 +46,20 @@ func TestBUG3080_OlderWriteLandingLastIsRefusedAndNotWritten(t *testing.T) {
 			slug := createWSWithCollections(t, srv)
 			item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
 
+			makeBody := func(content, tab string, n int64) map[string]interface{} {
+				b := stamped(content, tab, n)
+				if path.query != "" {
+					b["op_log_cursor"] = 0
+				}
+				return b
+			}
+
 			// The NEWER write lands first...
-			if code, body := patchContent(t, srv, slug, item.Slug, path.query, stamped("newer", "tab-a", 2)); code != http.StatusOK {
+			if code, body := patchContent(t, srv, slug, item.Slug, path.query, makeBody("newer", "tab-a", 2)); code != http.StatusOK {
 				t.Fatalf("the newer write must apply; got %d %v", code, body)
 			}
 			// ...then the OLDER one arrives.
-			code, body := patchContent(t, srv, slug, item.Slug, path.query, stamped("older", "tab-a", 1))
+			code, body := patchContent(t, srv, slug, item.Slug, path.query, makeBody("older", "tab-a", 1))
 			if code != http.StatusConflict {
 				t.Fatalf("the older write must be refused 409; got %d %v", code, body)
 			}

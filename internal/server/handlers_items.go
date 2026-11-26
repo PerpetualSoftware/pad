@@ -42,9 +42,22 @@ func writeSnapshotBehindContentError(w http.ResponseWriter, itemID string, err e
 	}
 	slog.Info("collab-snapshot: refused; cursor behind the stored content",
 		"item_id", itemID, "cursor", behind.Cursor, "covered", behind.Covered)
-	writeError2(w, http.StatusConflict, "superseded_write",
-		"a newer body is already stored; this snapshot was not written",
-		map[string]interface{}{"op_log_cursor": behind.Cursor, "content_op_cursor": behind.Covered})
+	writeError(w, http.StatusConflict, "superseded_write",
+		"a newer body is already stored; this snapshot was not written")
+	return true
+}
+
+// writeSnapshotAheadOfOpLogError answers a browser snapshot refused because
+// its op-log cursor exceeds MAX(item_yjs_updates.id) for the item.
+func writeSnapshotAheadOfOpLogError(w http.ResponseWriter, itemID string, err error) bool {
+	var ahead *store.SnapshotAheadOfOpLogError
+	if !errors.As(err, &ahead) {
+		return false
+	}
+	slog.Info("collab-snapshot: refused; cursor ahead of op-log",
+		"item_id", itemID, "cursor", ahead.Cursor, "max", ahead.Max)
+	writeError(w, http.StatusConflict, "stale_collab_snapshot",
+		"This editor's view is out of sync with the server; please reload.")
 	return true
 }
 
@@ -2266,14 +2279,16 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	var appliedContent string
 	// `?source=collab-snapshot` opts out of the applier-routing path so
 	// a connected collab tab can flush its Y.Doc-derived markdown to
-	// items.content WITHOUT looping back through ApplyExternalContent
-	// (which would ask this same tab to apply, ack, and then strip
-	// input.Content — leaving items.content unchanged). The flag is
-	// trustworthy because the caller already has edit access (else the
-	// PATCH would 401/403); the bypass just skips a defensive
-	// re-routing that's only useful for EXTERNAL content updates.
-	// Per TASK-1260 / PLAN-1248.
-	collabSnapshot := r.URL.Query().Get("source") == "collab-snapshot"
+	// items.content WITHOUT looping back through ApplyExternalContent.
+	// Honoured only on the web door with content and an op_log_cursor
+	// (classifyCollabSnapshot); refused before client_write acquire so no
+	// client_write mark moves on a rejected cursorless snapshot.
+	collabSnapshot, refuseSnapshot := classifyCollabSnapshot(r, item.ID, &input)
+	if refuseSnapshot {
+		writeError(w, http.StatusConflict, "stale_collab_snapshot",
+			"This editor's view is out of sync with the server; please reload.")
+		return
+	}
 
 	// Stamp the per-version-row attribution so the Versions panel /
 	// `pad history` views can distinguish auto-flush snapshots from
@@ -2290,14 +2305,15 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 	// `source IN ('cli', 'mcp')` filter just because the user
 	// happened to open the editor and trigger a 5s auto-flush (TASK-1267).
 	//
-	// **Force-override** when the query param is set, even if the
-	// body sent a different VersionSource. Otherwise a buggy or
+	// **Force-override** when the request is a collab snapshot, even if
+	// the body sent a different VersionSource. Otherwise a buggy or
 	// malicious client could send `?source=collab-snapshot` (which
 	// triggers the applier-bypass) with `"version_source":"cli"`
 	// in the body, sneaking a stale browser snapshot through the
 	// op-log GC watermark check (TASK-1309 keys on
-	// VersionSource to gate watermark advancement). The query
-	// param is the trustworthy server-side signal; the body
+	// VersionSource to gate watermark advancement). The server-side
+	// signal is classifyCollabSnapshot's verdict (web door plus an
+	// op_log_cursor), never the query flag alone; the body
 	// VersionSource is client-attacker-controlled (TASK-1309).
 	// PLAN-2348 U2: the version row this update may write names its user.
 	// Internal-only field, so a body cannot set it.
@@ -2544,6 +2560,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			if writeSnapshotBehindContentError(w, item.ID, err) {
 				return
 			}
+			if writeSnapshotAheadOfOpLogError(w, item.ID, err) {
+				return
+			}
 			if conflict, ok := asUpdateConflictError(err); ok {
 				writeUpdateConflictError(w, itemRefOrSlug(*item), conflict)
 				return
@@ -2724,6 +2743,9 @@ func (s *Server) updateItem(w http.ResponseWriter, r *http.Request, b *builtinIt
 			return
 		}
 		if writeSnapshotBehindContentError(w, item.ID, err) {
+			return
+		}
+		if writeSnapshotAheadOfOpLogError(w, item.ID, err) {
 			return
 		}
 		if pending, ok := store.AsContentPendingFlushError(err); ok {

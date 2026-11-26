@@ -90,8 +90,12 @@ func TestBUG3327_ApplierPathBodyEditLeavesAVersion(t *testing.T) {
 	// not store the replaced body a second time, which would put the agent's
 	// change in History under the tab user's row; and the chain must still
 	// resolve, with the agent's row's change reading previous -> next.
+	maxID, _, err := srv.store.MaxOpLogID(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+"?source=collab-snapshot",
-		map[string]interface{}{"content": next}); rr.Code != http.StatusOK {
+		map[string]interface{}{"content": next, "op_log_cursor": maxID}); rr.Code != http.StatusOK {
 		t.Fatalf("flush PATCH: %d %s", rr.Code, rr.Body.String())
 	}
 	flushed, err := srv.store.ListItemVersions(item.ID)
@@ -177,8 +181,12 @@ func TestBUG3327_FlushAfterThrottledRevertStillVersions(t *testing.T) {
 	item := createTaskWithFields(t, srv, slug, "Item", `{"status":"open"}`)
 	patch := func(path, content string, headers map[string]string) {
 		t.Helper()
+		body := map[string]interface{}{"content": content}
+		if path != "" {
+			body["op_log_cursor"] = 0
+		}
 		rr := doRequestWithHeaders(srv, "PATCH", "/api/v1/workspaces/"+slug+"/items/"+item.Slug+path,
-			map[string]interface{}{"content": content}, headers)
+			body, headers)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("PATCH %q: %d %s", content, rr.Code, rr.Body.String())
 		}

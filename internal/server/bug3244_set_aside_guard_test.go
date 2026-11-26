@@ -126,7 +126,7 @@ func TestSetAsideOverwriteDiscardsAndReports(t *testing.T) {
 func TestSetAsideSurvivesCollabSnapshotFlush(t *testing.T) {
 	f := newBug3133Fixture(t)
 	f.seedSetAside(t)
-	rr := doRequest(f.srv, "PATCH", f.path+"?source=collab-snapshot", map[string]any{"content": "flushed body"})
+	rr := doRequest(f.srv, "PATCH", f.path+"?source=collab-snapshot", map[string]any{"content": "flushed body", "op_log_cursor": 0})
 	if rr.Code != http.StatusOK {
 		t.Fatalf("want 200, got %d: %s", rr.Code, rr.Body.String())
 	}
