@@ -411,14 +411,14 @@ func SetMaxListPages(n int) (restore func()) {
 // the whole one is this bug's own class. A negative startOffset reads from 0,
 // as the server reads any bad offset.
 // params' limit and offset are the pager's own.
-func listAllPages(params url.Values, startOffset int, fetch func(url.Values) ([]models.Item, ItemListPage, error)) ([]models.Item, ItemListPage, error) {
+func listAllPages[T any](params url.Values, startOffset int, fetch func(url.Values) ([]T, ItemListPage, error)) ([]T, ItemListPage, error) {
 	q := url.Values{}
 	for k, v := range params {
 		q[k] = v
 	}
 	q.Del("limit")
 	q.Del("offset")
-	var all []models.Item
+	var all []T
 	var first ItemListPage
 	// A negative offset is sent as none, and the server reads none as 0, so
 	// the contiguity check must count from 0 as well.
@@ -1160,29 +1160,67 @@ func (c *Client) DeleteItemLink(wsSlug, linkID string) error {
 	return c.delete("/workspaces/" + url.PathEscape(wsSlug) + "/links/" + url.PathEscape(linkID))
 }
 
+// backlinksAutoPageSize is the page size ListAllBacklinks requests per page
+// (matching the server's 300-row ceiling on GET .../backlinks).
+const backlinksAutoPageSize = 300
+
+// GetBacklinksPage fetches one page of items that contain a `[[<itemRef>]]`
+// reference to the queried item, plus the response's paging headers
+// (X-Pad-Has-More / X-Pad-Next-Offset, BUG-4026).
+//
+// `limit` and `offset` paginate (server clamps limit to [1,300]).
+// Zero values fall through to the server default (50).
+func (c *Client) GetBacklinksPage(wsSlug, itemSlug string, limit, offset int) ([]models.Backlink, ItemListPage, error) {
+	q := url.Values{}
+	if limit > 0 {
+		q.Set("limit", strconv.Itoa(limit))
+	}
+	if offset > 0 {
+		q.Set("offset", strconv.Itoa(offset))
+	}
+	path := "/workspaces/" + url.PathEscape(wsSlug) + "/items/" + url.PathEscape(itemSlug) + "/backlinks"
+	if len(q) > 0 {
+		path += "?" + q.Encode()
+	}
+	var result []models.Backlink
+	h, err := c.getWithHeader(path, &result)
+	return result, itemListPage(h), err
+}
+
 // GetBacklinks fetches the items that contain a `[[<itemRef>]]`
-// reference to the queried item. Phase 1 returns ref-form backlinks
-// only — title and cross-workspace forms wait for Phase 2 of
-// PLAN-1593. The server applies visibility filtering before
-// returning, so callers see only sources they're allowed to see.
+// reference to the queried item. The server applies visibility filtering
+// before returning, so callers see only sources they're allowed to see.
 //
 // `limit` and `offset` paginate (server clamps limit to [1,300]).
 // Zero values fall through to the server default (50).
 func (c *Client) GetBacklinks(wsSlug, itemSlug string, limit, offset int) ([]models.Backlink, error) {
-	q := ""
-	if limit > 0 {
-		q = "?limit=" + strconv.Itoa(limit)
-	}
-	if offset > 0 {
-		if q == "" {
-			q = "?"
-		} else {
-			q += "&"
+	backlinks, _, err := c.GetBacklinksPage(wsSlug, itemSlug, limit, offset)
+	return backlinks, err
+}
+
+// ListAllBacklinks pages through GET .../backlinks from startOffset at 300
+// rows per page until X-Pad-Has-More is false (BUG-4026). A server without
+// paging headers (one older than BUG-4026) still honours limit and offset
+// but never says whether more exist, and the item-list pager's rule for that
+// case (one response is everything) does not hold here: this endpoint was
+// always bounded. So a header-less page that came back full is read as
+// "there may be more" and the next offset is requested; a short page ends it.
+func (c *Client) ListAllBacklinks(wsSlug, itemSlug string, startOffset int) ([]models.Backlink, error) {
+	rows, _, err := listAllPages(nil, startOffset, func(q url.Values) ([]models.Backlink, ItemListPage, error) {
+		offset, _ := strconv.Atoi(q.Get("offset"))
+		page, info, err := c.GetBacklinksPage(wsSlug, itemSlug, backlinksAutoPageSize, offset)
+		if err == nil && !info.Known && len(page) >= backlinksAutoPageSize {
+			info = ItemListPage{Known: true, HasMore: true, NextOffset: offset + len(page)}
 		}
-		q += "offset=" + strconv.Itoa(offset)
+		return page, info, err
+	})
+	if err != nil {
+		return nil, err
 	}
-	var result []models.Backlink
-	return result, c.get("/workspaces/"+url.PathEscape(wsSlug)+"/items/"+url.PathEscape(itemSlug)+"/backlinks"+q, &result)
+	if rows == nil {
+		rows = []models.Backlink{}
+	}
+	return rows, nil
 }
 
 // --- Comments ---
