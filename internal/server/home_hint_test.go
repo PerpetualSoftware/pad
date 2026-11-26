@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"sort"
+	"sync"
 	"testing"
 	"time"
 
@@ -165,6 +166,9 @@ func TestWatchStream_HomeHintOptInAndVisibility(t *testing.T) {
 func TestHomeHint_ProducersCovered(t *testing.T) {
 	t.Parallel()
 	srv := testServerWithWatchEvents(t)
+	// Bypass per-key coalescing so consecutive rows touching the same item
+	// each observe their own immediate hint.
+	srv.homeHintCoalesceForTesting = &homeHintCoalesceConfig{disabled: true}
 	// This table exercises 35+ routes sequentially under one owner token; bypass
 	// the general API burst limiter so the later rows are not 429'd.
 	srv.rateLimiters.Stop()
@@ -1097,5 +1101,355 @@ func TestHomeHint_ProducersCovered(t *testing.T) {
 		if got := counterValue(t, srv.metrics.HomeHintsTotal); got < float64(len(rows)) {
 			t.Errorf("pad_home_hints_total = %v, want >= %d", got, len(rows))
 		}
+	}
+}
+
+type fakeHomeHintTimer struct {
+	mu      sync.Mutex
+	d       time.Duration
+	fn      func()
+	stopped bool
+	fired   bool
+}
+
+func (ft *fakeHomeHintTimer) Stop() bool {
+	ft.mu.Lock()
+	defer ft.mu.Unlock()
+	if ft.stopped || ft.fired {
+		return false
+	}
+	ft.stopped = true
+	return true
+}
+
+func (ft *fakeHomeHintTimer) fire() {
+	ft.mu.Lock()
+	if ft.stopped || ft.fired {
+		ft.mu.Unlock()
+		return
+	}
+	ft.fired = true
+	fn := ft.fn
+	ft.mu.Unlock()
+	fn()
+}
+
+type fakeHomeHintScheduler struct {
+	mu     sync.Mutex
+	timers []*fakeHomeHintTimer
+}
+
+func (s *fakeHomeHintScheduler) afterFunc(d time.Duration, f func()) homeHintTimer {
+	ft := &fakeHomeHintTimer{d: d, fn: f}
+	s.mu.Lock()
+	s.timers = append(s.timers, ft)
+	s.mu.Unlock()
+	return ft
+}
+
+func (s *fakeHomeHintScheduler) fireAll() int {
+	s.mu.Lock()
+	batch := append([]*fakeHomeHintTimer(nil), s.timers...)
+	s.timers = nil
+	s.mu.Unlock()
+	fired := 0
+	for _, ft := range batch {
+		ft.fire()
+		fired++
+	}
+	return fired
+}
+
+func (s *fakeHomeHintScheduler) pendingDurations() []time.Duration {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]time.Duration, len(s.timers))
+	for i, ft := range s.timers {
+		out[i] = ft.d
+	}
+	return out
+}
+
+func TestHomeHint_CoalescesBurstPerKey(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	sched := &fakeHomeHintScheduler{}
+	srv.homeHintCoalesceForTesting = &homeHintCoalesceConfig{afterFunc: sched.afterFunc}
+
+	wsID := "ws-burst"
+	collID := "coll-burst"
+	itemA := "item-a"
+	itemB := "item-b"
+
+	countFor := func(itemID string) int {
+		n := 0
+		for _, ev := range srv.watchEvents.EventsSince(0) {
+			if ev.Kind == watchevents.KindHomeChanged && ev.WorkspaceID == wsID && ev.CollectionID == collID && ev.ItemID == itemID {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Burst 10 hints for itemA inside one window, plus 1 hint for itemB (independent key).
+	for i := 0; i < 10; i++ {
+		srv.publishHomeChanged(wsID, collID, itemA)
+	}
+	srv.publishHomeChanged(wsID, collID, itemB)
+
+	if got := countFor(itemA); got != 1 {
+		t.Fatalf("immediate hints for itemA = %d, want 1", got)
+	}
+	if got := countFor(itemB); got != 1 {
+		t.Fatalf("immediate hints for itemB = %d, want 1", got)
+	}
+	durs := sched.pendingDurations()
+	if len(durs) != 2 || durs[0] != defaultHomeHintCoalesceWindow || durs[1] != defaultHomeHintCoalesceWindow {
+		t.Fatalf("scheduled window durations = %v, want two %v timers", durs, defaultHomeHintCoalesceWindow)
+	}
+
+	// Close first window: itemA emits 1 trailing hint and opens a new window;
+	// itemB had nothing pending so its entry is evicted.
+	sched.fireAll()
+	if got := countFor(itemA); got != 2 {
+		t.Fatalf("total hints for itemA after first window = %d, want 2 (1 immediate + 1 trailing)", got)
+	}
+	if got := countFor(itemB); got != 1 {
+		t.Fatalf("total hints for itemB after first window = %d, want 1", got)
+	}
+
+	// Trailing publish opened a new window for itemA: a burst during it is
+	// suppressed until that new window ends.
+	for i := 0; i < 4; i++ {
+		srv.publishHomeChanged(wsID, collID, itemA)
+	}
+	if got := countFor(itemA); got != 2 {
+		t.Fatalf("hints for itemA during trailing window = %d, want 2", got)
+	}
+	sched.fireAll()
+	if got := countFor(itemA); got != 3 {
+		t.Fatalf("hints for itemA after trailing window = %d, want 3", got)
+	}
+
+	// Close quiet window: no extra hint, and map is cleaned up.
+	sched.fireAll()
+	if got := countFor(itemA); got != 3 {
+		t.Fatalf("hints for itemA after quiet window = %d, want 3", got)
+	}
+	srv.homeHintMu.Lock()
+	remaining := len(srv.homeHintEntries)
+	srv.homeHintMu.Unlock()
+	if remaining != 0 {
+		t.Fatalf("homeHintEntries len = %d after quiet windows, want 0", remaining)
+	}
+}
+
+func TestHomeHint_TrailingAfterLastWrite(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	sched := &fakeHomeHintScheduler{}
+	srv.homeHintCoalesceForTesting = &homeHintCoalesceConfig{afterFunc: sched.afterFunc}
+
+	wsID := "ws-trail"
+	collID := "coll-trail"
+	itemID := "item-trail"
+
+	hintsFor := func() []watchevents.Notification {
+		var out []watchevents.Notification
+		for _, ev := range srv.watchEvents.EventsSince(0) {
+			if ev.Kind == watchevents.KindHomeChanged && ev.WorkspaceID == wsID && ev.CollectionID == collID && ev.ItemID == itemID {
+				out = append(out, ev)
+			}
+		}
+		return out
+	}
+
+	// First write publishes immediately.
+	srv.publishHomeChanged(wsID, collID, itemID)
+	if got := len(hintsFor()); got != 1 {
+		t.Fatalf("after first write: %d hints, want 1", got)
+	}
+
+	// Subsequent writes inside the window are coalesced.
+	for i := 0; i < 5; i++ {
+		srv.publishHomeChanged(wsID, collID, itemID)
+	}
+	afterLastWrite := time.Now().UTC().UnixMilli()
+	if got := len(hintsFor()); got != 1 {
+		t.Fatalf("during burst inside window: %d hints, want 1 (further hints must wait for trailing edge)", got)
+	}
+
+	// Publish a sentinel event on the bus AFTER the last write call so we can
+	// prove ordering strictly by monotonic bus ID (not just wall clock).
+	srv.publishHomeChanged(wsID, collID, "sentinel-after-last-write")
+	var sentinelID int64
+	for _, ev := range srv.watchEvents.EventsSince(0) {
+		if ev.ItemID == "sentinel-after-last-write" {
+			sentinelID = ev.ID
+		}
+	}
+	if sentinelID == 0 {
+		t.Fatal("sentinel event was not published")
+	}
+
+	// Close the window: trailing hint must be published strictly after the last write.
+	sched.fireAll()
+	got := hintsFor()
+	if len(got) != 2 {
+		t.Fatalf("after window: %d hints, want 2", len(got))
+	}
+	trailing := got[1]
+	if trailing.ID <= sentinelID {
+		t.Errorf("trailing hint ID %d <= sentinel ID %d; trailing hint must be published after the last write", trailing.ID, sentinelID)
+	}
+	if trailing.Timestamp < afterLastWrite {
+		t.Errorf("trailing hint timestamp %d < afterLastWrite %d", trailing.Timestamp, afterLastWrite)
+	}
+}
+
+func TestHomeHint_LeaseRenewalAndNoopReleasePublishNone(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	// Bypass coalescing so we test the lease handler's own suppression directly.
+	srv.homeHintCoalesceForTesting = &homeHintCoalesceConfig{disabled: true}
+
+	owner := mkAgentsUser(t, srv, "lease-hint-owner@example.com", "Lease Owner")
+	ownerTok := mkAgentsPAT(t, srv, owner.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Lease WS", Slug: "lease-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	coll, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Slug: "tasks", Prefix: "LSE", Schema: meAgentsStdSchema})
+	if err != nil {
+		t.Fatalf("coll: %v", err)
+	}
+	item, err := srv.store.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Lease Item", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatalf("item: %v", err)
+	}
+	item, _ = srv.store.GetItem(item.ID)
+
+	wsBase := "/api/v1/workspaces/" + ws.Slug
+
+	latestBusID := func() int64 {
+		evs := srv.watchEvents.EventsSince(0)
+		if len(evs) == 0 {
+			return 0
+		}
+		return evs[len(evs)-1].ID
+	}
+	homeHintsSince := func(sinceID int64) []watchevents.Notification {
+		var out []watchevents.Notification
+		for _, n := range srv.watchEvents.EventsSince(sinceID) {
+			if n.Kind == watchevents.KindHomeChanged {
+				out = append(out, n)
+			}
+		}
+		return out
+	}
+
+	// 1. Initial claim (unclaimed -> held): publishes 1 hint.
+	before := latestBusID()
+	rr := doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/claim",
+		map[string]any{"holder": "agent-1"}, bearerHdr(ownerTok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("initial claim: %d %s", rr.Code, rr.Body.String())
+	}
+	if hints := homeHintsSince(before); len(hints) != 1 {
+		t.Fatalf("initial claim published %d hints, want 1", len(hints))
+	}
+
+	// 2. Renewal / extension by the same holder while live: publishes 0 hints.
+	before = latestBusID()
+	rr = doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/claim",
+		map[string]any{"holder": "agent-1", "ttl_seconds": 1800}, bearerHdr(ownerTok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("renewal claim: %d %s", rr.Code, rr.Body.String())
+	}
+	if hints := homeHintsSince(before); len(hints) != 0 {
+		t.Fatalf("lease renewal published %d hint(s), want 0: %+v", len(hints), hints)
+	}
+
+	// 3. Release of held lease (released=true): publishes 1 hint.
+	before = latestBusID()
+	rr = doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/release",
+		map[string]any{"holder": "agent-1"}, bearerHdr(ownerTok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("release: %d %s", rr.Code, rr.Body.String())
+	}
+	if hints := homeHintsSince(before); len(hints) != 1 {
+		t.Fatalf("active release published %d hints, want 1", len(hints))
+	}
+
+	// 4. Second release when already released (released=false): publishes 0 hints.
+	before = latestBusID()
+	rr = doRequestWithHeaders(srv, http.MethodPost, wsBase+"/items/"+item.Ref+"/release",
+		map[string]any{"holder": "agent-1"}, bearerHdr(ownerTok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("noop release: %d %s", rr.Code, rr.Body.String())
+	}
+	if hints := homeHintsSince(before); len(hints) != 0 {
+		t.Fatalf("noop release published %d hint(s), want 0: %+v", len(hints), hints)
+	}
+}
+
+func TestHomeHint_MoveNotifiesSourceCollectionViewer(t *testing.T) {
+	t.Parallel()
+	srv := testServerWithWatchEvents(t)
+	ts := httptest.NewServer(srv)
+	defer ts.Close()
+
+	owner := mkAgentsUser(t, srv, "move-owner@example.com", "Move Owner")
+	sourceOnly := mkAgentsUser(t, srv, "move-source-only@example.com", "Source Only")
+	ownerTok := mkAgentsPAT(t, srv, owner.ID, "")
+	sourceOnlyTok := mkAgentsPAT(t, srv, sourceOnly.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Move WS", Slug: "move-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member owner: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, sourceOnly.ID, "viewer"); err != nil {
+		t.Fatalf("member sourceOnly: %v", err)
+	}
+	srcColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Source", Slug: "source", Prefix: "SRC", Schema: meAgentsStdSchema})
+	if err != nil {
+		t.Fatalf("srcColl: %v", err)
+	}
+	dstColl, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Target", Slug: "target", Prefix: "DST", Schema: meAgentsStdSchema})
+	if err != nil {
+		t.Fatalf("dstColl: %v", err)
+	}
+	if err := srv.store.SetMemberCollectionAccess(ws.ID, sourceOnly.ID, "specific", []string{srcColl.ID}); err != nil {
+		t.Fatalf("SetMemberCollectionAccess: %v", err)
+	}
+
+	it, err := srv.store.CreateItem(ws.ID, srcColl.ID, models.ItemCreate{Title: "Leaving Item", Fields: `{"status":"open"}`})
+	if err != nil {
+		t.Fatalf("item: %v", err)
+	}
+	it, _ = srv.store.GetItem(it.ID)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	chSourceOnly := connectWatchStreamWithHeadersAndQuery(ctx, t, ts.URL, sourceOnlyTok, nil, "home=true")
+	waitForWatchEvent(t, chSourceOnly, 3*time.Second)
+
+	rr := doRequestWithHeaders(srv, http.MethodPost, "/api/v1/workspaces/"+ws.Slug+"/items/"+it.Slug+"/move",
+		map[string]any{"target_collection": dstColl.Slug}, bearerHdr(ownerTok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("move item: %d %s", rr.Code, rr.Body.String())
+	}
+
+	got := waitForHomeHint(t, chSourceOnly, 2*time.Second)
+	if got["workspace"] != ws.Slug || got["kind"] != watchevents.KindHomeChanged {
+		t.Errorf("source-only viewer hint = %+v, want workspace=%s kind=home_changed", got, ws.Slug)
 	}
 }

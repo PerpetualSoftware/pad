@@ -159,6 +159,13 @@ type Server struct {
 	// meAgentsQueryerOverride is a TEST-ONLY seam, nil in production: when set,
 	// handleMeAgents routes all store reads through the returned Queryer.
 	meAgentsQueryerOverride func(r *http.Request) store.Queryer
+	// homeHintCoalesceForTesting is a TEST-ONLY seam, nil in production: when
+	// set, publishHomeChanged uses its window/timer or bypasses coalescing.
+	homeHintCoalesceForTesting *homeHintCoalesceConfig
+	homeHintMu                 sync.Mutex
+	homeHintEntries            map[string]*homeHintEntry
+	homeHintStopped            bool
+	homeHintWG                 sync.WaitGroup
 	// needsMemoLoad is a TEST-ONLY seam, nil in production: the scorers' shared
 	// memo calls it with the name of each batch read it actually performs, so a
 	// test can hold a request to one read of each kind (TASK-3959).
@@ -854,6 +861,8 @@ func (s *Server) Stop() {
 	s.bg.Wait()
 	// The worker PROCESS goes after bg.Wait, when nothing can hand it a job.
 	s.closeMaterializer()
+	// Stop any pending home_changed coalescing timers before closing the watch bus.
+	s.stopHomeHintCoalescer()
 	// Watch/nudge bus (BUG-2651). Closed AFTER bg.Wait() so a background
 	// producer cannot publish into a bus that is already tearing down; both
 	// implementations are safe if one does anyway (MemoryBus finds no

@@ -293,3 +293,37 @@ func TestTASK3613_StoreWorkerIDRules(t *testing.T) {
 		t.Errorf("release by worker id: ok=%v err=%v", ok, err)
 	}
 }
+
+func TestClaimItemLeaseStatus_AcquiredVsRenewed(t *testing.T) {
+	t.Parallel()
+	s, itemID := leaseFixture(t)
+
+	lease1, acquired, err := s.ClaimItemLeaseStatus(itemID, "agent-1", "", "u1", 15*time.Minute)
+	if err != nil {
+		t.Fatalf("initial claim: %v", err)
+	}
+	if !acquired {
+		t.Fatalf("initial claim acquired = false, want true")
+	}
+
+	lease2, acquired, err := s.ClaimItemLeaseStatus(itemID, "agent-1", "", "u1", 30*time.Minute)
+	if err != nil {
+		t.Fatalf("renewal claim: %v", err)
+	}
+	if acquired {
+		t.Fatalf("renewal claim acquired = true, want false")
+	}
+	if !lease2.AcquiredAt.Equal(lease1.AcquiredAt) {
+		t.Errorf("renewal changed acquired_at: %v != %v", lease2.AcquiredAt, lease1.AcquiredAt)
+	}
+
+	// Expire the lease and re-claim by the same holder -> newly acquired again.
+	if _, _, err := s.ClaimItemLeaseStatus(itemID, "agent-1", "", "u1", -2*time.Second); err != nil {
+		t.Fatalf("expire claim: %v", err)
+	}
+	if _, acquired, err := s.ClaimItemLeaseStatus(itemID, "agent-1", "", "u1", 15*time.Minute); err != nil {
+		t.Fatalf("re-claim after expiry: %v", err)
+	} else if !acquired {
+		t.Fatalf("re-claim after expiry acquired = false, want true")
+	}
+}
