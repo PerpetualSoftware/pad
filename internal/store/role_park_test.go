@@ -837,7 +837,8 @@ func TestListWorkspaceRoleFinishedItemsQ_VisibilityAndFallback(t *testing.T) {
 		t.Fatalf("item vis = %+v, want [%s]", itemRows, hidIDs[0])
 	}
 
-	// 4. Fallback when >500 IDs: omits SQL IN clause and over-fetches 4x per role (perRole=1 -> up to 4 rows).
+	// 4. Fallback when >500 IDs: no SQL IN clause and no SQL caps, so the 5
+	// newer hidden rows cannot crowd out the visible items[0] (perRole=1).
 	bigIDs := make([]string, maxFinishedVisibilityIDs+1)
 	for i := range bigIDs {
 		bigIDs[i] = fmt.Sprintf("synthetic-id-%d", i)
@@ -850,7 +851,16 @@ func TestListWorkspaceRoleFinishedItemsQ_VisibilityAndFallback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fallback vis: %v", err)
 	}
-	if len(fallbackRows) != 4 {
-		t.Fatalf("fallback vis (>500 IDs, perRole=1) got %d rows, want 4 (4x over-fetch)", len(fallbackRows))
+	if len(fallbackRows) != 6 {
+		t.Fatalf("fallback vis (>500 IDs, perRole=1) got %d rows, want all 6 (no SQL caps)", len(fallbackRows))
+	}
+	foundVisible := false
+	for _, r := range fallbackRows {
+		if r.ItemID == items[0].ID {
+			foundVisible = true
+		}
+	}
+	if !foundVisible {
+		t.Fatalf("fallback vis dropped the visible item %s behind newer hidden rows: %+v", items[0].ID, fallbackRows)
 	}
 }

@@ -15,7 +15,6 @@ const (
 	defaultMeAgentsFinished = 5
 	maxMeAgentsFinished     = 20
 	meAgentsFinishedWindow  = 30 * 24 * time.Hour
-	meAgentsFinishedSQLCap  = 200
 )
 
 type meAgentsFinishedItem struct {
@@ -275,7 +274,7 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 				CollectionIDs: fullCollIDs,
 				ItemIDs:       grantedItemIDs,
 			}
-			finishedRows, err = s.store.ListWorkspaceRoleFinishedItemsQ(q, ws.ID, roleIDs, finishedFilters, finishedVis, finishedSince, finishedLimit, meAgentsFinishedSQLCap)
+			finishedRows, err = s.store.ListWorkspaceRoleFinishedItemsQ(q, ws.ID, roleIDs, finishedFilters, finishedVis, finishedSince, finishedLimit, finishedLimit*len(roleIDs))
 			if err != nil {
 				slog.Error("me/agents: finished items failed; workspace degraded", "workspace_id", ws.ID, "workspace_slug", ws.Slug, "error", err)
 				degraded = append(degraded, ws.Slug)

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -396,10 +397,14 @@ type FinishedCollectionFilter struct {
 	Values       []string
 }
 
-const (
-	maxFinishedVisibilityIDs          = 500
-	finishedVisibilityOverfetchFactor = 4
-)
+// maxFinishedVisibilityIDs bounds the visibility IN lists the finished query
+// sends. Above it the query applies neither visibility nor its caps; see
+// ListWorkspaceRoleFinishedItemsQ.
+const maxFinishedVisibilityIDs = 500
+
+// finishedUncapped stands in for the per-role and overall caps when the
+// visibility predicate cannot be sent.
+const finishedUncapped = math.MaxInt32
 
 // FinishedVisibility scopes ListWorkspaceRoleFinishedItemsQ to items visible
 // to the caller before the per-role cap is applied. When Unrestricted is true,
@@ -436,9 +441,11 @@ type WorkspaceRoleFinishedRow struct {
 // item, at most perRole rows per role, and at most limit rows overall, ordered
 // newest first (created_at DESC, id DESC).
 //
-// If either visibility ID list exceeds 500 entries, it falls back to omitting
-// the SQL visibility predicate and over-fetching 4x per role (and 4x overall)
-// so the caller's Go-side visibility filter can drop hidden rows.
+// If either visibility ID list exceeds maxFinishedVisibilityIDs, the query
+// sends no visibility predicate and applies neither cap, so hidden rows can
+// never use up a role's cap before its visible ones. The caller then filters
+// visibility and caps per role in Go. The result is still bounded: one row per
+// item completed in the window.
 func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 	q Queryer,
 	workspaceID string,
@@ -462,10 +469,11 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 			return nil, nil
 		}
 		if len(vis.CollectionIDs) > maxFinishedVisibilityIDs || len(vis.ItemIDs) > maxFinishedVisibilityIDs {
-			// Guard against oversized IN lists: fall back to the caller's
-			// Go-side visibility filter with a 4x per-role over-fetch.
-			effectivePerRole = perRole * finishedVisibilityOverfetchFactor
-			effectiveLimit = limit * finishedVisibilityOverfetchFactor
+			// Oversized IN lists: no SQL visibility, so no SQL caps either
+			// (a cap applied before visibility would let hidden rows crowd
+			// out visible ones). The caller filters and caps in Go.
+			effectivePerRole = finishedUncapped
+			effectiveLimit = finishedUncapped
 		} else {
 			var parts []string
 			if len(vis.CollectionIDs) > 0 {
