@@ -17,12 +17,19 @@ func tightenDir(path string) {
 		return
 	}
 	clean := filepath.Clean(path)
-	info, err := os.Lstat(clean)
+	// Open without following a symlink and chmod through the descriptor, so a
+	// symlink swapped in at the path cannot redirect the mode change.
+	d, err := os.OpenFile(clean, dirTightenOpenFlags, 0)
+	if err != nil {
+		return
+	}
+	defer func() { _ = d.Close() }()
+	info, err := d.Stat()
 	if err != nil {
 		return
 	}
 	mode := info.Mode()
-	if mode&os.ModeSymlink != 0 || !mode.IsDir() {
+	if !mode.IsDir() {
 		return
 	}
 	// A sticky or world-writable directory is shared by design; chmod 0700
@@ -34,7 +41,7 @@ func tightenDir(path string) {
 	if perm&0o077 == 0 {
 		return
 	}
-	if err := os.Chmod(clean, 0o700); err != nil {
+	if err := d.Chmod(0o700); err != nil {
 		slog.Warn("failed to tighten directory permissions",
 			"path", clean,
 			"mode", fmt.Sprintf("%04o", perm),

@@ -104,9 +104,14 @@ func openServerLog(path string) (*os.File, error) {
 	}
 	// Only a log that is itself a regular file is tightened: a symlinked log
 	// (to /dev/null, say) points at a file Pad does not own.
+	// The opened file must also be the one the path names right now
+	// (os.SameFile), so a path swapped between the open and the check cannot
+	// make the chmod land on a symlink's target.
 	if runtime.GOOS != "windows" {
-		if info, serr := os.Lstat(path); serr == nil && info.Mode().IsRegular() && info.Mode().Perm()&0o077 != 0 {
-			_ = f.Chmod(info.Mode().Perm() &^ 0o077)
+		linfo, lerr := os.Lstat(path)
+		finfo, ferr := f.Stat()
+		if lerr == nil && ferr == nil && linfo.Mode().IsRegular() && os.SameFile(linfo, finfo) && finfo.Mode().Perm()&0o077 != 0 {
+			_ = f.Chmod(finfo.Mode().Perm() &^ 0o077)
 		}
 	}
 	return f, nil
