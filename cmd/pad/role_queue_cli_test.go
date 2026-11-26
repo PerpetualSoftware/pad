@@ -398,6 +398,10 @@ func TestRoleParkUnparkAndClaimIgnorePark_RoundTrip(t *testing.T) {
 
 	st := storetest.NewSQLite(t)
 	srv := server.New(st)
+	// Registered before ts.Close, so it runs after it: Stop drains the
+	// server's async work (the activity touch reads time.Local), which would
+	// otherwise outlive this test and race a later test's time.Local write.
+	t.Cleanup(srv.Stop)
 	ts := httptest.NewServer(srv)
 	t.Cleanup(ts.Close)
 
