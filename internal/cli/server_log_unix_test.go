@@ -55,3 +55,29 @@ func TestOpenServerLogCreates0600AndAppends(t *testing.T) {
 		t.Errorf("log content = %q, want %q", string(got), "first\nsecond\n")
 	}
 }
+
+func TestOpenServerLogTightensExistingLog(t *testing.T) {
+	logPath := filepath.Join(t.TempDir(), "server.log")
+	if err := os.WriteFile(logPath, []byte("old\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	if err := os.Chmod(logPath, 0o644); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+
+	f, err := openServerLog(logPath)
+	if err != nil {
+		t.Fatalf("openServerLog: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	info, err := os.Lstat(logPath)
+	if err != nil {
+		t.Fatalf("Lstat: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Errorf("mode(%q) = %04o, want 0600", logPath, got)
+	}
+}

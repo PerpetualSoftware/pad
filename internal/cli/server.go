@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -93,8 +94,20 @@ func serverStartCommand(exePath string) *exec.Cmd {
 	return cmd
 }
 
+// openServerLog opens the background server's log for appending, owner-only.
+// The mode argument applies only on create, so a log left 0644 by an earlier
+// version is tightened too.
 func openServerLog(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	if runtime.GOOS != "windows" {
+		if info, serr := f.Stat(); serr == nil && info.Mode().Perm()&0o077 != 0 {
+			_ = f.Chmod(info.Mode().Perm() &^ 0o077)
+		}
+	}
+	return f, nil
 }
 
 func startBackgroundServer(cfg *config.Config) error {

@@ -480,7 +480,8 @@ func Load() (*Config, error) {
 	cfg := DefaultConfig()
 
 	// Data-dir overrides affect where config.toml lives, so apply them first.
-	if dir, db, set := envDataDir(); set {
+	dir, db, dataDirFromEnv := envDataDir()
+	if dataDirFromEnv {
 		cfg.DataDir = dir
 		cfg.DBPath = db
 		cfg.ConfigPath = filepath.Join(dir, "config.toml")
@@ -497,8 +498,15 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 
-	tightenDir(cfg.DataDir)
-	tightenDir(logsDir)
+	// Tighten an existing permissive data dir only when it is Pad's own
+	// default location. A directory named through PAD_DATA_DIR or PAD_DB_PATH
+	// may be shared or not Pad's at all (PAD_DB_PATH=pad.db makes it the
+	// working directory), so it keeps its mode; the database files inside
+	// are still owner-only (store.New).
+	if !dataDirFromEnv {
+		tightenDir(cfg.DataDir)
+		tightenDir(logsDir)
+	}
 
 	// Load config file if it exists
 	if _, err := os.Stat(cfg.ConfigPath); err == nil {
