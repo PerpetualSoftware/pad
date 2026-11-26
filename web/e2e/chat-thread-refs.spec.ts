@@ -79,6 +79,11 @@ async function waitForThread(page: Page, n: number, rowsWanted: number) {
 	await expect(page.locator('article.bubble')).toHaveCount(rowsWanted);
 }
 
+// The page reads as the same token the API assertions use: the admin's
+// browser session is an owner of every workspace, so case (b)'s
+// "workspace the reader cannot see" holds only for the token.
+test.use({ pageAuth: 'token' });
+
 test.describe('E7: refs in message bodies', () => {
 	test.beforeEach(({}, testInfo) => {
 		test.skip(testInfo.project.name !== 'desktop-chromium', 'desktop only');

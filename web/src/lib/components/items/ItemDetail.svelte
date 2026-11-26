@@ -4707,11 +4707,11 @@
 				// doesn't reflect. The cursor reflects the provider tracking
 				// THIS item; if a navigation has already swapped to another
 				// item the foreground flush path bails earlier on dedupe and
-				// this code doesn't run. With no provider for this item the
-				// cursor is 0, as in cursorFor above: the server refuses a
-				// snapshot that carries no cursor at all.
+				// this code doesn't run.
 				const opLogCursor =
-					collabProvider && collabProvider.itemID === itemId ? collabProvider.lastOpLogID : 0;
+					collabProvider && collabProvider.itemID === itemId
+						? collabProvider.lastOpLogID
+						: undefined;
 				await api.items.flushCollabContent(ws, itemId, toSave, {
 					keepalive,
 					opLogCursor,

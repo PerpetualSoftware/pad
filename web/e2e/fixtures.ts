@@ -78,13 +78,29 @@ export function suiteFixture(): SuiteFixture {
 	return loadSuiteFixture();
 }
 
+// Sends the suite's API token on every request the page makes. Only for a
+// spec whose reader must have a token's reach: the admin's browser session
+// is an owner of every workspace, a token only of the ones it is a member of.
+async function applyTokenAuth(context: BrowserContext, fixture: SuiteFixture) {
+	await context.setExtraHTTPHeaders({
+		Authorization: `Bearer ${fixture.apiToken}`
+	});
+}
+
 // Extended test — use `import { test } from './fixtures'` in specs.
 // The `context` fixture override signs the context in once, so
-// downstream `page` navigation is authenticated.
-export const test = base.extend<{ fixture: SuiteFixture }>({
-	context: async ({ context }, run) => {
+// downstream `page` navigation is authenticated. `pageAuth` picks how:
+// 'session' (the default, a real browser) or 'token'
+// (`test.use({ pageAuth: 'token' })`).
+export const test = base.extend<{ fixture: SuiteFixture; pageAuth: 'session' | 'token' }>({
+	pageAuth: ['session', { option: true }],
+	context: async ({ context, pageAuth }, run) => {
 		const fixture = loadSuiteFixture();
-		await applySessionAuth(context, fixture);
+		if (pageAuth === 'token') {
+			await applyTokenAuth(context, fixture);
+		} else {
+			await applySessionAuth(context, fixture);
+		}
 		await quietCrossActorToasts(context);
 		await run(context);
 	},
