@@ -521,7 +521,7 @@ func (r *materializeRecovery) process(itemID string) materializeResult {
 			"item_id", itemID, "op_log_cursor", in.Cursor, "rows", len(in.Rows),
 			"pending_rows", in.Pending, "bytes", len(md), "elapsed", time.Since(started).String())
 		if updated != nil {
-			s.publishItemEventWithName(sseItemUpdated, updated.WorkspaceID, updated.ID, updated.Title,
+			s.publishItemEventWithCollectionID(r.ctx, sseItemUpdated, updated.WorkspaceID, updated.ID, updated.CollectionID, updated.Title,
 				updated.CollectionSlug, models.VersionCreatedBySystem, "", models.VersionSourceRecovery, updated.Seq)
 		}
 		return mrApplied

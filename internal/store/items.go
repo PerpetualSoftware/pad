@@ -6126,8 +6126,16 @@ func (s *Store) GetBlocksEdgesQ(q Queryer, workspaceID string) ([]BlocksEdge, er
 // soft-deleted items), used by best-effort notification publishers that only
 // hold an item ID and collection slug.
 func (s *Store) GetItemCollectionID(workspaceID, itemID string) (string, error) {
+	return s.GetItemCollectionIDContext(context.Background(), workspaceID, itemID)
+}
+
+// GetItemCollectionIDContext is GetItemCollectionID bound to ctx.
+func (s *Store) GetItemCollectionIDContext(ctx context.Context, workspaceID, itemID string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	var collID string
-	err := s.db.QueryRow(s.q(`
+	err := s.db.QueryRowContext(ctx, s.q(`
 		SELECT collection_id FROM items WHERE id = ? AND workspace_id = ?
 	`), itemID, workspaceID).Scan(&collID)
 	if err == sql.ErrNoRows {

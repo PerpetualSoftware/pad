@@ -408,5 +408,5 @@ func (s *Server) publishItemVerified(workspaceID string, item *models.Item, r *h
 	if u := currentUser(r); u != nil {
 		name = u.Name
 	}
-	s.publishItemEventWithCollectionID(sseItemUpdated, workspaceID, item.ID, item.CollectionID, item.Title, item.CollectionSlug, actor, name, source, item.Seq)
+	s.publishItemEventWithCollectionID(r.Context(), sseItemUpdated, workspaceID, item.ID, item.CollectionID, item.Title, item.CollectionSlug, actor, name, source, item.Seq)
 }

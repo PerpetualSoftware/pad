@@ -856,7 +856,7 @@ func (s *Server) emitCopyFanout(r *http.Request, res *store.CrossWorkspaceCopyRe
 	// --- Destination: always all three. ---
 	targetWorkspaceID := res.Item.WorkspaceID
 	s.logActivity(targetWorkspaceID, res.Item.ID, "created", r)
-	s.publishItemEventWithName(sseItemCreated, targetWorkspaceID, res.Item.ID, res.Item.Title,
+	s.publishItemEventWithCollectionID(r.Context(), sseItemCreated, targetWorkspaceID, res.Item.ID, res.TargetCollection.ID, res.Item.Title,
 		res.TargetCollection.Slug, actor, actorName, actorSource, res.Item.Seq)
 
 	// --- Source: only on a move, and SourceSeq is the discriminator. It is
@@ -867,7 +867,7 @@ func (s *Server) emitCopyFanout(r *http.Request, res *store.CrossWorkspaceCopyRe
 		return
 	}
 	s.logActivity(res.SourceWorkspaceID, res.Source.ID, "archived", r)
-	s.publishItemEventWithName(sseItemArchived, res.SourceWorkspaceID, res.Source.ID, res.Source.Title,
+	s.publishItemEventWithCollectionID(r.Context(), sseItemArchived, res.SourceWorkspaceID, res.Source.ID, res.SourceCollection.ID, res.Source.Title,
 		res.SourceCollection.Slug, actor, actorName, actorSource, *res.SourceSeq)
 }
 

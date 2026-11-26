@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"log/slog"
 	"sync"
 	"time"
@@ -208,5 +209,5 @@ func (s *Server) announceDeadlineLapse(lapse store.DeadlineLapse) {
 	}); err != nil {
 		slog.Error("reminder tick: lapse announce: activity", "item", lapse.ItemID, "error", err)
 	}
-	s.publishItemEventWithName(sseItemUpdated, lapse.WorkspaceID, item.ID, item.Title, item.CollectionSlug, system, "", system, item.Seq)
+	s.publishItemEventWithCollectionID(context.Background(), sseItemUpdated, lapse.WorkspaceID, item.ID, item.CollectionID, item.Title, item.CollectionSlug, system, "", system, item.Seq)
 }

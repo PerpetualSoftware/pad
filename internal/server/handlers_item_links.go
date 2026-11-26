@@ -292,5 +292,5 @@ func (s *Server) publishStructuralLinkSourceEvent(r *http.Request, workspaceID, 
 	// Consequence worth naming: this handler publishes SSE for BOTH kinds, so
 	// the SSE and events/1 pictures deliberately differ here. That is the
 	// v1.5 silence working, not drift.
-	s.publishItemEventWithName(sseItemUpdated, workspaceID, item.ID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, item.Seq)
+	s.publishItemEventWithCollectionID(r.Context(), sseItemUpdated, workspaceID, item.ID, item.CollectionID, item.Title, item.CollectionSlug, actor, actorNameFromRequest(r), source, item.Seq)
 }

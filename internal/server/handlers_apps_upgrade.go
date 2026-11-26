@@ -255,7 +255,7 @@ func (s *Server) handleAppUpgradeConfirm(w http.ResponseWriter, r *http.Request)
 	for i, item := range items {
 		key := plan.Artifacts[i].Key // the store creates them in plan order
 		s.logActivity(workspaceID, item.ID, "created", r)
-		s.publishItemEventWithName(sseItemCreated, workspaceID, item.ID, item.Title, collOf[key], actor, actorName, source, item.Seq)
+		s.publishItemEventWithCollectionID(r.Context(), sseItemCreated, workspaceID, item.ID, item.CollectionID, item.Title, collOf[key], actor, actorName, source, item.Seq)
 		out.Items = append(out.Items, confirmItem{Key: key, Ref: item.Ref, Status: itemStatus(item)})
 	}
 	s.logAuditEvent(models.ActionAppInstallLifecycle, r, auditMeta(map[string]string{

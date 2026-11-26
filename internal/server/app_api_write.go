@@ -169,7 +169,7 @@ func (s *Server) appCreateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	item := wr.Item
-	s.publishItemEventWithName(sseItemCreated, ac.WorkspaceID, item.ID, item.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", item.Seq)
+	s.publishItemEventWithCollectionID(r.Context(), sseItemCreated, ac.WorkspaceID, item.ID, c.ID, item.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", item.Seq)
 	writeAppJSON(w, http.StatusCreated, appWrittenItemDTO(wr))
 }
 
@@ -218,7 +218,11 @@ func (s *Server) appUpdateItem(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	after := wr.Item
-	s.publishItemEventWithName(sseItemUpdated, ac.WorkspaceID, after.ID, after.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", after.Seq)
+	collID := after.CollectionID
+	if collID == "" {
+		collID = before.CollectionID
+	}
+	s.publishItemEventWithCollectionID(r.Context(), sseItemUpdated, ac.WorkspaceID, after.ID, collID, after.Title, wr.View.CollectionSlug, appActorKind(ac), wr.ActorDisplay, "app", after.Seq)
 	// Watchers hear about an app's status change as about anyone's. The signal is the fenced
 	// transaction's own, never a comparison with this handler's earlier read: a status another writer
 	// changed between that read and the commit is not this write's.
