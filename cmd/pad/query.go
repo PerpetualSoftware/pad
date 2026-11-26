@@ -46,7 +46,8 @@ Bugs, Features, Backlog), ranked by priority (else severity), then age.
 Blocked items are never listed; 'pad project stale' shows them.
 
 With --role <slug>, reads that role's canonical queue instead of the dashboard,
-returning only unblocked, unparked items in lane order.`,
+returning only unblocked, unparked items in lane order. JSON carries queue_total
+and queue_more; an empty result is final only when queue_more is false.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			client, _ := getClient()
 			if err := applyWorkerID(client, workerIDFlag); err != nil {
@@ -131,10 +132,12 @@ func renderRoleQueueReady(q *models.RoleQueueResponse, capResults int) error {
 
 	if formatFlag == "json" {
 		payload := map[string]any{
-			"count":   len(readyItems),
-			"results": readyItems,
-			"role":    q.Role.Slug,
-			"now":     nowItems,
+			"count":       len(readyItems),
+			"results":     readyItems,
+			"role":        q.Role.Slug,
+			"now":         nowItems,
+			"queue_total": q.QueueTotal,
+			"queue_more":  q.QueueMore,
 		}
 		if q.Park != nil {
 			payload["park"] = q.Park
@@ -143,6 +146,10 @@ func renderRoleQueueReady(q *models.RoleQueueResponse, capResults int) error {
 	}
 
 	if len(readyItems) == 0 {
+		if q.QueueMore {
+			fmt.Printf("Nothing ready in the first %d of %d items in %s's queue; the rest was not read.\n", len(q.Queue), q.QueueTotal, q.Role.Slug)
+			return nil
+		}
 		if q.Park != nil {
 			setBy := "someone"
 			if q.Park.SetBy != nil && *q.Park.SetBy != "" {

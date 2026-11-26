@@ -132,7 +132,9 @@ func projectRoleParam(input map[string]any, cmdKey string) (string, bool, *CallT
 
 // dispatchProjectRoleQueue mirrors `pad project ready|next --role <slug> --format json`:
 // GET /api/v1/workspaces/{ws}/agent-roles/{role}/queue?limit=50, filtering
-// queue entries to ready=true (and capping to capResults when > 0).
+// queue entries to ready=true (and capping to capResults when > 0), and
+// forwarding queue_total and queue_more so callers can tell a partial read
+// from an exhausted lane.
 func (d *HTTPHandlerDispatcher) dispatchProjectRoleQueue(
 	ctx context.Context,
 	input map[string]any,
@@ -179,10 +181,12 @@ func (d *HTTPHandlerDispatcher) dispatchProjectRoleQueue(
 		nowItems = []models.RoleQueueNowItem{}
 	}
 	payload := map[string]any{
-		"count":   len(results),
-		"results": results,
-		"role":    q.Role.Slug,
-		"now":     nowItems,
+		"count":       len(results),
+		"results":     results,
+		"role":        q.Role.Slug,
+		"now":         nowItems,
+		"queue_total": q.QueueTotal,
+		"queue_more":  q.QueueMore,
 	}
 	if q.Park != nil {
 		payload["park"] = q.Park
