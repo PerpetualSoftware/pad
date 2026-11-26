@@ -741,6 +741,8 @@ export interface RoleQueueNowItem {
 
 /** One queued item, in canonical lane order. */
 export interface RoleQueueItem {
+	/** Item UUID; the reorder endpoint's item_id. */
+	id: string;
 	ref: string;
 	title: string;
 	status: string;
@@ -754,6 +756,8 @@ export interface RoleQueueItem {
 /** The park line relative to the caller's visible queue; omitted when unparked. */
 export interface RoleQueuePark {
 	mode: 'top' | 'line';
+	/** The line position P in mode line; null in mode top. */
+	sort_order: number | null;
 	/** Index of the first parked visible queue item; null when none is parked. */
 	index: number | null;
 	first_parked_ref: string | null;

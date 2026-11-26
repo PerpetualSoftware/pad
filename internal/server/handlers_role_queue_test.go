@@ -1,6 +1,7 @@
 package server
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"testing"
@@ -31,6 +32,7 @@ type roleQueueTestResponse struct {
 		Live string `json:"live"`
 	} `json:"now"`
 	Queue []struct {
+		ID            string `json:"id"`
 		Ref           string `json:"ref"`
 		Title         string `json:"title"`
 		Status        string `json:"status"`
@@ -42,6 +44,7 @@ type roleQueueTestResponse struct {
 	} `json:"queue"`
 	Park *struct {
 		Mode           string     `json:"mode"`
+		SortOrder      *int       `json:"sort_order"`
 		Index          *int       `json:"index"`
 		FirstParkedRef *string    `json:"first_parked_ref"`
 		SetBy          *string    `json:"set_by"`
@@ -140,9 +143,13 @@ func TestRoleQueue_ReadyStopsAtLine(t *testing.T) {
 	if len(got.Queue) != 4 {
 		t.Fatalf("len(queue) = %d, want 4", len(got.Queue))
 	}
+	wantIDs := []string{f.items[0].ID, f.items[1].ID, f.items[2].ID, fourth.ID}
 	wantRefs := []string{f.items[0].Ref, f.items[1].Ref, f.items[2].Ref, fourth.Ref}
 	wantReady := []bool{true, true, false, false}
 	for i := range wantRefs {
+		if got.Queue[i].ID != wantIDs[i] {
+			t.Errorf("queue[%d].id = %q, want %q", i, got.Queue[i].ID, wantIDs[i])
+		}
 		if got.Queue[i].Ref != wantRefs[i] {
 			t.Errorf("queue[%d].ref = %q, want %q", i, got.Queue[i].Ref, wantRefs[i])
 		}
@@ -155,6 +162,23 @@ func TestRoleQueue_ReadyStopsAtLine(t *testing.T) {
 	}
 	if got.Park == nil || got.Park.Mode != "line" {
 		t.Fatalf("park = %+v, want mode=line", got.Park)
+	}
+	rolePath := "/api/v1/workspaces/" + f.ws.Slug + "/agent-roles/" + f.role.Slug
+	rrRole := doRequestWithHeaders(f.srv, http.MethodGet, rolePath, nil, bearerHdr(f.ownerTok))
+	if rrRole.Code != http.StatusOK {
+		t.Fatalf("GET agent-role: %d %s", rrRole.Code, rrRole.Body.String())
+	}
+	var roleResp struct {
+		Park *struct {
+			SortOrder *int `json:"sort_order"`
+		} `json:"park"`
+	}
+	parseJSON(t, rrRole, &roleResp)
+	if roleResp.Park == nil || roleResp.Park.SortOrder == nil {
+		t.Fatalf("GET agent-role park = %+v, want non-nil sort_order", roleResp.Park)
+	}
+	if got.Park.SortOrder == nil || *got.Park.SortOrder != *roleResp.Park.SortOrder {
+		t.Errorf("park.sort_order = %v, want %d (from GET agent-role)", got.Park.SortOrder, *roleResp.Park.SortOrder)
 	}
 	if got.Park.Index == nil || *got.Park.Index != 2 {
 		t.Errorf("park.index = %v, want 2", got.Park.Index)
@@ -225,10 +249,23 @@ func TestRoleQueue_ReadyStopsAtLine(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("GET top-parked queue: %d %s", rr.Code, rr.Body.String())
 	}
+	rawTopBytes := append([]byte(nil), rr.Body.Bytes()...)
 	var topGot roleQueueTestResponse
 	parseJSON(t, rr, &topGot)
 	if topGot.Park == nil || topGot.Park.Mode != "top" || topGot.Park.Index == nil || *topGot.Park.Index != 0 {
 		t.Fatalf("top park = %+v, want mode=top index=0", topGot.Park)
+	}
+	if topGot.Park.SortOrder != nil {
+		t.Errorf("top park.sort_order = %d, want nil", *topGot.Park.SortOrder)
+	}
+	var rawTop struct {
+		Park map[string]any `json:"park"`
+	}
+	if err := json.Unmarshal(rawTopBytes, &rawTop); err != nil {
+		t.Fatalf("unmarshal raw top queue: %v", err)
+	}
+	if val, hasSortOrder := rawTop.Park["sort_order"]; !hasSortOrder || val != nil {
+		t.Errorf("top park raw sort_order: present=%v val=%v, want present JSON null", hasSortOrder, val)
 	}
 	if topGot.Park.FirstParkedRef == nil || *topGot.Park.FirstParkedRef != f.items[0].Ref {
 		t.Errorf("top first_parked_ref = %v, want %q", topGot.Park.FirstParkedRef, f.items[0].Ref)

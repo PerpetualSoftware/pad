@@ -86,6 +86,7 @@ type RoleQueueNowItem struct {
 
 // RoleQueueItem is one queued item in canonical role lane order.
 type RoleQueueItem struct {
+	ID            string `json:"id"`
 	Ref           string `json:"ref"`
 	Title         string `json:"title"`
 	Status        string `json:"status"`
@@ -100,6 +101,7 @@ type RoleQueueItem struct {
 // visible queue. Omitted on RoleQueueResponse when the role is unparked.
 type RoleQueuePark struct {
 	Mode           string     `json:"mode"`
+	SortOrder      *int       `json:"sort_order"`
 	Index          *int       `json:"index"`
 	FirstParkedRef *string    `json:"first_parked_ref"`
 	SetBy          *string    `json:"set_by"`

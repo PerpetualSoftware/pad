@@ -196,6 +196,7 @@ func buildRoleQueueLaneResponse(
 		_, blocked := firstActiveBlocker[e.Item.ID]
 		parked := store.ItemParked(role.Park, e.Item.RoleSortOrder)
 		queueItems = append(queueItems, models.RoleQueueItem{
+			ID:            e.Item.ID,
 			Ref:           ref,
 			Title:         e.Item.Title,
 			Status:        extractFieldValue(e.Item.Fields, doneKey),
@@ -211,6 +212,7 @@ func buildRoleQueueLaneResponse(
 	if role.Park != nil {
 		parkOut = &models.RoleQueuePark{
 			Mode:           role.Park.Mode,
+			SortOrder:      role.Park.SortOrder,
 			Index:          firstParkedIdx,
 			FirstParkedRef: firstParkedRef,
 			SetBy:          role.Park.SetBy,
