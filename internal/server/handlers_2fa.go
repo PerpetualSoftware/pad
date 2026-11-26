@@ -286,6 +286,9 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		CodeVerifier *secret.Secret `json:"code_verifier"`
 		// LinkPending: as on login (TASK-4745).
 		LinkPending bool `json:"link_pending"`
+		// PendingLinkToken: body-supplied pending-link token for native
+		// clients; takes precedence over the cookie when present.
+		PendingLinkToken secret.Secret `json:"pending_link_token"`
 	}
 	if err := decodeJSON(r, &input); err != nil {
 		writeError(w, http.StatusBadRequest, "bad_request", "Invalid request body")
@@ -372,7 +375,7 @@ func (s *Server) handleTOTPLoginVerify(w http.ResponseWriter, r *http.Request) {
 		"user":  sessionUserPayload(user),
 		"token": token,
 	}
-	if pl := s.completePendingLinkFromCookie(w, r, user, input.LinkPending); pl != nil {
+	if pl := s.completePendingLinkFor(w, r, user, input.PendingLinkToken, input.LinkPending); pl != nil {
 		resp["pending_link"] = pl
 	}
 	writeJSON(w, http.StatusOK, resp)
