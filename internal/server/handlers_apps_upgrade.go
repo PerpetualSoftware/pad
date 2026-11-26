@@ -221,7 +221,7 @@ func (s *Server) handleAppUpgradeConfirm(w http.ResponseWriter, r *http.Request)
 	items, err := s.store.UpgradeAppInstall(store.UpgradeRequest{
 		PendingID: p.ID, WorkspaceID: workspaceID, OwnerID: owner.ID, InstallID: installID,
 		ManifestSHA256: p.ManifestSHA256, FromManifestSHA256: reviewed.Upgrade.FromManifestSHA256,
-	}, derive)
+	}, derive, s.workspaceLimitMintOpts()...)
 	if err != nil {
 		var ae *appInstallError
 		var pc *store.ProvisionConflictError
@@ -238,6 +238,7 @@ func (s *Server) handleAppUpgradeConfirm(w http.ResponseWriter, r *http.Request)
 			writeError(w, http.StatusConflict, "install_review_mismatch", "This pending upgrade is not the manifest you reviewed; preview it again")
 		case errors.Is(err, store.ErrNotWorkspaceOwner):
 			writeForbidden(w, "forbidden", "Only a workspace owner can upgrade apps", roleGateReason(r))
+		case writeStorePlanLimitError(w, r, err, "The upgrade was not applied, and nothing was written."):
 		default:
 			s.writeInstallLifecycleError(w, err)
 		}

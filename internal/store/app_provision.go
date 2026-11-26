@@ -204,7 +204,12 @@ var ErrNotWorkspaceOwner = errors.New("not a workspace owner")
 //
 // Any refusal rolls the whole transaction back and leaves the pending record
 // for a retry or a discard.
-func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDeriveFunc) (*ProvisionResult, error) {
+//
+// With WithPlanLimit(), every artifact insert enforces the workspace's
+// items_per_workspace cap under the workspace seq lock; a refusal rolls back
+// the whole transaction and surfaces as *PlanLimitError. Cloud only, chosen by
+// the server; callers that pass no options are unlimited.
+func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDeriveFunc, opts ...MintOption) (*ProvisionResult, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
 		return nil, fmt.Errorf("provision app: begin: %w", err)
@@ -347,6 +352,7 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 
 	// The artifacts, in manifest order, as drafts through the owner create's
 	// transactional path, stamped with their pack and both digests.
+	mint := resolveMintOptions(opts)
 	result := &ProvisionResult{InstallID: installID, BotUserID: bot.ID}
 	for _, a := range req.Artifacts {
 		fieldsJSON, err := json.Marshal(a.Fields)
@@ -356,7 +362,7 @@ func (s *Store) ProvisionAppInstall(req ProvisionRequest, derive ProvisionDerive
 		item, err := s.createItemTxWithID(tx, newID(), req.WorkspaceID, a.CollectionID, models.ItemCreate{
 			Title: a.Title, Content: a.Content, Fields: string(fieldsJSON),
 			CreatedBy: "user", Source: "web", ActorUserID: req.OwnerID, Append: true,
-		}, mintOptions{})
+		}, mint)
 		if err != nil {
 			if isUniqueViolation(err) {
 				return nil, &ProvisionConflictError{Artifact: a.Key, Detail: "it collides with an existing item (duplicate slug or invocation slug)"}
