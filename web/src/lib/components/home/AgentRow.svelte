@@ -73,9 +73,11 @@
 		if (locked(lane)) return;
 		const shown = lane.queue.length;
 		// A truncated lane's end is not open: at the queue read limit there is no
-		// next item to bound it, so the last slot is left to the Roles board.
-		if (lane.queue_more && shown >= AGENTS_SHOW_ALL_LIMIT && next.refs.indexOf(movedRef) === next.refs.length - 1) {
-			fail('This queue is longer than shown here. Use the Roles board to move an item to the end.');
+		// next item to bound it, and a whole-lane plan (tied values, a shift or a
+		// respace) can write past the unshown items wherever the mover lands, so
+		// reordering such a lane is left to the Roles board, which loads it whole.
+		if (lane.queue_more && shown >= AGENTS_SHOW_ALL_LIMIT) {
+			fail('This queue is longer than shown here. Use the Roles board to reorder it.');
 			return;
 		}
 		const sameIdentity = authStore.identityFence();

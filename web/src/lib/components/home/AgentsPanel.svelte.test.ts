@@ -251,6 +251,20 @@ it('at the read limit a truncated lane refuses a move to the last shown slot', a
 	expect(h.toast).toHaveBeenCalledWith(expect.stringContaining('Roles board'), 'error');
 });
 
+it('at the read limit a truncated lane of tied values refuses a move anywhere, not only to the end', async () => {
+	// Tied values make the whole-lane plan write the items after the mover upward,
+	// past the unshown items still at 0; with no unshown item to bound it, refuse.
+	const fifty = Array.from({ length: 50 }, (_, i) => item(`TASK-${i + 1}`, 0));
+	h.agents.mockResolvedValue(answer([lane({ park: undefined, queue: fifty, queue_more: true, queue_total: 60, parked_total: 0 })]));
+	await open();
+	await fireEvent.click(screen.getByRole('button', { name: 'Actions for TASK-10' }));
+	await fireEvent.click(await screen.findByRole('menuitem', { name: /Move up/ }));
+	await settle();
+	expect(h.queue).not.toHaveBeenCalled();
+	expect(h.reorder).not.toHaveBeenCalled();
+	expect(h.toast).toHaveBeenCalledWith(expect.stringContaining('Roles board'), 'error');
+});
+
 it('with can_park but not can_reorder the line can be dropped after the last item', async () => {
 	h.agents.mockResolvedValue(answer([lane({ can_reorder: false })]));
 	await open();
