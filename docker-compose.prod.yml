@@ -3,9 +3,8 @@
 #
 # Extends the base docker-compose.yml with:
 # - Resource limits
-# - Secure cookie settings
-# - CORS configuration
-# - Email (Maileroo) support
+# - Secure cookies enabled by default
+# - Redis authentication and noeviction policy
 # - Named network for reverse proxy integration
 
 services:
@@ -16,23 +15,8 @@ services:
       # Without this, the pad container inherits the passwordless URL from
       # docker-compose.yml and fails to connect when Redis AUTH is enabled.
       PAD_REDIS_URL: "redis://:${REDIS_PASSWORD:-}@redis:6379"
-      # Set your public-facing URL for correct invitation links:
-      # PAD_URL: "https://pad.example.com"
-      # CORS origins (comma-separated):
-      # PAD_CORS_ORIGINS: "https://pad.example.com"
-      # Email (Maileroo):
-      # PAD_MAILEROO_API_KEY: "your-sending-key"
-      # PAD_EMAIL_FROM: "noreply@example.com"
-      # PAD_EMAIL_FROM_NAME: "Pad"
-      # SSE limits:
-      # PAD_SSE_MAX_CONNECTIONS covers BOTH SSE endpoints (BUG-2726).
-      # PAD_SSE_MAX_CONNECTIONS: "1000"
-      # PAD_SSE_MAX_PER_WORKSPACE: "100"
-      # PAD_SSE_MAX_PER_USER: "50"
-      # Open collab WebSockets per user, per instance (BUG-1308).
-      # PAD_COLLAB_MAX_PER_USER: "50"
-      # Set only when this Redis is shared with another Pad installation.
-      # PAD_REDIS_NAMESPACE: "prod"
+      # PAD_URL, CORS, Maileroo, SSE/collab limits, Redis namespace, and other
+      # optional PAD_* settings are forwarded from .env by docker-compose.yml.
     deploy:
       resources:
         limits:

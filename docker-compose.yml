@@ -56,7 +56,30 @@ services:
       PAD_ENCRYPTION_KEY: "${PAD_ENCRYPTION_KEY:?PAD_ENCRYPTION_KEY is required — see .env.example}"
       PAD_REDIS_URL: "redis://redis:6379"
       PAD_DATA_DIR: "/data"
-      PAD_LOG_LEVEL: "info"
+      # Core server settings (see .env.example)
+      PAD_LOG_LEVEL: "${PAD_LOG_LEVEL:-info}"
+      PAD_URL: "${PAD_URL:-}"
+      PUBLIC_URL: "${PUBLIC_URL:-}"
+      # MCP over HTTP for agents
+      PAD_MCP_ENABLED: "${PAD_MCP_ENABLED:-}"
+      PAD_MCP_PUBLIC_URL: "${PAD_MCP_PUBLIC_URL:-}"
+      PAD_AUTH_SERVER_URL: "${PAD_AUTH_SERVER_URL:-}"
+      # Real-time events and streaming limits
+      PAD_REDIS_NAMESPACE: "${PAD_REDIS_NAMESPACE:-}"
+      PAD_SSE_MAX_CONNECTIONS: "${PAD_SSE_MAX_CONNECTIONS:-}"
+      PAD_SSE_MAX_PER_WORKSPACE: "${PAD_SSE_MAX_PER_WORKSPACE:-}"
+      PAD_SSE_MAX_PER_USER: "${PAD_SSE_MAX_PER_USER:-}"
+      PAD_COLLAB_MAX_PER_USER: "${PAD_COLLAB_MAX_PER_USER:-}"
+      # Security hardening and observability
+      PAD_SECURE_COOKIES: "${PAD_SECURE_COOKIES:-}"
+      PAD_CORS_ORIGINS: "${PAD_CORS_ORIGINS:-}"
+      PAD_TRUSTED_PROXIES: "${PAD_TRUSTED_PROXIES:-}"
+      PAD_METRICS_TOKEN: "${PAD_METRICS_TOKEN:-}"
+      PAD_IP_CHANGE_ENFORCE: "${PAD_IP_CHANGE_ENFORCE:-}"
+      # Transactional email (Maileroo)
+      PAD_MAILEROO_API_KEY: "${PAD_MAILEROO_API_KEY:-}"
+      PAD_EMAIL_FROM: "${PAD_EMAIL_FROM:-}"
+      PAD_EMAIL_FROM_NAME: "${PAD_EMAIL_FROM_NAME:-}"
       # Cloud-mode wiring — safe to keep enabled on self-host deploys
       # because every var defaults to empty and pad treats empty as
       # "not in cloud mode". Populate from .env when co-deploying with
