@@ -51,6 +51,13 @@ func secureSQLiteFiles(dbPath string) error {
 // chmod to another file. A missing path, a symlink or a non-regular file is
 // left alone; a failed chmod logs a warning.
 func tightenSQLiteFile(p string) {
+	// Open only a file that needs tightening. Closing a descriptor drops every
+	// POSIX lock this process holds on the file, including those of another
+	// connection to the same database, so an already owner-only file (the
+	// steady state after the first start) is never opened here.
+	if pre, err := os.Lstat(p); err != nil || !pre.Mode().IsRegular() || pre.Mode().Perm()&0o077 == 0 {
+		return
+	}
 	f, err := os.OpenFile(p, fsperm.NoFollowFile, 0)
 	if err != nil {
 		return
