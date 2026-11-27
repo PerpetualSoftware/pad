@@ -333,6 +333,19 @@ func backupSQLiteFile(srcPath, dst string) (retErr error) {
 		}
 	}()
 
+	// Create tmp as an empty 0600 file before SQLite opens it. SQLite creates
+	// a missing database file with umask-derived permissions (typically 0644),
+	// and its journal copies that mode, so otherwise the partial copy is
+	// readable by other local users while the backup runs. An empty file is a
+	// valid empty database, and SQLite keeps an existing file's mode.
+	pre, err := os.OpenFile(tmp, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return err
+	}
+	if err := pre.Close(); err != nil {
+		return err
+	}
+
 	srcURI, err := sqliteFileURI(srcPath, "mode=ro&_pragma=busy_timeout(30000)")
 	if err != nil {
 		return err
