@@ -114,7 +114,7 @@ The three `PAD_DB_*_TIMEOUT` values are sent as connection startup parameters in
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both SSE endpoints and MCP's long-lived streams, **per instance** |
 | `PAD_COLLAB_MAX_PER_USER` | `50` | Per-user maximum open collaborative-editing WebSockets (`/api/v1/collab/{itemID}`), **per instance**. See *Collab connection limits* below |
-| `PAD_EVENTS_PUBLISH_EPOCH` | `false` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. **Only set this once every instance runs a binary that accepts it** — see *Event ID-space migration* below. Ignored without Redis. |
+| `PAD_EVENTS_PUBLISH_EPOCH` | `true` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. On by default; `false` is the opt-out. **A multi-instance Redis fleet must run v0.15.0 or later on every replica before any replica runs a release with this default** — see *Event ID-space migration* below. Ignored without Redis. |
 | `PAD_WATCH_HEARTBEAT` | `false` | Phase 2 of half-open detection on the **watch** stream (`/api/v1/events/stream`). Independent of `PAD_EVENTS_HEARTBEAT` — the two buses hold different connections with different fates — and rolled the same way, phase 1 everywhere first. Ignored without Redis. |
 | `PAD_EVENTS_HEARTBEAT` | `false` | Phase 2 of the half-open-connection detection rollout: publish a bus-internal liveness frame on each subscribed workspace channel every 30s. **Only set this once every instance runs a binary that recognises it** — see *Half-open connection detection* below. Setting it early makes every un-upgraded instance resync all its clients every 30 seconds. Ignored without Redis. |
 
@@ -783,22 +783,39 @@ messages across channels, so a pre-rotation message on one channel can arrive
 after a post-rotation message on another; with an unordered token that is
 indistinguishable from a second rotation.
 
-**It rolls out in two phases, and the order is not optional.**
+**Phase 2 is the default.** Every release from v0.15.0 accepts both wire
+forms; this release and later ones also publish the prefixed form unless told
+not to.
 
-| Phase | What you do | What instances publish | What they accept |
-|-------|-------------|------------------------|------------------|
-| 1 | Roll the new binary everywhere. Leave `PAD_EVENTS_PUBLISH_EPOCH` unset. | The historical bare JSON | Both forms |
-| 2 | Set `PAD_EVENTS_PUBLISH_EPOCH=true` and roll again. | `<epoch>\|<id>\|<json>` | Both forms |
+| Phase | How an instance is on it | What it publishes | What it accepts |
+|-------|--------------------------|-------------------|-----------------|
+| 1 | `PAD_EVENTS_PUBLISH_EPOCH=false`, or `events_publish_epoch = false` in `~/.pad/config.toml` | The historical bare JSON | Both forms |
+| 2 | The default: neither of the above | `<epoch>\|<id>\|<json>` | Both forms |
 
-The asymmetry that makes two phases necessary: an instance running a
-**pre-phase-1** binary cannot parse a prefixed payload at all. It fails to
-unmarshal the message and drops the event for its own clients. So flipping
-before every instance is upgraded loses events on the ones that are not — not
-a resync, a silent loss.
+**The upgrade floor, and the order is not optional.** On a multi-instance
+Redis deployment, every replica must run v0.15.0 or later before any replica
+runs a release with this default. A fleet below v0.15.0 rolls to v0.15.0
+first, lets that roll finish, and only then rolls to this release. The reason
+is an asymmetry: a replica older than v0.15.0 cannot parse a prefixed payload
+at all. It fails to unmarshal the message and drops the event for its own
+clients, so during a mixed roll from below the floor those replicas lose
+events — not a resync, a silent loss. Single-instance deployments and
+deployments without Redis need nothing: there is no peer to disagree with.
 
-Both rolls are zero-loss in the other direction, because accept-both is on
-from phase 1: during the phase-2 roll, flipped and un-flipped instances are
-publishing different forms at the same time and every instance reads both.
+A roll from v0.15.0 or later is zero-loss, because accept-both is already on:
+during the roll, phase-1 and phase-2 instances publish different forms at the
+same time and every instance reads both. To hold a fleet on phase 1 for a
+while, set `PAD_EVENTS_PUBLISH_EPOCH=false` before rolling.
+
+**An existing config.toml may hold the opt-out without anyone choosing it.**
+Before this release, `pad init` and `pad auth configure` wrote
+`events_publish_epoch = false` into `~/.pad/config.toml` whatever you had
+chosen. Pad does not reinterpret that line (staying on phase 1 loses no
+events), so an install upgraded with such a file stays on phase 1. On a Redis
+deployment the server logs a warning at startup naming the file. Delete the
+line to take the default once every replica accepts the prefixed form, or keep
+it as a deliberate opt-out. Saving the config now writes the key only when the
+value is false.
 
 **Rolling back to phase 1** is safe: make the effective value **false** and
 roll. Peers accept the bare form throughout, so there is no window where this
@@ -807,15 +824,21 @@ direction loses events.
 Two things about rolling back that are easy to get wrong:
 
 - **Setting the value to false is not the same as unsetting the environment
-  variable.** `events_publish_epoch` can also be set in `~/.pad/config.toml`,
-  and the config file's value stands when the environment variable is absent.
-  Clear both, or set the environment variable explicitly to `false`.
-- **Downgrading past phase 1 is a SECOND step, and the order is the reverse of
-  the upgrade.** A pre-phase-1 binary cannot parse the prefixed form. So:
-  first roll every instance to phase 1 (new binary, flip off) and let the roll
-  finish, *then* downgrade the binary. Introducing an old binary while any
-  flipped instance is still publishing drops events on the old one — the same
-  asymmetry that makes the upgrade two phases, in reverse.
+  variable.** With the variable absent, `events_publish_epoch` in
+  `~/.pad/config.toml` stands if it is there, and the default (phase 2) applies
+  if it is not. Set the environment variable explicitly to `false`, or put
+  `events_publish_epoch = false` in the config file. The same holds in the other
+  direction: an explicit `PAD_EVENTS_PUBLISH_EPOCH=true` overrides a `false` in
+  the file.
+- **Downgrading below v0.15.0 is a SECOND step, and the order is the reverse
+  of the upgrade.** A binary older than v0.15.0 cannot parse the prefixed form.
+  So: first roll every instance to phase 1 (set the value false) and let the
+  roll finish, *then* downgrade the binary. Introducing an older binary while
+  any instance is still publishing phase 2 drops events on the older one — the
+  same asymmetry as the upgrade floor, in reverse. Downgrading to a release
+  from v0.15.0 up to the one before this default needs no first step for
+  parsing, but note that such a release publishes phase 1 unless
+  `PAD_EVENTS_PUBLISH_EPOCH=true` is set.
 
 There is no Redis or database migration in either direction. The epoch key and
 its generation counter are created by the first flipped publisher; a phase-1 instance deletes it if it
@@ -874,7 +897,8 @@ So the expectation depends on where you are:
 
 **Which phase an instance is publishing in is in its startup log**, as
 `id_space_phase=1` or `id_space_phase=2` on the "Event bus using Redis pub/sub"
-line — the counter above cannot be read without it. An unparseable
+line — the counter above cannot be read without it. `id_space_phase_source`
+says where the setting came from: `default`, `config file` or `env`. An unparseable
 `PAD_EVENTS_PUBLISH_EPOCH` is ignored (a typo must not flip a migration whose
 wrong direction loses events) and logs a warning naming the value.
 
