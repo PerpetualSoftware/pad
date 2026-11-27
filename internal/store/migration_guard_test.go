@@ -19,8 +19,11 @@ package store
 // TestMigrationGuardTestsStaySerial enforces this file-wide.
 
 import (
+	"context"
+	"database/sql"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -606,5 +609,239 @@ func TestPruneSnapshots_NotAfterFailedMigrate(t *testing.T) {
 	assertPresent(t, keep) // control: the snapshot WAS taken before the failure
 	for _, p := range []string{old1, old2, old3} {
 		assertPresent(t, p)
+	}
+}
+
+func testSQLiteFileURI(t *testing.T, path, rawQuery string) string {
+	t.Helper()
+	uri, err := sqliteFileURI(path, rawQuery)
+	if err != nil {
+		t.Fatalf("sqliteFileURI(%q): %v", path, err)
+	}
+	return uri
+}
+
+func assertSnapshotQuickCheck(t *testing.T, db *sql.DB) {
+	t.Helper()
+	var res string
+	if err := db.QueryRow("PRAGMA quick_check").Scan(&res); err != nil {
+		t.Fatalf("PRAGMA quick_check: %v", err)
+	}
+	if res != "ok" {
+		t.Fatalf("PRAGMA quick_check = %q, want %q", res, "ok")
+	}
+}
+
+func TestSnapshotBeforeMigrate_IncludesCommitsBehindHeldReader(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific path")
+	}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "snap.db")
+	if err := lockedCopyFromSQLiteTemplate(dbPath); err != nil {
+		t.Fatalf("seed db from template: %v", err)
+	}
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	ctx := context.Background()
+	r, err := sql.Open("sqlite", testSQLiteFileURI(t, dbPath, ""))
+	if err != nil {
+		t.Fatalf("open reader: %v", err)
+	}
+	defer r.Close()
+
+	conn, err := r.Conn(ctx)
+	if err != nil {
+		t.Fatalf("reader conn: %v", err)
+	}
+	readerOpen := true
+	defer func() {
+		if readerOpen {
+			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			_ = conn.Close()
+		}
+	}()
+
+	if _, err := conn.ExecContext(ctx, "BEGIN"); err != nil {
+		t.Fatalf("reader BEGIN: %v", err)
+	}
+	var migCount int
+	if err := conn.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations").Scan(&migCount); err != nil {
+		t.Fatalf("reader pin WAL: %v", err)
+	}
+
+	if _, err := s.db.Exec("CREATE TABLE snap_marker(v TEXT)"); err != nil {
+		t.Fatalf("create snap_marker: %v", err)
+	}
+	if _, err := s.db.Exec("INSERT INTO snap_marker VALUES ('after-reader')"); err != nil {
+		t.Fatalf("insert snap_marker: %v", err)
+	}
+
+	const target = "042_x.sql"
+	s.snapshotBeforeMigrate(target)
+
+	if _, err := conn.ExecContext(ctx, "ROLLBACK"); err != nil {
+		t.Fatalf("reader ROLLBACK: %v", err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatalf("reader conn close: %v", err)
+	}
+	readerOpen = false
+	if err := r.Close(); err != nil {
+		t.Fatalf("reader db close: %v", err)
+	}
+
+	dst := s.snapshotPath(target)
+	snap, err := sql.Open("sqlite", testSQLiteFileURI(t, dst, "mode=ro"))
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	defer snap.Close()
+
+	var got string
+	if err := snap.QueryRow("SELECT v FROM snap_marker").Scan(&got); err != nil {
+		t.Fatalf("query snap_marker in snapshot: %v", err)
+	}
+	if got != "after-reader" {
+		t.Fatalf("snap_marker = %q, want %q", got, "after-reader")
+	}
+	assertSnapshotQuickCheck(t, snap)
+}
+
+func TestSnapshotBeforeMigrate_PreservesImplicitRowids(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific path")
+	}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "snap.db")
+	if err := lockedCopyFromSQLiteTemplate(dbPath); err != nil {
+		t.Fatalf("seed db from template: %v", err)
+	}
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	if _, err := s.db.Exec("CREATE TABLE rowid_probe(v TEXT)"); err != nil {
+		t.Fatalf("create rowid_probe: %v", err)
+	}
+	for _, v := range []string{"a", "b", "c", "d", "e"} {
+		if _, err := s.db.Exec("INSERT INTO rowid_probe(v) VALUES (?)", v); err != nil {
+			t.Fatalf("insert %q: %v", v, err)
+		}
+	}
+	if _, err := s.db.Exec("DELETE FROM rowid_probe WHERE v IN ('b','d')"); err != nil {
+		t.Fatalf("delete b/d: %v", err)
+	}
+
+	type row struct {
+		id int64
+		v  string
+	}
+	readRows := func(db *sql.DB) []row {
+		rows, err := db.Query("SELECT rowid, v FROM rowid_probe ORDER BY rowid")
+		if err != nil {
+			t.Fatalf("query rowid_probe: %v", err)
+		}
+		defer rows.Close()
+		var out []row
+		for rows.Next() {
+			var r row
+			if err := rows.Scan(&r.id, &r.v); err != nil {
+				t.Fatalf("scan rowid_probe: %v", err)
+			}
+			out = append(out, r)
+		}
+		if err := rows.Err(); err != nil {
+			t.Fatalf("rows err: %v", err)
+		}
+		return out
+	}
+
+	want := []row{{1, "a"}, {3, "c"}, {5, "e"}}
+	srcRows := readRows(s.db)
+	if len(srcRows) != len(want) {
+		t.Fatalf("source rows = %v, want %v", srcRows, want)
+	}
+	for i := range want {
+		if srcRows[i] != want[i] {
+			t.Fatalf("source row[%d] = %v, want %v", i, srcRows[i], want[i])
+		}
+	}
+
+	const target = "042_rowid.sql"
+	s.snapshotBeforeMigrate(target)
+
+	dst := s.snapshotPath(target)
+	snap, err := sql.Open("sqlite", testSQLiteFileURI(t, dst, "mode=ro"))
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	defer snap.Close()
+
+	gotRows := readRows(snap)
+	if len(gotRows) != len(srcRows) {
+		t.Fatalf("snapshot rows = %v, want %v", gotRows, srcRows)
+	}
+	for i := range srcRows {
+		if gotRows[i] != srcRows[i] {
+			t.Fatalf("snapshot row[%d] = %v, want %v", i, gotRows[i], srcRows[i])
+		}
+	}
+}
+
+func TestSnapshotBeforeMigrate_FileModeAndNoTemp(t *testing.T) {
+	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
+		t.Skip("SQLite-specific path")
+	}
+	dir := t.TempDir()
+	dbPath := filepath.Join(dir, "snap.db")
+	if err := lockedCopyFromSQLiteTemplate(dbPath); err != nil {
+		t.Fatalf("seed db from template: %v", err)
+	}
+	s, err := New(dbPath)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	defer s.Close()
+
+	const target = "042_mode.sql"
+	dst := s.snapshotPath(target)
+	tmp := dst + ".tmp"
+	if err := os.WriteFile(tmp, []byte("STALE-JUNK-BYTES"), 0o644); err != nil {
+		t.Fatalf("seed stale tmp: %v", err)
+	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(tmp, 0o644); err != nil {
+			t.Fatalf("chmod stale tmp: %v", err)
+		}
+	}
+
+	s.snapshotBeforeMigrate(target)
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("stat snapshot %s: %v", dst, err)
+	}
+	if runtime.GOOS != "windows" {
+		if got := info.Mode().Perm(); got != 0o600 {
+			t.Fatalf("snapshot mode = %04o, want 0600", got)
+		}
+	}
+
+	snap, err := sql.Open("sqlite", testSQLiteFileURI(t, dst, "mode=ro"))
+	if err != nil {
+		t.Fatalf("open snapshot: %v", err)
+	}
+	defer snap.Close()
+	assertSnapshotQuickCheck(t, snap)
+
+	if _, err := os.Stat(tmp); !os.IsNotExist(err) {
+		t.Fatalf("stale temp file %s still exists (stat err=%v)", tmp, err)
 	}
 }

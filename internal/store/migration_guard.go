@@ -1,16 +1,20 @@
 package store
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
-	"io"
 	"log/slog"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 	"time"
+
+	"modernc.org/sqlite"
 )
 
 // appliedMigrations returns the set of migration version strings recorded
@@ -98,23 +102,23 @@ func guardSchemaAhead(applied map[string]bool, embedded []string) error {
 	)
 }
 
-// snapshotBeforeMigrate copies the live SQLite database file to
-// <db>.pre-<VERSION>-m<NNN> (see snapshotPathFor) before any pending
-// migrations run, so a botched upgrade can be rolled back by copying the
-// snapshot back over the DB. targetMigration is the migration this run is
+// snapshotBeforeMigrate writes a consistent snapshot of the live SQLite
+// database to <db>.pre-<VERSION>-m<NNN> (see snapshotPathFor) before any
+// pending migrations run, so a botched upgrade can be rolled back by copying
+// the snapshot back over the DB. targetMigration is the migration this run is
 // migrating TO: the highest embedded migration filename.
 //
-// SQLite-only and best-effort: any failure (checkpoint, copy, missing
-// file) is logged as a warning and migration proceeds. Refusing to boot
-// because a backup file couldn't be written (read-only volume, full disk)
-// would be worse than proceeding — the operator following the upgrade docs
-// keeps their own backup regardless.
+// SQLite-only and best-effort: any failure (backup, I/O, missing file) is
+// logged as a warning and migration proceeds. Refusing to boot because a
+// backup file couldn't be written (read-only volume, full disk) would be
+// worse than proceeding — the operator following the upgrade docs keeps their
+// own backup regardless.
 func (s *Store) snapshotBeforeMigrate(targetMigration string) {
 	if s.dialect.Driver() != DriverSQLite {
 		return // Postgres: snapshots are the operator's pg_dump/PITR job.
 	}
 	if s.dbPath == "" || strings.HasPrefix(s.dbPath, ":memory:") || strings.Contains(s.dbPath, "mode=memory") {
-		return // in-memory DB: nothing on disk to copy.
+		return // in-memory DB: nothing on disk to snapshot.
 	}
 	if _, err := os.Stat(s.dbPath); err != nil {
 		return // no file yet (fresh DB) — nothing to snapshot.
@@ -143,20 +147,10 @@ func (s *Store) snapshotBeforeMigrate(targetMigration string) {
 		return
 	}
 
-	// Flush the WAL into the main DB file so the copy is a complete,
-	// self-contained snapshot (no dependence on -wal/-shm sidecars).
-	// wal_checkpoint returns a (busy, log, checkpointed) row rather than an
-	// error when it can't fully checkpoint; surface that so an incomplete
-	// snapshot isn't taken silently. At startup the DB has a single
-	// connection and no live readers, so busy should always be 0.
-	var busy, logFrames, ckpt sql.NullInt64
-	if err := s.db.QueryRow("PRAGMA wal_checkpoint(TRUNCATE)").Scan(&busy, &logFrames, &ckpt); err != nil {
-		slog.Warn("pre-migration snapshot: WAL checkpoint failed; snapshot may be incomplete", "error", err)
-	} else if busy.Int64 != 0 {
-		slog.Warn("pre-migration snapshot: WAL checkpoint reported busy; snapshot may miss un-checkpointed WAL frames", "log_frames", logFrames.Int64)
-	}
-
-	if err := copyFileContents(s.dbPath, dst); err != nil {
+	// Take the snapshot via SQLite's online backup API so committed WAL
+	// frames are included consistently even while another connection holds
+	// a WAL read transaction, and implicit rowids are preserved.
+	if err := backupSQLiteFile(s.dbPath, dst); err != nil {
 		slog.Warn("pre-migration snapshot failed; continuing with migration (make sure you have your own backup)", "dest", dst, "error", err)
 		return
 	}
@@ -181,10 +175,10 @@ func (s *Store) pruneSnapshotsAfterMigrate(targetMigration string) {
 // newest one other than keep, so each upgrade does not leave another full
 // copy of the database behind. keep is this run's snapshot; it and the single
 // newest other snapshot (by modification time, ties broken by name
-// descending) survive. copyFileContents renames a fresh temp file into place,
-// so a snapshot's mtime is its creation time.
+// descending) survive. The snapshot is renamed into place from a fresh temp
+// file, so its mtime is its creation time.
 //
-// If keep is not on disk (the copy failed), nothing is removed: the older
+// If keep is not on disk (the backup failed), nothing is removed: the older
 // snapshots are then the only rollback point.
 //
 // Only regular files whose name is exactly what snapshotPathFor produces for
@@ -303,41 +297,101 @@ func sanitizeVersion(v string) string {
 	return b.String()
 }
 
-// copyFileContents copies src to dst atomically: it writes to a sibling
-// temp file, fsyncs it, then renames it into place. A failure therefore
-// never leaves a partial file at dst that a later existence check would
-// mistake for a complete snapshot.
-func copyFileContents(src, dst string) (err error) {
-	in, err := os.Open(src)
+// sqliteFileURI builds an escaped SQLite file: URI for path so filesystem
+// characters like '?' or '#' are not interpreted as URI options. Windows drive
+// paths get a leading slash in file URIs.
+func sqliteFileURI(path, rawQuery string) (string, error) {
+	abs, err := filepath.Abs(path)
 	if err != nil {
-		return err
+		return "", err
 	}
-	defer in.Close()
+	path = filepath.ToSlash(abs)
+	if filepath.VolumeName(abs) != "" && !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	return (&url.URL{Scheme: "file", Path: path, RawQuery: rawQuery}).String(), nil
+}
 
+// backupSQLiteFile writes a consistent, self-contained copy of srcPath to dst
+// using SQLite's online backup API (which incorporates committed WAL frames
+// even while readers hold WAL marks and preserves implicit rowids, unlike
+// VACUUM INTO). It backs up into a sibling temp file, chmods and fsyncs it,
+// then renames it into place so a failure never leaves a partial file at dst
+// or tmp.
+func backupSQLiteFile(srcPath, dst string) (retErr error) {
 	tmp := dst + ".tmp"
-	out, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
-	if err != nil {
-		return err
+	for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+		if err := os.Remove(tmp + suffix); err != nil && !os.IsNotExist(err) {
+			return err
+		}
 	}
-	// Clean up the temp file on any error path.
 	defer func() {
-		if err != nil {
-			_ = os.Remove(tmp)
+		if retErr != nil {
+			for _, suffix := range []string{"", "-wal", "-shm", "-journal"} {
+				_ = os.Remove(tmp + suffix)
+			}
 		}
 	}()
 
-	if _, err = io.Copy(out, in); err != nil {
-		out.Close()
+	srcURI, err := sqliteFileURI(srcPath, "mode=ro&_pragma=busy_timeout(30000)")
+	if err != nil {
 		return err
 	}
-	if err = out.Sync(); err != nil {
-		out.Close()
+	dstURI, err := sqliteFileURI(tmp, "")
+	if err != nil {
 		return err
 	}
-	if err = out.Close(); err != nil {
+
+	if err := runSQLiteOnlineBackup(srcURI, dstURI); err != nil {
+		return err
+	}
+
+	f, err := os.OpenFile(tmp, os.O_RDWR, 0)
+	if err != nil {
+		return err
+	}
+	if err := errors.Join(f.Chmod(0o600), f.Sync(), f.Close()); err != nil {
 		return err
 	}
 	return os.Rename(tmp, dst)
+}
+
+func runSQLiteOnlineBackup(srcURI, dstURI string) (retErr error) {
+	db, err := sql.Open("sqlite", srcURI)
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, db.Close()) }()
+
+	conn, err := db.Conn(context.Background())
+	if err != nil {
+		return err
+	}
+	defer func() { retErr = errors.Join(retErr, conn.Close()) }()
+
+	return conn.Raw(func(raw any) error {
+		b, ok := raw.(interface {
+			NewBackup(string) (*sqlite.Backup, error)
+		})
+		if !ok {
+			return fmt.Errorf("sqlite connection %T does not support online backup", raw)
+		}
+		backup, err := b.NewBackup(dstURI)
+		if err != nil {
+			return err
+		}
+		more, stepErr := backup.Step(-1)
+		if more && stepErr == nil {
+			stepErr = errors.New("SQLite backup did not finish")
+		}
+		// Finalize even on failure to roll back the private destination, and
+		// close it explicitly: Backup.Finish discards its Close error.
+		dstConn, finishErr := backup.Commit()
+		if dstConn != nil {
+			finishErr = errors.Join(finishErr, dstConn.Close())
+		}
+		return errors.Join(stepErr, finishErr)
+	})
 }
 
 // snapshotPath is snapshotPathFor for this store's database file.
