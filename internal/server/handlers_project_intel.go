@@ -29,13 +29,14 @@ import (
 // Asymmetry resolved (TASK-1894, BUG-1917): handleGetProjectStandup
 // scopes its own completed/in_progress ListItems calls through
 // projectIntelVisibility (see below), and its dashboard-derived sections
-// (blockers, suggested_next) come from buildDashboardResponse — both now sit
-// on the same bearer-gated visibleCollectionIDs (server.go), so a bearer-authed
-// platform admin who is only a restricted member of the workspace gets
-// correctly-scoped completed/in_progress AND blockers/suggested_next from
-// standup. handleGetProjectNext stays on buildDashboardResponse's visibility
-// so it keeps exact parity with dashboard.suggested_next; that parity was the
-// reason the two couldn't diverge on gating in the first place.
+// (blockers, suggested_next) come from buildDashboard in actionable-only
+// mode (BUG-3705) — both sit on the same bearer-gated visibleCollectionIDs
+// (server.go), so a bearer-authed platform admin who is only a restricted
+// member of the workspace gets correctly-scoped completed/in_progress AND
+// blockers/suggested_next from standup. handleGetProjectNext also uses
+// buildDashboard in actionable-only mode so it keeps exact visibility and
+// ranking parity with dashboard.suggested_next without scanning completed
+// items or assembling unused dashboard sections.
 
 // parseDaysParam reads a "days" query param with a fallback default. Mirrors
 // the CLI's `n > 0` gate (standupCmd/changelogCmd flag defaults); the MCP
@@ -73,7 +74,7 @@ func itemMatchesParentFilter(item models.Item, parent string) bool {
 
 // projectIntelVisibility computes the (collectionIDs, itemIDs)
 // visibility-scoping pair for the item-list calls the standup/changelog
-// handlers make directly (outside of buildDashboardResponse), using
+// handlers make directly (outside of buildDashboard), using
 // visibleCollectionIDs (server.go), which is bearer-gated (BUG-1917).
 //
 // This does NOT delegate to reportVisibleCollections despite the shared
@@ -276,14 +277,15 @@ func completedWorkValue(item models.Item, doneField map[string]string) string {
 // (TASK-1916), so it returns the exact same shape. Returned as a bare JSON
 // array (matching the CLI's
 // `cli.PrintJSON(dash.SuggestedNext)` and the handleListItems bare-array
-// convention), never null (buildDashboardResponse initializes SuggestedNext
-// to []DashboardSuggestion{}).
+// convention), never null (buildDashboard initializes SuggestedNext
+// to []DashboardSuggestion{}). Uses actionable-only mode (BUG-3705) so it
+// skips unused dashboard sections and excludes terminal items in SQL.
 func (s *Server) handleGetProjectNext(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
 		return
 	}
-	resp, err := s.buildDashboardResponse(workspaceID, r)
+	resp, err := s.buildDashboard(workspaceID, r, dashboardBuildOpts{actionableOnly: true})
 	if err != nil {
 		writeInternalError(w, err)
 		return
@@ -326,10 +328,10 @@ type StandupResponse struct {
 //	See parseDaysParam for the lenient-default semantics.
 //
 // Mirrors `pad project standup --format json` (cmd/pad/main.go standupCmd)
-// exactly: dashboard for active items / blockers / suggested-next, plus a
-// per-terminal-status ListItems loop (limit 20, best-effort) for
-// "completed", plus an unbounded in-progress ListItems call. The MCP HTTP
-// transport's dispatchProjectStandup proxies straight here (TASK-1916).
+// exactly: actionable-only dashboard build (BUG-3705) for blockers /
+// suggested-next, plus a per-terminal-status ListItems loop (limit 20,
+// best-effort) for "completed", plus an unbounded in-progress ListItems call.
+// The MCP HTTP transport's dispatchProjectStandup proxies straight here (TASK-1916).
 func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := s.getWorkspaceID(w, r)
 	if !ok {
@@ -338,7 +340,7 @@ func (s *Server) handleGetProjectStandup(w http.ResponseWriter, r *http.Request)
 	days := parseDaysParam(r, 1)
 	cutoff := time.Now().AddDate(0, 0, -days)
 
-	dash, err := s.buildDashboardResponse(workspaceID, r)
+	dash, err := s.buildDashboard(workspaceID, r, dashboardBuildOpts{actionableOnly: true})
 	if err != nil {
 		writeInternalError(w, err)
 		return

@@ -415,12 +415,44 @@ func (s *Server) handleGetDashboard(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// buildDashboardResponse is the canonical dashboard-assembly path. The
+type dashboardBuildOpts struct {
+	// actionableOnly skips sections that /next and /standup never read
+	// (HasAgentActivity, NeedsOnboarding, Summary, OnboardingSeed,
+	// ActiveItems, RecentActivity, ByRole, StarredItems) and adds
+	// NonTerminal: true to the main item scan so large archives of completed
+	// items are filtered in SQL rather than loaded into memory (BUG-3705).
+	actionableOnly bool
+}
+
+func dashboardAllItemsParams(collIDs, itemIDs []string, opts dashboardBuildOpts) models.ItemListParams {
+	return models.ItemListParams{
+		CollectionIDs: collIDs,
+		ItemIDs:       itemIDs,
+		NoContent:     true,
+		NonTerminal:   opts.actionableOnly,
+	}
+}
+
+func dashboardOrphanTasksParams(collIDs, itemIDs []string) models.ItemListParams {
+	return models.ItemListParams{
+		CollectionSlug: "tasks",
+		CollectionIDs:  collIDs,
+		ItemIDs:        itemIDs,
+		NoContent:      true,
+		NonTerminal:    true,
+	}
+}
+
+// buildDashboardResponse is the canonical full dashboard-assembly path. The
 // HTTP handler (handleGetDashboard) is now a thin wrapper around it, and
 // the bootstrap endpoint (TASK-1379) calls it directly so the bootstrap
 // blob carries the same dashboard data the dedicated endpoint returns —
 // without forcing a second HTTP round-trip.
 func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*DashboardResponse, error) {
+	return s.buildDashboard(workspaceID, r, dashboardBuildOpts{})
+}
+
+func (s *Server) buildDashboard(workspaceID string, r *http.Request, opts dashboardBuildOpts) (*DashboardResponse, error) {
 	// Compute collection visibility once for the entire dashboard
 	visibleIDs, err := s.visibleCollectionIDs(r, workspaceID)
 	if err != nil {
@@ -501,95 +533,101 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			"workspace_id", workspaceID, "section", section, "error", err)
 	}
 
-	// Cheap EXISTS query — drives the connect-agent banner's auto-hide on
-	// the web side. Filtered by the same visibility set used elsewhere in
-	// this handler (dashCollIDs / dashItemIDs) so a guest can't infer the
-	// existence of agent-sourced items in collections they don't have
-	// access to. See WorkspaceHasAgentActivity for the rationale.
-	hasAgent, err := s.store.WorkspaceHasAgentActivity(workspaceID, dashCollIDs, dashItemIDs)
-	if err != nil {
-		return nil, err
-	}
-	// A workspace created through an agent surface (`pad init`, `pad
-	// workspace init`, MCP pad_workspace.create — all persist source
-	// cli/mcp) already has an agent wired up before that agent creates its
-	// first item. Fold that in so the "connect an agent" banner and the
-	// onboarding launchpad's "Agent connected" step don't nag right after
-	// `pad init` (BUG-1557). Unlike WorkspaceHasAgentActivity this is a
-	// workspace-level property (not visibility-scoped), so it's OR'd in
-	// unconditionally — but only queried when the cheap item EXISTS check
-	// came up empty. A load failure is non-fatal: buildDashboardResponse
-	// also backs the bootstrap endpoint, and a missing source signal must
-	// not break the whole dashboard.
-	if !hasAgent {
-		if ws, wErr := s.store.GetWorkspaceByID(workspaceID); wErr == nil && ws != nil {
-			hasAgent = ws.Source == "cli" || ws.Source == "mcp"
-		} else if wErr != nil {
-			// Non-fatal: hasAgent already has a valid value from the
-			// EXISTS check above; this is only a source-signal fallback.
-			// Log it but don't degrade the response — the banner just
-			// stays visible one render longer, no section renders empty.
-			slog.Warn("dashboard: workspace source lookup failed (agent banner fallback)",
-				"workspace_id", workspaceID, "error", wErr)
+	if !opts.actionableOnly {
+		// Cheap EXISTS query — drives the connect-agent banner's auto-hide on
+		// the web side. Filtered by the same visibility set used elsewhere in
+		// this handler (dashCollIDs / dashItemIDs) so a guest can't infer the
+		// existence of agent-sourced items in collections they don't have
+		// access to. See WorkspaceHasAgentActivity for the rationale.
+		hasAgent, err := s.store.WorkspaceHasAgentActivity(workspaceID, dashCollIDs, dashItemIDs)
+		if err != nil {
+			return nil, err
 		}
-	}
-	resp.HasAgentActivity = hasAgent
+		// A workspace created through an agent surface (`pad init`, `pad
+		// workspace init`, MCP pad_workspace.create — all persist source
+		// cli/mcp) already has an agent wired up before that agent creates its
+		// first item. Fold that in so the "connect an agent" banner and the
+		// onboarding launchpad's "Agent connected" step don't nag right after
+		// `pad init` (BUG-1557). Unlike WorkspaceHasAgentActivity this is a
+		// workspace-level property (not visibility-scoped), so it's OR'd in
+		// unconditionally — but only queried when the cheap item EXISTS check
+		// came up empty. A load failure is non-fatal: buildDashboardResponse
+		// also backs the bootstrap endpoint, and a missing source signal must
+		// not break the whole dashboard.
+		if !hasAgent {
+			if ws, wErr := s.store.GetWorkspaceByID(workspaceID); wErr == nil && ws != nil {
+				hasAgent = ws.Source == "cli" || ws.Source == "mcp"
+			} else if wErr != nil {
+				// Non-fatal: hasAgent already has a valid value from the
+				// EXISTS check above; this is only a source-signal fallback.
+				// Log it but don't degrade the response — the banner just
+				// stays visible one render longer, no section renders empty.
+				slog.Warn("dashboard: workspace source lookup failed (agent banner fallback)",
+					"workspace_id", workspaceID, "error", wErr)
+			}
+		}
+		resp.HasAgentActivity = hasAgent
 
-	// needs_onboarding mirrors AgentBootstrap.NeedsOnboarding (TASK-1504):
-	// true when the workspace has zero items with source != 'template'.
-	// Web UI's onboarding nudge banner (TASK-1530) reads this from the
-	// dashboard fetch the page already does, so no second round-trip
-	// against the heavier bootstrap endpoint is needed. Predicate is the
-	// same EXISTS-backed store helper bootstrap uses.
-	hasUserItems, err := s.store.WorkspaceHasUserCreatedItems(workspaceID)
-	if err != nil {
-		return nil, err
+		// needs_onboarding mirrors AgentBootstrap.NeedsOnboarding (TASK-1504):
+		// true when the workspace has zero items with source != 'template'.
+		// Web UI's onboarding nudge banner (TASK-1530) reads this from the
+		// dashboard fetch the page already does, so no second round-trip
+		// against the heavier bootstrap endpoint is needed. Predicate is the
+		// same EXISTS-backed store helper bootstrap uses.
+		hasUserItems, err := s.store.WorkspaceHasUserCreatedItems(workspaceID)
+		if err != nil {
+			return nil, err
+		}
+		resp.NeedsOnboarding = !hasUserItems
 	}
-	resp.NeedsOnboarding = !hasUserItems
 
 	// Summary: items grouped by collection slug and status field.
 	// NoContent: the dashboard only counts/summarizes/scans structured
 	// fields — it never reads item.Content — so we skip loading every
 	// item's full markdown body (BUG-2002).
-	allItems, err := s.store.ListItems(workspaceID, models.ItemListParams{CollectionIDs: dashCollIDs, ItemIDs: dashItemIDs, NoContent: true})
+	// In actionableOnly mode, NonTerminal: true filters terminal items in SQL
+	// because neither /next nor /standup reads Summary/OnboardingSeed/ActiveItems.
+	allItems, err := s.store.ListItems(workspaceID, dashboardAllItemsParams(dashCollIDs, dashItemIDs, opts))
 	if err != nil {
 		return nil, err
 	}
 
-	resp.Summary.TotalItems = len(allItems)
-	for _, item := range allItems {
-		collSlug := item.CollectionSlug
-		if _, exists := resp.Summary.ByCollection[collSlug]; !exists {
-			resp.Summary.ByCollection[collSlug] = make(map[string]int)
-		}
-
-		status := extractFieldValue(item.Fields, "status")
-		if status == "" {
-			status = "unknown"
-		}
-		resp.Summary.ByCollection[collSlug][status]++
-
-		// Identify the seeded onboarding primary entry. Match shape:
-		// item_number=1 + system-template provenance + lives in a
-		// known onboarding-primary collection. The first match wins —
-		// item_number is workspace-scoped + monotonic so there's only
-		// one item with item_number=1 per workspace anyway.
-		if resp.OnboardingSeed == nil &&
-			item.ItemNumber != nil && *item.ItemNumber == 1 &&
-			item.Source == "template" && item.CreatedBy == "system" &&
-			onboardingPrimaryCollectionSlugs[collSlug] {
-			itemStatus := extractFieldValue(item.Fields, "status")
-			ref := ""
-			if item.CollectionPrefix != "" {
-				ref = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+	if !opts.actionableOnly {
+		resp.Summary.TotalItems = len(allItems)
+		for _, item := range allItems {
+			collSlug := item.CollectionSlug
+			if _, exists := resp.Summary.ByCollection[collSlug]; !exists {
+				resp.Summary.ByCollection[collSlug] = make(map[string]int)
 			}
-			resp.OnboardingSeed = &DashboardOnboardingSeed{
-				Ref:            ref,
-				Title:          item.Title,
-				Slug:           item.Slug,
-				CollectionSlug: collSlug,
-				Status:         itemStatus,
-				Active:         onboardingInitialStatus[collSlug] == itemStatus,
+
+			status := extractFieldValue(item.Fields, "status")
+			if status == "" {
+				status = "unknown"
+			}
+			resp.Summary.ByCollection[collSlug][status]++
+
+			// Identify the seeded onboarding primary entry. Match shape:
+			// item_number=1 + system-template provenance + lives in a
+			// known onboarding-primary collection. The first match wins —
+			// item_number is workspace-scoped + monotonic so there's only
+			// one item with item_number=1 per workspace anyway.
+			if resp.OnboardingSeed == nil &&
+				item.ItemNumber != nil && *item.ItemNumber == 1 &&
+				item.Source == "template" && item.CreatedBy == "system" &&
+				onboardingPrimaryCollectionSlugs[collSlug] {
+				itemStatus := extractFieldValue(item.Fields, "status")
+				ref := ""
+				if item.CollectionPrefix != "" {
+					ref = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+				}
+				resp.OnboardingSeed = &DashboardOnboardingSeed{
+					Ref:            ref,
+					Title:          item.Title,
+					Slug:           item.Slug,
+					CollectionSlug: collSlug,
+					Status:         itemStatus,
+					Active:         onboardingInitialStatus[collSlug] == itemStatus,
+				}
 			}
 		}
 	}
@@ -606,42 +644,44 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
-	// Active items: items currently being worked on (not initial state, not terminal state)
-	for _, item := range workItems {
-		status := extractFieldValue(item.Fields, "status")
-		if !isActiveStatus(status) {
-			continue
+	if !opts.actionableOnly {
+		// Active items: items currently being worked on (not initial state, not terminal state)
+		for _, item := range workItems {
+			status := extractFieldValue(item.Fields, "status")
+			if !isActiveStatus(status) {
+				continue
+			}
+			// Skip plans (they have their own section)
+			if item.CollectionSlug == "plans" {
+				continue
+			}
+			ai := DashboardActiveItem{
+				Slug:           item.Slug,
+				Title:          item.Title,
+				CollectionSlug: item.CollectionSlug,
+				CollectionIcon: item.CollectionIcon,
+				Status:         status,
+				UpdatedAt:      item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+			}
+			ai.Priority = extractFieldValue(item.Fields, "priority")
+			if item.CollectionPrefix != "" && item.ItemNumber != nil {
+				ai.ItemRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+			}
+			resp.ActiveItems = append(resp.ActiveItems, ai)
 		}
-		// Skip plans (they have their own section)
-		if item.CollectionSlug == "plans" {
-			continue
+		// Sort active items: by priority rank then by most recently updated
+		sort.Slice(resp.ActiveItems, func(i, j int) bool {
+			pi := models.PriorityRank(resp.ActiveItems[i].Priority)
+			pj := models.PriorityRank(resp.ActiveItems[j].Priority)
+			if pi != pj {
+				return pi < pj
+			}
+			return resp.ActiveItems[i].UpdatedAt > resp.ActiveItems[j].UpdatedAt
+		})
+		// Cap at 10
+		if len(resp.ActiveItems) > 10 {
+			resp.ActiveItems = resp.ActiveItems[:10]
 		}
-		ai := DashboardActiveItem{
-			Slug:           item.Slug,
-			Title:          item.Title,
-			CollectionSlug: item.CollectionSlug,
-			CollectionIcon: item.CollectionIcon,
-			Status:         status,
-			UpdatedAt:      item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-		}
-		ai.Priority = extractFieldValue(item.Fields, "priority")
-		if item.CollectionPrefix != "" && item.ItemNumber != nil {
-			ai.ItemRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
-		}
-		resp.ActiveItems = append(resp.ActiveItems, ai)
-	}
-	// Sort active items: by priority rank then by most recently updated
-	sort.Slice(resp.ActiveItems, func(i, j int) bool {
-		pi := models.PriorityRank(resp.ActiveItems[i].Priority)
-		pj := models.PriorityRank(resp.ActiveItems[j].Priority)
-		if pi != pj {
-			return pi < pj
-		}
-		return resp.ActiveItems[i].UpdatedAt > resp.ActiveItems[j].UpdatedAt
-	})
-	// Cap at 10
-	if len(resp.ActiveItems) > 10 {
-		resp.ActiveItems = resp.ActiveItems[:10]
 	}
 
 	// Active plans: items in "plans" collection where status=active
@@ -854,12 +894,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		parentMap, err := s.store.GetParentMap(workspaceID)
 		if err != nil {
 			markDegraded("attention.orphaned_tasks", err)
-		} else if allTasks, tErr := s.store.ListItems(workspaceID, models.ItemListParams{
-			CollectionSlug: "tasks",
-			CollectionIDs:  dashCollIDs,
-			ItemIDs:        dashItemIDs,
-			NoContent:      true,
-		}); tErr != nil {
+		} else if allTasks, tErr := s.store.ListItems(workspaceID, dashboardOrphanTasksParams(dashCollIDs, dashItemIDs)); tErr != nil {
 			markDegraded("attention.orphaned_tasks", tErr)
 		} else {
 			for _, task := range allTasks {
@@ -912,120 +947,122 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		})
 	}
 
-	// Recent activity — enriched with item titles and user names. The
-	// caller's visibility rides into the query (BUG-3687), so the 30 rows are
-	// rows this caller may see and the ten are not starved by a run of hidden
-	// ones; the filters below stay, since the guest grant rule
-	// (isItemVisibleToGuest) is narrower than the query's. The over-fetch
-	// still covers reorder batches that merge into one entry.
-	// The loop below drops a row whose item is gone, so the query must not
-	// spend the window on them, for scoped and unscoped callers alike.
-	activityParams := models.ActivityListParams{Limit: 30, ExcludeUnresolvedItems: true}
-	if visibleIDs != nil {
-		activityParams.Visibility = &models.ActivityVisibility{
-			CollectionIDs:         visibleIDs,
-			FullCollectionIDs:     dashFullCollIDs,
-			GrantedItemIDs:        dashGrantedItemIDs,
-			ExcludeWorkspaceLevel: workspaceRole(r) == "guest",
-		}
-	}
-	activities, err := s.store.ListWorkspaceActivity(workspaceID, activityParams)
-	if err != nil {
-		markDegraded("recent_activity", err)
-	} else if activities != nil {
-		// Build visible slug set for filtering. Resolve slugs from the
-		// already-loaded collection list (ListCollections above) rather than
-		// a GetCollection per visible ID — no extra queries (BUG-2002).
-		var visibleSlugSet map[string]bool
+	if !opts.actionableOnly {
+		// Recent activity — enriched with item titles and user names. The
+		// caller's visibility rides into the query (BUG-3687), so the 30 rows are
+		// rows this caller may see and the ten are not starved by a run of hidden
+		// ones; the filters below stay, since the guest grant rule
+		// (isItemVisibleToGuest) is narrower than the query's. The over-fetch
+		// still covers reorder batches that merge into one entry.
+		// The loop below drops a row whose item is gone, so the query must not
+		// spend the window on them, for scoped and unscoped callers alike.
+		activityParams := models.ActivityListParams{Limit: 30, ExcludeUnresolvedItems: true}
 		if visibleIDs != nil {
-			collSlugByID := make(map[string]string, len(collections))
-			for _, c := range collections {
-				collSlugByID[c.ID] = c.Slug
-			}
-			visibleSlugSet = make(map[string]bool)
-			for _, id := range visibleIDs {
-				if slug, ok := collSlugByID[id]; ok {
-					visibleSlugSet[slug] = true
-				}
+			activityParams.Visibility = &models.ActivityVisibility{
+				CollectionIDs:         visibleIDs,
+				FullCollectionIDs:     dashFullCollIDs,
+				GrantedItemIDs:        dashGrantedItemIDs,
+				ExcludeWorkspaceLevel: workspaceRole(r) == "guest",
 			}
 		}
-
-		// Batch-hydrate the items referenced by these activity rows in one
-		// include-deleted query instead of a GetItemIncludeDeleted per row
-		// (BUG-2002). Collect the distinct document IDs first.
-		activityItemIDs := make([]string, 0, len(activities))
-		seenActID := make(map[string]struct{}, len(activities))
-		for _, a := range activities {
-			if a.DocumentID == "" {
-				continue
-			}
-			if _, dup := seenActID[a.DocumentID]; dup {
-				continue
-			}
-			seenActID[a.DocumentID] = struct{}{}
-			activityItemIDs = append(activityItemIDs, a.DocumentID)
-		}
-		activityItems, aiErr := s.store.GetItemsByIDsIncludeDeleted(activityItemIDs)
-		if aiErr != nil {
-			return nil, aiErr
-		}
-
-		for _, a := range activities {
-			if len(resp.RecentActivity) >= 10 {
-				break
-			}
-			da := DashboardActivity{
-				Action:    a.Action,
-				Actor:     a.Actor,
-				ActorName: a.ActorName,
-				Source:    a.Source,
-				CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05Z"),
-				Metadata:  a.Metadata,
-			}
-			// Look up item title if we have a document/item ID. Use the
-			// include-deleted lookup so an archived item's activity renders
-			// with its real title/slug — gated by the same visibility checks —
-			// instead of a blank "ghost" row that also skipped those gates.
-			// If the referenced item is gone entirely, drop the row rather
-			// than emit a blank entry.
-			if a.DocumentID != "" {
-				item := activityItems[a.DocumentID]
-				if item == nil {
-					continue
+		activities, err := s.store.ListWorkspaceActivity(workspaceID, activityParams)
+		if err != nil {
+			markDegraded("recent_activity", err)
+		} else if activities != nil {
+			// Build visible slug set for filtering. Resolve slugs from the
+			// already-loaded collection list (ListCollections above) rather than
+			// a GetCollection per visible ID — no extra queries (BUG-2002).
+			var visibleSlugSet map[string]bool
+			if visibleIDs != nil {
+				collSlugByID := make(map[string]string, len(collections))
+				for _, c := range collections {
+					collSlugByID[c.ID] = c.Slug
 				}
-				// Skip items in hidden collections
-				if visibleSlugSet != nil && !visibleSlugSet[item.CollectionSlug] {
-					continue
-				}
-				// For users with item grants: skip items not directly granted
-				if !s.isItemVisibleToGuest(r, workspaceID, item, dashFullCollIDs, dashGrantedItemIDs) {
-					continue
-				}
-				item.ComputeRef()
-				da.ItemTitle = item.Title
-				da.ItemSlug = item.Slug
-				da.ItemRef = item.Ref
-				da.CollectionSlug = item.CollectionSlug
-			} else if workspaceRole(r) == "guest" {
-				// Workspace-level activity (no item) — skip for guests since
-				// it may contain audit metadata (member invites, role changes).
-				continue
-			}
-			// A reorder writes one row per moved item (TASK-3517). Each was
-			// filtered above like any row; a run of one batch then shows as
-			// one entry, so a long drag does not push everything else out of
-			// the ten.
-			if batch := reorderBatchOf(a.Action, a.Metadata); batch != "" && len(resp.RecentActivity) > 0 {
-				prev := &resp.RecentActivity[len(resp.RecentActivity)-1]
-				if reorderBatchOf(prev.Action, prev.Metadata) == batch {
-					if prev.ReorderCount == 0 {
-						prev.ReorderCount = 1
+				visibleSlugSet = make(map[string]bool)
+				for _, id := range visibleIDs {
+					if slug, ok := collSlugByID[id]; ok {
+						visibleSlugSet[slug] = true
 					}
-					prev.ReorderCount++
-					continue
 				}
 			}
-			resp.RecentActivity = append(resp.RecentActivity, da)
+
+			// Batch-hydrate the items referenced by these activity rows in one
+			// include-deleted query instead of a GetItemIncludeDeleted per row
+			// (BUG-2002). Collect the distinct document IDs first.
+			activityItemIDs := make([]string, 0, len(activities))
+			seenActID := make(map[string]struct{}, len(activities))
+			for _, a := range activities {
+				if a.DocumentID == "" {
+					continue
+				}
+				if _, dup := seenActID[a.DocumentID]; dup {
+					continue
+				}
+				seenActID[a.DocumentID] = struct{}{}
+				activityItemIDs = append(activityItemIDs, a.DocumentID)
+			}
+			activityItems, aiErr := s.store.GetItemsByIDsIncludeDeleted(activityItemIDs)
+			if aiErr != nil {
+				return nil, aiErr
+			}
+
+			for _, a := range activities {
+				if len(resp.RecentActivity) >= 10 {
+					break
+				}
+				da := DashboardActivity{
+					Action:    a.Action,
+					Actor:     a.Actor,
+					ActorName: a.ActorName,
+					Source:    a.Source,
+					CreatedAt: a.CreatedAt.Format("2006-01-02T15:04:05Z"),
+					Metadata:  a.Metadata,
+				}
+				// Look up item title if we have a document/item ID. Use the
+				// include-deleted lookup so an archived item's activity renders
+				// with its real title/slug — gated by the same visibility checks —
+				// instead of a blank "ghost" row that also skipped those gates.
+				// If the referenced item is gone entirely, drop the row rather
+				// than emit a blank entry.
+				if a.DocumentID != "" {
+					item := activityItems[a.DocumentID]
+					if item == nil {
+						continue
+					}
+					// Skip items in hidden collections
+					if visibleSlugSet != nil && !visibleSlugSet[item.CollectionSlug] {
+						continue
+					}
+					// For users with item grants: skip items not directly granted
+					if !s.isItemVisibleToGuest(r, workspaceID, item, dashFullCollIDs, dashGrantedItemIDs) {
+						continue
+					}
+					item.ComputeRef()
+					da.ItemTitle = item.Title
+					da.ItemSlug = item.Slug
+					da.ItemRef = item.Ref
+					da.CollectionSlug = item.CollectionSlug
+				} else if workspaceRole(r) == "guest" {
+					// Workspace-level activity (no item) — skip for guests since
+					// it may contain audit metadata (member invites, role changes).
+					continue
+				}
+				// A reorder writes one row per moved item (TASK-3517). Each was
+				// filtered above like any row; a run of one batch then shows as
+				// one entry, so a long drag does not push everything else out of
+				// the ten.
+				if batch := reorderBatchOf(a.Action, a.Metadata); batch != "" && len(resp.RecentActivity) > 0 {
+					prev := &resp.RecentActivity[len(resp.RecentActivity)-1]
+					if reorderBatchOf(prev.Action, prev.Metadata) == batch {
+						if prev.ReorderCount == 0 {
+							prev.ReorderCount = 1
+						}
+						prev.ReorderCount++
+						continue
+					}
+				}
+				resp.RecentActivity = append(resp.RecentActivity, da)
+			}
 		}
 	}
 
@@ -1105,6 +1142,12 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 			if isReferenceCollection(task.CollectionID, ctxMap) {
 				continue
 			}
+			// Done-gate against the collection's real done field (BUG-3707):
+			// a collection whose board_group_by is not `status` can mark an
+			// item terminal while its literal `status` is still open/in-progress.
+			if isItemDone(task.Fields, task.CollectionID, ctxMap) {
+				continue
+			}
 			taskStatus := extractFieldValue(task.Fields, "status")
 			isInProgress := isActiveStatus(taskStatus)
 			isOpen := taskStatus == "open"
@@ -1177,6 +1220,12 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		if !s.isItemVisibleToGuest(r, workspaceID, &item, dashFullCollIDs, dashGrantedItemIDs) {
 			continue
 		}
+		// Done-gate before the admitted decision (BUG-3707) so both the
+		// admitted path (in-progress / open+high/critical/overdue) and the
+		// fallback path honor the collection's configured done field.
+		if isItemDone(item.Fields, item.CollectionID, ctxMap) {
+			continue
+		}
 		taskStatus := extractFieldValue(item.Fields, "status")
 		isInProgress := isActiveStatus(taskStatus)
 		isOpen := taskStatus == "open"
@@ -1193,7 +1242,7 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		// the same list.
 		admitted := isInProgress || (isOpen && (isOverdue || pri == "high" || pri == "critical"))
 		if !admitted {
-			if !workable[item.CollectionID] || isItemDone(item.Fields, item.CollectionID, ctxMap) {
+			if !workable[item.CollectionID] {
 				continue
 			}
 			if _, blocked := firstActiveBlocker[item.ID]; blocked {
@@ -1497,91 +1546,93 @@ func (s *Server) buildDashboardResponse(workspaceID string, r *http.Request) (*D
 		}
 	}
 
-	// Role breakdown: items per role with assigned users.
-	// When visibility is restricted, recompute from visible items only.
-	if visibleIDs != nil {
-		roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
-		if err != nil {
-			markDegraded("by_role", err)
-		} else {
-			// Recount from visible items
-			roleCounts := make(map[string]int)
-			roleUsers := make(map[string]map[string]bool)
-			for _, item := range workItems {
-				roleID := ""
-				if item.AgentRoleID != nil {
-					roleID = *item.AgentRoleID
-				}
-				if isItemDone(item.Fields, item.CollectionID, ctxMap) {
-					continue
-				}
-				roleCounts[roleID]++
-				if item.AssignedUserName != "" {
-					if roleUsers[roleID] == nil {
-						roleUsers[roleID] = make(map[string]bool)
+	if !opts.actionableOnly {
+		// Role breakdown: items per role with assigned users.
+		// When visibility is restricted, recompute from visible items only.
+		if visibleIDs != nil {
+			roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
+			if err != nil {
+				markDegraded("by_role", err)
+			} else {
+				// Recount from visible items
+				roleCounts := make(map[string]int)
+				roleUsers := make(map[string]map[string]bool)
+				for _, item := range workItems {
+					roleID := ""
+					if item.AgentRoleID != nil {
+						roleID = *item.AgentRoleID
 					}
-					roleUsers[roleID][item.AssignedUserName] = true
+					if isItemDone(item.Fields, item.CollectionID, ctxMap) {
+						continue
+					}
+					roleCounts[roleID]++
+					if item.AssignedUserName != "" {
+						if roleUsers[roleID] == nil {
+							roleUsers[roleID] = make(map[string]bool)
+						}
+						roleUsers[roleID][item.AssignedUserName] = true
+					}
+				}
+				for i := range roleBreakdown {
+					rid := ""
+					if roleBreakdown[i].RoleID != nil {
+						rid = *roleBreakdown[i].RoleID
+					}
+					roleBreakdown[i].ItemCount = roleCounts[rid]
+					users := make([]string, 0)
+					for u := range roleUsers[rid] {
+						users = append(users, u)
+					}
+					roleBreakdown[i].Users = users
+				}
+				if len(roleBreakdown) > 0 {
+					resp.ByRole = roleBreakdown
 				}
 			}
-			for i := range roleBreakdown {
-				rid := ""
-				if roleBreakdown[i].RoleID != nil {
-					rid = *roleBreakdown[i].RoleID
-				}
-				roleBreakdown[i].ItemCount = roleCounts[rid]
-				users := make([]string, 0)
-				for u := range roleUsers[rid] {
-					users = append(users, u)
-				}
-				roleBreakdown[i].Users = users
-			}
-			if len(roleBreakdown) > 0 {
+		} else {
+			roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
+			if err != nil {
+				markDegraded("by_role", err)
+			} else if len(roleBreakdown) > 0 {
 				resp.ByRole = roleBreakdown
 			}
 		}
-	} else {
-		roleBreakdown, err := s.store.GetRoleBreakdown(workspaceID)
-		if err != nil {
-			markDegraded("by_role", err)
-		} else if len(roleBreakdown) > 0 {
-			resp.ByRole = roleBreakdown
-		}
-	}
 
-	// Starred items: non-terminal items starred by the current user
-	if userID := currentUserID(r); userID != "" {
-		starred, err := s.store.ListStarredItems(userID, workspaceID, false)
-		if err != nil {
-			markDegraded("starred_items", err)
-		} else if len(starred) > 0 {
-			starredItems := []DashboardActiveItem{}
-			for _, item := range starred {
-				// Apply same visibility filter as the rest of the dashboard
-				if visibleIDs != nil && !isCollectionVisible(item.CollectionID, visibleIDs) {
-					continue
+		// Starred items: non-terminal items starred by the current user
+		if userID := currentUserID(r); userID != "" {
+			starred, err := s.store.ListStarredItems(userID, workspaceID, false)
+			if err != nil {
+				markDegraded("starred_items", err)
+			} else if len(starred) > 0 {
+				starredItems := []DashboardActiveItem{}
+				for _, item := range starred {
+					// Apply same visibility filter as the rest of the dashboard
+					if visibleIDs != nil && !isCollectionVisible(item.CollectionID, visibleIDs) {
+						continue
+					}
+					if len(dashGrantedItemIDs) > 0 && !dashFullCollSet[item.CollectionID] && !dashGrantedItemSet[item.ID] {
+						continue
+					}
+					si := DashboardActiveItem{
+						Slug:           item.Slug,
+						Title:          item.Title,
+						CollectionSlug: item.CollectionSlug,
+						CollectionIcon: item.CollectionIcon,
+						Status:         extractFieldValue(item.Fields, "status"),
+						UpdatedAt:      item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
+					}
+					si.Priority = extractFieldValue(item.Fields, "priority")
+					if item.CollectionPrefix != "" && item.ItemNumber != nil {
+						si.ItemRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
+					}
+					starredItems = append(starredItems, si)
+					if len(starredItems) >= 10 {
+						break
+					}
 				}
-				if len(dashGrantedItemIDs) > 0 && !dashFullCollSet[item.CollectionID] && !dashGrantedItemSet[item.ID] {
-					continue
+				if len(starredItems) > 0 {
+					resp.StarredItems = starredItems
 				}
-				si := DashboardActiveItem{
-					Slug:           item.Slug,
-					Title:          item.Title,
-					CollectionSlug: item.CollectionSlug,
-					CollectionIcon: item.CollectionIcon,
-					Status:         extractFieldValue(item.Fields, "status"),
-					UpdatedAt:      item.UpdatedAt.Format("2006-01-02T15:04:05Z"),
-				}
-				si.Priority = extractFieldValue(item.Fields, "priority")
-				if item.CollectionPrefix != "" && item.ItemNumber != nil {
-					si.ItemRef = item.CollectionPrefix + "-" + strconv.Itoa(*item.ItemNumber)
-				}
-				starredItems = append(starredItems, si)
-				if len(starredItems) >= 10 {
-					break
-				}
-			}
-			if len(starredItems) > 0 {
-				resp.StarredItems = starredItems
 			}
 		}
 	}
