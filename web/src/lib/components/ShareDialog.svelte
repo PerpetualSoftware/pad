@@ -51,8 +51,10 @@
 
 	// Which open of the dialog a request belongs to. PLAIN for the same reason
 	// as prevOpen. The dialog stays mounted between opens and can reopen for
-	// another target, so a list or create response from an earlier open must
-	// not commit into this one: a created link carries its one-time token.
+	// another target, so no response from an earlier open may commit into this
+	// one (BUG-4893): a created link carries its one-time token, and a grant
+	// list belongs to its target. Every handler captures `gen` before its
+	// await and drops the commit, and its busy-flag reset, on `gen !== openGen`.
 	let openGen = 0;
 
 	$effect.pre(() => {
@@ -64,6 +66,12 @@
 			shareError = '';
 			newlyCreatedLinkId = null;
 			confirmRevoke = null;
+			// A request still in flight from an earlier open must not leave this
+			// open's buttons reading "Sharing..." or "Creating..." until it ends.
+			sharing = false;
+			creatingLink = false;
+			revokingId = null;
+			deletingLinkId = null;
 			loadGrants();
 			loadShareLinks();
 		}
@@ -77,6 +85,7 @@
 		// back. Grants are an access-control list, so painting one identity's list
 		// into the next identity's dialog is the sharpest version of this bug.
 		const isSameIdentity = authStore.identityFence();
+		const gen = openGen;
 		loadingGrants = true;
 		loadError = '';
 		try {
@@ -87,14 +96,14 @@
 				type === 'collection'
 					? await api.grants.listCollectionGrants(wsSlug, targetSlug)
 					: await api.grants.listItemGrants(wsSlug, targetSlug);
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			grants = loaded ?? [];
 		} catch (e: any) {
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			loadError = e.message ?? 'Failed to load grants';
 			grants = [];
 		} finally {
-			loadingGrants = false;
+			if (gen === openGen) loadingGrants = false;
 		}
 	}
 
@@ -163,10 +172,10 @@
 			newlyCreatedLinkId = newLink.id;
 			toastStore.show('Share link created', 'success');
 		} catch (e: any) {
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			toastStore.show(e.message ?? 'Failed to create share link', 'error');
 		} finally {
-			creatingLink = false;
+			if (gen === openGen) creatingLink = false;
 		}
 	}
 
@@ -174,6 +183,7 @@
 		if (deletingLinkId) return;
 		// IDENTITY fence (BUG-3105).
 		const isSameIdentity = authStore.identityFence();
+		const gen = openGen;
 		deletingLinkId = linkId;
 		try {
 			await api.shareLinks.deleteShareLink(wsSlug, linkId);
@@ -187,7 +197,9 @@
 			if (!isSameIdentity()) return;
 			toastStore.show(e.message ?? 'Failed to revoke share link', 'error');
 		} finally {
-			deletingLinkId = null;
+			// The commit above filters by id, harmless across opens; only the
+			// busy flag must not clear a delete started in a later open.
+			if (gen === openGen) deletingLinkId = null;
 		}
 	}
 
@@ -217,6 +229,7 @@
 		// input under a DIFFERENT user is the visible half; appending a grant to
 		// a list that identity may not be allowed to see is the other.
 		const isSameIdentity = authStore.identityFence();
+		const gen = openGen;
 		sharing = true;
 		shareError = '';
 		try {
@@ -224,16 +237,16 @@
 				type === 'collection'
 					? await api.grants.createCollectionGrant(wsSlug, targetSlug, trimmed, permission)
 					: await api.grants.createItemGrant(wsSlug, targetSlug, trimmed, permission);
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			grants = [...grants, newGrant];
 			email = '';
 			permission = 'view';
 			toastStore.show(`Shared with ${trimmed}`, 'success');
 		} catch (e: any) {
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			shareError = e.message ?? 'Failed to share';
 		} finally {
-			sharing = false;
+			if (gen === openGen) sharing = false;
 		}
 	}
 
@@ -241,6 +254,7 @@
 		if (revokingId) return;
 		// IDENTITY fence (BUG-3105).
 		const isSameIdentity = authStore.identityFence();
+		const gen = openGen;
 		revokingId = grantId;
 		try {
 			if (type === 'collection') {
@@ -248,14 +262,14 @@
 			} else {
 				await api.grants.deleteItemGrant(wsSlug, targetSlug, grantId);
 			}
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			grants = grants.filter((g) => g.id !== grantId);
 			toastStore.show('Access revoked', 'success');
 		} catch (e: any) {
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			toastStore.show(e.message ?? 'Failed to revoke access', 'error');
 		} finally {
-			revokingId = null;
+			if (gen === openGen) revokingId = null;
 		}
 	}
 
@@ -395,14 +409,19 @@
 						</button>
 					</div>
 
-					{#if loadingLinks}
-						<div class="grants-loading">Loading...</div>
-					{:else if linksError}
+					<!-- BUG-4892: a link created while the list loads carries its one-time
+					     token, so neither the loading text nor a load error may hide it. -->
+					{#if linksError}
 						<div class="error-msg">{linksError}</div>
-					{:else if shareLinks.length === 0}
-						<div class="grants-empty">No share links yet. Create one to share via URL.</div>
+					{/if}
+					{#if shareLinks.length === 0}
+						{#if loadingLinks}
+							<div class="grants-loading">Loading...</div>
+						{:else if !linksError}
+							<div class="grants-empty">No share links yet. Create one to share via URL.</div>
+						{/if}
 					{:else}
-						<div class="share-links-list">
+						<div class="share-links-list" class:after-error={Boolean(linksError)}>
 							{#each shareLinks as link (link.id)}
 								{@const linkUrl = getShareLinkUrl(link)}
 								<div class="share-link-row" class:newly-created={link.id === newlyCreatedLinkId}>
@@ -792,6 +811,10 @@
 		display: flex;
 		flex-direction: column;
 		gap: var(--space-2);
+	}
+
+	.share-links-list.after-error {
+		margin-top: var(--space-2);
 	}
 
 	.share-link-row {

@@ -209,6 +209,78 @@ describe('ShareDialog: share link created while initial list loads', () => {
 	});
 });
 
+describe('ShareDialog: the list load does not hide a link created during it (BUG-4892)', () => {
+	const createdLink = {
+		id: 'n1',
+		token: 'tok-1',
+		view_count: 0,
+		created_at: '2026-10-02T00:00:00Z',
+		require_auth: false,
+	};
+
+	it('a list that fails after a create still shows the one-time URL beside the error', async () => {
+		const listD = deferred<unknown[]>();
+		apiMock.listItemShareLinks.mockReturnValue(listD.promise);
+		apiMock.createItemShareLink.mockResolvedValue(createdLink);
+
+		render();
+		await settle();
+
+		target.querySelector<HTMLButtonElement>('.create-link-btn')!.click();
+		await settle();
+
+		listD.reject(new Error('failed to load links'));
+		await settle();
+
+		const section = target.querySelector('.share-links-section')!;
+		expect(section.querySelector('.error-msg')?.textContent).toContain('failed to load links');
+		const urlInput = section.querySelector<HTMLInputElement>('input.new-link-url');
+		expect(urlInput).toBeTruthy();
+		expect(urlInput?.value).toContain('tok-1');
+		expect(section.textContent).not.toContain('No share links yet');
+	});
+
+	it('a link created while the list is pending shows at once, with no Loading text', async () => {
+		const listD = deferred<unknown[]>();
+		apiMock.listItemShareLinks.mockReturnValue(listD.promise);
+		apiMock.createItemShareLink.mockResolvedValue(createdLink);
+
+		render();
+		await settle();
+
+		const section = target.querySelector('.share-links-section')!;
+		expect(section.textContent).toContain('Loading...');
+
+		target.querySelector<HTMLButtonElement>('.create-link-btn')!.click();
+		await settle();
+
+		expect(section.querySelector<HTMLInputElement>('input.new-link-url')?.value).toContain('tok-1');
+		expect(section.textContent).not.toContain('Loading...');
+		expect(section.textContent).not.toContain('No share links yet');
+
+		listD.resolve([]);
+		await settle();
+	});
+
+	it('the empty state shows only after a successful empty load', async () => {
+		const listD = deferred<unknown[]>();
+		apiMock.listItemShareLinks.mockReturnValue(listD.promise);
+
+		render();
+		await settle();
+
+		const section = target.querySelector('.share-links-section')!;
+		expect(section.textContent).not.toContain('No share links yet');
+
+		listD.reject(new Error('failed to load links'));
+		await settle();
+
+		expect(section.querySelector('.error-msg')?.textContent).toContain('failed to load links');
+		expect(section.textContent).not.toContain('No share links yet');
+		expect(section.querySelector('.share-links-list')).toBeNull();
+	});
+});
+
 describe('ShareDialog: a created link does not outlive its open', () => {
 	const props = $state({ wsSlug: 'ws', type: 'item', targetSlug: 'ITEM-1', targetName: 'Item One', open: true });
 
