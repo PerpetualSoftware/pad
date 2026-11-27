@@ -18,11 +18,12 @@ import { ADMIN_EMAIL, ADMIN_PASSWORD } from '../global-setup';
 export async function browserLogin(page: Page): Promise<void> {
 	// Land on a same-origin document first so the fetch + Set-Cookie land in
 	// the browser's cookie jar (and under the browser's UA). It must be one
-	// that runs no app code (BUG-4885): the context's Bearer header makes an
-	// app page believe it is signed in, so /login moved itself to `/`, and a
-	// home request racing the login cookie could 401 into a hard redirect to
-	// /login?redirect=. Either navigation superseded the caller's next
-	// page.goto (net::ERR_ABORTED), which then waited out the test timeout.
+	// that runs no app code (BUG-4885): the context is already signed in
+	// (session cookie, or Bearer under pageAuth 'token'), so /login moved
+	// itself to `/`, and a home request racing this login could 401 into a
+	// hard redirect to /login?redirect=. Either navigation superseded the
+	// caller's next page.goto (net::ERR_ABORTED), which then waited out the
+	// test timeout.
 	await page.goto('/api/v1/health/live');
 	const status = await page.evaluate(
 		async ({ email, password }) => {
