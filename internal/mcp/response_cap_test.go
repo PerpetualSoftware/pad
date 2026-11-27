@@ -176,6 +176,69 @@ func TestResponseCap_HTTPOverLimitErrorStatus(t *testing.T) {
 	assertResponseTooLargeEnvelope(t, res, limit)
 }
 
+// An oversized PATCH answer in bulk-update is that row's outcome: the write
+// already ran, so the call must still report every row (earlier ones were
+// written too), with a 2xx row counted as updated.
+func TestResponseCap_BulkUpdateRowOutcome(t *testing.T) {
+	const limit int64 = 1024
+	big := strings.Repeat("x", 4096)
+	stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/TASK-1"):
+			w.WriteHeader(http.StatusOK)
+			_, _ = fmt.Fprintf(w, `{"ref":"TASK-1","content":%q}`, big)
+		case strings.HasSuffix(r.URL.Path, "/TASK-2"):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprintf(w, `{"error":{"code":"internal_error","message":%q}}`, big)
+		default:
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ref":"TASK-3"}`))
+		}
+	})
+	d := &HTTPHandlerDispatcher{
+		Handler:          stub,
+		UserResolver:     fixedUserResolver(&models.User{ID: "u1", Name: "Tester"}),
+		ResponseMaxBytes: limit,
+	}
+	ctx := WithDispatchInput(context.Background(), map[string]any{
+		"workspace": "ws", "ref": []any{"TASK-1", "TASK-2", "TASK-3"}, "status": "done",
+	})
+	res, err := d.Dispatch(ctx, []string{"item", "bulk-update"}, nil)
+	if err != nil {
+		t.Fatalf("Dispatch returned err: %v", err)
+	}
+	if res.IsError {
+		t.Fatalf("IsError = true, want a per-row report (text=%q)", textOf(res))
+	}
+	var got struct {
+		Updated int `json:"updated"`
+		Total   int `json:"total"`
+		Results []struct {
+			Ref     string `json:"ref"`
+			Updated bool   `json:"updated"`
+			Error   *struct {
+				Code ErrorCode `json:"code"`
+			} `json:"error"`
+		} `json:"results"`
+	}
+	if err := json.Unmarshal([]byte(textOf(res)), &got); err != nil {
+		t.Fatalf("decode result %q: %v", textOf(res), err)
+	}
+	if got.Updated != 2 || got.Total != 3 || len(got.Results) != 3 {
+		t.Fatalf("updated/total/rows = %d/%d/%d, want 2/3/3 (%s)", got.Updated, got.Total, len(got.Results), textOf(res))
+	}
+	if !got.Results[0].Updated || got.Results[0].Error != nil {
+		t.Errorf("TASK-1 (2xx, oversized) = %+v, want updated", got.Results[0])
+	}
+	if got.Results[1].Updated || got.Results[1].Error == nil || got.Results[1].Error.Code != ErrTooLarge {
+		t.Errorf("TASK-2 (5xx, oversized) = %+v, want error too_large", got.Results[1])
+	}
+	if !got.Results[2].Updated {
+		t.Errorf("TASK-3 = %+v, want updated", got.Results[2])
+	}
+}
+
 func TestResponseCap_HTTPUnderLimit(t *testing.T) {
 	const limit int64 = 1024
 	mux := http.NewServeMux()

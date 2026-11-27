@@ -498,7 +498,17 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 		}
 		patchResp, exceeded := d.serveCapped(patchReq)
 		if exceeded {
-			return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+			// The PATCH has already run, and earlier rows may have been
+			// written, so an oversized answer is this row's outcome, never
+			// the whole call's. A 2xx body is not read on success anyway.
+			if patchResp.StatusCode < 400 {
+				results = append(results, bulkResult{Ref: ref, Updated: true})
+				successes++
+			} else {
+				env := envelopeFrom(responseTooLargeResult(cmdKey, d.responseMaxBytes()))
+				results = append(results, bulkResult{Ref: ref, Error: &env.Error})
+			}
+			continue
 		}
 		patchBodyBytes, readErr := io.ReadAll(patchResp.Body)
 		_ = patchResp.Body.Close()
