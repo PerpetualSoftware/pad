@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/svelte';
 import { tick } from 'svelte';
 import type { MeAgentsResponse, RoleQueueResponse } from '$lib/types';
@@ -94,6 +94,12 @@ it('the collapsed strip shows Now, age, live state, queued count and parked lane
 });
 
 it('dragging the line sends park before the item below it, with expected_park_seq', async () => {
+	// The line's label shows only the time when set_at is today, so pin the
+	// clock to the fixture's day; otherwise the label gains the date once that
+	// day has passed.
+	vi.useFakeTimers({ toFake: ['Date'] });
+	vi.setSystemTime(new Date('2026-11-26T16:00:00Z'));
+	onTestFinished(() => { vi.useRealTimers(); });
 	await open();
 	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
 	const line = within(padLane).getByRole('separator');
