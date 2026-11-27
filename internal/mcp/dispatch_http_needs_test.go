@@ -284,3 +284,137 @@ func TestPadNeeds_RemotePutFailsAfterGiveSaysSo(t *testing.T) {
 		t.Fatalf("error does not say the item was already reassigned: %s", txt)
 	}
 }
+
+// BUG-4891: stdio expands an array ref into several positionals (cmdhelp marks
+// ref repeatable), so the remote dispatcher takes one too: each ref in order,
+// stopping at the first error and naming the refs already done, as the CLI does.
+
+// secondItem adds another item to the fixture's collection, assigned to the owner.
+func (f *clearFixture) secondItem(t *testing.T) *models.Item {
+	t.Helper()
+	item, err := f.store.CreateItem(f.workspace.ID, f.item.CollectionID, models.ItemCreate{
+		Title: "Also assigned", AssignedUserID: &f.owner.ID, AgentRoleID: &f.role.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return item
+}
+
+func resultRefs(t *testing.T, res *CallToolResult) []string {
+	t.Helper()
+	var out struct {
+		Results []struct {
+			Ref     string          `json:"ref"`
+			GivenTo json.RawMessage `json:"given_to"`
+		} `json:"results"`
+	}
+	raw, _ := json.Marshal(res.StructuredContent)
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("result shape: %s (%v)", raw, err)
+	}
+	refs := make([]string, len(out.Results))
+	for i, r := range out.Results {
+		refs[i] = r.Ref
+	}
+	return refs
+}
+
+func TestPadNeeds_RemoteNotMineArrayRef(t *testing.T) {
+	f := newClearFixture(t)
+	second := f.secondItem(t)
+	other, err := f.store.CreateAgentRole(f.workspace.ID, models.AgentRoleCreate{Name: "Reviewer"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := f.needsDispatch(t, nil, "not-mine", map[string]any{
+		"workspace": f.workspace.Slug, "ref": []any{f.item.Slug, second.Slug}, "to_role": other.Slug,
+	})
+	if res.IsError {
+		t.Fatalf("not-mine: %s", textOf(res))
+	}
+	for _, it := range []*models.Item{f.item, second} {
+		got, err := f.store.GetItem(it.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.AgentRoleID == nil || *got.AgentRoleID != other.ID {
+			t.Fatalf("%s role = %v, want %s", it.Slug, got.AgentRoleID, other.ID)
+		}
+		if nm, err := f.store.GetNeedsNotMine(f.owner.ID, it.ID); err != nil || nm == nil {
+			t.Fatalf("%s not-mine row: %+v %v", it.Slug, nm, err)
+		}
+	}
+	if got := resultRefs(t, res); len(got) != 2 {
+		t.Fatalf("want one result per ref, got %v", got)
+	}
+}
+
+func TestPadNeeds_RemoteRestoreArrayRef(t *testing.T) {
+	f := newClearFixture(t)
+	second := f.secondItem(t)
+	for _, it := range []*models.Item{f.item, second} {
+		if _, err := f.store.MarkNeedsNotMine(f.owner.ID, f.workspace.ID, it.ID, models.NeedsSourceCLI, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	res := f.needsDispatch(t, nil, "restore", map[string]any{
+		"workspace": f.workspace.Slug, "ref": []string{f.item.Slug, second.Slug},
+	})
+	if res.IsError {
+		t.Fatalf("restore: %s", textOf(res))
+	}
+	for _, it := range []*models.Item{f.item, second} {
+		if nm, err := f.store.GetNeedsNotMine(f.owner.ID, it.ID); err != nil || nm != nil {
+			t.Fatalf("%s not-mine survived restore: %+v %v", it.Slug, nm, err)
+		}
+	}
+	if got := resultRefs(t, res); len(got) != 2 || got[0] != f.item.Slug || got[1] != second.Slug {
+		t.Fatalf("results out of order: %v", got)
+	}
+}
+
+// A ref that fails stops the run: later refs are untouched and the error names
+// the failing ref and the ones already done.
+func TestPadNeeds_RemoteArrayRefStopsAtFirstError(t *testing.T) {
+	f := newClearFixture(t)
+	second := f.secondItem(t)
+	for _, verb := range []string{"not-mine", "restore"} {
+		if verb == "restore" {
+			if _, err := f.store.MarkNeedsNotMine(f.owner.ID, f.workspace.ID, second.ID, models.NeedsSourceCLI, nil); err != nil {
+				t.Fatal(err)
+			}
+		}
+		res := f.needsDispatch(t, nil, verb, map[string]any{
+			"workspace": f.workspace.Slug, "ref": []any{f.item.Slug, "TASK-99999", second.Slug},
+		})
+		if !res.IsError {
+			t.Fatalf("%s: want an error result, got %s", verb, textOf(res))
+		}
+		txt := textOf(res)
+		if !strings.Contains(txt, "TASK-99999: ") || !strings.Contains(txt, "(already done: "+f.item.Slug+")") {
+			t.Fatalf("%s: error does not name the failing ref and the done ones: %s", verb, txt)
+		}
+		nm, err := f.store.GetNeedsNotMine(f.owner.ID, second.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if (verb == "not-mine") != (nm == nil) {
+			t.Fatalf("%s: the ref after the failure was processed: %+v", verb, nm)
+		}
+	}
+}
+
+// A malformed array is refused before anything is written.
+func TestPadNeeds_RemoteArrayRefMalformed(t *testing.T) {
+	f := newClearFixture(t)
+	for _, ref := range []any{[]any{f.item.Slug, 5}, []any{f.item.Slug, ""}, []any{}} {
+		res := f.needsDispatch(t, nil, "not-mine", map[string]any{"workspace": f.workspace.Slug, "ref": ref})
+		if !res.IsError || !strings.Contains(textOf(res), "validation_failed") {
+			t.Fatalf("ref %v: want validation_failed, got %s", ref, textOf(res))
+		}
+		if nm, err := f.store.GetNeedsNotMine(f.owner.ID, f.item.ID); err != nil || nm != nil {
+			t.Fatalf("ref %v: wrote a not-mine row: %+v %v", ref, nm, err)
+		}
+	}
+}
