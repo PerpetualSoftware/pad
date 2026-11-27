@@ -91,6 +91,24 @@
 		}
 	}
 
+	// A list response never carries the one-time token (the server only stores
+	// its hash), so preserve any locally created token-bearing links when the
+	// list response lands or fails.
+	function mergeLoadedShareLinks(current: ShareLink[], loaded: ShareLink[]): ShareLink[] {
+		const tokenById = new Map<string, ShareLink>();
+		for (const link of current) {
+			if (link.token) {
+				tokenById.set(link.id, link);
+			}
+		}
+		if (tokenById.size === 0) return loaded;
+
+		const loadedIds = new Set(loaded.map((link) => link.id));
+		const localOnly = current.filter((link) => Boolean(link.token) && !loadedIds.has(link.id));
+		const mergedLoaded = loaded.map((link) => tokenById.get(link.id) ?? link);
+		return [...localOnly, ...mergedLoaded];
+	}
+
 	async function loadShareLinks() {
 		// IDENTITY fence (BUG-3105). A share link carries a bearer token; the
 		// dialog renders a freshly minted one under "copy it now, it is only
@@ -105,11 +123,11 @@
 					? await api.shareLinks.listCollectionShareLinks(wsSlug, targetSlug)
 					: await api.shareLinks.listItemShareLinks(wsSlug, targetSlug);
 			if (!isSameIdentity()) return;
-			shareLinks = loaded ?? [];
+			shareLinks = mergeLoadedShareLinks(shareLinks, loaded ?? []);
 		} catch (e: any) {
 			if (!isSameIdentity()) return;
 			linksError = e.message ?? 'Failed to load share links';
-			shareLinks = [];
+			shareLinks = mergeLoadedShareLinks(shareLinks, []);
 		} finally {
 			loadingLinks = false;
 		}

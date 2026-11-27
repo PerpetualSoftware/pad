@@ -1,0 +1,210 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { flushSync, mount, unmount } from 'svelte';
+
+const apiMock = vi.hoisted(() => ({
+	listCollectionGrants: vi.fn(),
+	listItemGrants: vi.fn(),
+	deleteItemGrant: vi.fn(),
+	deleteCollectionGrant: vi.fn(),
+	listItemShareLinks: vi.fn(),
+	listCollectionShareLinks: vi.fn(),
+	createItemShareLink: vi.fn(),
+	deleteShareLink: vi.fn(),
+}));
+
+vi.mock('$lib/api/client', () => ({
+	api: {
+		grants: {
+			listCollectionGrants: (...a: unknown[]) => apiMock.listCollectionGrants(...a),
+			listItemGrants: (...a: unknown[]) => apiMock.listItemGrants(...a),
+			deleteCollectionGrant: (...a: unknown[]) => apiMock.deleteCollectionGrant(...a),
+			deleteItemGrant: (...a: unknown[]) => apiMock.deleteItemGrant(...a),
+			createCollectionGrant: vi.fn(),
+			createItemGrant: vi.fn(),
+		},
+		shareLinks: {
+			listCollectionShareLinks: (...a: unknown[]) => apiMock.listCollectionShareLinks(...a),
+			listItemShareLinks: (...a: unknown[]) => apiMock.listItemShareLinks(...a),
+			createCollectionShareLink: vi.fn(),
+			createItemShareLink: (...a: unknown[]) => apiMock.createItemShareLink(...a),
+			deleteShareLink: (...a: unknown[]) => apiMock.deleteShareLink(...a),
+		},
+	},
+}));
+
+const auth = vi.hoisted(() => {
+	let epoch = 0;
+	return {
+		get identityEpoch() {
+			return epoch;
+		},
+		get userId() {
+			return 'u1';
+		},
+		get user() {
+			return { id: 'u1', name: 'A' };
+		},
+		get authenticated() {
+			return true;
+		},
+		moveIdentity() {
+			epoch += 1;
+		},
+		reset() {
+			epoch = 0;
+		},
+		identityFence() {
+			const captured = epoch;
+			return () => epoch === captured;
+		},
+		// `toast.svelte.ts` subscribes at MODULE LOAD and the dialog imports it, so
+		// a double without this throws before any test runs.
+		onIdentityChange(_fn: (p: string) => void) {
+			return () => {};
+		},
+	};
+});
+vi.mock('$lib/stores/auth.svelte', () => ({ authStore: auth }));
+
+import ShareDialog from './ShareDialog.svelte';
+
+let target: HTMLElement;
+let instance: ReturnType<typeof mount> | null = null;
+
+function deferred<T>() {
+	let resolve!: (v: T) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
+async function settle() {
+	await Promise.resolve();
+	await Promise.resolve();
+	await new Promise((r) => setTimeout(r, 0));
+	flushSync();
+}
+
+function render() {
+	target = document.body.appendChild(document.createElement('div'));
+	instance = mount(ShareDialog, {
+		target,
+		props: {
+			wsSlug: 'ws',
+			type: 'item',
+			targetSlug: 'ITEM-1',
+			targetName: 'Item One',
+			open: true,
+		} as Record<string, unknown>,
+	});
+	flushSync();
+}
+
+beforeEach(() => {
+	auth.reset();
+	for (const fn of Object.values(apiMock)) (fn as ReturnType<typeof vi.fn>).mockReset();
+	apiMock.listItemGrants.mockResolvedValue([]);
+	apiMock.listItemShareLinks.mockResolvedValue([]);
+	apiMock.deleteItemGrant.mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+	if (instance) unmount(instance);
+	instance = null;
+	if (target) target.remove();
+	vi.clearAllMocks();
+});
+
+describe('ShareDialog: share link created while initial list loads', () => {
+	it('keeps the token-bearing created link when the pending list resolves empty', async () => {
+		const listD = deferred<unknown[]>();
+		apiMock.listItemShareLinks.mockReturnValue(listD.promise);
+		apiMock.createItemShareLink.mockResolvedValue({
+			id: 'n1',
+			token: 'tok-1',
+			view_count: 0,
+			created_at: '2026-10-02T00:00:00Z',
+			require_auth: false,
+		});
+
+		render();
+		await settle();
+
+		target.querySelector<HTMLButtonElement>('.create-link-btn')!.click();
+		await settle();
+		expect(apiMock.createItemShareLink).toHaveBeenCalledTimes(1);
+
+		listD.resolve([]);
+		await settle();
+
+		const highlight = target.querySelector('.new-link-highlight');
+		expect(highlight).toBeTruthy();
+		expect(highlight?.textContent).toContain('copy it now');
+		const urlInput = target.querySelector<HTMLInputElement>('input.new-link-url');
+		expect(urlInput).toBeTruthy();
+		expect(urlInput?.value).toContain('tok-1');
+	});
+
+	it('preserves the token-bearing link and avoids duplicates when the list includes the created id without a token', async () => {
+		const listD = deferred<unknown[]>();
+		apiMock.listItemShareLinks.mockReturnValue(listD.promise);
+		apiMock.createItemShareLink.mockResolvedValue({
+			id: 'n1',
+			token: 'tok-1',
+			view_count: 0,
+			created_at: '2026-10-02T00:00:00Z',
+			require_auth: false,
+		});
+
+		render();
+		await settle();
+
+		target.querySelector<HTMLButtonElement>('.create-link-btn')!.click();
+		await settle();
+		expect(apiMock.createItemShareLink).toHaveBeenCalledTimes(1);
+
+		listD.resolve([
+			{ id: 'n1', view_count: 0, created_at: '2026-10-02T00:00:00Z', require_auth: false },
+			{ id: 'old1', view_count: 3, created_at: '2026-10-01T00:00:00Z', require_auth: false },
+		]);
+		await settle();
+
+		expect(target.querySelectorAll('.share-link-row')).toHaveLength(2);
+		expect(target.querySelectorAll('.new-link-highlight')).toHaveLength(1);
+		expect(target.querySelector('.new-link-highlight')?.textContent).toContain('copy it now');
+		const urlInputs = target.querySelectorAll<HTMLInputElement>('input.new-link-url');
+		expect(urlInputs).toHaveLength(1);
+		expect(urlInputs[0].value).toContain('tok-1');
+		expect(target.querySelectorAll('.link-url-hidden')).toHaveLength(1);
+		expect(target.textContent).toContain('3 views');
+	});
+
+	it('renders the load error without throwing when a link is created before the list rejects', async () => {
+		const listD = deferred<unknown[]>();
+		apiMock.listItemShareLinks.mockReturnValue(listD.promise);
+		apiMock.createItemShareLink.mockResolvedValue({
+			id: 'n1',
+			token: 'tok-1',
+			view_count: 0,
+			created_at: '2026-10-02T00:00:00Z',
+			require_auth: false,
+		});
+
+		render();
+		await settle();
+
+		target.querySelector<HTMLButtonElement>('.create-link-btn')!.click();
+		await settle();
+		expect(apiMock.createItemShareLink).toHaveBeenCalledTimes(1);
+
+		listD.reject(new Error('failed to load links'));
+		await expect(settle()).resolves.toBeUndefined();
+
+		const errorEl = target.querySelector('.share-links-section .error-msg');
+		expect(errorEl).toBeTruthy();
+		expect(errorEl?.textContent).toContain('failed to load links');
+	});
+});
