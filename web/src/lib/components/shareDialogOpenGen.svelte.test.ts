@@ -91,6 +91,7 @@ async function settle() {
 }
 
 async function render() {
+	props.wsSlug = 'ws';
 	props.targetSlug = 'ITEM-1';
 	props.open = true;
 	target = document.body.appendChild(document.createElement('div'));
@@ -442,5 +443,56 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 
 		del2.resolve(undefined);
 		await settle();
+	});
+
+	it('a create from open #1 that succeeds after a same-target reopen shows its one-time URL there', async () => {
+		const createD = deferred<unknown>();
+		apiMock.createItemShareLink.mockReturnValue(createD.promise);
+		await render();
+		createBtn().click();
+		await settle();
+
+		await reopen('ITEM-1');
+		createD.resolve({ id: 'l1', token: 'tok-same', view_count: 0, created_at: '2026-11-27T00:00:00Z' });
+		await settle();
+
+		const url = target.querySelector<HTMLInputElement>('.new-link-url');
+		expect(url?.value).toContain('/s/tok-same');
+		expect(toastShow).toHaveBeenCalledWith('Share link created', 'success');
+	});
+
+	it('a create from open #1 that succeeds after a reopen on another target shows no token there, and toasts', async () => {
+		const createD = deferred<unknown>();
+		apiMock.createItemShareLink.mockReturnValue(createD.promise);
+		await render();
+		createBtn().click();
+		await settle();
+
+		await reopen('ITEM-2');
+		createD.resolve({ id: 'l1', token: 'tok-other', view_count: 0, created_at: '2026-11-27T00:00:00Z' });
+		await settle();
+
+		expect(target.querySelector('.new-link-url')).toBeNull();
+		expect(target.textContent).not.toContain('tok-other');
+		expect(toastShow).toHaveBeenCalledWith('Share link created', 'success');
+	});
+
+	it('a share from open #1 is not listed after a reopen on the same slug in another workspace', async () => {
+		const shareD = deferred<unknown>();
+		apiMock.createItemGrant.mockReturnValue(shareD.promise);
+		await render();
+		await startShare('old@example.com');
+
+		props.open = false;
+		flushSync();
+		await settle();
+		props.wsSlug = 'other-ws';
+		props.open = true;
+		flushSync();
+		await settle();
+
+		shareD.resolve(grantA);
+		await settle();
+		expect(grantsSection().textContent).not.toContain('old@example.com');
 	});
 });

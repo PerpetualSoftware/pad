@@ -52,13 +52,20 @@
 	// Which open of the dialog a request belongs to. PLAIN for the same reason
 	// as prevOpen. The dialog stays mounted between opens and can reopen for
 	// another target, so state that belongs to an open must not be written by
-	// a response from an earlier one (BUG-4893): a created link's one-time
-	// token, a loaded grant list, the form, inline errors and busy flags. Each
-	// handler captures `gen` before its await and gates those on
-	// `gen === openGen`. What the server did is not open-scoped: a revoke or
-	// delete still filters by id, a share appends on the same target, and
-	// toasts (global) still report the outcome.
+	// a response from an earlier one (BUG-4893): a loaded list, the form,
+	// inline errors and busy flags. Each handler captures `gen` before its
+	// await and gates those on `gen === openGen`. What the server did is not
+	// open-scoped: a revoke or delete still filters by id, a share or a created
+	// link (with its one-time token) is listed while the dialog shows the
+	// target it was made for (currentTargetKey), and toasts (global) still
+	// report the outcome.
 	let openGen = 0;
+
+	// What a request was made for. Slugs repeat across workspaces (every
+	// workspace can have a `tasks` collection), so the workspace is part of it.
+	function currentTargetKey(): string {
+		return `${wsSlug}\u0000${type}\u0000${targetSlug}`;
+	}
 
 	$effect.pre(() => {
 		if (open && !prevOpen) {
@@ -113,8 +120,9 @@
 	// A list response never carries the one-time token (the server only stores
 	// its hash), so preserve any locally created token-bearing links when the
 	// list response lands or fails. loadShareLinks clears the list when it
-	// starts, and responses from an earlier open are dropped (openGen), so the
-	// only links that can carry a token here were created during this open.
+	// starts, list responses from an earlier open are dropped (openGen), and a
+	// create lists its link only while the dialog shows the target it was
+	// minted for, so every token-bearing link here belongs to this target.
 	function mergeLoadedShareLinks(current: ShareLink[], loaded: ShareLink[]): ShareLink[] {
 		const tokenById = new Map<string, ShareLink>();
 		for (const link of current) {
@@ -164,15 +172,23 @@
 		// next identity's dialog.
 		const isSameIdentity = authStore.identityFence();
 		const gen = openGen;
+		const createdFor = currentTargetKey();
 		creatingLink = true;
 		try {
 			const newLink: ShareLink =
 				type === 'collection'
 					? await api.shareLinks.createCollectionShareLink(wsSlug, targetSlug)
 					: await api.shareLinks.createItemShareLink(wsSlug, targetSlug);
-			if (!isSameIdentity() || gen !== openGen) return;
-			shareLinks = [newLink, ...shareLinks];
-			newlyCreatedLinkId = newLink.id;
+			if (!isSameIdentity()) return;
+			// The link exists either way. Its one-time token may be shown only
+			// for the target it was minted for: after a reopen on another target
+			// it is listed there (token hidden, revocable) the next time that
+			// target opens, and the toast says it was created.
+			if (currentTargetKey() === createdFor) {
+				const rest = shareLinks.filter((l) => l.id !== newLink.id);
+				shareLinks = [newLink, ...rest];
+				newlyCreatedLinkId = newLink.id;
+			}
 			toastStore.show('Share link created', 'success');
 		} catch (e: any) {
 			// No link exists, and toasts are global: report it across a reopen.
@@ -234,8 +250,7 @@
 		// a list that identity may not be allowed to see is the other.
 		const isSameIdentity = authStore.identityFence();
 		const gen = openGen;
-		const sharedType = type;
-		const sharedTarget = targetSlug;
+		const sharedFor = currentTargetKey();
 		sharing = true;
 		shareError = '';
 		try {
@@ -249,8 +264,7 @@
 			// not. The reopen's own list load may already hold it, so append
 			// by id only once.
 			if (
-				type === sharedType &&
-				targetSlug === sharedTarget &&
+				currentTargetKey() === sharedFor &&
 				!grants.some((g) => g.id === newGrant.id)
 			) {
 				grants = [...grants, newGrant];
