@@ -1005,8 +1005,13 @@ func (s *Store) removeOAuthProviderTx(tx *sql.Tx, userID, provider string) (int6
 	}
 	// BUG-3681: advance credential_epoch in the same transaction so a sign-in
 	// that read the account before this unlink cannot mint a session after it.
-	if _, err := tx.Exec(s.q(`UPDATE users SET credential_epoch = credential_epoch + 1, updated_at = ? WHERE id = ?`), now(), userID); err != nil {
-		return 0, fmt.Errorf("remove oauth provider: bump credential epoch: %w", err)
+	// A repeat of an unlink that already landed changes no sign-in method, so
+	// it leaves the epoch alone: a bump would stale the first request's
+	// session rotation when a double submit races.
+	if providerListHas(providers, provider) {
+		if _, err := tx.Exec(s.q(`UPDATE users SET credential_epoch = credential_epoch + 1, updated_at = ? WHERE id = ?`), now(), userID); err != nil {
+			return 0, fmt.Errorf("remove oauth provider: bump credential epoch: %w", err)
+		}
 	}
 	var epoch int64
 	if err := tx.QueryRow(s.q(`SELECT credential_epoch FROM users WHERE id = ?`), userID).Scan(&epoch); err != nil {

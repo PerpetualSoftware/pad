@@ -94,3 +94,31 @@ func TestRemoveOAuthProviderLastMethodDoesNotAdvanceEpoch(t *testing.T) {
 		t.Errorf("CredentialEpoch after refused unlink = %d, want %d", after.CredentialEpoch, before.CredentialEpoch)
 	}
 }
+
+// A repeat of an unlink that already landed (a double submit) changes no
+// sign-in method, so it returns the current epoch without advancing it: a bump
+// would stale the first request's fenced session rotation.
+func TestRemoveOAuthProviderRepeatUnlinkDoesNotAdvanceEpoch(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	id := bug3816OAuthOnlyUser(t, s)
+
+	first, err := s.RemoveOAuthProvider(id, "google")
+	if err != nil {
+		t.Fatalf("first unlink: %v", err)
+	}
+	again, err := s.RemoveOAuthProvider(id, "google")
+	if err != nil {
+		t.Fatalf("repeat unlink: %v", err)
+	}
+	if again != first {
+		t.Errorf("repeat unlink returned epoch %d, want %d (unchanged)", again, first)
+	}
+	after, err := s.GetUser(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.CredentialEpoch != first {
+		t.Errorf("CredentialEpoch after repeat unlink = %d, want %d", after.CredentialEpoch, first)
+	}
+}
