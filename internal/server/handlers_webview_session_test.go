@@ -541,7 +541,7 @@ func TestWebViewDeleteAccountRefused(t *testing.T) {
 // webViewClassifiedPattern names every route that can create, widen or prove
 // a credential. A route matching it must be in webViewRefusedRoutes or
 // webViewAllowedRoutes, so a door added later is classified by test.
-var webViewClassifiedPattern = regexp.MustCompile(`token|oauth|cli/|calendar-feeds|step-up|2fa|password|delete-account|push-devices|install-code|rotate|logout|webview|webhook|admin/users|register|claim-code|apps/.*(confirm|enable)`)
+var webViewClassifiedPattern = regexp.MustCompile(`token|oauth|cli/|calendar-feeds|step-up|2fa|password|delete-account|push-devices|install-code|rotate|logout|webview|webhook|admin/users|register|claim-code|apps/.*(confirm|enable)|connected-apps`)
 
 // webViewAdminWrite reports whether a route is a non-GET under /api/v1/admin,
 // every one of which is refused to a WebView session and classified by that
@@ -576,6 +576,8 @@ var webViewRefusedRoutes = map[string]string{
 	"POST /api/v1/workspaces/{slug}/apps/install/pending/{pendingID}/confirm": "provisions an app and answers its install code",
 	"POST /api/v1/workspaces/{slug}/apps/{installID}/upgrade/confirm":         "can widen an app's access, events and URLs",
 	"POST /api/v1/workspaces/{slug}/apps/{installID}/enable":                  "restores a disabled app install's grant",
+	"PATCH /api/v1/connected-apps/{id}/flags":                                 "can widen an OAuth connection's workspace reach",
+	"POST /api/v1/connected-apps/{id}/workspaces":                             "adds a workspace to an OAuth connection",
 }
 
 // webViewAllowedRoutes match the pattern but stay open to a WebView
@@ -599,6 +601,12 @@ var webViewAllowedRoutes = map[string]string{
 	"POST /api/v1/auth/oauth-login":                            "a sign-in by the cloud sidecar; the cookie is not the credential",
 	"GET /api/v1/feeds/ics/{token}":                            "the feed URL is the credential; no cookie is read",
 	"GET /api/v1/s/{token}":                                    "a share link is the credential",
+	"GET /api/v1/connected-apps":                               "lists OAuth connections; no secret",
+	"GET /api/v1/connected-apps/{id}/audit":                    "reads a connection's audit log",
+	"DELETE /api/v1/connected-apps/{id}":                       "revocation only narrows access",
+	"PATCH /api/v1/connected-apps/{id}/name":                   "renames a connection's label",
+	"POST /api/v1/connected-apps/{id}/limit-to-current":        "narrows a connection to its current workspaces",
+	"DELETE /api/v1/connected-apps/{id}/workspaces/{slug}":     "removing a workspace only narrows access",
 	"GET /api/v1/s/{token}/attachments/{attachmentID}":         "a share link is the credential",
 	"GET /api/v1/oauth/clients/{id}/public-info":               "reads public client metadata",
 	"POST /api/v1/oauth/claim":                                 "redeemed by an OAuth grant, not a cookie session",
