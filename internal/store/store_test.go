@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -1397,6 +1398,79 @@ func TestSearchFieldFilters(t *testing.T) {
 	}
 	if len(resp.Results) > 0 && resp.Results[0].Item.Title != "Fix login bug" {
 		t.Errorf("expected 'Fix login bug', got %q", resp.Results[0].Item.Title)
+	}
+}
+
+func TestSearchFieldFilterUnderscoreKey(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	colls, _ := s.ListCollections(ws.ID)
+	var tasksID string
+	for _, c := range colls {
+		if c.Slug == "tasks" {
+			tasksID = c.ID
+			break
+		}
+	}
+
+	if _, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix ops bug", Fields: `{"status":"open","_team":"ops"}`}); err != nil {
+		t.Fatalf("create ops item: %v", err)
+	}
+	if _, err := s.CreateItem(ws.ID, tasksID, models.ItemCreate{Title: "Fix web bug", Fields: `{"status":"open","_team":"web"}`}); err != nil {
+		t.Fatalf("create web item: %v", err)
+	}
+
+	resp, err := s.Search(SearchParams{
+		Unrestricted: true,
+		Query:        "bug",
+		Workspace:    ws.Slug,
+		FieldFilters: map[string]string{"_team": "ops"},
+	})
+	if err != nil {
+		t.Fatalf("underscore field filter search: %v", err)
+	}
+	if len(resp.Results) != 1 {
+		t.Fatalf("_team=ops: expected 1 result, got %d", len(resp.Results))
+	}
+	if resp.Results[0].Item.Title != "Fix ops bug" {
+		t.Errorf("expected 'Fix ops bug', got %q", resp.Results[0].Item.Title)
+	}
+}
+
+func TestSearchFieldFilterRefusesUnsafeKey(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Test")
+	s.SeedDefaultCollections(ws.ID)
+
+	_, err := s.Search(SearchParams{
+		Unrestricted: true,
+		Query:        "bug",
+		Workspace:    ws.Slug,
+		FieldFilters: map[string]string{"a.b": "x"},
+	})
+	if err == nil {
+		t.Fatal("expected error for unsafe field filter key, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid search filter") {
+		t.Errorf("expected error containing 'invalid search filter', got %q", err.Error())
+	}
+
+	// Multiple bad keys report the lexicographically smallest key deterministically.
+	_, err = s.Search(SearchParams{
+		Unrestricted: true,
+		Query:        "bug",
+		Workspace:    ws.Slug,
+		FieldFilters: map[string]string{"b.b": "x", "a.a": "y"},
+	})
+	if err == nil {
+		t.Fatal("expected error for multiple unsafe field filter keys, got nil")
+	}
+	if !strings.Contains(err.Error(), `"a.a"`) {
+		t.Errorf("expected deterministic error naming \"a.a\", got %q", err.Error())
 	}
 }
 

@@ -3,7 +3,7 @@ package store
 import (
 	"database/sql"
 	"fmt"
-	"regexp"
+	"sort"
 	"strings"
 	"time"
 	"unicode"
@@ -11,9 +11,6 @@ import (
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
-
-// validFieldKey matches safe JSON field keys: alphanumeric, underscores, hyphens only.
-var validFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
 
 type SearchResult struct {
 	Item    models.Item `json:"item"`
@@ -223,6 +220,19 @@ func (p *SearchParams) Normalize() {
 
 func (s *Store) Search(params SearchParams) (*SearchResponse, error) {
 	params.Normalize()
+
+	if len(params.FieldFilters) > 0 {
+		keys := make([]string, 0, len(params.FieldFilters))
+		for key := range params.FieldFilters {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			if !isValidFieldKey(key) {
+				return nil, fmt.Errorf("invalid search filter %q: unsupported field key", key)
+			}
+		}
+	}
 
 	// No visible collections and no granted items, and not explicitly
 	// unrestricted: nothing is visible (BUG-3331).
@@ -638,7 +648,8 @@ func (s *Store) appendSearchFilters(query string, args []interface{}, params Sea
 	query, args = appendSearchCollectionFilter(query, args, params)
 
 	for key, value := range params.FieldFilters {
-		if !validFieldKey.MatchString(key) {
+		// Unreachable from Search, which refuses invalid field keys up front (BUG-3711).
+		if !isValidFieldKey(key) {
 			continue
 		}
 		cond, condArgs := s.dialect.JSONFieldEquals("i.fields", key, value) // BUG-3221

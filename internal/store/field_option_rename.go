@@ -21,7 +21,7 @@ type arrayRow struct{ id, raw string }
 // arrayRowsHoldingTx returns every live row of the collection whose field is
 // an ARRAY holding at least one of olds as a string element, each once.
 func (s *Store) arrayRowsHoldingTx(tx *sql.Tx, collectionID, field string, olds []string) ([]arrayRow, error) {
-	if !validFieldKey.MatchString(field) {
+	if !isValidFieldKey(field) {
 		return nil, fmt.Errorf("rename option: unsupported field key %q", field)
 	}
 	var selectSQL string

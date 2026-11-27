@@ -89,3 +89,37 @@ func TestDropCarriedUniqueCollisions_HolderNamedOnlyWhenVisible(t *testing.T) {
 		}
 	})
 }
+
+func TestUniqueFieldCheckUnderscoreKey(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	ws := createTestWorkspace(t, s, "Unique Underscore WS")
+	schema := `{"fields":[{"key":"_code","label":"Code","type":"text","unique_scope":"workspace_collection"}]}`
+	coll, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Codes", Schema: schema})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CreateItem(ws.ID, coll.ID, models.ItemCreate{Title: "Holder", Fields: `{"_code":"abc"}`}); err != nil {
+		t.Fatal(err)
+	}
+	var defs models.CollectionSchema
+	if err := json.Unmarshal([]byte(coll.Schema), &defs); err != nil {
+		t.Fatal(err)
+	}
+
+	keys, err := s.UniqueFieldConflictsQ(s.Q(), coll.ID, "", defs.Fields, map[string]any{"_code": "abc"})
+	if err != nil {
+		t.Fatalf("UniqueFieldConflictsQ(_code): unexpected error: %v", err)
+	}
+	if len(keys) != 1 || keys[0] != "_code" {
+		t.Fatalf("UniqueFieldConflictsQ(_code): got keys %v, want [_code]", keys)
+	}
+
+	keys, err = s.UniqueFieldConflictsQ(s.Q(), coll.ID, "", defs.Fields, map[string]any{"_code": "def"})
+	if err != nil {
+		t.Fatalf("UniqueFieldConflictsQ(_code distinct): unexpected error: %v", err)
+	}
+	if len(keys) != 0 {
+		t.Fatalf("UniqueFieldConflictsQ(_code distinct): got keys %v, want empty", keys)
+	}
+}

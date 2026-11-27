@@ -184,7 +184,7 @@ func (s *Store) NeedsCandidateItems(workspaceID string, scope CatchUpScope, p Ne
 	}
 	for _, a := range p.AwaitsStatus {
 		// The key is spliced into the JSON path, so only a safe one is used.
-		if len(a.Values) == 0 || !validFieldKey.MatchString(a.Key) {
+		if len(a.Values) == 0 || !isValidFieldKey(a.Key) {
 			continue
 		}
 		// The declared spelling matches exactly, so a value with a non-ASCII
