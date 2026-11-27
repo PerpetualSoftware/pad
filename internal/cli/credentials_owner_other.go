@@ -3,6 +3,6 @@
 package cli
 
 // foreignOwnedCredentials is a Unix-only ownership check (BUG-3807).
-func foreignOwnedCredentials(string) bool {
-	return false
+func foreignOwnedCredentials(string) []string {
+	return nil
 }

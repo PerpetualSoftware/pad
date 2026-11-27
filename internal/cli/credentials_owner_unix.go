@@ -11,10 +11,12 @@ import (
 // credentials file without root privileges (BUG-3807).
 var currentUID = os.Getuid
 
-// foreignOwnedCredentials reports whether path or path+".lock" exists (following
-// symlinks) and is owned by a uid other than currentUID() (BUG-3807).
-func foreignOwnedCredentials(path string) bool {
+// foreignOwnedCredentials returns those of path and path+".lock" that exist
+// (following symlinks) and are owned by a uid other than currentUID(), in that
+// order (BUG-3807).
+func foreignOwnedCredentials(path string) []string {
 	uid := currentUID()
+	var foreign []string
 	for _, p := range []string{path, path + ".lock"} {
 		fi, err := os.Stat(p)
 		if err != nil {
@@ -25,8 +27,8 @@ func foreignOwnedCredentials(path string) bool {
 			continue
 		}
 		if uid < 0 || st.Uid != uint32(uid) {
-			return true
+			foreign = append(foreign, p)
 		}
 	}
-	return false
+	return foreign
 }

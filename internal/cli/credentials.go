@@ -404,14 +404,29 @@ func (s *CredentialStore) saveLocked(path string) error {
 
 // withForeignOwnerHint appends an actionable chown command when a credentials
 // read or write fails with a permission error and credentials.json or
-// credentials.json.lock is owned by another Unix user (BUG-3807). The returned
-// error keeps wrapping err so errors.Is(err, fs.ErrPermission) still holds.
+// credentials.json.lock is owned by another Unix user (BUG-3807). It names
+// only the files that exist and are foreign-owned, shell-quoted so the command
+// can be pasted as is. The returned error keeps wrapping err so
+// errors.Is(err, fs.ErrPermission) still holds.
 func withForeignOwnerHint(path string, err error) error {
-	if !errors.Is(err, fs.ErrPermission) || !foreignOwnedCredentials(path) {
+	if !errors.Is(err, fs.ErrPermission) {
 		return err
 	}
-	return fmt.Errorf("%w (%s or %s.lock is owned by another user, probably from running pad with sudo; fix it with: sudo chown %s %s %s.lock)",
-		err, path, path, currentUsername(), path, path)
+	foreign := foreignOwnedCredentials(path)
+	if len(foreign) == 0 {
+		return err
+	}
+	quoted := make([]string, len(foreign))
+	for i, p := range foreign {
+		quoted[i] = shellQuote(p)
+	}
+	return fmt.Errorf("%w (%s owned by another user, probably from running pad with sudo; fix it with: sudo chown %s %s)",
+		err, strings.Join(foreign, " and "), shellQuote(currentUsername()), strings.Join(quoted, " "))
+}
+
+// shellQuote single-quotes s for a POSIX shell.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func currentUsername() string {

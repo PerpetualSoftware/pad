@@ -63,6 +63,20 @@ func TestCredentialsForeignOwnerHint(t *testing.T) {
 	_, err = loadStoreUnlocked(path)
 	assertHint("loadStoreUnlocked (foreign)", err)
 
+	// The command quotes each path so it can be pasted as is.
+	if msg := err.Error(); !strings.Contains(msg, "'"+path+"' '"+path+".lock'") {
+		t.Errorf("hint does not quote both paths: %q", msg)
+	}
+
+	// A lock file that does not exist is not named: chown would fail on it.
+	if err := os.Remove(path + ".lock"); err != nil {
+		t.Fatalf("remove lock: %v", err)
+	}
+	err = withForeignOwnerHint(path, &fs.PathError{Op: "open", Path: path, Err: fs.ErrPermission})
+	if msg := err.Error(); !strings.Contains(msg, "sudo chown") || strings.Contains(msg, ".lock") {
+		t.Errorf("hint with no lock file = %q, want a chown naming only %s", msg, path)
+	}
+
 	// Owned by the current user: permission error must NOT claim foreign ownership.
 	currentUID = origUID
 
