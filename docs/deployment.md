@@ -114,7 +114,7 @@ The three `PAD_DB_*_TIMEOUT` values are sent as connection startup parameters in
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
 | `PAD_SSE_MAX_PER_USER` | `50` | Per-user maximum streaming connections across both SSE endpoints and MCP's long-lived streams, **per instance** |
 | `PAD_COLLAB_MAX_PER_USER` | `50` | Per-user maximum open collaborative-editing WebSockets (`/api/v1/collab/{itemID}`), **per instance**. See *Collab connection limits* below |
-| `PAD_EVENTS_PUBLISH_EPOCH` | `true` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. On by default; `false` is the opt-out. **A multi-instance Redis fleet must run v0.15.0 or later on every replica before any replica runs a release with this default** — see *Event ID-space migration* below. Ignored without Redis. |
+| `PAD_EVENTS_PUBLISH_EPOCH` | `true` | Phase 2 of the event ID-space migration: publish the `<epoch>\|<id>\|<json>` wire form. On by default; `false` is the opt-out, and it goes on **every replica or none**: a fleet mixing the two forms keeps dropping replay buffers and resyncing clients. This variable is the only control; an `events_publish_epoch` line in `config.toml` is ignored with a startup warning and should be deleted. **A multi-instance Redis fleet must run v0.15.0 or later on every replica before any replica runs a release with this default** — see *Event ID-space migration* below. Ignored without Redis. |
 | `PAD_WATCH_HEARTBEAT` | `false` | Phase 2 of half-open detection on the **watch** stream (`/api/v1/events/stream`). Independent of `PAD_EVENTS_HEARTBEAT` — the two buses hold different connections with different fates — and rolled the same way, phase 1 everywhere first. Ignored without Redis. |
 | `PAD_EVENTS_HEARTBEAT` | `false` | Phase 2 of the half-open-connection detection rollout: publish a bus-internal liveness frame on each subscribed workspace channel every 30s. **Only set this once every instance runs a binary that recognises it** — see *Half-open connection detection* below. Setting it early makes every un-upgraded instance resync all its clients every 30 seconds. Ignored without Redis. |
 
@@ -789,8 +789,16 @@ not to.
 
 | Phase | How an instance is on it | What it publishes | What it accepts |
 |-------|--------------------------|-------------------|-----------------|
-| 1 | `PAD_EVENTS_PUBLISH_EPOCH=false`, or `events_publish_epoch = false` in `~/.pad/config.toml` | The historical bare JSON | Both forms |
-| 2 | The default: neither of the above | `<epoch>\|<id>\|<json>` | Both forms |
+| 1 | `PAD_EVENTS_PUBLISH_EPOCH=false` | The historical bare JSON | Both forms |
+| 2 | The default: the variable unset, or `true` | `<epoch>\|<id>\|<json>` | Both forms |
+
+**The setting lives in `PAD_EVENTS_PUBLISH_EPOCH` only, and it goes on every
+replica or none.** A fleet that stays mixed, some replicas on phase 1 and some
+on phase 2, does not just disagree for the length of a roll: once a replica
+has adopted the epoch from a phase-2 peer, the phase-1 peers' interleaved
+two-call publishes look like a counter going backwards, and that replica keeps
+dropping its replay buffers and resyncing its clients for as long as the
+fleet stays mixed.
 
 **The upgrade floor, and the order is not optional.** On a multi-instance
 Redis deployment, every replica must run v0.15.0 or later before any replica
@@ -801,36 +809,36 @@ at all. It fails to unmarshal the message and drops the event for its own
 clients, so during a mixed roll from below the floor those replicas lose
 events — not a resync, a silent loss. Single-instance deployments and
 deployments without Redis need nothing: there is no peer to disagree with.
+Anyone who deliberately put `events_publish_epoch = false` in `config.toml`
+to stay on phase 1 must move it to `PAD_EVENTS_PUBLISH_EPOCH=false` on every
+replica before upgrading: the file line is no longer read.
 
 A roll from v0.15.0 or later is zero-loss, because accept-both is already on:
 during the roll, phase-1 and phase-2 instances publish different forms at the
-same time and every instance reads both. To hold a fleet on phase 1 for a
-while, set `PAD_EVENTS_PUBLISH_EPOCH=false` before rolling.
+same time and every instance reads both. Keep the roll short for the reason
+above. To hold a fleet on phase 1 for a while, set
+`PAD_EVENTS_PUBLISH_EPOCH=false` on every replica before rolling.
 
-**An existing config.toml may hold the opt-out without anyone choosing it.**
-Before this release, `pad init` and `pad auth configure` wrote
-`events_publish_epoch = false` into `~/.pad/config.toml` unless the file
-already set it to true, so the line is there on most installs whether or not
-anyone chose it. Pad does not reinterpret that line (staying on phase 1 loses no
-events), so an install upgraded with such a file stays on phase 1. On a Redis
-deployment the server logs a warning at startup naming the file. Delete the
-line to take the default once every replica accepts the prefixed form, or keep
-it as a deliberate opt-out. Saving the config now writes the key only when the
-value is false.
+**An `events_publish_epoch` line in config.toml is ignored.** Before this
+release, `pad init` and `pad auth configure` wrote `events_publish_epoch =
+false` into `~/.pad/config.toml` unless the file already set it to true, so
+the line is there on most installs whether or not anyone chose it. Honouring
+it would leave fleets mixed indefinitely, so the server ignores it, whatever
+its value, and on a Redis deployment logs a warning at startup naming the file.
+Delete the line. Pad no longer writes the key, so the next save of the config
+removes it too.
 
-**Rolling back to phase 1** is safe: make the effective value **false** and
-roll. Peers accept the bare form throughout, so there is no window where this
+**Rolling back to phase 1** is safe: set `PAD_EVENTS_PUBLISH_EPOCH=false` on
+every replica and roll. Peers accept the bare form throughout, so there is no window where this
 direction loses events.
 
 Two things about rolling back that are easy to get wrong:
 
 - **Setting the value to false is not the same as unsetting the environment
-  variable.** With the variable absent, `events_publish_epoch` in
-  `~/.pad/config.toml` stands if it is there, and the default (phase 2) applies
-  if it is not. Set the environment variable explicitly to `false`, or put
-  `events_publish_epoch = false` in the config file. The same holds in the other
-  direction: an explicit `PAD_EVENTS_PUBLISH_EPOCH=true` overrides a `false` in
-  the file.
+  variable.** With the variable absent, the default (phase 2) applies. Putting
+  `events_publish_epoch = false` in `~/.pad/config.toml` does nothing: the
+  file line is ignored. Set the environment variable explicitly to `false`,
+  on every replica.
 - **Downgrading below v0.15.0 is a SECOND step, and the order is the reverse
   of the upgrade.** A binary older than v0.15.0 cannot parse the prefixed form.
   So: first roll every instance to phase 1 (set the value false) and let the
@@ -891,7 +899,9 @@ So the expectation depends on where you are:
   before this migration existed, and precisely what phase 2 fixes.
 - **During the phase-2 roll, once a replica has adopted the epoch** — expect it
   to rise for the length of the roll: un-flipped publishers are still
-  assigning and publishing in two calls, and this replica is now armed.
+  assigning and publishing in two calls, and this replica is now armed. If it
+  keeps rising after the roll, the fleet is still mixed: check that
+  `PAD_EVENTS_PUBLISH_EPOCH` is the same on every replica.
 - **Phase 2, every publisher flipped** — expect it at or near zero. A
   persistent rate here is an anomaly worth investigating rather than tuning
   away.
@@ -899,7 +909,7 @@ So the expectation depends on where you are:
 **Which phase an instance is publishing in is in its startup log**, as
 `id_space_phase=1` or `id_space_phase=2` on the "Event bus using Redis pub/sub"
 line — the counter above cannot be read without it. `id_space_phase_source`
-says where the setting came from: `default`, `config file` or `env`. An unparseable
+says where the setting came from: `default` or `env`. An unparseable
 `PAD_EVENTS_PUBLISH_EPOCH` is ignored (a typo must not flip a migration whose
 wrong direction loses events) and logs a warning naming the value.
 
