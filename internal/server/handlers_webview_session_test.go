@@ -397,7 +397,7 @@ func newWebViewDoorFixture(t *testing.T) *webViewDoorFixture {
 func webViewTableCounts(t *testing.T, srv *Server) map[string]int {
 	t.Helper()
 	out := map[string]int{}
-	for _, table := range []string{"sessions", "users", "api_tokens", "webhooks", "calendar_feeds", "push_devices", "step_up_codes", "user_oauth_identities"} {
+	for _, table := range []string{"sessions", "users", "api_tokens", "webhooks", "calendar_feeds", "push_devices", "step_up_codes", "user_oauth_identities", "platform_settings", "app_installs"} {
 		var n int
 		if err := srv.store.DB().QueryRow(`SELECT COUNT(*) FROM ` + table).Scan(&n); err != nil {
 			t.Fatalf("count %s: %v", table, err)
@@ -439,10 +439,18 @@ func TestWebViewSessionRefusedAtCredentialDoors(t *testing.T) {
 		{"POST", ws + "/webhooks", map[string]any{"url": "https://example.com/hook"}},
 		{"POST", "/api/v1/auth/register", map[string]any{"email": "made@example.com", "name": "Made", "password": "made-pass-12345"}},
 		{"POST", "/api/v1/admin/users/" + victim.ID + "/reset-password", nil},
+		{"PATCH", "/api/v1/admin/users/" + victim.ID, map[string]any{"role": "admin"}},
+		{"PATCH", "/api/v1/admin/settings", map[string]any{"platform_name": "Hijacked"}},
+		{"POST", ws + "/apps/install/pending/pending-x/confirm", map[string]any{"manifest_sha256": "x"}},
+		{"POST", ws + "/apps/install-x/upgrade/confirm", map[string]any{"pending_id": "pending-x", "manifest_sha256": "x"}},
 		// An encoded slash routes on the raw path; the refusal reads it too.
 		{"POST", "/api/v1/workspaces/a%2Fb/tokens", map[string]any{"name": "minted"}},
 	}
 	before := webViewTableCounts(t, f.srv)
+	platformName, err := f.srv.store.GetPlatformSetting("platform_name")
+	if err != nil {
+		t.Fatal(err)
+	}
 	for _, d := range doors {
 		rr := doRequestWithCookie(f.srv, d.method, d.path, d.body, f.child)
 		if rr.Code != http.StatusForbidden || errorCode(t, rr) != "webview_session_forbidden" {
@@ -464,6 +472,12 @@ func TestWebViewSessionRefusedAtCredentialDoors(t *testing.T) {
 	}
 	if ok, _ := f.srv.store.ValidatePassword(victim.Email, "victim-pass-12345"); ok == nil {
 		t.Error("the admin reset changed another user's password")
+	}
+	if v, err := f.srv.store.GetUser(victim.ID); err != nil || v == nil || v.Role == "admin" {
+		t.Errorf("the admin edit changed another user's role: %+v %v", v, err)
+	}
+	if got, err := f.srv.store.GetPlatformSetting("platform_name"); err != nil || got != platformName {
+		t.Errorf("platform_name %q -> %q (%v): the admin settings write landed", platformName, got, err)
 	}
 
 	// POST /oauth/authorize/decide is mounted behind the OAuth availability
@@ -527,32 +541,41 @@ func TestWebViewDeleteAccountRefused(t *testing.T) {
 // webViewClassifiedPattern names every route that can create, widen or prove
 // a credential. A route matching it must be in webViewRefusedRoutes or
 // webViewAllowedRoutes, so a door added later is classified by test.
-var webViewClassifiedPattern = regexp.MustCompile(`token|oauth|cli/|calendar-feeds|step-up|2fa|password|delete-account|push-devices|install-code|rotate|logout|webview|webhook|admin/users|register|claim-code`)
+var webViewClassifiedPattern = regexp.MustCompile(`token|oauth|cli/|calendar-feeds|step-up|2fa|password|delete-account|push-devices|install-code|rotate|logout|webview|webhook|admin/users|register|claim-code|apps/.*(confirm|enable)`)
+
+// webViewAdminWrite reports whether a route is a non-GET under /api/v1/admin,
+// every one of which is refused to a WebView session and classified by that
+// rule rather than by a table row.
+func webViewAdminWrite(method, route string) bool {
+	return method != http.MethodGet && (route == "/api/v1/admin" || strings.HasPrefix(route, "/api/v1/admin/"))
+}
 
 // webViewRefusedRoutes are refused to a WebView session (webViewRouteRefused).
 var webViewRefusedRoutes = map[string]string{
-	"POST /api/v1/auth/tokens":                                     "mints an API key",
-	"PATCH /api/v1/auth/tokens/{tokenID}":                          "widens an API key",
-	"POST /api/v1/auth/tokens/{tokenID}/rotate":                    "mints a new API key secret",
-	"POST /api/v1/workspaces/{slug}/tokens/":                       "mints a workspace API key",
-	"POST /api/v1/auth/webview-session":                            "a child never mints a child",
-	"POST /api/v1/auth/cli/sessions/{code}/approve":                "mints a 30-day CLI session",
-	"POST /oauth/authorize/decide":                                 "grants an OAuth connection",
-	"POST /api/v1/me/calendar-feeds":                               "mints a calendar feed URL",
-	"POST /api/v1/workspaces/{slug}/apps/{installID}/install-code": "issues an app install code",
-	"POST /api/v1/workspaces/{slug}/apps/{installID}/rotate":       "rotates an app secret",
-	"PUT /api/v1/me/push-devices/{connection_id}":                  "binds a push device to the session",
-	"POST /api/v1/auth/2fa/setup":                                  "changes a sign-in factor",
-	"POST /api/v1/auth/2fa/verify":                                 "enables a sign-in factor",
-	"POST /api/v1/auth/2fa/disable":                                "removes a sign-in factor and rotates sessions",
-	"POST /api/v1/auth/delete-account":                             "irreversible; its freshness check reads created_at",
-	"POST /api/v1/auth/step-up/email":                              "starts a step-up grant",
-	"POST /api/v1/auth/step-up/verify":                             "grants step-up on the session",
-	"POST /api/v1/auth/oauth-link":                                 "links a sign-in provider",
-	"POST /api/v1/auth/oauth-unlink":                               "unlinks a sign-in provider and rotates sessions",
-	"POST /api/v1/workspaces/{slug}/webhooks/":                     "creates a webhook, a standing outbound feed",
-	"POST /api/v1/auth/register":                                   "with an admin caller, creates an account",
-	"POST /api/v1/admin/users/{userID}/reset-password":             "sets another account's password",
+	"POST /api/v1/auth/tokens":                                                "mints an API key",
+	"PATCH /api/v1/auth/tokens/{tokenID}":                                     "widens an API key",
+	"POST /api/v1/auth/tokens/{tokenID}/rotate":                               "mints a new API key secret",
+	"POST /api/v1/workspaces/{slug}/tokens/":                                  "mints a workspace API key",
+	"POST /api/v1/auth/webview-session":                                       "a child never mints a child",
+	"POST /api/v1/auth/cli/sessions/{code}/approve":                           "mints a 30-day CLI session",
+	"POST /oauth/authorize/decide":                                            "grants an OAuth connection",
+	"POST /api/v1/me/calendar-feeds":                                          "mints a calendar feed URL",
+	"POST /api/v1/workspaces/{slug}/apps/{installID}/install-code":            "issues an app install code",
+	"POST /api/v1/workspaces/{slug}/apps/{installID}/rotate":                  "rotates an app secret",
+	"PUT /api/v1/me/push-devices/{connection_id}":                             "binds a push device to the session",
+	"POST /api/v1/auth/2fa/setup":                                             "changes a sign-in factor",
+	"POST /api/v1/auth/2fa/verify":                                            "enables a sign-in factor",
+	"POST /api/v1/auth/2fa/disable":                                           "removes a sign-in factor and rotates sessions",
+	"POST /api/v1/auth/delete-account":                                        "irreversible; its freshness check reads created_at",
+	"POST /api/v1/auth/step-up/email":                                         "starts a step-up grant",
+	"POST /api/v1/auth/step-up/verify":                                        "grants step-up on the session",
+	"POST /api/v1/auth/oauth-link":                                            "links a sign-in provider",
+	"POST /api/v1/auth/oauth-unlink":                                          "unlinks a sign-in provider and rotates sessions",
+	"POST /api/v1/workspaces/{slug}/webhooks/":                                "creates a webhook, a standing outbound feed",
+	"POST /api/v1/auth/register":                                              "with an admin caller, creates an account",
+	"POST /api/v1/workspaces/{slug}/apps/install/pending/{pendingID}/confirm": "provisions an app and answers its install code",
+	"POST /api/v1/workspaces/{slug}/apps/{installID}/upgrade/confirm":         "can widen an app's access, events and URLs",
+	"POST /api/v1/workspaces/{slug}/apps/{installID}/enable":                  "restores a disabled app install's grant",
 }
 
 // webViewAllowedRoutes match the pattern but stay open to a WebView
@@ -589,10 +612,6 @@ var webViewAllowedRoutes = map[string]string{
 	"GET /api/v1/admin/users/{userID}/detail":                  "admin read",
 	"GET /api/v1/admin/users/{userID}/metrics":                 "admin read",
 	"GET /api/v1/admin/users/{userID}/workspaces":              "admin read",
-	"PATCH /api/v1/admin/users/{userID}/":                      "accepted residual: admin role edit, UI authority",
-	"POST /api/v1/admin/users/{userID}/disable":                "only removes access",
-	"POST /api/v1/admin/users/{userID}/enable":                 "accepted residual: restores an account, mints no credential",
-	"POST /api/v1/admin/users/{userID}/verify-email":           "accepted residual: marks an address verified, mints no credential",
 	"GET /oauth/authorize":                                     "renders consent; nothing is granted until decide",
 	"POST /oauth/token":                                        "PKCE or client bound; the cookie is not the credential",
 	"POST /oauth/revoke":                                       "revocation only narrows access",
@@ -610,7 +629,7 @@ func TestEveryCredentialRouteClassifiedForWebView(t *testing.T) {
 	srv.ensureRouter()
 	param := regexp.MustCompile(`\{[^}]*\}`)
 	seen := map[string]bool{}
-	matched := 0
+	matched, adminWrites := 0, 0
 	err := chi.Walk(srv.router, func(method, route string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
 		key := method + " " + route
 		path := strings.ReplaceAll(param.ReplaceAllString(route, "x"), "*", "x")
@@ -623,6 +642,21 @@ func TestEveryCredentialRouteClassifiedForWebView(t *testing.T) {
 			if webViewRouteRefused(httptest.NewRequest(method, p, nil)) {
 				refusedAny = true
 			}
+		}
+		if webViewAdminWrite(method, route) {
+			adminWrites++
+			if _, ok := webViewAllowedRoutes[key]; ok {
+				t.Errorf("%s is an admin write in the allowed table; every admin write is refused", key)
+			}
+			if _, ok := webViewRefusedRoutes[key]; ok {
+				t.Errorf("%s is an admin write in the refused table; the admin rule classifies it", key)
+			}
+			for _, p := range forms {
+				if !webViewRouteRefused(httptest.NewRequest(method, p, nil)) {
+					t.Errorf("%s (%s) is an admin write that webViewRouteRefused allows", key, p)
+				}
+			}
+			return nil
 		}
 		if !webViewClassifiedPattern.MatchString(route) {
 			if refusedAny {
@@ -667,6 +701,9 @@ func TestEveryCredentialRouteClassifiedForWebView(t *testing.T) {
 	}
 	if matched < 40 {
 		t.Fatalf("only %d routes matched; the walk is not seeing the router", matched)
+	}
+	if adminWrites < 10 {
+		t.Fatalf("only %d admin writes found; the walk is not seeing the admin routes", adminWrites)
 	}
 	// A webhook update route does not exist yet; one added later is refused.
 	for _, m := range []string{http.MethodPatch, http.MethodPut} {

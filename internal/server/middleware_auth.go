@@ -1537,9 +1537,11 @@ func webViewRouteRefused(r *http.Request) bool {
 	case strings.HasPrefix(p, "/api/v1/me/push-devices/"):
 		return write
 	}
-	if rest, ok := strings.CutPrefix(p, "/api/v1/admin/users/"); ok {
-		segs := strings.Split(rest, "/")
-		return len(segs) == 2 && segs[1] == "reset-password"
+	// Every admin write: platform settings, user edits, password resets. An
+	// admin action can act as or over another account, so a new admin route
+	// is refused by default.
+	if p == "/api/v1/admin" || strings.HasPrefix(p, "/api/v1/admin/") {
+		return r.Method != http.MethodGet
 	}
 	if rest, ok := strings.CutPrefix(p, "/api/v1/workspaces/"); ok {
 		segs := strings.Split(rest, "/")
@@ -1555,7 +1557,12 @@ func webViewRouteRefused(r *http.Request) bool {
 			return len(segs) == 2 && write ||
 				len(segs) == 3 && (r.Method == http.MethodPatch || r.Method == http.MethodPut)
 		case "apps":
-			return len(segs) == 4 && (segs[3] == "install-code" || segs[3] == "rotate")
+			// The install confirm answers an install code; the upgrade
+			// confirm can widen the install's access, events and URLs;
+			// enable restores a disabled install's grant.
+			return len(segs) == 4 && (segs[3] == "install-code" || segs[3] == "rotate" || segs[3] == "enable") ||
+				len(segs) == 6 && segs[2] == "install" && segs[3] == "pending" && segs[5] == "confirm" ||
+				len(segs) == 5 && segs[3] == "upgrade" && segs[4] == "confirm"
 		}
 	}
 	return false
