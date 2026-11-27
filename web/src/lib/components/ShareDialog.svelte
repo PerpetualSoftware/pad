@@ -49,8 +49,15 @@
 	// production build silently wedges Svelte's effect scheduler on close.
 	let prevOpen = false;
 
+	// Which open of the dialog a request belongs to. PLAIN for the same reason
+	// as prevOpen. The dialog stays mounted between opens and can reopen for
+	// another target, so a list or create response from an earlier open must
+	// not commit into this one: a created link carries its one-time token.
+	let openGen = 0;
+
 	$effect.pre(() => {
 		if (open && !prevOpen) {
+			openGen += 1;
 			// Reset form state on open
 			email = '';
 			permission = 'view';
@@ -94,8 +101,8 @@
 	// A list response never carries the one-time token (the server only stores
 	// its hash), so preserve any locally created token-bearing links when the
 	// list response lands or fails. loadShareLinks clears the list when it
-	// starts, so the only links that can carry a token here were created
-	// during that load: none survive from an earlier open or another target.
+	// starts, and responses from an earlier open are dropped (openGen), so the
+	// only links that can carry a token here were created during this open.
 	function mergeLoadedShareLinks(current: ShareLink[], loaded: ShareLink[]): ShareLink[] {
 		const tokenById = new Map<string, ShareLink>();
 		for (const link of current) {
@@ -117,6 +124,7 @@
 		// shown once". Rendering that to whoever happens to be signed in when the
 		// response lands is the worst commit in this file.
 		const isSameIdentity = authStore.identityFence();
+		const gen = openGen;
 		shareLinks = [];
 		loadingLinks = true;
 		linksError = '';
@@ -125,14 +133,14 @@
 				type === 'collection'
 					? await api.shareLinks.listCollectionShareLinks(wsSlug, targetSlug)
 					: await api.shareLinks.listItemShareLinks(wsSlug, targetSlug);
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			shareLinks = mergeLoadedShareLinks(shareLinks, loaded ?? []);
 		} catch (e: any) {
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			linksError = e.message ?? 'Failed to load share links';
 			shareLinks = mergeLoadedShareLinks(shareLinks, []);
 		} finally {
-			loadingLinks = false;
+			if (gen === openGen) loadingLinks = false;
 		}
 	}
 
@@ -143,13 +151,14 @@
 		// token minted for THIS identity, rendered once, must not land in the
 		// next identity's dialog.
 		const isSameIdentity = authStore.identityFence();
+		const gen = openGen;
 		creatingLink = true;
 		try {
 			const newLink: ShareLink =
 				type === 'collection'
 					? await api.shareLinks.createCollectionShareLink(wsSlug, targetSlug)
 					: await api.shareLinks.createItemShareLink(wsSlug, targetSlug);
-			if (!isSameIdentity()) return;
+			if (!isSameIdentity() || gen !== openGen) return;
 			shareLinks = [newLink, ...shareLinks];
 			newlyCreatedLinkId = newLink.id;
 			toastStore.show('Share link created', 'success');

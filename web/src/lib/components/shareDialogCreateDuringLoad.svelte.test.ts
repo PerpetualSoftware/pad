@@ -276,4 +276,39 @@ describe('ShareDialog: a created link does not outlive its open', () => {
 		expect(target.querySelectorAll('.share-link-row')).toHaveLength(0);
 		expect(target.innerHTML).not.toContain('tok-1');
 	});
+
+	it('a create still in flight when the dialog reopens for another target does not land there', async () => {
+		renderReactive();
+		await settle();
+
+		const createD = deferred<unknown>();
+		apiMock.createItemShareLink.mockReturnValue(createD.promise);
+		target.querySelector<HTMLButtonElement>('.create-link-btn')!.click();
+		await settle();
+
+		const listB = deferred<unknown[]>();
+		apiMock.listItemShareLinks.mockReturnValue(listB.promise);
+		props.open = false;
+		flushSync();
+		await settle();
+		props.targetSlug = 'ITEM-2';
+		props.open = true;
+		flushSync();
+		await settle();
+
+		createD.resolve({
+			id: 'n1',
+			token: 'tok-1',
+			view_count: 0,
+			created_at: '2026-10-02T00:00:00Z',
+			require_auth: false,
+		});
+		await settle();
+		listB.resolve([]);
+		await settle();
+
+		expect(target.querySelectorAll('.share-link-row')).toHaveLength(0);
+		expect(target.querySelector('.new-link-highlight')).toBeNull();
+		expect(target.innerHTML).not.toContain('tok-1');
+	});
 });
