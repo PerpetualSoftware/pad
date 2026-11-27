@@ -269,10 +269,10 @@ type Config struct {
 	//
 	// Rolling BACK is safe and immediate: set the EFFECTIVE value false and
 	// roll. Peers ignore the frame throughout, and detection stops with it —
-	// back to the pre-BUG-2738 behaviour, not to a worse one. The same two wrinkles as
-	// EventsPublishEpoch apply — unsetting the environment variable is not the
-	// same as setting it false, because config.toml's value stands when the
-	// variable is absent; and downgrading PAST phase 1 is a second step in the
+	// back to the pre-BUG-2738 behaviour, not to a worse one. Two wrinkles:
+	// unsetting the environment variable is not the same as setting it false,
+	// because config.toml's value stands when the variable is absent; and
+	// downgrading PAST phase 1 is a second step in the
 	// reverse order, because a pre-phase-1 binary still cannot classify the
 	// frame. See docs/deployment.md for the procedure in both directions.
 	EventsHeartbeat bool `toml:"events_heartbeat"`
