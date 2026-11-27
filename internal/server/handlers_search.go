@@ -1,8 +1,10 @@
 package server
 
 import (
+	"fmt"
 	"net/http"
-	"regexp"
+	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -10,10 +12,14 @@ import (
 	"github.com/PerpetualSoftware/pad/internal/store"
 )
 
-// safeFieldKey matches safe JSON field keys: starts with a letter, alphanumeric/underscore/hyphen.
-var safeFieldKey = regexp.MustCompile(`^[a-zA-Z][a-zA-Z0-9_-]*$`)
-
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	// r.URL.Query() drops a pair it cannot decode (a bad escape, a bare
+	// semicolon), which would silently drop a field filter and widen the
+	// results (BUG-3711), so a query string that does not parse is refused.
+	if _, err := url.ParseQuery(r.URL.RawQuery); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "invalid search query: "+err.Error())
+		return
+	}
 	query := r.URL.Query().Get("q")
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "Query parameter 'q' is required")
@@ -38,14 +44,21 @@ func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
 	if v := r.URL.Query().Get("priority"); v != "" {
 		fieldFilters["priority"] = v
 	}
-	for key, values := range r.URL.Query() {
+	queryParams := r.URL.Query()
+	var fieldParamKeys []string
+	for key, values := range queryParams {
 		if strings.HasPrefix(key, "field.") && len(values) > 0 && values[0] != "" {
-			fieldKey := strings.TrimPrefix(key, "field.")
-			if !safeFieldKey.MatchString(fieldKey) {
-				continue // skip keys with unsafe characters
-			}
-			fieldFilters[fieldKey] = values[0]
+			fieldParamKeys = append(fieldParamKeys, key)
 		}
+	}
+	sort.Strings(fieldParamKeys)
+	for _, key := range fieldParamKeys {
+		fieldKey := strings.TrimPrefix(key, "field.")
+		if !store.IsValidFieldKey(fieldKey) {
+			writeError(w, http.StatusBadRequest, "validation_error", fmt.Sprintf("invalid search filter %q: a field key may hold only letters, digits, '_' and '-'", fieldKey))
+			return
+		}
+		fieldFilters[fieldKey] = queryParams[key][0]
 	}
 	if len(fieldFilters) > 0 {
 		params.FieldFilters = fieldFilters

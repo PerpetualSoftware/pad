@@ -535,7 +535,7 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 		for _, v := range lowered {
 			args = append(args, v)
 		}
-		if validFieldKey.MatchString(f.FieldKey) {
+		if isValidFieldKey(f.FieldKey) {
 			curVal := "TRIM(" + s.dialect.JSONExtractText("i.fields", f.FieldKey) + ")"
 			clause += " AND (" + curVal + " = TRIM(st.to_status) OR LOWER(" + curVal + ") = LOWER(TRIM(st.to_status)))"
 		}

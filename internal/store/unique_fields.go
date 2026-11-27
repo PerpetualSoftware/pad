@@ -62,8 +62,8 @@ func (s *Store) uniqueFieldConflictsQ(q Queryer, collectionID, excludeItemID str
 			continue
 		}
 		// The key is interpolated into the JSON path, so it must be a key the
-		// field-filter paths would also accept (search.go).
-		if !validFieldKey.MatchString(def.Key) {
+		// field-filter paths would also accept (isValidFieldKey).
+		if !isValidFieldKey(def.Key) {
 			return nil, fmt.Errorf("unique field check: unsupported field key %q", def.Key)
 		}
 		query, args := s.uniqueHolderQuery(collectionID, def.Key, val, excludeItemID)
