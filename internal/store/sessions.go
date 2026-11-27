@@ -42,14 +42,126 @@ type SessionInfo struct {
 	RenewTTL time.Duration
 	// StepUpUntil is the fixed deadline for sensitive edits in this session.
 	StepUpUntil *time.Time
+	// ParentID is the web session a WebView session was minted from
+	// (parent_session_id, TASK-4454); empty for every other kind.
+	ParentID string
 }
 
 // Session kinds (BUG-3350). A CLI session is a bearer credential only; a web
-// session is the browser's cookie (and may also be sent as a bearer).
+// session is the browser's cookie (and may also be sent as a bearer). A
+// WebView session (TASK-4454) is a short-lived child of a web session, minted
+// by the mobile app for its WebView on an http connection: it is accepted only
+// as a cookie, never slides, and dies with its parent.
 const (
-	SessionKindWeb = "web"
-	SessionKindCLI = "cli"
+	SessionKindWeb     = "web"
+	SessionKindCLI     = "cli"
+	SessionKindWebView = "webview"
 )
+
+// ErrSessionGone is returned by CreateWebViewSession when the parent is not a
+// live web session of the user: deleted, expired, of another kind or another
+// user's.
+var ErrSessionGone = errors.New("session is gone or expired")
+
+// CreateWebViewSession mints a WebView session from the web session parentID
+// (TASK-4454), in one transaction: the account must be active, and the parent
+// a live web session of userID, else ErrSessionGone. replacePrevious first
+// deletes the parent's existing children. The child never slides
+// (renew_ttl_seconds 0), is never freshly signed in (signed_in_at NULL), and
+// expires at now+ttl or at the parent's expiry, whichever is first. It
+// returns the plaintext token and that expiry.
+func (s *Store) CreateWebViewSession(ctx context.Context, parentID, userID, ipAddress, userAgent string, ttl time.Duration, replacePrevious bool) (string, time.Time, error) {
+	if ttl <= 0 {
+		return "", time.Time{}, fmt.Errorf("create webview session: non-positive ttl %v", ttl)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return "", time.Time{}, fmt.Errorf("create webview session: begin: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+	if err := s.requireActiveUserTx(tx, userID); err != nil {
+		if errors.Is(err, ErrUserDisabled) {
+			return "", time.Time{}, err
+		}
+		return "", time.Time{}, fmt.Errorf("create webview session: %w", err)
+	}
+	// FOR KEY SHARE is the lock the child insert takes on the parent for its
+	// foreign key anyway; taking it here keeps a concurrent delete of the
+	// parent from landing between this read and the insert.
+	q := `SELECT expires_at FROM sessions WHERE id = ? AND user_id = ? AND kind = ?`
+	if s.dialect.Driver() == DriverPostgres {
+		q += ` FOR KEY SHARE`
+	}
+	var parentExpiresAt string
+	switch err := tx.QueryRowContext(ctx, s.q(q), parentID, userID, SessionKindWeb).Scan(&parentExpiresAt); {
+	case errors.Is(err, sql.ErrNoRows):
+		return "", time.Time{}, ErrSessionGone
+	case err != nil:
+		return "", time.Time{}, fmt.Errorf("create webview session: read parent: %w", err)
+	}
+	nowT := time.Now().UTC()
+	parentExpiry := parseTime(parentExpiresAt)
+	if !parentExpiry.After(nowT) {
+		return "", time.Time{}, ErrSessionGone
+	}
+	if replacePrevious {
+		if _, err := tx.ExecContext(ctx, s.q(`DELETE FROM sessions WHERE parent_session_id = ? AND user_id = ?`), parentID, userID); err != nil {
+			return "", time.Time{}, fmt.Errorf("create webview session: delete previous: %w", err)
+		}
+	}
+	expires := nowT.Add(ttl)
+	if parentExpiry.Before(expires) {
+		expires = parentExpiry
+	}
+	expires = expires.Truncate(time.Second)
+
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		return "", time.Time{}, fmt.Errorf("generate session token: %w", err)
+	}
+	plaintext := "padsess_" + hex.EncodeToString(raw)
+	hash := sha256.Sum256([]byte(plaintext))
+	uaHash := ""
+	if userAgent != "" {
+		h := sha256.Sum256([]byte(userAgent))
+		uaHash = hex.EncodeToString(h[:])
+	}
+	if _, err := tx.ExecContext(ctx, s.q(`
+		INSERT INTO sessions (id, user_id, token_hash, device_info, ip_address, ua_hash, expires_at, created_at, renew_ttl_seconds, kind, signed_in_at, parent_session_id)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, NULL, ?)
+	`), newID(), userID, hex.EncodeToString(hash[:]), SessionKindWebView, ipAddress, uaHash,
+		expires.Format(time.RFC3339), nowT.Format(time.RFC3339), SessionKindWebView, parentID); err != nil {
+		if isForeignKeyViolation(err) {
+			return "", time.Time{}, ErrSessionGone
+		}
+		return "", time.Time{}, fmt.Errorf("create webview session: insert: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return "", time.Time{}, fmt.Errorf("create webview session: commit: %w", err)
+	}
+	return plaintext, expires, nil
+}
+
+// DeleteWebViewParent deletes the parent of the WebView session token,
+// expired or not, which deletes the child and its siblings through the
+// cascade (TASK-4454). It returns the parent's user id, or "" when token is
+// not a WebView session or its parent is already gone.
+func (s *Store) DeleteWebViewParent(token string) (string, error) {
+	hash := sha256.Sum256([]byte(token))
+	var userID string
+	err := s.db.QueryRow(s.q(`
+		DELETE FROM sessions WHERE id = (
+			SELECT parent_session_id FROM sessions WHERE token_hash = ? AND kind = ?
+		) RETURNING user_id
+	`), hex.EncodeToString(hash[:]), SessionKindWebView).Scan(&userID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("delete webview parent: %w", err)
+	}
+	return userID, nil
+}
 
 // SessionKindFor maps a session's device label to its kind. The CLI's two
 // sign-in paths label their sessions "cli-browser-auth" (browser approval)
@@ -275,10 +387,10 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 
 	var sessionID, userID, expiresAt, ipAddress, uaHash, createdAt, kind string
 	var renewSeconds int64
-	var stepUpUntil, signedInAt *string
+	var stepUpUntil, signedInAt, parentID *string
 	err := s.db.QueryRowContext(ctx, s.q(`
-		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds, step_up_until, signed_in_at FROM sessions WHERE token_hash = ?
-	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds, &stepUpUntil, &signedInAt)
+		SELECT id, user_id, expires_at, ip_address, ua_hash, created_at, kind, renew_ttl_seconds, step_up_until, signed_in_at, parent_session_id FROM sessions WHERE token_hash = ?
+	`), tokenHash).Scan(&sessionID, &userID, &expiresAt, &ipAddress, &uaHash, &createdAt, &kind, &renewSeconds, &stepUpUntil, &signedInAt, &parentID)
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -305,6 +417,10 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 	if signedInAt != nil {
 		signInTime = parseTime(*signedInAt)
 	}
+	var parent string
+	if parentID != nil {
+		parent = *parentID
+	}
 	return &SessionInfo{
 		ID:          sessionID,
 		User:        user,
@@ -316,6 +432,7 @@ func (s *Store) ValidateSessionContext(ctx context.Context, token string) (*Sess
 		Kind:        kind,
 		RenewTTL:    time.Duration(renewSeconds) * time.Second,
 		StepUpUntil: parseTimePtr(stepUpUntil),
+		ParentID:    parent,
 	}, nil
 }
 
