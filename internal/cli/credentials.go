@@ -44,7 +44,9 @@ import (
 	"io"
 	"io/fs"
 	"os"
+	"os/user"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -144,7 +146,7 @@ func loadStoreLocked(path string) (*CredentialStore, error) {
 			if os.IsNotExist(err) {
 				return newEmptyStore(), nil
 			}
-			return nil, fmt.Errorf("read credentials: %w", err)
+			return nil, withForeignOwnerHint(path, fmt.Errorf("read credentials: %w", err))
 		}
 		if len(strings.TrimSpace(string(data))) != 0 {
 			return parseStore(data)
@@ -241,7 +243,7 @@ func loadStoreUnlocked(path string) (*CredentialStore, error) {
 			if os.IsNotExist(err) {
 				return newEmptyStore(), nil
 			}
-			return nil, fmt.Errorf("read credentials: %w", err)
+			return nil, withForeignOwnerHint(path, fmt.Errorf("read credentials: %w", err))
 		}
 		if len(strings.TrimSpace(string(data))) != 0 {
 			return parseStore(data)
@@ -352,8 +354,9 @@ func (s *CredentialStore) Delete(serverURL string) {
 	delete(s.Credentials, normalizeServerURL(serverURL))
 }
 
-// Save writes the store to disk in v2 format with mode 0600. Always
-// writes the current version constant — even if the store was loaded
+// Save writes the store to disk in v2 format, restricted to the current user
+// (mode 0600 on POSIX; a protected owner-only DACL on Windows, BUG-3807).
+// Always writes the current version constant — even if the store was loaded
 // from v1, this is the migration moment.
 //
 // The write is in place, the shape os.WriteFile had, so a symlinked,
@@ -362,12 +365,14 @@ func (s *CredentialStore) Delete(serverURL string) {
 // atomic temp-plus-rename was worse than os.WriteFile for each of those).
 // What changes is privacy and readers. os.WriteFile applied 0600 only when
 // it CREATED the file, so an existing loose-mode file kept its mode with
-// fresh tokens in it (BUG-3648); Save chmods before it truncates. And it
-// writes under the exclusive side of the credentials lock, so LoadStore,
-// which reads under the shared side, never sees the truncated file of a save
-// that took the lock. A save that waited the lock out writes without it, and
-// its truncate can be read; loadStoreLocked re-reads an empty file for that
-// (BUG-3829).
+// fresh tokens in it (BUG-3648), and on Windows chmod does not restrict ACL
+// access (BUG-3807); Save applies 0600 and the Windows owner-only DACL before
+// it truncates or writes, warning once on credentialsLockWarning if restricting
+// a file we own fails while still completing the save. And it writes under the
+// exclusive side of the credentials lock, so LoadStore, which reads under the
+// shared side, never sees the truncated file of a save that took the lock. A
+// save that waited the lock out writes without it, and its truncate can be
+// read; loadStoreLocked re-reads an empty file for that (BUG-3829).
 //
 // Save alone does not stop two processes losing each other's entries; a
 // load-modify-save goes through UpdateStore. Never call Save, LoadStore,
@@ -392,19 +397,41 @@ func (s *CredentialStore) saveLocked(path string) error {
 		return fmt.Errorf("marshal credentials: %w", err)
 	}
 	if err := writeFileInPlace0600(path, data); err != nil {
-		return fmt.Errorf("write credentials: %w", err)
+		return withForeignOwnerHint(path, fmt.Errorf("write credentials: %w", err))
 	}
 	return nil
 }
 
+// withForeignOwnerHint appends an actionable chown command when a credentials
+// read or write fails with a permission error and credentials.json or
+// credentials.json.lock is owned by another Unix user (BUG-3807). The returned
+// error keeps wrapping err so errors.Is(err, fs.ErrPermission) still holds.
+func withForeignOwnerHint(path string, err error) error {
+	if !errors.Is(err, fs.ErrPermission) || !foreignOwnedCredentials(path) {
+		return err
+	}
+	return fmt.Errorf("%w (%s or %s.lock is owned by another user, probably from running pad with sudo; fix it with: sudo chown %s %s %s.lock)",
+		err, path, path, currentUsername(), path, path)
+}
+
+func currentUsername() string {
+	if u, err := user.Current(); err == nil && u.Username != "" {
+		return u.Username
+	}
+	return strconv.Itoa(os.Getuid())
+}
+
 // writeFileInPlace0600 writes data over path in place, following a symlink,
-// as os.WriteFile did. A regular file is made 0600 before it is truncated,
-// so the new tokens never land under a looser mode on a file we own; on one
-// we cannot chmod (a foreign-owned file we may write) the write goes ahead,
-// as os.WriteFile's did. Anything else a link may point at (/dev/null, a
-// FIFO) is neither chmodded nor truncated, as O_TRUNC leaves it, and the
-// sync is best effort since os.WriteFile never synced: a target os.WriteFile
-// could write stays writable.
+// as os.WriteFile did. A regular file is made 0600 on POSIX and given a
+// protected owner-only DACL on Windows (BUG-3807) before it is touched,
+// truncated or written, so new tokens never land under looser access on a file
+// we own. On a file we cannot chmod (a foreign-owned file we may write) the
+// write goes ahead silently, as os.WriteFile's did; if restricting access via
+// restrictCredentials fails on a file owned by the current user, one warning is
+// written to credentialsLockWarning and the save still completes (BUG-3807).
+// Anything else a link may point at (/dev/null, a FIFO) is neither restricted
+// nor truncated, as O_TRUNC leaves it, and the sync is best effort since
+// os.WriteFile never synced: a target os.WriteFile could write stays writable.
 //
 // A failed stat fails the write before anything is written (BUG-3810): it
 // cannot say whether the target is a regular file to truncate, and writing
@@ -421,6 +448,9 @@ func writeFileInPlace0600(path string, data []byte) error {
 	}
 	if fi.Mode().IsRegular() {
 		_ = f.Chmod(0600)
+		if err := restrictCredentials(path); err != nil && credentialsFileOwnedByUs(path) {
+			fmt.Fprintf(credentialsLockWarning, "warning: could not restrict access to %s to the current user (%v); saving credentials anyway\n", path, err)
+		}
 		// The mtime is set before the truncate, so a reader's emptyConfirmed
 		// memo stops matching even when the file is already empty: POSIX moves
 		// mtime on ftruncate only when the size changes, and Windows'
@@ -439,6 +469,10 @@ func writeFileInPlace0600(path string, data []byte) error {
 	_ = f.Sync()
 	return f.Close()
 }
+
+// restrictCredentials is restrictCredentialsFile, swappable so a test can force
+// an access-restriction failure on any OS (BUG-3807).
+var restrictCredentials = restrictCredentialsFile
 
 // statOpenFile is f.Stat, a variable so a test can fail it (BUG-3810).
 var statOpenFile = (*os.File).Stat

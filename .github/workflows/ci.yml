@@ -541,6 +541,10 @@ jobs:
           PAD_MATERIALIZE_TEST_NO_SKIP: "1"
         run: go test ./internal/materialize/ -run '^(TestSupervisor.*|TestParseMemLimit|TestConfigFromEnv|TestParsePSRSS|TestPSRSSLive|TestParseStatVsize|TestStderrOOMMarkers|TestDeepNestFrameShallow)$' -count=1 -timeout 20m -v
 
+      - name: CLI credentials on Windows (BUG-3807)
+        if: runner.os == 'Windows'
+        run: go test ./internal/cli/ -run '^(TestCredentialsWindows.*|TestCredentialsRestrictFailureWarnsAndSaves)$' -count=1 -v
+
   # Runs as two parallel matrix legs on pull requests (TASK-4820) — `store`
   # (./internal/store) and `rest` (every other package in
   # scripts/ci-pg-packages.txt) — and a single `full` leg on pushes (main and
