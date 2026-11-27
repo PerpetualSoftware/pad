@@ -1537,6 +1537,13 @@ func webViewRouteRefused(r *http.Request) bool {
 	case strings.HasPrefix(p, "/api/v1/me/push-devices/"):
 		return write
 	}
+	// An OAuth connection's flags and added workspaces widen its reach; rename,
+	// limit-to-current, removing a workspace and revoke only narrow it.
+	if rest, ok := strings.CutPrefix(p, "/api/v1/connected-apps/"); ok {
+		segs := strings.Split(rest, "/")
+		return len(segs) == 2 && (segs[1] == "flags" && r.Method == http.MethodPatch ||
+			segs[1] == "workspaces" && r.Method == http.MethodPost)
+	}
 	// Every admin write: platform settings, user edits, password resets. An
 	// admin action can act as or over another account, so a new admin route
 	// is refused by default.
