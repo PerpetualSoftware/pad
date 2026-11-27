@@ -93,7 +93,9 @@
 
 	// A list response never carries the one-time token (the server only stores
 	// its hash), so preserve any locally created token-bearing links when the
-	// list response lands or fails.
+	// list response lands or fails. loadShareLinks clears the list when it
+	// starts, so the only links that can carry a token here were created
+	// during that load: none survive from an earlier open or another target.
 	function mergeLoadedShareLinks(current: ShareLink[], loaded: ShareLink[]): ShareLink[] {
 		const tokenById = new Map<string, ShareLink>();
 		for (const link of current) {
@@ -115,6 +117,7 @@
 		// shown once". Rendering that to whoever happens to be signed in when the
 		// response lands is the worst commit in this file.
 		const isSameIdentity = authStore.identityFence();
+		shareLinks = [];
 		loadingLinks = true;
 		linksError = '';
 		try {

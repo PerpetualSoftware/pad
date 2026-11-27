@@ -208,3 +208,72 @@ describe('ShareDialog: share link created while initial list loads', () => {
 		expect(errorEl?.textContent).toContain('failed to load links');
 	});
 });
+
+describe('ShareDialog: a created link does not outlive its open', () => {
+	const props = $state({ wsSlug: 'ws', type: 'item', targetSlug: 'ITEM-1', targetName: 'Item One', open: true });
+
+	function renderReactive() {
+		props.targetSlug = 'ITEM-1';
+		props.open = true;
+		target = document.body.appendChild(document.createElement('div'));
+		instance = mount(ShareDialog, { target, props: props as Record<string, unknown> });
+		flushSync();
+	}
+
+	async function createOneLink() {
+		apiMock.createItemShareLink.mockResolvedValue({
+			id: 'n1',
+			token: 'tok-1',
+			view_count: 0,
+			created_at: '2026-10-02T00:00:00Z',
+			require_auth: false,
+		});
+		target.querySelector<HTMLButtonElement>('.create-link-btn')!.click();
+		await settle();
+		expect(target.querySelector<HTMLInputElement>('input.new-link-url')?.value).toContain('tok-1');
+	}
+
+	async function reopen() {
+		props.open = false;
+		flushSync();
+		await settle();
+		props.open = true;
+		flushSync();
+		await settle();
+	}
+
+	it('reopening the same target shows the created link without its token', async () => {
+		renderReactive();
+		await settle();
+		await createOneLink();
+
+		apiMock.listItemShareLinks.mockResolvedValue([
+			{ id: 'n1', view_count: 0, created_at: '2026-10-02T00:00:00Z', require_auth: false },
+		]);
+		await reopen();
+
+		expect(target.querySelectorAll('.share-link-row')).toHaveLength(1);
+		expect(target.querySelector('.new-link-highlight')).toBeNull();
+		expect(target.querySelectorAll('.link-url-hidden')).toHaveLength(1);
+		expect(target.innerHTML).not.toContain('tok-1');
+	});
+
+	it('reopening for another target does not show the previous target link', async () => {
+		renderReactive();
+		await settle();
+		await createOneLink();
+
+		apiMock.listItemShareLinks.mockResolvedValue([]);
+		props.open = false;
+		flushSync();
+		await settle();
+		props.targetSlug = 'ITEM-2';
+		props.open = true;
+		flushSync();
+		await settle();
+
+		expect(apiMock.listItemShareLinks).toHaveBeenLastCalledWith('ws', 'ITEM-2');
+		expect(target.querySelectorAll('.share-link-row')).toHaveLength(0);
+		expect(target.innerHTML).not.toContain('tok-1');
+	});
+});
