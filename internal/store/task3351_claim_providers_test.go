@@ -73,7 +73,7 @@ func TestTASK3351_BindAfterUnlinkBindsNothing(t *testing.T) {
 	if err := s.AddOAuthProvider(u.ID, "google"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RemoveOAuthProvider(u.ID, "google"); err != nil {
+	if _, err := s.RemoveOAuthProvider(u.ID, "google"); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.BindOAuthIdentity(u.ID, "google", "g-stale"); !errors.Is(err, ErrOAuthProviderNotLinked) {

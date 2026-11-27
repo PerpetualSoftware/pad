@@ -906,7 +906,8 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.store.RemoveOAuthProvider(user.ID, input.Provider); err != nil {
+	epoch, err := s.store.RemoveOAuthProvider(user.ID, input.Provider)
+	if err != nil {
 		if errors.Is(err, store.ErrLastSignInMethod) {
 			// A concurrent unlink took the other method after the check
 			// above read the account (BUG-3816).
@@ -929,7 +930,11 @@ func (s *Server) handleOAuthUnlink(w http.ResponseWriter, r *http.Request) {
 	// all sessions so any cookie issued while the provider was linked
 	// (possibly via a compromised OAuth account) becomes invalid. The
 	// caller keeps their session via a re-issued cookie.
-	token, ok := s.rotateSessionsAfterCredentialChange(w, r, user)
+	// BUG-3681: fence the rotation on the post-unlink credential_epoch without
+	// mutating the context's shared *models.User in place.
+	rotated := *user
+	rotated.CredentialEpoch = epoch
+	token, ok := s.rotateSessionsAfterCredentialChange(w, r, &rotated)
 	if !ok {
 		return
 	}
