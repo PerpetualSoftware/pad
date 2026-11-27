@@ -765,6 +765,9 @@ func (s *Store) migrate() error {
 	}
 
 	for _, name := range migrations {
+		// The applied set read above is only a hint for skipping already-recorded
+		// versions. The authoritative check is the recheck inside each migration
+		// transaction (BUG-3754).
 		if applied[name] {
 			continue
 		}
@@ -959,6 +962,9 @@ func (s *Store) migratePostgres() error {
 	}
 
 	for _, name := range migrations {
+		// The applied set read above is only a hint for skipping already-recorded
+		// versions. The authoritative check is the recheck inside each migration
+		// transaction (BUG-3754).
 		if applied[name] {
 			continue
 		}
@@ -1327,6 +1333,18 @@ func applySQLiteMigration(db *sql.DB, name, sqlText string) error {
 		}
 	}()
 
+	// The connection DSN carries _txlock=immediate, so BeginTx is BEGIN IMMEDIATE
+	// and holds the SQLite write lock: this recheck sees every runner that
+	// committed before us (BUG-3754).
+	var appliedCount int
+	if err := tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM schema_migrations WHERE version = ?", name).Scan(&appliedCount); err != nil {
+		return fmt.Errorf("apply migration %s: check applied: %w", name, err)
+	}
+	if appliedCount != 0 {
+		slog.Info("migration already applied by another runner; skipped", "migration", name)
+		return nil
+	}
+
 	// With foreign keys off the body can leave a dangling reference that
 	// nothing reports (BUG-3663). The violations it leaves are checked against
 	// the ones the database already had: a legacy database may carry some
@@ -1444,7 +1462,11 @@ func normalizePragma(p string) string {
 // schema. Wrapping both in a single explicit transaction closes that window
 // for multi-statement migration files.
 func applyPostgresMigration(db *sql.DB, name, sqlText string) error {
-	tx, err := db.Begin()
+	// READ COMMITTED explicitly, not the database default: the recheck below
+	// must take its snapshot after the advisory lock is granted, and under a
+	// REPEATABLE READ or SERIALIZABLE default the lock statement would fix
+	// the snapshot before it waits (BUG-3754).
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("apply migration %s: begin tx: %w", name, err)
 	}
@@ -1454,6 +1476,23 @@ func applyPostgresMigration(db *sql.DB, name, sqlText string) error {
 			_ = tx.Rollback()
 		}
 	}()
+
+	// Serialize migration runners across processes for the life of the
+	// transaction (BUG-3754). Under READ COMMITTED (pinned at BeginTx above) the
+	// recheck statement takes a fresh snapshot after the lock is granted, so it sees any runner that
+	// committed while this one waited. Keep this lock first so every runner
+	// acquires it before prepareReminderMigrationTx's LOCK TABLE (one lock order).
+	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('pad:schema-migrations'))`); err != nil {
+		return fmt.Errorf("apply migration %s: acquire migration lock: %w", name, err)
+	}
+	var appliedCount int
+	if err := tx.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = $1`, name).Scan(&appliedCount); err != nil {
+		return fmt.Errorf("apply migration %s: check applied: %w", name, err)
+	}
+	if appliedCount != 0 {
+		slog.Info("migration already applied by another runner; skipped", "migration", name)
+		return nil
+	}
 
 	already, err := prepareReminderMigrationTx(tx, name, &postgresDialect{})
 	if err != nil {
