@@ -6,21 +6,24 @@ import { expect, mock, test } from 'claude-code/testing'
 // TASK-3970: none of it runs at session start; the session's first use of Pad
 // (a pad command, a Pad MCP tool, the pane) starts it.
 
-type Opts = { armed?: boolean; noCli?: boolean; chunks?: { stream: string; text: string }[]; gate?: Promise<void>; holdSubmit?: boolean }
+type Opts = { onTool?: (e: any) => Promise<void> | void; armed?: boolean; noCli?: boolean; chunks?: { stream: string; text: string }[]; gate?: Promise<void>; holdSubmit?: boolean }
 
 function stubs(on: any, opts: Opts = {}) {
   const runs: { argv: string[]; env: Record<string, string> }[] = []
   const spawns: { argv: string[]; env: Record<string, string> }[] = []
   const submitted: string[] = []
   const shown: string[] = []
-  const consent = {
+  // code: a should-arm answer other than armed/not armed (a number), or a
+  // run that throws ('throw'), as a timeout or a missing CLI would (BUG-3741).
+  const consent: { armed: boolean; code?: number | 'throw' } = {
     get armed() { return Boolean(opts.armed) },
     set armed(v: boolean) { opts.armed = v },
   }
   const stream = { closed: false, release: () => {}, end: () => {} }
   const atCall: string[][] = [] // the CLI calls already made when each tool call ran
-  on('tool.call', () => {
+  on('tool.call', async ($: any, e: any) => {
     atCall.push(runs.map((r) => r.argv.join(' ')))
+    if (opts.onTool) await opts.onTool(e)
     return { result: { stdout: '', stderr: '' }, text: '' }
   })
   on('session.start', ($: any, e: any) => ({ cwd: e.cwd }))
@@ -36,6 +39,8 @@ function stubs(on: any, opts: Opts = {}) {
     if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: '4242\n', stderr: '' } }
     if (opts.noCli) return { deny: 'spawn pad ENOENT' }
     if (e.argv.join(' ') === 'pad session should-arm') {
+      if (consent.code === 'throw') return { deny: 'pad session should-arm timed out' }
+      if (typeof consent.code === 'number') return { value: { exitCode: consent.code, stdout: '', stderr: '' } }
       const answer = { value: { exitCode: consent.armed ? 0 : 1, stdout: '', stderr: '' } }
       return opts.gate ? opts.gate.then(() => answer) : answer
     }
@@ -567,10 +572,12 @@ test('every shape of the disarm command ends the stream, and no other command or
     await $.session.start({ cwd: '/work/demo' })
     await usePad($)
     await settle()
+    s.consent.armed = false // what a disarm that took effect leaves
     await $.tool.call(call as any)
     s.stream.release()
     await settle()
     const closed = s.stream.closed
+    s.consent.armed = true
     await $.session.end({ reason: 'prompt_input_exit' })
     s.stream.release()
     await settle()
@@ -597,4 +604,73 @@ test('an armed session rechecks consent with the stream env and submits a burst 
   const checks = s.runs.filter((r) => r.argv.join(' ') === 'pad session should-arm')
   expect(checks.length).toBe(2)
   expect(checks[1].env).toEqual({ CLAUDECODE: '1', PAD_SESSION_PID: '4242' })
+})
+
+// BUG-3741 r1: only should-arm's "not armed" (exit 1) withdraws consent.
+for (const [label, code] of [['a timeout', 'throw'], ['another exit code', 2]] as const) {
+  test(`a consent check that ends in ${label} keeps the stream and its lines (BUG-3741)`, async ($, on) => {
+    const clock = mock.clock(on)
+    const s = stubs(on, { armed: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+    await $.session.start({ cwd: '/work/demo' })
+    await usePad($)
+    await settle()
+    s.consent.code = code
+    await clock.advance(1500)
+    await settle()
+    expect(s.submitted).toEqual([])
+    expect(s.stream.closed).toBe(false)
+    s.consent.code = undefined
+    s.stream.release()
+    await settle()
+    await clock.advance(1500)
+    await settle()
+    expect(s.submitted).toEqual(['first\nlate line'])
+  })
+}
+
+test('a disarm that did not take effect (--help, a refusal) keeps the stream and flushes what waited (BUG-3741)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await usePad($, 'pad session disarm --help')
+  s.stream.release()
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.stream.closed).toBe(false)
+  expect(s.submitted).toEqual(['late line'])
+})
+
+test('a consent check that answers armed while a disarm runs submits nothing (BUG-3741 r1)', async ($, on) => {
+  const clock = mock.clock(on)
+  const opts: any = { armed: true, holdSubmit: true, chunks: [{ stream: 'stdout', text: 'first\n' }] }
+  const s = stubs(on, opts)
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+  s.stream.release() // 'late line' waits behind the held submit
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  // The disarm is running: the held submit returns and the flush asks
+  // should-arm, which still answers armed, before the disarm takes effect.
+  opts.onTool = async (e: any) => {
+    if (!/disarm/.test(String(e.command))) return
+    s.held.release()
+    await settle()
+    s.consent.armed = false
+  }
+  await usePad($, 'pad session disarm')
+  await settle()
+  s.stream.release() // an ended stream stops at its next write
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+  expect(s.stream.closed).toBe(true)
 })
