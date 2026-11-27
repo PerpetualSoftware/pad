@@ -3,9 +3,9 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"io"
 	goMime "mime"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"path/filepath"
 	"strconv"
@@ -87,6 +87,9 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentList(
 	if itemRef != "" {
 		resolved, err := d.resolveItemRef(ctx, user, workspace, itemRef)
 		if err != nil {
+			if res := tooLargeResultIfExceeded(cmdKey, err); res != nil {
+				return res, nil
+			}
 			return validationFailedResult(cmdKey, "resolve --item: "+err.Error(),
 				fmt.Sprintf("Verify item %q exists in workspace %q (use pad_item search / list).", itemRef, workspace)), nil
 		}
@@ -139,15 +142,22 @@ func (d *HTTPHandlerDispatcher) dispatchAttachmentShow(
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "build request", err), nil
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-
-	if rec.Code >= 400 {
-		return upstreamHTTPErrorResult(ctx, cmdKey, "fetch attachment metadata", urlPath,
-			rec.Code, rec.Body.Bytes(), d.Lister, ResourceAttachment, attachmentID), nil
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "read response", err), nil
 	}
 
-	return packageStructuredResponse(cmdKey, synthesizeAttachmentMetadata(rec.Result().Header, attachmentID))
+	if resp.StatusCode >= 400 {
+		return upstreamHTTPErrorResult(ctx, cmdKey, "fetch attachment metadata", urlPath,
+			resp.StatusCode, bodyBytes, d.Lister, ResourceAttachment, attachmentID), nil
+	}
+
+	return packageStructuredResponse(cmdKey, synthesizeAttachmentMetadata(resp.Header, attachmentID))
 }
 
 // synthesizeAttachmentMetadata maps an attachment HEAD response's headers

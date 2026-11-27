@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 
@@ -174,29 +174,36 @@ func (d *HTTPHandlerDispatcher) lookupRoleID(
 	if err != nil {
 		return "", fmt.Errorf("build agent-role request: %w", err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code == http.StatusNotFound {
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return "", &responseTooLargeError{limit: d.responseMaxBytes()}
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read agent-role response: %w", err)
+	}
+	if resp.StatusCode == http.StatusNotFound {
 		return "", fmt.Errorf("no agent role matches --role %q", role)
 	}
-	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
+	if resp.StatusCode >= 400 {
+		body := strings.TrimSpace(string(bodyBytes))
 		if body == "" {
-			body = http.StatusText(rec.Code)
+			body = http.StatusText(resp.StatusCode)
 		}
-		return "", fmt.Errorf("look up agent role: %d %s", rec.Code, body)
+		return "", fmt.Errorf("look up agent role: %d %s", resp.StatusCode, body)
 	}
 
-	var resp struct {
+	var roleResp struct {
 		ID string `json:"id"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(bodyBytes, &roleResp); err != nil {
 		return "", fmt.Errorf("parse agent-role response: %w", err)
 	}
-	if resp.ID == "" {
+	if roleResp.ID == "" {
 		return "", fmt.Errorf("agent-role response missing id for %q", role)
 	}
-	return resp.ID, nil
+	return roleResp.ID, nil
 }
 
 // lookupAssigneeID issues an in-handler GET against
@@ -222,29 +229,36 @@ func (d *HTTPHandlerDispatcher) lookupAssigneeID(
 	if err != nil {
 		return "", fmt.Errorf("build members request: %w", err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return "", &responseTooLargeError{limit: d.responseMaxBytes()}
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read members response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		body := strings.TrimSpace(string(bodyBytes))
 		if body == "" {
-			body = http.StatusText(rec.Code)
+			body = http.StatusText(resp.StatusCode)
 		}
-		return "", fmt.Errorf("list workspace members: %d %s", rec.Code, body)
+		return "", fmt.Errorf("list workspace members: %d %s", resp.StatusCode, body)
 	}
 
 	// Response shape: {"members":[{user_id, user_name, user_email, ...}, ...], "invitations":[...]}
-	var resp struct {
+	var membersResp struct {
 		Members []struct {
 			UserID    string `json:"user_id"`
 			UserName  string `json:"user_name"`
 			UserEmail string `json:"user_email"`
 		} `json:"members"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+	if err := json.Unmarshal(bodyBytes, &membersResp); err != nil {
 		return "", fmt.Errorf("parse members response: %w", err)
 	}
 
-	for _, m := range resp.Members {
+	for _, m := range membersResp.Members {
 		if strings.EqualFold(m.UserName, assign) || strings.EqualFold(m.UserEmail, assign) {
 			return m.UserID, nil
 		}
@@ -317,9 +331,11 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "build prefetch request", err), nil
 	}
-	prefetchRec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(prefetchRec, prefetchReq)
-	if prefetchRec.Code >= 400 {
+	prefetchResp, exceeded := d.serveCapped(prefetchReq)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
+	if prefetchResp.StatusCode >= 400 {
 		// Mirror the CLI's "not found" UX — the handler's 404 body
 		// already contains a clear message; package it the same way
 		// any other tool error would be packaged. Pass d.Lister so
@@ -328,7 +344,12 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 		// prefetchReq.Context() so the lister sees the same
 		// auth/token state buildHTTPRequest + d.Apply attached
 		// (#379, same fix as executeRequest).
-		return packageHTTPResponse(prefetchReq.Context(), cmdKey, prefetchRec.Result(), d.Lister)
+		return packageHTTPResponse(prefetchReq.Context(), cmdKey, prefetchResp, d.Lister)
+	}
+	prefetchBody, err := io.ReadAll(prefetchResp.Body)
+	_ = prefetchResp.Body.Close()
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "read prefetch response", err), nil
 	}
 
 	// Step 2: Build the PATCH payload.
@@ -543,8 +564,11 @@ func (d *HTTPHandlerDispatcher) dispatchItemUpdate(
 			// One extra GetCollection-equivalent call, paid ONLY on this path
 			// (clear_parent=true) — the common update path fetches no schema
 			// today and shouldn't start paying for one.
-			shadowedKey, serr := d.collectionSchemaShadowsParent(ctx, user, workspace, prefetchRec)
+			shadowedKey, serr := d.collectionSchemaShadowsParent(ctx, user, workspace, prefetchBody)
 			if serr != nil {
+				if res := tooLargeResultIfExceeded(cmdKey, serr); res != nil {
+					return res, nil
+				}
 				return dispatcherErrorResult(cmdKey, "check collection schema for clear_parent", serr), nil
 			}
 			if shadowedKey != "" {
@@ -627,12 +651,12 @@ func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
 	ctx context.Context,
 	user *models.User,
 	workspace string,
-	prefetchItem *httptest.ResponseRecorder,
+	prefetchBody []byte,
 ) (string, error) {
 	var item struct {
 		CollectionSlug string `json:"collection_slug"`
 	}
-	if err := json.Unmarshal(prefetchItem.Body.Bytes(), &item); err != nil {
+	if err := json.Unmarshal(prefetchBody, &item); err != nil {
 		return "", fmt.Errorf("parse prefetched item: %w", err)
 	}
 	if item.CollectionSlug == "" {
@@ -645,20 +669,27 @@ func (d *HTTPHandlerDispatcher) collectionSchemaShadowsParent(
 	if err != nil {
 		return "", fmt.Errorf("build collection request: %w", err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return "", &responseTooLargeError{limit: d.responseMaxBytes()}
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("read collection %q: %w", item.CollectionSlug, err)
+	}
+	if resp.StatusCode >= 400 {
+		body := strings.TrimSpace(string(bodyBytes))
 		if body == "" {
-			body = http.StatusText(rec.Code)
+			body = http.StatusText(resp.StatusCode)
 		}
-		return "", fmt.Errorf("get collection %q: %d %s", item.CollectionSlug, rec.Code, body)
+		return "", fmt.Errorf("get collection %q: %d %s", item.CollectionSlug, resp.StatusCode, body)
 	}
 
 	var coll struct {
 		Schema string `json:"schema"`
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &coll); err != nil {
+	if err := json.Unmarshal(bodyBytes, &coll); err != nil {
 		return "", fmt.Errorf("parse collection response: %w", err)
 	}
 	var schema models.CollectionSchema

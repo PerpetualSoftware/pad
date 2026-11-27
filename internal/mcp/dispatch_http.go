@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 	"sync"
@@ -156,6 +155,10 @@ type HTTPHandlerDispatcher struct {
 	// the /api/v1 chain and the middleware blocks it, but wiring the hook
 	// stops the request before it's ever built.
 	RequireVerifiedEmail func(user *models.User) bool
+
+	// ResponseMaxBytes caps the buffered response body of any single
+	// in-process HTTP call. Zero uses defaultResponseMaxBytes (32 MiB).
+	ResponseMaxBytes int64
 
 	// specialOnce / special lazily cache the specialRoutes map so
 	// Dispatch doesn't rebuild ~20 bound-method entries per call.
@@ -364,6 +367,9 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 			return noWorkspaceResult(ctx, d.Lister), nil
 		}
 		if err != nil {
+			if res := tooLargeResultIfExceeded(cmdKey, err); res != nil {
+				return res, nil
+			}
 			return validationFailedResult(cmdKey, "resolve --assign: "+err.Error(),
 				"Pass `assign=<user-name|email>` matching a workspace member, or `assigned_user_id=<uuid>` directly."), nil
 		}
@@ -381,6 +387,9 @@ func (d *HTTPHandlerDispatcher) Dispatch(ctx context.Context, cmdPath, _ []strin
 			return noWorkspaceResult(ctx, d.Lister), nil
 		}
 		if err != nil {
+			if res := tooLargeResultIfExceeded(cmdKey, err); res != nil {
+				return res, nil
+			}
 			return validationFailedResult(cmdKey, "resolve --role: "+err.Error(),
 				"Pass `role=<slug>` matching an existing agent role, or `agent_role_id=<uuid>` directly."), nil
 		}
@@ -523,8 +532,10 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 		return buildRequestErrorResult(cmdKey, err), nil
 	}
 
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
 	// Use req.Context() (NOT the outer ctx) so the workspace lister
 	// sees everything buildHTTPRequest + d.Apply attached:
 	// WithCurrentUser, WithAPITokenAuth, and any TokenAllowedWorkspaces
@@ -535,8 +546,6 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 	// those test paths and (more critically) in any production
 	// dispatcher that attaches token state via Apply rather than
 	// inheriting from the inbound request's ctx (#379).
-	resp := rec.Result()
-	resp.Request = req
 	return packageHTTPResponse(req.Context(), cmdKey, resp, d.Lister)
 }
 

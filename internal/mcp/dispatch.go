@@ -120,6 +120,10 @@ type ExecDispatcher struct {
 	// `pad workspace list` with these flags so it hits the same
 	// endpoint as the original failed call.
 	RootArgs []string
+
+	// ResponseMaxBytes caps the buffered stdout of any single subprocess call.
+	// Zero uses defaultResponseMaxBytes (32 MiB).
+	ResponseMaxBytes int64
 }
 
 // Dispatch runs `<Binary> <cmdPath...> <cliArgs...>` and packages the
@@ -149,17 +153,19 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	full := append(append([]string{}, cmdPath...), cliArgs...)
 	cmd := exec.CommandContext(ctx, d.Binary, full...)
 	cmd.Env = dispatchChildEnv()
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	limit := d.responseMaxBytes()
+	stdout, stderr, exceeded, err := runCapped(cmd, limit)
+	if exceeded {
+		return responseTooLargeResult(strings.Join(cmdPath, " "), limit), nil
+	}
+	if err != nil {
 		// Classify into the structured envelope. WorkspaceLister
 		// uses the same dispatcher (recursive in spirit but a fresh
 		// subprocess) to enrich no_workspace / unknown_workspace
 		// errors with available_workspaces.
-		return classifyExecError(ctx, cmdPath, err, stderr.String(), d), nil
+		return classifyExecError(ctx, cmdPath, err, stderr, d), nil
 	}
-	out := stdout.String()
+	out := string(stdout)
 	// If stdout is JSON, surface it as structured content alongside
 	// the text fallback. This is what `--format json` emits for most
 	// pad commands; clients that parse structured content (Claude
@@ -348,13 +354,15 @@ func (d *ExecDispatcher) ListWorkspaces(ctx context.Context) ([]WorkspaceHint, e
 	args = append(args, d.RootArgs...)
 	cmd := exec.CommandContext(ctx, d.Binary, args...)
 	cmd.Env = dispatchChildEnv()
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("workspace list: %s", strings.TrimSpace(stderr.String()))
+	limit := d.responseMaxBytes()
+	stdout, stderr, exceeded, err := runCapped(cmd, limit)
+	if exceeded {
+		return nil, fmt.Errorf("workspace list: output exceeded %d-byte cap", limit)
 	}
-	return parseWorkspaceListJSON(stdout.String())
+	if err != nil {
+		return nil, fmt.Errorf("workspace list: %s", strings.TrimSpace(stderr))
+	}
+	return parseWorkspaceListJSON(string(stdout))
 }
 
 // parseWorkspaceListJSON decodes the JSON shape `pad workspace list

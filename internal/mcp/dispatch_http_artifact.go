@@ -3,7 +3,6 @@ package mcp
 import (
 	"context"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 
@@ -74,7 +73,9 @@ func (d *HTTPHandlerDispatcher) dispatchItemImport(
 	// identical.
 	req.Header.Set("Content-Type", "text/markdown; charset=utf-8")
 
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	return packageHTTPResponse(req.Context(), cmdKey, rec.Result(), d.Lister)
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
+	return packageHTTPResponse(req.Context(), cmdKey, resp, d.Lister)
 }

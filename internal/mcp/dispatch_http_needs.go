@@ -3,8 +3,8 @@ package mcp
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
@@ -54,6 +54,9 @@ func (d *HTTPHandlerDispatcher) dispatchNeedsNotMine(ctx context.Context, input 
 		if toRole != "" {
 			id, err := d.lookupRoleID(ctx, user, ws, toRole)
 			if err != nil {
+				if res := tooLargeResultIfExceeded(key, err); res != nil {
+					return res, nil
+				}
 				return validationFailedResult(key, "resolve to_role: "+err.Error(), "Pass an existing agent role slug."), nil
 			}
 			patch["agent_role_id"], patch["clear_assigned_user"] = id, true
@@ -61,6 +64,9 @@ func (d *HTTPHandlerDispatcher) dispatchNeedsNotMine(ctx context.Context, input 
 		} else {
 			id, err := d.lookupAssigneeID(ctx, user, ws, toUser)
 			if err != nil {
+				if res := tooLargeResultIfExceeded(key, err); res != nil {
+					return res, nil
+				}
 				return validationFailedResult(key, "resolve to_user: "+err.Error(), "Pass a workspace member's name or email."), nil
 			}
 			patch["assigned_user_id"] = id
@@ -70,15 +76,22 @@ func (d *HTTPHandlerDispatcher) dispatchNeedsNotMine(ctx context.Context, input 
 		if err != nil {
 			return buildRequestErrorResult(key, err), nil
 		}
-		rec := httptest.NewRecorder()
-		d.Handler.ServeHTTP(rec, req)
-		if rec.Code >= 400 {
-			return packageHTTPResponse(req.Context(), key, rec.Result(), d.Lister)
+		resp, exceeded := d.serveCapped(req)
+		if exceeded {
+			return responseTooLargeResult(key, d.responseMaxBytes()), nil
+		}
+		if resp.StatusCode >= 400 {
+			return packageHTTPResponse(req.Context(), key, resp, d.Lister)
+		}
+		bodyBytes, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			return dispatcherErrorResult(key, "read item", err), nil
 		}
 		var item struct {
 			Seq int64 `json:"seq"`
 		}
-		if err := json.Unmarshal(rec.Body.Bytes(), &item); err != nil {
+		if err := json.Unmarshal(bodyBytes, &item); err != nil {
 			return dispatcherErrorResult(key, "decode item", err), nil
 		}
 		patch["expected_seq"] = item.Seq

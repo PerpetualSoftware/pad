@@ -1,12 +1,11 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strconv"
 	"strings"
@@ -145,17 +144,23 @@ func (f *HTTPResourceFetcher) FetchBytes(ctx context.Context, args []string) ([]
 		return nil, fmt.Errorf("attachment download: workspace and id required")
 	}
 	urlPath := attachmentVariantPath(ws, id, flags["variant"])
-	w := newCappedResponseWriter(attachmentResourceMaxBytes + 1)
-	if err := f.serve(ctx, user, http.MethodGet, urlPath, w); err != nil {
+	req, err := f.d.buildAuthedRequest(ctx, http.MethodGet, urlPath, nil, user)
+	if err != nil {
 		return nil, err
 	}
-	if w.status >= 400 {
-		return nil, resourceHTTPError(urlPath, w.status, w.body.Bytes())
-	}
-	if w.exceededCap() {
+	resp, exceeded := f.d.serveCappedWithLimit(req, attachmentResourceMaxBytes+1)
+	defer resp.Body.Close()
+	if exceeded {
 		return nil, fmt.Errorf("attachment download %s: output exceeded %d-byte cap", id, attachmentResourceMaxBytes)
 	}
-	return w.body.Bytes(), nil
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode >= 400 {
+		return nil, resourceHTTPError(urlPath, resp.StatusCode, body)
+	}
+	return body, nil
 }
 
 // fetchItemList reproduces `pad item list --all --format json`: the CLI
@@ -269,16 +274,25 @@ func (f *HTTPResourceFetcher) fetchAttachmentMetadata(ctx context.Context, user 
 		return "", fmt.Errorf("attachment show: workspace and id required")
 	}
 	urlPath := attachmentVariantPath(ws, id, flags["variant"])
-	rec := httptest.NewRecorder()
-	if err := f.serve(ctx, user, http.MethodHead, urlPath, rec); err != nil {
+	req, err := f.d.buildAuthedRequest(ctx, http.MethodHead, urlPath, nil, user)
+	if err != nil {
 		return "", err
 	}
-	if rec.Code >= 400 {
-		return "", resourceHTTPError(urlPath, rec.Code, rec.Body.Bytes())
+	resp, exceeded := f.d.serveCapped(req)
+	defer resp.Body.Close()
+	if exceeded {
+		return "", fmt.Errorf("%s: response exceeded %d-byte cap", urlPath, f.d.responseMaxBytes())
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", err
+	}
+	if resp.StatusCode >= 400 {
+		return "", resourceHTTPError(urlPath, resp.StatusCode, body)
 	}
 	// Shared with the pad_attachment tool's dispatchAttachmentShow so the two
 	// surfaces for this HEAD-derived shape stay in lockstep.
-	enc, err := json.Marshal(synthesizeAttachmentMetadata(rec.Result().Header, id))
+	enc, err := json.Marshal(synthesizeAttachmentMetadata(resp.Header, id))
 	if err != nil {
 		return "", fmt.Errorf("attachment show: encode metadata: %w", err)
 	}
@@ -289,25 +303,23 @@ func (f *HTTPResourceFetcher) fetchAttachmentMetadata(ctx context.Context, user 
 // any 4xx/5xx to a Go error (the resource protocol surfaces these as
 // JSON-RPC errors).
 func (f *HTTPResourceFetcher) getJSON(ctx context.Context, user *models.User, urlPath string) ([]byte, error) {
-	rec := httptest.NewRecorder()
-	if err := f.serve(ctx, user, http.MethodGet, urlPath, rec); err != nil {
+	req, err := f.d.buildAuthedRequest(ctx, http.MethodGet, urlPath, nil, user)
+	if err != nil {
 		return nil, err
 	}
-	if rec.Code >= 400 {
-		return nil, resourceHTTPError(urlPath, rec.Code, rec.Body.Bytes())
+	resp, exceeded := f.d.serveCapped(req)
+	defer resp.Body.Close()
+	if exceeded {
+		return nil, fmt.Errorf("%s: response exceeded %d-byte cap", urlPath, f.d.responseMaxBytes())
 	}
-	return rec.Body.Bytes(), nil
-}
-
-// serve builds an authed in-process request (reusing the dispatcher's
-// scope/consent/verified-email perimeter) and runs it through the handler.
-func (f *HTTPResourceFetcher) serve(ctx context.Context, user *models.User, method, urlPath string, w http.ResponseWriter) error {
-	req, err := f.d.buildAuthedRequest(ctx, method, urlPath, nil, user)
+	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	f.d.Handler.ServeHTTP(w, req)
-	return nil
+	if resp.StatusCode >= 400 {
+		return nil, resourceHTTPError(urlPath, resp.StatusCode, body)
+	}
+	return body, nil
 }
 
 // attachmentVariantPath builds the attachment blob URL with an optional
@@ -382,51 +394,3 @@ func splitResourceArgs(args []string) (flags map[string]string, pos []string) {
 	}
 	return flags, pos
 }
-
-// cappedResponseWriter is an http.ResponseWriter that retains at most
-// `limit` bytes of the response body (silently discarding the rest so the
-// handler's io.Copy keeps draining) and records whether it overflowed. Used
-// for the attachment-download read so an oversized blob can't balloon memory
-// in the shared cloud process. It reuses ExecResourceFetcher's cappedWriter
-// for the byte-capping algorithm — the same 1 MiB download bound — and only
-// adds the http.ResponseWriter shims, so the cap logic lives in one place.
-type cappedResponseWriter struct {
-	header   http.Header
-	status   int
-	wroteHdr bool
-	body     bytes.Buffer
-	capped   *cappedWriter
-}
-
-// newCappedResponseWriter wires the writer's body buffer into a cappedWriter
-// bounded at limit. Must be used (not a bare struct literal) so `capped` is
-// non-nil before the first Write.
-func newCappedResponseWriter(limit int64) *cappedResponseWriter {
-	w := &cappedResponseWriter{}
-	w.capped = &cappedWriter{buf: &w.body, limit: limit}
-	return w
-}
-
-func (w *cappedResponseWriter) Header() http.Header {
-	if w.header == nil {
-		w.header = http.Header{}
-	}
-	return w.header
-}
-
-func (w *cappedResponseWriter) WriteHeader(status int) {
-	if !w.wroteHdr {
-		w.status = status
-		w.wroteHdr = true
-	}
-}
-
-func (w *cappedResponseWriter) Write(p []byte) (int, error) {
-	if !w.wroteHdr {
-		w.WriteHeader(http.StatusOK)
-	}
-	return w.capped.Write(p)
-}
-
-// exceededCap reports whether the response body overran the byte limit.
-func (w *cappedResponseWriter) exceededCap() bool { return w.capped.exceeded }
