@@ -1442,6 +1442,23 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), suffixes[exp])
 }
 
+// eventIDSpacePhase is what the Redis startup log reports about the event
+// ID-space migration (BUG-2736): the phase this instance publishes, where the
+// setting came from, and whether to warn. It warns for phase 1 from config.toml
+// only (TASK-4895): every Save before phase 2 became the default wrote
+// `events_publish_epoch = false` unless the file already said true, so that
+// line is usually not a choice, while
+// PAD_EVENTS_PUBLISH_EPOCH=false is. Called on the Redis path only; the
+// in-process bus has no wire form, and the CLI loads config for every command.
+func eventIDSpacePhase(cfg *config.Config) (phase int, source string, warn bool) {
+	phase = 1
+	if cfg.EventsPublishEpoch {
+		phase = 2
+	}
+	source = cfg.EventsPublishEpochSource
+	return phase, source, phase == 1 && source == config.EventsPublishEpochSourceConfigFile
+}
+
 // newObservedEventBus builds the event bus for this deployment shape with its
 // operational observer already attached (BUG-2731). A nil client selects the
 // in-process bus.
@@ -1477,22 +1494,6 @@ func humanBytes(n int64) string {
 // The flip reaches the Redis bus only. The in-process bus has no wire and
 // identifies its ID space by its own incarnation base instead (see
 // internal/idspace), so it ignores the field.
-// eventIDSpacePhase is what the Redis startup log reports about the event
-// ID-space migration (BUG-2736): the phase this instance publishes, where the
-// setting came from, and whether to warn. It warns for phase 1 from config.toml
-// only (TASK-4895): every Save before phase 2 became the default wrote
-// `events_publish_epoch = false`, so that line is usually not a choice, while
-// PAD_EVENTS_PUBLISH_EPOCH=false is. Called on the Redis path only; the
-// in-process bus has no wire form, and the CLI loads config for every command.
-func eventIDSpacePhase(cfg *config.Config) (phase int, source string, warn bool) {
-	phase = 1
-	if cfg.EventsPublishEpoch {
-		phase = 2
-	}
-	source = cfg.EventsPublishEpochSource
-	return phase, source, phase == 1 && source == config.EventsPublishEpochSourceConfigFile
-}
-
 func newObservedEventBus(cfg *config.Config, rc *redis.Client, redisKeys redisns.Keys, m *metrics.Metrics) events.EventBus {
 	if rc != nil {
 		bus := events.NewRedisBusWithKeys(rc, redisKeys, cfg.EventsPublishEpoch, cfg.EventsHeartbeat)
