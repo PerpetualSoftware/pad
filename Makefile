@@ -100,16 +100,20 @@ test-nix-hash:
 # greens red.
 #
 # THE READINESS PROBE TESTS THE HOST-PUBLISHED PORT, which is the path the
-# tests take — not the container's own socket. Two ways in, because neither is
-# universal: the host's pg_isready when it exists, otherwise a throwaway
-# container reaching back through host.docker.internal (native on Docker
-# Desktop, and `--add-host=...:host-gateway` makes it resolve on Linux too).
-# An earlier version used `--network host`, which is Linux-only and would have
-# made a healthy database read as unreachable on Desktop; the version after
-# that fell back to `compose exec`, which answers "is the server alive inside
-# the container" and would let a broken port mapping through the guard. This
-# box has no host pg_isready, so the fallback is the branch that actually runs
-# here — it is not a rarely-exercised path.
+# tests take — not the container's own socket. The port is published on
+# 127.0.0.1 only (docker-compose.test.yml), so every probe must arrive on the
+# host's loopback. The host's pg_isready when it exists; otherwise a throwaway
+# container, first with `--network host` (shares the host's loopback on a
+# native Linux engine), then through host.docker.internal (Docker Desktop
+# forwards it to the host). Either answering proves the published port serves
+# Postgres. host.docker.internal alone is not enough on Linux: with
+# `--add-host=...:host-gateway` it resolves to the bridge gateway, which a
+# loopback-bound port does not listen on, so a healthy database would read as
+# unreachable. `--network host` alone is not enough on Desktop, where the
+# container's loopback is the VM's. Do not fall back to `compose exec`: it
+# answers "is the server alive inside the container" and would let a broken
+# port mapping through the guard. Many dev machines have no host pg_isready,
+# so the container branches are the ones that usually run.
 #
 # THE BANNER IS THE DISCRIMINATOR, NOT THE EXIT CODE. make collapses every
 # failed recipe to exit 2, so "the database was unreachable" and "tests failed"
@@ -163,6 +167,15 @@ COMPOSE_TEST := docker compose -p $(TEST_PG_PROJECT) -f docker-compose.test.yml
 test-pg:
 	@trap 'echo ""; if $(COMPOSE_TEST) down -v >/dev/null 2>&1; then echo "test-pg: INTERRUPTED - stack $(TEST_PG_PROJECT) torn down."; else echo "test-pg: INTERRUPTED and TEARDOWN FAILED - reap it with: docker compose -p $(TEST_PG_PROJECT) down -v"; fi; exit 130' INT TERM; \
 	port=""; \
+	pg_probe() { \
+		if command -v pg_isready >/dev/null 2>&1; then \
+			pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; return; \
+		fi; \
+		docker run --rm --network host postgres:17-alpine \
+			pg_isready -h 127.0.0.1 -p "$$port" -U pad -q && return 0; \
+		docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine \
+			pg_isready -h host.docker.internal -p "$$port" -U pad -q; \
+	}; \
 	if ! $(COMPOSE_TEST) up -d --wait; then \
 		echo ""; \
 		echo "################################################################"; \
@@ -183,12 +196,7 @@ test-pg:
 		exit 1; \
 	fi; \
 	url="postgres://pad:pad@127.0.0.1:$$port/pad?sslmode=disable"; \
-	if command -v pg_isready >/dev/null 2>&1; then \
-		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; ready=$$?; \
-	else \
-		docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine \
-			pg_isready -h host.docker.internal -p "$$port" -U pad -q; ready=$$?; \
-	fi; \
+	pg_probe; ready=$$?; \
 	if [ $$ready -ne 0 ]; then \
 		echo ""; \
 		echo "################################################################"; \
@@ -218,12 +226,7 @@ test-pg:
 		PAD_TEST_POSTGRES_URL="$$url" go test -timeout=45m $(TEST_PG_PKGS) -v -count=1; \
 		EXIT_CODE=$$?; \
 	fi; \
-	if command -v pg_isready >/dev/null 2>&1; then \
-		pg_isready -h 127.0.0.1 -p "$$port" -U pad -q; still_up=$$?; \
-	else \
-		docker run --rm --add-host=host.docker.internal:host-gateway postgres:17-alpine \
-			pg_isready -h host.docker.internal -p "$$port" -U pad -q; still_up=$$?; \
-	fi; \
+	pg_probe; still_up=$$?; \
 	if [ $$EXIT_CODE -ne 0 ] && [ $$still_up -ne 0 ]; then \
 		echo ""; \
 		echo "################################################################"; \
