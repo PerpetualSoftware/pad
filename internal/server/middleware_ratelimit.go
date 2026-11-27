@@ -450,6 +450,14 @@ type RateLimiters struct {
 	// code can spend another install's bucket. It bounds secret churn from a
 	// stream of reissued codes.
 	AppRedeemInstall *ipRateLimiter
+
+	// WebViewSession caps POST /api/v1/auth/webview-session per PARENT
+	// session (TASK-4454): 0.1/s, burst 30. The app mints one child on each
+	// identity proof, about every 240 s, plus one after each network gap, so
+	// one view never comes near it; the burst covers a run of gaps. Keyed by
+	// the parent's session id and charged in the handler, once the parent is
+	// known.
+	WebViewSession *ipRateLimiter
 }
 
 // NewRateLimiters creates rate limiters with sensible defaults.
@@ -674,6 +682,10 @@ func NewRateLimiters() *RateLimiters {
 			Rate:  rate.Limit(5.0 / 60.0),
 			Burst: 5,
 		}),
+		WebViewSession: newIPRateLimiter(rateLimitConfig{
+			Rate:  rate.Limit(0.1),
+			Burst: 30,
+		}),
 	}
 }
 
@@ -720,6 +732,7 @@ func (rls *RateLimiters) Stop() {
 		rls.OAuthClaim,
 		rls.AppRedeemAddr,
 		rls.AppRedeemInstall,
+		rls.WebViewSession,
 	} {
 		rl.Stop() // nil-safe via the receiver guard in (*ipRateLimiter).Stop
 	}

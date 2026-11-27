@@ -582,6 +582,8 @@ var nulExcluded = map[string]string{
 	"item_entries.item_id": "server UUID: the id of the items row whose trigger wrote it (TASK-4491, migration 184)",
 	"item_entries.kind":    "fixed enum constrained by CHECK: note or decision (TASK-4491, migration 184)",
 
+	"sessions.parent_session_id": "server value: the parent session UUID read from the authenticated session (TASK-4454, migration 194)",
+
 	"users.totp_enabled_at":    "server value: RFC3339 enrolment time (TASK-3867)",
 	"sessions.signed_in_at":    "server value: RFC3339 sign-in time (TASK-3867)",
 	"sessions.step_up_until":   "server value: RFC3339 grant deadline (TASK-3867)",

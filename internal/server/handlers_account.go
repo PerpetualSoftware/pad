@@ -39,7 +39,8 @@ func writeAccountDisabledIf(w http.ResponseWriter, err error) bool {
 // again. A credential-change rotation does not restart the clock
 // (CreateSessionIssuedAt). A CLI-kind session never satisfies it (TASK-3975):
 // a CLI token approved from a web session has its own created_at, so its age
-// says nothing about when anyone signed in.
+// says nothing about when anyone signed in. Nor does a WebView session
+// (TASK-4454), minted minutes ago from a sign-in of any age.
 const accountDeleteReauthWindow = 10 * time.Minute
 
 // cookieKindAccepted reports whether a session may be used as a browser
@@ -145,7 +146,7 @@ func (s *Server) handleDeleteAccount(w http.ResponseWriter, r *http.Request) {
 		// linked OAuth, reads false too. So confirm-only also needs a recent
 		// sign-in.
 		info := s.requestSessionInfo(r)
-		if info == nil || info.User.ID != fullUser.ID || info.Kind == store.SessionKindCLI || time.Since(info.CreatedAt) > accountDeleteReauthWindow {
+		if info == nil || info.User.ID != fullUser.ID || info.Kind == store.SessionKindCLI || info.Kind == store.SessionKindWebView || time.Since(info.CreatedAt) > accountDeleteReauthWindow {
 			writeError(w, http.StatusForbidden, "reauth_required",
 				"For your security, sign in again to delete your account")
 			return
