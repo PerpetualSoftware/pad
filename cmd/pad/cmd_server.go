@@ -709,14 +709,14 @@ func serveCmd() *cobra.Command {
 				// pad_event_sequence_resets_total cannot interpret it without
 				// knowing which phase this instance publishes in — a
 				// counter_backward rate is expected on phase 1 and an anomaly
-				// on phase 2 — and the config can arrive from an env var, a
-				// TOML file, or neither, so the source is logged with it.
-				phase, phaseSource, phaseWarn := eventIDSpacePhase(cfg)
-				if phaseWarn {
-					slog.Warn("Event ID-space phase 1 comes from events_publish_epoch = false in the config file; "+
-						"this keeps the older wire form. Delete that line to take the default (phase 2) once every "+
-						"replica accepts it, or keep it as a deliberate opt-out",
-						"config_path", cfg.ConfigPath)
+				// on phase 2 — and the value comes from the default or the
+				// env var, so the source is logged with it.
+				phase, phaseSource, warnIgnoredFileKey := eventIDSpacePhase(cfg)
+				if warnIgnoredFileKey {
+					slog.Warn("events_publish_epoch in the config file is ignored: this setting moved to the "+
+						"PAD_EVENTS_PUBLISH_EPOCH environment variable. Delete the line. To stay on the older wire form, "+
+						"set PAD_EVENTS_PUBLISH_EPOCH=false on every replica (a fleet mixing the two forms resyncs clients repeatedly)",
+						"config_path", cfg.ConfigPath, "key", "events_publish_epoch")
 				}
 				// The heartbeat rollout is logged for the SAME reason and is a
 				// SEPARATE, independently-flipped migration (BUG-2738): an
@@ -1444,19 +1444,18 @@ func humanBytes(n int64) string {
 
 // eventIDSpacePhase is what the Redis startup log reports about the event
 // ID-space migration (BUG-2736): the phase this instance publishes, where the
-// setting came from, and whether to warn. It warns for phase 1 from config.toml
-// only (TASK-4895): every Save before phase 2 became the default wrote
-// `events_publish_epoch = false` unless the file already said true, so that
-// line is usually not a choice, while
-// PAD_EVENTS_PUBLISH_EPOCH=false is. Called on the Redis path only; the
-// in-process bus has no wire form, and the CLI loads config for every command.
-func eventIDSpacePhase(cfg *config.Config) (phase int, source string, warn bool) {
+// setting came from ("default" or "env"), and whether to warn about an
+// events_publish_epoch line in config.toml. Load ignores that line in either
+// phase (TASK-4895): the setting lives in PAD_EVENTS_PUBLISH_EPOCH only, set on
+// every replica or none, because a fleet mixing the two wire forms keeps
+// resyncing clients. Called on the Redis path only; the in-process bus has no
+// wire form, and the CLI loads config for every command.
+func eventIDSpacePhase(cfg *config.Config) (phase int, source string, warnIgnoredFileKey bool) {
 	phase = 1
 	if cfg.EventsPublishEpoch {
 		phase = 2
 	}
-	source = cfg.EventsPublishEpochSource
-	return phase, source, phase == 1 && source == config.EventsPublishEpochSourceConfigFile
+	return phase, cfg.EventsPublishEpochSource, cfg.EventsPublishEpochFileIgnored
 }
 
 // newObservedEventBus builds the event bus for this deployment shape with its

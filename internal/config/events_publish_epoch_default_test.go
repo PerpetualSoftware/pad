@@ -8,10 +8,13 @@ import (
 )
 
 // TASK-4895: phase 2 of the event ID-space migration (BUG-2736) is the
-// default. These tests pin the three things that make the flip safe for an
-// install that already has a config.toml: where the effective value came from
-// is recorded, a saved default writes no key at all, and an explicit false
-// (typed by an operator, or written by an older `pad init`) is kept.
+// default, and the setting lives in PAD_EVENTS_PUBLISH_EPOCH only. A fleet
+// mixing phase-1 and phase-2 publishers keeps dropping replay buffers and
+// resyncing clients, and older `pad init` / `pad auth configure` wrote
+// `events_publish_epoch = false` into config.toml without anyone choosing it,
+// so honouring that line would split fleets indefinitely. These tests pin
+// that the file key never reaches the field, that its presence is recorded
+// so the server can warn, and that Save never writes the key.
 
 var epochKeyLine = regexp.MustCompile(`(?m)^events_publish_epoch\s*=`)
 
@@ -24,158 +27,94 @@ func readConfigText(t *testing.T, dir string) string {
 	return string(b)
 }
 
-func TestEventsPublishEpochSourceDefault(t *testing.T) {
-	isolateEnv(t)
-	cfg := mustLoad(t)
-	if !cfg.EventsPublishEpoch {
-		t.Error("EventsPublishEpoch = false with no file key and no env, want true (the default)")
-	}
-	if cfg.EventsPublishEpochSource != EventsPublishEpochSourceDefault {
-		t.Errorf("EventsPublishEpochSource = %q, want %q", cfg.EventsPublishEpochSource, EventsPublishEpochSourceDefault)
-	}
-}
-
-// A config.toml that holds an unrelated key must not count as having set the
-// epoch key: the source is the key, not the file.
-func TestEventsPublishEpochSourceDefaultWithAFileWithoutTheKey(t *testing.T) {
-	dir := isolateEnv(t)
-	writeConfigFile(t, dir, "editor = \"nano\"\n")
-	cfg := mustLoad(t)
-	if !cfg.EventsPublishEpoch || cfg.EventsPublishEpochSource != EventsPublishEpochSourceDefault {
-		t.Errorf("got %v from %q, want true from %q", cfg.EventsPublishEpoch, cfg.EventsPublishEpochSource, EventsPublishEpochSourceDefault)
-	}
-}
-
-func TestEventsPublishEpochSourceConfigFile(t *testing.T) {
-	dir := isolateEnv(t)
-	writeConfigFile(t, dir, "events_publish_epoch = false\n")
-	cfg := mustLoad(t)
-	if cfg.EventsPublishEpoch {
-		t.Error("EventsPublishEpoch = true, want false from config.toml")
-	}
-	if cfg.EventsPublishEpochSource != EventsPublishEpochSourceConfigFile {
-		t.Errorf("EventsPublishEpochSource = %q, want %q", cfg.EventsPublishEpochSource, EventsPublishEpochSourceConfigFile)
-	}
-}
-
-func TestEventsPublishEpochSourceEnvOverFile(t *testing.T) {
-	dir := isolateEnv(t)
-	writeConfigFile(t, dir, "events_publish_epoch = false\n")
-	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "true")
-	cfg := mustLoad(t)
-	if !cfg.EventsPublishEpoch {
-		t.Error("EventsPublishEpoch = false, want true: the env var wins over the file")
-	}
-	if cfg.EventsPublishEpochSource != EventsPublishEpochSourceEnv {
-		t.Errorf("EventsPublishEpochSource = %q, want %q", cfg.EventsPublishEpochSource, EventsPublishEpochSourceEnv)
+func TestEventsPublishEpochLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		file        string // config.toml body; "" writes no file
+		env         string
+		wantOn      bool
+		wantSource  string
+		wantIgnored bool
+	}{
+		{"no file key, no env", "", "", true, EventsPublishEpochSourceDefault, false},
+		{"a file without the key", "editor = \"nano\"\n", "", true, EventsPublishEpochSourceDefault, false},
+		{"file false, no env, is ignored", "events_publish_epoch = false\n", "", true, EventsPublishEpochSourceDefault, true},
+		{"file true, no env, is ignored", "events_publish_epoch = true\n", "", true, EventsPublishEpochSourceDefault, true},
+		{"file true, env false", "events_publish_epoch = true\n", "false", false, EventsPublishEpochSourceEnv, true},
+		{"file false, env true", "events_publish_epoch = false\n", "true", true, EventsPublishEpochSourceEnv, true},
+		{"no file key, env false", "", "false", false, EventsPublishEpochSourceEnv, false},
+		{"no file key, env true", "", "true", true, EventsPublishEpochSourceEnv, false},
+		// A non-boolean env value is ignored loudly and changes nothing,
+		// the source included; the file key still does not count.
+		{"file false, env not a boolean", "events_publish_epoch = false\n", "yes-please", true, EventsPublishEpochSourceDefault, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := isolateEnv(t)
+			if tc.file != "" {
+				writeConfigFile(t, dir, tc.file)
+			}
+			t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", tc.env)
+			cfg := mustLoad(t)
+			if cfg.EventsPublishEpoch != tc.wantOn || cfg.EventsPublishEpochSource != tc.wantSource ||
+				cfg.EventsPublishEpochFileIgnored != tc.wantIgnored {
+				t.Errorf("Load: EventsPublishEpoch %v source %q file-ignored %v, want %v %q %v",
+					cfg.EventsPublishEpoch, cfg.EventsPublishEpochSource, cfg.EventsPublishEpochFileIgnored,
+					tc.wantOn, tc.wantSource, tc.wantIgnored)
+			}
+		})
 	}
 }
 
-func TestEventsPublishEpochSourceEnvFalse(t *testing.T) {
-	isolateEnv(t)
-	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "false")
-	cfg := mustLoad(t)
-	if cfg.EventsPublishEpoch {
-		t.Error("EventsPublishEpoch = true, want false: PAD_EVENTS_PUBLISH_EPOCH=false is the opt-out")
-	}
-	if cfg.EventsPublishEpochSource != EventsPublishEpochSourceEnv {
-		t.Errorf("EventsPublishEpochSource = %q, want %q", cfg.EventsPublishEpochSource, EventsPublishEpochSourceEnv)
-	}
-}
-
-// A non-boolean env value is ignored loudly and leaves the source where the
-// file or the default put it.
-func TestEventsPublishEpochSourceUnchangedByANonBooleanEnv(t *testing.T) {
-	dir := isolateEnv(t)
-	writeConfigFile(t, dir, "events_publish_epoch = false\n")
-	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "yes-please")
-	cfg := mustLoad(t)
-	if cfg.EventsPublishEpoch || cfg.EventsPublishEpochSource != EventsPublishEpochSourceConfigFile {
-		t.Errorf("got %v from %q, want false from %q", cfg.EventsPublishEpoch, cfg.EventsPublishEpochSource, EventsPublishEpochSourceConfigFile)
-	}
-}
-
-// Save of a default config writes no events_publish_epoch key, so a later
-// change of default reaches the install. Before TASK-4895 every Save wrote
-// `events_publish_epoch = false`, which pinned phase 1 for good.
-func TestSaveOfDefaultWritesNoEventsPublishEpochKey(t *testing.T) {
-	dir := isolateEnv(t)
-	cfg := mustLoad(t)
-	mustSave(t, cfg)
-	if text := readConfigText(t, dir); epochKeyLine.MatchString(text) {
-		t.Errorf("config.toml holds an events_publish_epoch key for a default config:\n%s", text)
-	}
-	back := mustLoad(t)
-	if !back.EventsPublishEpoch || back.EventsPublishEpochSource != EventsPublishEpochSourceDefault {
-		t.Errorf("round trip: got %v from %q, want true from %q", back.EventsPublishEpoch, back.EventsPublishEpochSource, EventsPublishEpochSourceDefault)
+// Save never writes the key, whatever the in-memory value and wherever it
+// came from, and a Load+Save of a file holding it removes it.
+func TestSaveNeverWritesEventsPublishEpoch(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		file string
+		env  string
+		set  *bool // assigned after Load, as a caller would
+	}{
+		{"default", "", "", nil},
+		{"set false after Load", "", "", epochPtr(false)},
+		{"set true after Load", "", "", epochPtr(true)},
+		{"env false", "", "false", nil},
+		{"file false", "editor = \"vim\"\nevents_publish_epoch = false\n", "", nil},
+		{"file true", "events_publish_epoch = true\n", "", nil},
+		{"file false, set false after Load", "events_publish_epoch = false\n", "", epochPtr(false)},
+		{"file true, env false", "events_publish_epoch = true\n", "false", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := isolateEnv(t)
+			if tc.file != "" {
+				writeConfigFile(t, dir, tc.file)
+			}
+			t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", tc.env)
+			cfg := mustLoad(t)
+			if tc.set != nil {
+				cfg.EventsPublishEpoch = *tc.set
+			}
+			mustSave(t, cfg)
+			if text := readConfigText(t, dir); epochKeyLine.MatchString(text) {
+				t.Errorf("config.toml holds an events_publish_epoch key after Save:\n%s", text)
+			}
+		})
 	}
 }
 
-// Save without Load (pad init builds a Config from DefaultConfig) takes the
-// same path.
-func TestSaveWithoutLoadOfDefaultWritesNoEventsPublishEpochKey(t *testing.T) {
-	dir := t.TempDir()
-	cfg := DefaultConfig()
-	cfg.DataDir = dir
-	cfg.ConfigPath = filepath.Join(dir, "config.toml")
-	mustSave(t, cfg)
-	if text := readConfigText(t, dir); epochKeyLine.MatchString(text) {
-		t.Errorf("config.toml holds an events_publish_epoch key for a default config:\n%s", text)
-	}
-}
-
-func TestSaveOfOptOutWritesEventsPublishEpochFalse(t *testing.T) {
-	dir := isolateEnv(t)
-	cfg := mustLoad(t)
-	cfg.EventsPublishEpoch = false
-	mustSave(t, cfg)
-	text := readConfigText(t, dir)
-	if !regexp.MustCompile(`(?m)^events_publish_epoch = false$`).MatchString(text) {
-		t.Errorf("config.toml lacks `events_publish_epoch = false` for an opted-out config:\n%s", text)
-	}
-	back := mustLoad(t)
-	if back.EventsPublishEpoch || back.EventsPublishEpochSource != EventsPublishEpochSourceConfigFile {
-		t.Errorf("round trip: got %v from %q, want false from %q", back.EventsPublishEpoch, back.EventsPublishEpochSource, EventsPublishEpochSourceConfigFile)
-	}
-	// And a second Save of the reloaded config keeps the opt-out.
-	mustSave(t, back)
-	if !regexp.MustCompile(`(?m)^events_publish_epoch = false$`).MatchString(readConfigText(t, dir)) {
-		t.Error("a second Save dropped the opt-out")
-	}
-}
-
-// An existing file holding `events_publish_epoch = false` (what every Save
-// wrote before TASK-4895) is not reinterpreted: a Save that changes something
-// else keeps it.
-func TestSaveKeepsAnExistingFalseInTheFile(t *testing.T) {
-	dir := isolateEnv(t)
-	writeConfigFile(t, dir, "editor = \"vim\"\nevents_publish_epoch = false\n")
-	cfg := mustLoad(t)
-	cfg.Editor = "nano"
-	mustSave(t, cfg)
-	if !regexp.MustCompile(`(?m)^events_publish_epoch = false$`).MatchString(readConfigText(t, dir)) {
-		t.Error("Save dropped an events_publish_epoch = false the file already held")
-	}
-}
-
-// The env opt-out is not persisted (the persistView rule every env override
-// follows), and the env opt-in over a file false does not erase the file false.
-func TestSaveDoesNotPersistTheEnvEpochValue(t *testing.T) {
-	t.Run("env false over no key", func(t *testing.T) {
-		dir := isolateEnv(t)
-		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "false")
-		mustSave(t, mustLoad(t))
+// Save without Load (pad init builds a Config from DefaultConfig) writes no
+// key either, for either value.
+func TestSaveWithoutLoadNeverWritesEventsPublishEpoch(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		dir := t.TempDir()
+		cfg := DefaultConfig()
+		cfg.DataDir = dir
+		cfg.ConfigPath = filepath.Join(dir, "config.toml")
+		cfg.EventsPublishEpoch = on
+		mustSave(t, cfg)
 		if text := readConfigText(t, dir); epochKeyLine.MatchString(text) {
-			t.Errorf("env false was persisted:\n%s", text)
+			t.Errorf("EventsPublishEpoch %v: config.toml holds an events_publish_epoch key:\n%s", on, text)
 		}
-	})
-	t.Run("env true over file false", func(t *testing.T) {
-		dir := isolateEnv(t)
-		writeConfigFile(t, dir, "events_publish_epoch = false\n")
-		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "true")
-		mustSave(t, mustLoad(t))
-		if !regexp.MustCompile(`(?m)^events_publish_epoch = false$`).MatchString(readConfigText(t, dir)) {
-			t.Error("env true erased the file's false")
-		}
-	})
+	}
 }
+
+func epochPtr(v bool) *bool { return &v }

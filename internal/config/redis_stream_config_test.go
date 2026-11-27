@@ -57,10 +57,10 @@ func TestStreamAndRedisEnvMapping(t *testing.T) {
 }
 
 // A value that is not a boolean must leave the field alone rather than be
-// read either way. A typo must not move a migration in either direction: from
-// the default it stays on phase 2, and from a config.toml opt-out it stays on
-// phase 1 (TestEventsPublishEpochPrecedenceBetweenEnvAndFile). The warning is
-// what tells the operator.
+// read either way. A typo must not move a migration in either direction: it
+// stays on the default, phase 2 (TestEventsPublishEpochLoad covers it with a
+// config.toml line present, which is ignored too). The warning is what tells
+// the operator.
 func TestEventsPublishEpochIgnoresANonBooleanValue(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "yes-please")
@@ -106,99 +106,10 @@ func TestStreamAndRedisDefaults(t *testing.T) {
 	}
 }
 
-// The env-var mapping test above proves PAD_EVENTS_PUBLISH_EPOCH
-// reaches the field; it says nothing about the TOML tag. A wrong or missing
-// `toml:"events_publish_epoch"` would keep every other test green while an
-// operator who opted out in ~/.pad/config.toml — which is the form the
-// rollback procedure warns about, because a file value outlives an unset env
-// var — silently stayed on phase 2. The value round-tripped is the opt-out:
-// a default (true) config writes no key at all (TASK-4895).
-func TestEventsPublishEpochRoundTripsThroughTheConfigFile(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "")
-
-	cfg := DefaultConfig()
-	cfg.EventsPublishEpoch = false
-	if err := cfg.Save(); err != nil {
-		t.Fatalf("save: %v", err)
-	}
-
-	reloaded, err := Load()
-	if err != nil {
-		t.Fatalf("reload: %v", err)
-	}
-	if reloaded.EventsPublishEpoch {
-		t.Error("events_publish_epoch = false did not survive a save/load round trip through config.toml")
-	}
-
-	// The other half of the rollback warning: an ABSENT env var must leave the
-	// file's value standing, not silently reset it to the default. If this
-	// ever changes, docs/deployment.md's rollback procedure changes with it.
-	if os.Getenv("PAD_EVENTS_PUBLISH_EPOCH") != "" {
-		t.Fatal("fixture: the env var must be unset for this half to mean anything")
-	}
-	if reloaded.EventsPublishEpoch {
-		t.Error("an unset env var must leave the config file's value alone")
-	}
-}
-
-// The rollback procedure tells an operator to make the
-// EFFECTIVE value false, and warns that unsetting the environment variable is
-// not the same thing. Neither half of that had a test, so a load order that
-// let the file win over an explicit env-var false would have kept a deployment
-// stuck on phase 2 while its operator believed they had rolled back.
-func TestEventsPublishEpochPrecedenceBetweenEnvAndFile(t *testing.T) {
-	// Written as raw text: Save writes no key for a true (the default), and
-	// these cases need the key in the file.
-	writeFileValue := func(t *testing.T, v string) {
-		t.Helper()
-		cfg := DefaultConfig()
-		if err := os.MkdirAll(cfg.DataDir, 0700); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(cfg.ConfigPath, []byte("events_publish_epoch = "+v+"\n"), 0600); err != nil {
-			t.Fatal(err)
-		}
-	}
-
-	t.Run("an explicit env false overrides a true in the file", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		writeFileValue(t, "true")
-		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "false")
-
-		cfg, err := Load()
-		if err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		if cfg.EventsPublishEpoch {
-			t.Error("an explicit env-var false must win over the config file — this is the documented rollback")
-		}
-	})
-
-	t.Run("an unparseable env value leaves the file's value standing", func(t *testing.T) {
-		t.Setenv("HOME", t.TempDir())
-		writeFileValue(t, "false")
-		t.Setenv("PAD_EVENTS_PUBLISH_EPOCH", "on-ish")
-
-		cfg, err := Load()
-		if err != nil {
-			t.Fatalf("reload: %v", err)
-		}
-		// The value is IGNORED, not read as true: a typo must not flip a
-		// migration in either direction. The warning is what tells the
-		// operator; the behaviour is to change nothing. The file holds the
-		// non-default value so the ignore is distinguishable from a reset to
-		// the default.
-		if cfg.EventsPublishEpoch {
-			t.Error("an unparseable env value must leave the configured value alone, not reset it")
-		}
-	})
-}
-
 // ---------------------------------------------------------------------------
-// BUG-2738's phase-2 flip. Structurally these mirror the EventsPublishEpoch
-// tests above, and the ASSERTIONS are the same — but the RATIONALE is
+// BUG-2738's phase-2 flip. Structurally these mirror the env-mapping and
+// non-boolean EventsPublishEpoch tests above (that flag no longer reads
+// config.toml; these still do), and the ASSERTIONS are the same — but the RATIONALE is
 // inverted, which is why they are written out rather than folded into a table
 // with the epoch's comments attached. See TestEventsHeartbeatIgnoresANonBooleanValue.
 // ---------------------------------------------------------------------------
