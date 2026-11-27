@@ -1042,12 +1042,27 @@ function draw($, e) {
 
 const WATCH_BURST_MS = 1500 // a burst ends after this much quiet, and goes to Claude as one message
 const WATCH_BURST_MAX_MS = 10000 // a stream that never goes quiet still flushes this often
+const WATCH_RETRY_MS = 5000 // an unknown consent answer is asked again this long after (BUG-3741)
 let burstTimer = null
 let burstStart = 0
 let watch = null // the running pad-monitor.sh, as $.process.spawn's iterator
-let watchEpoch = 0 // bumped by stopWatch: a start still asking the CLI then spawns nothing
+let watchEpoch = 0 // bumped by endStream/stopWatch: stale starts or flushes do nothing
+let watchEnv = { CLAUDECODE: '1' } // env used by the current stream (BUG-3741)
 let pending = [] // lines not yet handed to Claude
 let submitting = false
+let disarming = 0 // `pad session disarm` calls whose outcome is not known yet: no flush meanwhile (BUG-3741)
+
+// BUG-3741: what `pad session should-arm` says now. Exit 1 is its "not armed";
+// anything else (a timeout, a missing CLI, another code) is unknown, which
+// never ends a stream a session may still consent to.
+async function consentNow($) {
+  try {
+    const code = (await $.process.run(['pad', 'session', 'should-arm'], { env: watchEnv, timeoutMs: 10000 })).exitCode
+    return code === 0 ? 'armed' : code === 1 ? 'withdrawn' : 'unknown'
+  } catch {
+    return 'unknown'
+  }
+}
 
 // The harness session's pid. Claude Code exports CLAUDE_PID and CLAUDECODE to
 // Bash and to monitors but not to a mod's processes, whose parent is that same
@@ -1067,14 +1082,32 @@ async function sessionPid($) {
 
 // Hands the lines gathered so far to Claude, then any that arrived while that
 // message waited for the session to go idle: one message per idle window.
+// BUG-3741: recheck consent before each submission so lines queued before
+// disarm are never relayed after consent is withdrawn.
 async function flushWatch($) {
-  if (submitting || !pending.length) return
+  if (submitting || disarming || !pending.length) return
   const epoch = watchEpoch
   submitting = true
   try {
     // A flush the session's end overtook relays nothing more (codex r2): a
     // submit already waiting cannot be withdrawn, but nothing follows it.
     while (pending.length && epoch === watchEpoch) {
+      const consent = await consentNow($)
+      if (epoch !== watchEpoch) break
+      if (consent === 'withdrawn') {
+        endStream()
+        break
+      }
+      // An unknown answer (a timeout, a CLI error) keeps the lines and the
+      // stream, and asks again later: a quiet stream may bring no next line.
+      // A disarm still running keeps them too; its own recheck flushes them.
+      if (consent === 'unknown' && !burstTimer) {
+        burstTimer = $.clock.after(WATCH_RETRY_MS, () => {
+          burstTimer = null
+          if (epoch === watchEpoch) flushWatch($)
+        })
+      }
+      if (consent !== 'armed' || disarming || !pending.length) break
       const text = pending.join('\n')
       pending = []
       await $.prompt.submit({ text })
@@ -1128,6 +1161,12 @@ function armsSession(e) {
   return e.tool === 'Bash' && /(^|[^\w.-])pad\s+session\s+arm($|[^\w-])/.test(String(e.command || ''))
 }
 
+// BUG-3741: `pad session disarm`, the command /pad:disconnect runs to withdraw
+// consent. Mirrors armsSession so the stream and queued lines stop at once.
+function disarmsSession(e) {
+  return e.tool === 'Bash' && /(^|[^\w.-])pad\s+session\s+disarm($|[^\w-])/.test(String(e.command || ''))
+}
+
 // Silent by construction: every failure here leaves the session as it was.
 async function startWatch($, registered = () => {}) {
   if (watch) return
@@ -1146,6 +1185,7 @@ async function startWatch($, registered = () => {}) {
   // withdrawn in that window needs no check here: pad-monitor.sh asks
   // should-arm again before it streams, and that answer is the one that counts.
   if (!armed || watch || epoch !== watchEpoch) return
+  watchEnv = env
   let it
   try {
     it = $.process.spawn({ argv: [$.plugin.root + '/scripts/pad-monitor.sh'], env })
@@ -1168,6 +1208,7 @@ async function startWatch($, registered = () => {}) {
         // Wait for the burst to go quiet (codex r4), but never longer than
         // WATCH_BURST_MAX_MS from its first line.
         const now = await $.clock.now()
+        if (watch !== it) break
         if (!burstStart) burstStart = now
         if (burstTimer) burstTimer.cancel()
         const wait = Math.max(0, Math.min(WATCH_BURST_MS, burstStart + WATCH_BURST_MAX_MS - now))
@@ -1178,12 +1219,14 @@ async function startWatch($, registered = () => {}) {
         })
       }
     } catch {}
-    if (watch === it) watch = null
+    // BUG-3741: stream end invalidates queued lines and any pending burst timer.
+    if (watch === it) endStream(false)
   })()
 }
 
-function stopWatch() {
-  woken = null
+// BUG-3741: invalidate queued delivery and end the current stream without
+// resetting presence (woken), so a later `pad session arm` can start a new one.
+function endStream(close = true) {
   watchEpoch++
   const it = watch
   watch = null
@@ -1192,9 +1235,14 @@ function stopWatch() {
   if (burstTimer) burstTimer.cancel()
   burstTimer = null
   burstStart = 0
-  if (it) {
+  if (close && it) {
     try { it.return() } catch {}
   }
+}
+
+function stopWatch() {
+  woken = null
+  endStream()
 }
 
 // The pane's auto-refresh. It runs only while the pane is open (TASK-3970):
@@ -1563,7 +1611,27 @@ export function register(on) {
     if (usesPad(e)) {
       try { await wake($) } catch {}
     }
-    const result = await next(e)
+    // BUG-3741: no flush starts or submits while a `pad session disarm` runs,
+    // so a consent check that answered before the disarm took effect relays
+    // nothing after it. Once it returns, ask should-arm: only a "not armed"
+    // ends the stream and drops queued lines (a failed disarm, or --help,
+    // leaves a consenting session's stream up and flushes what waited).
+    const disarm = disarmsSession(e)
+    if (disarm) disarming++
+    let result
+    try {
+      result = await next(e)
+    } finally {
+      if (disarm) {
+        ;(async () => {
+          let consent = 'unknown'
+          try { consent = await consentNow($) } catch {}
+          disarming--
+          if (consent === 'withdrawn') endStream()
+          else flushWatch($)
+        })().catch(() => {})
+      }
+    }
     // BUG-4303: consent given after the session's first use of Pad. wake asked
     // should-arm once, before any consent, so nothing else would start the
     // stream for a session that opts in later. Ask again now that the arm has
