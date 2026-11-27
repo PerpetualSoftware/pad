@@ -945,34 +945,42 @@ func (s *Store) AddOAuthProvider(userID, provider string) error {
 var ErrLastSignInMethod = errors.New("cannot unlink the only sign-in method")
 
 // RemoveOAuthProvider removes a provider from the user's oauth_providers
-// list, and forgets the provider account it was bound to, so a relink may
-// bind a different one (TASK-3351). Under the account lock, so a sign-in
-// that read the link before this commits cannot re-bind afterwards.
+// list, forgets the provider account it was bound to so a relink may bind a
+// different one (TASK-3351), and advances credential_epoch in the same
+// transaction so a sign-in that read the account before the unlink cannot
+// mint a session after it (BUG-3681). Under the account lock, so a sign-in
+// that read the link before this commits cannot re-bind afterwards. Returns
+// the post-bump credential_epoch (0 on error).
 //
-// It refuses with ErrLastSignInMethod when no other provider and no password
-// would remain. The handler checks the same thing, but against the account
-// as it was when the request was admitted: two unlinks of different
-// providers sent at once both passed it, and the second wrote an empty list
-// (BUG-3816). The check that counts is this one, on the locked row.
-func (s *Store) RemoveOAuthProvider(userID, provider string) error {
+// It refuses with ErrLastSignInMethod (without bumping credential_epoch) when
+// no other provider and no password would remain. The handler checks the same
+// thing, but against the account as it was when the request was admitted: two
+// unlinks of different providers sent at once both passed it, and the second
+// wrote an empty list (BUG-3816). The check that counts is this one, on the
+// locked row.
+func (s *Store) RemoveOAuthProvider(userID, provider string) (int64, error) {
 	tx, err := s.db.Begin()
 	if err != nil {
-		return fmt.Errorf("remove oauth provider: begin: %w", err)
+		return 0, fmt.Errorf("remove oauth provider: begin: %w", err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := s.removeOAuthProviderTx(tx, userID, provider); err != nil {
-		return err
+	epoch, err := s.removeOAuthProviderTx(tx, userID, provider)
+	if err != nil {
+		return 0, err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return 0, err
+	}
+	return epoch, nil
 }
 
-func (s *Store) removeOAuthProviderTx(tx *sql.Tx, userID, provider string) error {
+func (s *Store) removeOAuthProviderTx(tx *sql.Tx, userID, provider string) (int64, error) {
 	providers, found, err := s.lockUserProvidersTx(tx, userID)
 	if err != nil {
-		return fmt.Errorf("remove oauth provider: %w", err)
+		return 0, fmt.Errorf("remove oauth provider: %w", err)
 	}
 	if !found {
-		return fmt.Errorf("remove oauth provider: user not found")
+		return 0, fmt.Errorf("remove oauth provider: user not found")
 	}
 	var filtered []string
 	for _, p := range providers {
@@ -983,19 +991,28 @@ func (s *Store) removeOAuthProviderTx(tx *sql.Tx, userID, provider string) error
 	if len(filtered) == 0 && providerListHas(providers, provider) {
 		var passwordSet bool
 		if err := tx.QueryRow(s.q(`SELECT password_set FROM users WHERE id = ?`), userID).Scan(&passwordSet); err != nil {
-			return fmt.Errorf("remove oauth provider: read password: %w", err)
+			return 0, fmt.Errorf("remove oauth provider: read password: %w", err)
 		}
 		if !passwordSet {
-			return ErrLastSignInMethod
+			return 0, ErrLastSignInMethod
 		}
 	}
 	if err := s.writeUserProvidersTx(tx, userID, filtered); err != nil {
-		return fmt.Errorf("remove oauth provider: %w", err)
+		return 0, fmt.Errorf("remove oauth provider: %w", err)
 	}
 	if _, err := tx.Exec(s.q(`DELETE FROM user_oauth_identities WHERE user_id = ? AND provider = ?`), userID, provider); err != nil {
-		return fmt.Errorf("remove oauth provider: forget subject: %w", err)
+		return 0, fmt.Errorf("remove oauth provider: forget subject: %w", err)
 	}
-	return nil
+	// BUG-3681: advance credential_epoch in the same transaction so a sign-in
+	// that read the account before this unlink cannot mint a session after it.
+	if _, err := tx.Exec(s.q(`UPDATE users SET credential_epoch = credential_epoch + 1, updated_at = ? WHERE id = ?`), now(), userID); err != nil {
+		return 0, fmt.Errorf("remove oauth provider: bump credential epoch: %w", err)
+	}
+	var epoch int64
+	if err := tx.QueryRow(s.q(`SELECT credential_epoch FROM users WHERE id = ?`), userID).Scan(&epoch); err != nil {
+		return 0, fmt.Errorf("remove oauth provider: read credential epoch: %w", err)
+	}
+	return epoch, nil
 }
 
 // ErrLastAdmin refuses a demotion, disable or account deletion that would

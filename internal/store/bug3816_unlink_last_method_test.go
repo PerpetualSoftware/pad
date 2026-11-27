@@ -58,12 +58,15 @@ func TestBUG3816_ConcurrentUnlinksKeepASignInMethod(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = tx.Rollback() }()
-	if err := s.removeOAuthProviderTx(tx, id, "google"); err != nil {
+	if _, err := s.removeOAuthProviderTx(tx, id, "google"); err != nil {
 		t.Fatalf("hold the google unlink: %v", err)
 	}
 
 	done := make(chan error, 1)
-	go func() { done <- s.RemoveOAuthProvider(id, "github") }()
+	go func() {
+		_, err := s.RemoveOAuthProvider(id, "github")
+		done <- err
+	}()
 
 	// Commit the first only once the second is seen waiting on a lock in the
 	// account row's FOR NO KEY UPDATE read, so the pair is concurrent by
@@ -113,10 +116,10 @@ func TestBUG3816_UnlinkRefusesOnlyTheLastSignInMethod(t *testing.T) {
 	t.Run("last provider, no password", func(t *testing.T) {
 		s := testStore(t)
 		id := bug3816OAuthOnlyUser(t, s)
-		if err := s.RemoveOAuthProvider(id, "google"); err != nil {
+		if _, err := s.RemoveOAuthProvider(id, "google"); err != nil {
 			t.Fatalf("first unlink: %v", err)
 		}
-		if err := s.RemoveOAuthProvider(id, "github"); !errors.Is(err, ErrLastSignInMethod) {
+		if _, err := s.RemoveOAuthProvider(id, "github"); !errors.Is(err, ErrLastSignInMethod) {
 			t.Errorf("unlink of the last provider err = %v, want ErrLastSignInMethod", err)
 		}
 		if got := bug3816Providers(t, s, id); len(got) != 1 || got[0] != "github" {
@@ -130,7 +133,7 @@ func TestBUG3816_UnlinkRefusesOnlyTheLastSignInMethod(t *testing.T) {
 			t.Fatal(err)
 		}
 		for _, p := range []string{"google", "github"} {
-			if err := s.RemoveOAuthProvider(id, p); err != nil {
+			if _, err := s.RemoveOAuthProvider(id, p); err != nil {
 				t.Fatalf("unlink %s with a password set: %v", p, err)
 			}
 		}
@@ -141,12 +144,12 @@ func TestBUG3816_UnlinkRefusesOnlyTheLastSignInMethod(t *testing.T) {
 	t.Run("provider not linked", func(t *testing.T) {
 		s := testStore(t)
 		id := bug3816OAuthOnlyUser(t, s)
-		if err := s.RemoveOAuthProvider(id, "google"); err != nil {
+		if _, err := s.RemoveOAuthProvider(id, "google"); err != nil {
 			t.Fatal(err)
 		}
 		// A repeat of an unlink that already landed (a double submit) stays
 		// a no-op, even though only one method remains.
-		if err := s.RemoveOAuthProvider(id, "google"); err != nil {
+		if _, err := s.RemoveOAuthProvider(id, "google"); err != nil {
 			t.Errorf("repeat unlink err = %v, want nil", err)
 		}
 		if got := bug3816Providers(t, s, id); len(got) != 1 || got[0] != "github" {

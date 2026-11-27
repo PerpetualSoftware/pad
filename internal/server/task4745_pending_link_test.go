@@ -272,7 +272,7 @@ func TestTASK4745_SingleUse(t *testing.T) {
 	tok := e.refuse(t, "google", "once@example.com", "g-once", true)
 	pl4745WantLinked(t, pl4745Read(t, e.login(t, "once@example.com", tok, pl4745Yes)).PendingLink, "google")
 	// Unlinked again, the same token links nothing.
-	if err := e.srv.store.RemoveOAuthProvider(u.ID, "google"); err != nil {
+	if _, err := e.srv.store.RemoveOAuthProvider(u.ID, "google"); err != nil {
 		t.Fatal(err)
 	}
 	pl4745WantNotLinked(t, pl4745Read(t, e.login(t, "once@example.com", tok, pl4745Yes)).PendingLink, pendingLinkCodeInvalid)

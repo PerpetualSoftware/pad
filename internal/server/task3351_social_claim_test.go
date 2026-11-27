@@ -155,7 +155,7 @@ func TestTASK3351_UnlinkForgetsTheSubject(t *testing.T) {
 	if err := srv.store.AddOAuthProvider(u.ID, "github"); err != nil {
 		t.Fatal(err)
 	}
-	if err := srv.store.RemoveOAuthProvider(u.ID, "google"); err != nil {
+	if _, err := srv.store.RemoveOAuthProvider(u.ID, "google"); err != nil {
 		t.Fatal(err)
 	}
 	if n := oauthIdentityRows(t, srv, "google", "g-old"); n != 0 {
