@@ -26,6 +26,12 @@
 # It performs the stop, the install and the restart; the caller does the
 # build. Ordering is load-bearing and matches CONVE-2687's day-74 clause:
 # nothing irreversible happens until the artifact has been checked.
+# When replacing a running server, the script captures and restores its
+# argv, working directory and settings environment (PAD_*, PG[A-Z]*,
+# PUBLIC_URL, HOME; BUG-3718) before stopping it. Stated limit: on systems
+# without /proc (or with PAD_NO_PROC=1) the environment cannot be read
+# reliably, so the script notes that and restarts under the invoking shell's
+# environment.
 
 set -uo pipefail
 
@@ -39,11 +45,21 @@ EXPECT_COMMIT="${3:-}"
 # directory at all (a pad auto-started from another project), and git
 # asked from there cannot resolve these commits (BUG-3403).
 SRC_DIR="$(pwd -P)"
-# PORT and HOST are resolved AFTER the argv capture, from the same
-# precedence the server itself uses: flag, then environment, then default.
-# See the resolution block below the capture.
+# PORT and HOST are resolved AFTER the argv and environment capture, from the
+# same precedence the server itself uses: flag, then the server's environment,
+# then its config file, then default. See the resolution block below.
 PORT=""
 PROBE_TIMEOUT="${PAD_PROBE_TIMEOUT:-20}"
+# Read the script's own knobs before the server's environment is applied
+# (BUG-3718), so capturing or clearing PAD_* settings cannot change how this
+# script behaves.
+NO_PROC="${PAD_NO_PROC:-}"
+NO_SETSID="${PAD_NO_SETSID:-}"
+# SERVER_HOME is the home directory used by data_dir() (~/.pad). Initialised
+# to the caller's HOME and overwritten with the running server's HOME when
+# captured, without mutating HOME itself (git and other tools the script runs
+# read the caller's HOME).
+SERVER_HOME="${HOME:-}"
 
 die() { printf 'install-refresh: %s\n' "$*" >&2; exit 1; }
 note() { printf 'install-refresh: %s\n' "$*"; }
@@ -78,17 +94,19 @@ flag_value() {
 }
 
 # data_dir prints the directory the server and CLI keep their state in, by
-# config.Load's rule: PAD_DB_PATH's directory, else PAD_DATA_DIR, else ~/.pad
-# (PAD_DB_PATH is applied second there, so it wins). The refresh marker
-# (BUG-3215) must be found by every CLI on the box, so it lives here and not
-# anywhere the cwd or the linked workspace could change.
+# config.Load's rule: PAD_DB_PATH's directory, else PAD_DATA_DIR, else
+# $SERVER_HOME/.pad (PAD_DB_PATH is applied second there, so it wins). After
+# the running server's settings are captured (BUG-3718), PAD_DB_PATH,
+# PAD_DATA_DIR and SERVER_HOME reflect the server's environment. The refresh
+# marker (BUG-3215) must be found by every CLI on the box, so it lives here
+# and not anywhere the cwd or the linked workspace could change.
 data_dir() {
 	if [ -n "${PAD_DB_PATH:-}" ]; then
 		dirname "$PAD_DB_PATH"
 	elif [ -n "${PAD_DATA_DIR:-}" ]; then
 		printf '%s' "$PAD_DATA_DIR"
 	else
-		printf '%s' "$HOME/.pad"
+		printf '%s' "${SERVER_HOME:-$HOME}/.pad"
 	fi
 }
 
@@ -306,7 +324,7 @@ capture_pid() {
 	# the branch is unreachable on any machine with /proc, and an
 	# untestable branch is exactly how the macOS half of this fix would
 	# have shipped broken.
-	if [ -z "${PAD_NO_PROC:-}" ] && [ -r "/proc/$pid/cmdline" ]; then
+	if [ -z "$NO_PROC" ] && [ -r "/proc/$pid/cmdline" ]; then
 		mapfile -d '' -t argv < "/proc/$pid/cmdline"
 	else
 		line="$(ps -o args= -p "$pid" 2>/dev/null || true)"
@@ -479,7 +497,134 @@ else
 	note "no running server found; will start with defaults after install"
 fi
 
-# --- 1c. Capture the TARGET's working directory, with its argv ----------------
+# --- 1c. Capture the TARGET's settings environment (BUG-3718) ----------------
+#
+# A server configured by environment (e.g. PAD_DB_DRIVER=postgres with
+# PAD_DATABASE_URL, or PAD_DATA_DIR) used to restart under the INSTALLER's
+# environment and could silently open a different database. Only the server's
+# configuration settings are carried over; unrelated caller variables (PATH,
+# terminal, test knobs) stay the caller's.
+#
+# Stated limit (no /proc): macOS and PAD_NO_PROC=1 cannot read another
+# process's environment reliably (`ps -E` is space-joined and macOS restricts
+# it). That path does not refuse; it notes the limitation and restarts under
+# the invoking shell's environment, as before.
+#
+# is_server_setting matches environment names the server reads as configuration:
+#   - PAD_* and PUBLIC_URL: read by internal/config/config.go (and subpackages);
+#   - PG[A-Z]*: libpq/pgx connection settings (PGHOST, PGPASSWORD, PGSERVICE, ...);
+#   - HOME: decides the default data directory (~/.pad).
+is_server_setting() {
+	case "$1" in
+	PAD_* | PG[ABCDEFGHIJKLMNOPQRSTUVWXYZ]* | PUBLIC_URL | HOME) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+# sort_names prints its arguments sorted in C lexicographical order, joined by
+# a single space, in pure bash (no dependency on external sort/paste).
+sort_names() {
+	local LC_COLLATE=C IFS=' '
+	local arr=("$@") i j key
+	for ((i = 1; i < ${#arr[@]}; i++)); do
+		key="${arr[i]}"
+		j=$((i - 1))
+		while [ "$j" -ge 0 ] && [[ "${arr[j]}" > "$key" ]]; do
+			arr[j + 1]="${arr[j]}"
+			j=$((j - 1))
+		done
+		arr[j + 1]="$key"
+	done
+	printf '%s' "${arr[*]}"
+}
+
+SERVER_SETTINGS=()
+SETTINGS_CAPTURED=""
+declare -A SERVER_SETTING_SEEN=()
+declare -A SERVER_SETTING_VAL=()
+if [ -n "$TARGET_PID" ]; then
+	if [ -z "$NO_PROC" ] && [ -d /proc ]; then
+		env_source="/proc/$TARGET_PID/environ"
+		env_raw=()
+		# Distinguish a read failure from an empty environ (e.g. a server
+		# started under `env -i`): cat succeeds with empty stderr on an empty
+		# file and fails with the errno text when the file cannot be read.
+		if ! env_err="$(cat "$env_source" 2>&1 >/dev/null)"; then
+			die "the environment of the running server (pid $TARGET_PID) cannot be read: $env_source: ${env_err:-unreadable}
+  Nothing was stopped or installed; the restart could not keep the settings the server runs with."
+		fi
+		if ! mapfile -d '' -t env_raw <"$env_source" 2>/dev/null; then
+			env_err="$(cat "$env_source" 2>&1 >/dev/null || true)"
+			die "the environment of the running server (pid $TARGET_PID) cannot be read: $env_source: ${env_err:-unreadable}
+  Nothing was stopped or installed; the restart could not keep the settings the server runs with."
+		fi
+		if [ "${#env_raw[@]}" -gt 0 ]; then
+			for env_entry in "${env_raw[@]}"; do
+				case "$env_entry" in
+				*=*) ;;
+				*) continue ;;
+				esac
+				env_name="${env_entry%%=*}"
+				env_val="${env_entry#*=}"
+				# Require a valid ASCII shell identifier (^[A-Za-z_][A-Za-z0-9_]*$).
+				case "$env_name" in
+				[ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz_]*)
+					case "$env_name" in
+					*[!ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_]*) continue ;;
+					esac
+					;;
+				*) continue ;;
+				esac
+				is_server_setting "$env_name" || continue
+				# Go's os.Getenv returns the first entry for a duplicate name.
+				[ -n "${SERVER_SETTING_SEEN[$env_name]+x}" ] && continue
+				SERVER_SETTING_SEEN[$env_name]=1
+				SERVER_SETTING_VAL[$env_name]="$env_val"
+				SERVER_SETTINGS+=("$env_entry")
+			done
+		fi
+		SETTINGS_CAPTURED=1
+
+		# Never print values (they can be secrets such as PAD_DATABASE_URL,
+		# PAD_MAILEROO_API_KEY or PGPASSWORD): print sorted names only.
+		if [ "${#SERVER_SETTING_SEEN[@]}" -gt 0 ]; then
+			note "captured server settings: $(sort_names "${!SERVER_SETTING_SEEN[@]}")"
+		else
+			note "captured server settings: none"
+		fi
+		dropped_settings=()
+		while IFS= read -r env_name; do
+			# HOME is kept when the server had none (see launch()), so it
+			# is not reported as dropped.
+			[ "$env_name" = HOME ] && continue
+			if is_server_setting "$env_name" && [ -z "${SERVER_SETTING_SEEN[$env_name]+x}" ]; then
+				dropped_settings+=("$env_name")
+			fi
+		done < <(compgen -e)
+		if [ "${#dropped_settings[@]}" -gt 0 ]; then
+			note "not passed on from this shell: $(sort_names "${dropped_settings[@]}")"
+		fi
+
+		# Align the script's own later config reads (data dir, log, marker,
+		# pid file, probe port/host) with the running server's settings.
+		# HOME itself is not mutated (git and other tools read it); SERVER_HOME
+		# carries the server's HOME for data_dir() alone.
+		for env_name in PAD_DB_PATH PAD_DATA_DIR PAD_PORT PAD_HOST; do
+			if [ -n "${SERVER_SETTING_SEEN[$env_name]+x}" ]; then
+				printf -v "$env_name" '%s' "${SERVER_SETTING_VAL[$env_name]}"
+			else
+				unset "$env_name"
+			fi
+		done
+		if [ -n "${SERVER_SETTING_SEEN[HOME]+x}" ]; then
+			SERVER_HOME="${SERVER_SETTING_VAL[HOME]}"
+		fi
+	else
+		note "server environment NOT captured (no /proc): the restart runs under this shell's environment, so PAD_* and other settings the old server had and this shell lacks are not carried over"
+	fi
+fi
+
+# --- 1d. Capture the TARGET's working directory, with its argv ----------------
 #
 # BUG-3196. The restart used to inherit the INVOKING shell's cwd, so a refresh
 # run from a worktree left the server in that worktree, and removing the
@@ -499,7 +644,7 @@ if [ -n "$TARGET_PID" ]; then
 	# the tool's own error text, which carries the errno (e.g. "Permission
 	# denied"). See BUG-3196.
 	cwd_source="" cwd_err=""
-	if [ -z "${PAD_NO_PROC:-}" ] && [ -d /proc ]; then
+	if [ -z "$NO_PROC" ] && [ -d /proc ]; then
 		cwd_source="/proc/$TARGET_PID/cwd"
 		cwd_err="$(readlink "$cwd_source" 2>&1 >/dev/null)" || true
 		SERVER_CWD="$(readlink "$cwd_source" 2>/dev/null || true)"
@@ -683,7 +828,7 @@ if [ -n "$TARGET_PID" ]; then
 	# signalled at all.
 	still_target() {
 		local now=()
-		if [ -z "${PAD_NO_PROC:-}" ] && [ -r "/proc/$TARGET_PID/cmdline" ]; then
+		if [ -z "$NO_PROC" ] && [ -r "/proc/$TARGET_PID/cmdline" ]; then
 			mapfile -d '' -t now < "/proc/$TARGET_PID/cmdline" 2>/dev/null
 		else
 			read -r -a now <<<"$(ps -o args= -p "$TARGET_PID" 2>/dev/null || true)"
@@ -852,10 +997,11 @@ if [ -n "$EXPECT_COMMIT" ]; then
 fi
 note "installed $BIN_NAME to $INSTALLED ($EXPECT_COMMIT)"
 
-# --- 5. Restart with the argv that was killed --------------------------------
+# --- 5. Restart with the argv, cwd and settings environment that were killed -
 #
-# The whole point of BUG-2897: a replacement is only correct if it preserves
-# what it replaced, and that includes the INVOCATION, not just the bytes.
+# The whole point of BUG-2897 (and BUG-3196, BUG-3718): a replacement is only
+# correct if it preserves what it replaced, and that includes the INVOCATION,
+# working directory and settings environment, not just the bytes.
 if [ ${#SERVER_ARGV[@]} -gt 0 ]; then
 	restart=("$INSTALLED" "${SERVER_ARGV[@]:1}")
 else
@@ -934,10 +1080,36 @@ if [ "${#early[@]}" -gt 0 ]; then
   Restart argv would have been: ${restart[*]}"
 fi
 
-if [ -z "${PAD_NO_SETSID:-}" ] && command -v setsid >/dev/null 2>&1; then
-	setsid nohup "${restart[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
+# Launch the restarted server under the captured settings environment (BUG-3718)
+# without placing any setting values on argv (which is world-readable via
+# /proc/<pid>/cmdline).
+launch() {
+	if [ -n "$SETTINGS_CAPTURED" ]; then
+		local n e
+		while IFS= read -r n; do
+			# If the old server had no HOME, keep the caller's HOME rather
+			# than unsetting it: a server exec'd without HOME is not a
+			# supported way to run pad, and an unset HOME would also change
+			# what nohup/setsid see.
+			if [ "$n" = HOME ] && [ -z "${SERVER_SETTING_SEEN[HOME]+x}" ]; then
+				continue
+			fi
+			if is_server_setting "$n"; then
+				unset "$n" 2>/dev/null || true
+			fi
+		done < <(compgen -e)
+		if [ "${#SERVER_SETTINGS[@]}" -gt 0 ]; then
+			for e in "${SERVER_SETTINGS[@]}"; do
+				export "${e%%=*}=${e#*=}"
+			done
+		fi
+	fi
+	exec "$@"
+}
+if [ -z "$NO_SETSID" ] && command -v setsid >/dev/null 2>&1; then
+	( launch setsid nohup "${restart[@]}" ) >>"$LOG_FILE" 2>&1 </dev/null &
 else
-	nohup "${restart[@]}" >>"$LOG_FILE" 2>&1 </dev/null &
+	( launch nohup "${restart[@]}" ) >>"$LOG_FILE" 2>&1 </dev/null &
 fi
 RESTART_PID=$!
 disown 2>/dev/null || true
