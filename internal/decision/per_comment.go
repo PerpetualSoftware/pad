@@ -49,6 +49,9 @@ func (r *Runner) evaluatePerComment(ctx context.Context, qs QuestionSet, itemID 
 	if item == nil || item.DeletedAt != nil {
 		return false, ErrItemGone
 	}
+	if err := r.checkLive(item.ID); err != nil {
+		return false, err
+	}
 	if ok, err := r.appliesNow(qs, item); err != nil {
 		return false, err
 	} else if !ok {
@@ -113,15 +116,8 @@ func (r *Runner) evaluatePerComment(ctx context.Context, qs QuestionSet, itemID 
 				r.beforeAsk()
 			}
 			// Liveness as the last statement before each send, as Evaluate.
-			itemLive, wsLive, lerr := r.store.ItemLiveness(item.ID)
-			if lerr != nil {
+			if lerr := r.checkLive(item.ID); lerr != nil {
 				return calls > 0, lerr
-			}
-			if !itemLive {
-				return calls > 0, ErrItemGone
-			}
-			if !wsLive {
-				return calls > 0, ErrWorkspaceDeleted
 			}
 			got, u, aerr := r.provider.Ask(ctx, st.Bytes, cq)
 			calls++
