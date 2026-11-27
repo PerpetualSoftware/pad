@@ -19,6 +19,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -79,6 +80,24 @@ func main() {
 				fmt.Fprintln(f, wd)
 				f.Close()
 			}
+		}
+	}
+	// STUB_ENV_LOG records, at each server start, the sorted NAME=value
+	// entries of this process's environment whose names are in the server
+	// settings set (PAD_*, PG[A-Z]*, PUBLIC_URL, HOME), joined by a single
+	// space (BUG-3718).
+	if logPath := os.Getenv("STUB_ENV_LOG"); logPath != "" {
+		var kept []string
+		for _, kv := range os.Environ() {
+			name, _, ok := strings.Cut(kv, "=")
+			if ok && isServerSetting(name) {
+				kept = append(kept, kv)
+			}
+		}
+		slices.Sort(kept)
+		if f, err := os.OpenFile(logPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
+			fmt.Fprintln(f, strings.Join(kept, " "))
+			f.Close()
 		}
 	}
 	// STUB_MARKER_LOG records, at each server start, the refresh marker at
@@ -151,6 +170,11 @@ func main() {
 	mux.HandleFunc("/stub/token", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprint(w, os.Getenv("STUB_TOKEN"))
 	})
+	// STUB_NODUMP=1 makes the process non-dumpable on Linux before listening,
+	// so /proc/<pid>/environ is unreadable to the same non-root user (BUG-3718).
+	if os.Getenv("STUB_NODUMP") == "1" {
+		applyNoDump()
+	}
 	// A port that cannot be bound exits the process, as ListenAndServe did.
 	ln, err := net.Listen("tcp", net.JoinHostPort(host, port))
 	if err != nil {
@@ -185,6 +209,13 @@ func main() {
 	_ = http.Serve(ln, mux)
 }
 
+func isServerSetting(name string) bool {
+	return strings.HasPrefix(name, "PAD_") ||
+		(len(name) >= 3 && strings.HasPrefix(name, "PG") && name[2] >= 'A' && name[2] <= 'Z') ||
+		name == "PUBLIC_URL" ||
+		name == "HOME"
+}
+
 // strayEnv is this process's environment without the knobs that would make
 // the stray do anything but serve: no stray of its own, no log lines that a
 // test counts as the refresh's restart.
@@ -193,7 +224,8 @@ func strayEnv() []string {
 	for _, kv := range os.Environ() {
 		switch strings.SplitN(kv, "=", 2)[0] {
 		case "STUB_STRAY_ON_START", "STUB_STRAY_ON_TERM", "STUB_STRAY_HOP",
-			"STUB_ARGV_LOG", "STUB_CWD_LOG", "STUB_MARKER_LOG", "STUB_ANNOUNCE", "STUB_HEALTHY":
+			"STUB_ARGV_LOG", "STUB_CWD_LOG", "STUB_MARKER_LOG", "STUB_ENV_LOG",
+			"STUB_NODUMP", "STUB_ANNOUNCE", "STUB_HEALTHY":
 			continue
 		}
 		env = append(env, kv)
