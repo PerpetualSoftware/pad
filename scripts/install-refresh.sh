@@ -594,6 +594,9 @@ if [ -n "$TARGET_PID" ]; then
 		fi
 		dropped_settings=()
 		while IFS= read -r env_name; do
+			# HOME is kept when the server had none (see launch()), so it
+			# is not reported as dropped.
+			[ "$env_name" = HOME ] && continue
 			if is_server_setting "$env_name" && [ -z "${SERVER_SETTING_SEEN[$env_name]+x}" ]; then
 				dropped_settings+=("$env_name")
 			fi
