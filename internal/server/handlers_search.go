@@ -3,6 +3,7 @@ package server
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -12,6 +13,13 @@ import (
 )
 
 func (s *Server) handleSearch(w http.ResponseWriter, r *http.Request) {
+	// r.URL.Query() drops a pair it cannot decode (a bad escape, a bare
+	// semicolon), which would silently drop a field filter and widen the
+	// results (BUG-3711), so a query string that does not parse is refused.
+	if _, err := url.ParseQuery(r.URL.RawQuery); err != nil {
+		writeError(w, http.StatusBadRequest, "validation_error", "invalid search query: "+err.Error())
+		return
+	}
 	query := r.URL.Query().Get("q")
 	if query == "" {
 		writeError(w, http.StatusBadRequest, "bad_request", "Query parameter 'q' is required")

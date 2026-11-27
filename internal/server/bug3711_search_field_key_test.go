@@ -123,6 +123,25 @@ func TestBUG3711_SearchFieldFilterKeyValidation(t *testing.T) {
 		}
 	})
 
+	// A pair the query parser cannot decode used to be dropped by
+	// r.URL.Query(), so a malformed field filter still widened the search.
+	t.Run("malformed query string refused with 400 validation_error", func(t *testing.T) {
+		for _, raw := range []string{"field.a%ZZ=x", "field._team=%ZZ", "field._team=ops;x"} {
+			rr := doRequest(srv, "GET", "/api/v1/search?q=bug&workspace="+ws.Slug+"&"+raw, nil)
+			if rr.Code != http.StatusBadRequest {
+				t.Fatalf("%s: status = %d, want 400: %s", raw, rr.Code, rr.Body.String())
+			}
+			var env errorEnvelope
+			parseJSON(t, rr, &env)
+			if env.Error.Code != "validation_error" {
+				t.Errorf("%s: code = %q, want validation_error", raw, env.Error.Code)
+			}
+			if !strings.HasPrefix(env.Error.Message, "invalid search query") {
+				t.Errorf("%s: message = %q, want prefix 'invalid search query'", raw, env.Error.Message)
+			}
+		}
+	})
+
 	t.Run("empty value for field param is still skipped", func(t *testing.T) {
 		rr := doRequest(srv, "GET", "/api/v1/search?q=bug&workspace="+ws.Slug+"&field.a%20b=", nil)
 		if rr.Code != http.StatusOK {
