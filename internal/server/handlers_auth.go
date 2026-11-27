@@ -310,6 +310,10 @@ func (s *Server) validateSessionCookie(r *http.Request) *models.User {
 	if session == nil || session.User == nil || !cookieKindAccepted(session) {
 		return nil
 	}
+	// The same refusal SessionAuth makes (TASK-4454).
+	if session.Kind == store.SessionKindWebView && webViewRouteRefused(r) {
+		return nil
+	}
 	// Session binding: a User-Agent change is logged for visibility but not
 	// rejected. UA is client-supplied and weak as a binding, and false-positives
 	// on routine client churn (browser/WebView updates, DevTools device
@@ -355,8 +359,10 @@ func (s *Server) rotateSessionsAfterCredentialChange(w http.ResponseWriter, r *h
 	// is a session-only door, so a request without a readable session of
 	// this user is not a state to mint from: every session is still revoked
 	// and the caller signs in again, rather than receiving a session that
-	// would read as freshly signed in.
-	if info == nil || info.User.ID != user.ID {
+	// would read as freshly signed in. A WebView session is treated the same
+	// way (TASK-4454): its doors are refused before this, and a replacement
+	// minted from it would be a full web session.
+	if info == nil || info.User.ID != user.ID || info.Kind == store.SessionKindWebView {
 		delErr := s.store.DeleteUserSessionsAndRevokeCalendarFeeds(user.ID)
 		if delErr != nil {
 			slog.Error("failed to invalidate sessions after credential change",
@@ -1473,8 +1479,15 @@ func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
 	if token, ok := bearerToken(r); ok && strings.HasPrefix(token.Reveal(), "padsess_") {
 		sessionOwner(token)
 	}
-	// Revoke cookie-based session
+	// Revoke cookie-based session. A WebView session's parent goes first,
+	// expired child or not, and takes the child and its siblings with it:
+	// signing out in the app's web UI signs the app out (TASK-4454).
 	if cookie, ok := cookieSecret(r, sessionCookieName(s.secureCookies)); ok {
+		if parentOwner, err := s.store.DeleteWebViewParent(cookie.Reveal()); err != nil {
+			slog.Warn("logout could not end the WebView session's parent", "error", err)
+		} else if parentOwner != "" {
+			loggedOut = append(loggedOut, parentOwner)
+		}
 		_ = s.store.DeleteSession(cookie.Reveal())
 	}
 
@@ -1610,6 +1623,14 @@ func (s *Server) handleUpdateCurrentUser(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusForbidden, "session_required",
 			"Changing your password requires an interactive session, not an API token")
 		return
+	}
+	// Nor from the app's WebView session on an http connection (TASK-4454):
+	// a name-only PATCH still works there.
+	if !input.NewPassword.IsZero() {
+		if info := s.requestSessionInfo(r); info != nil && info.Kind == store.SessionKindWebView {
+			writeWebViewSessionForbidden(w)
+			return
+		}
 	}
 
 	// Validate name if provided
