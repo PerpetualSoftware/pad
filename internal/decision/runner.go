@@ -467,9 +467,10 @@ func (r *Runner) debounceFor(setName string) time.Duration {
 // job is dropped rather than retried.
 var ErrItemGone = errors.New("decision: item is gone")
 
-// ErrWorkspaceDeleted reports that the item's workspace is soft-deleted. The
-// job is HELD, not dropped: a restore must find the work still owed.
-var ErrWorkspaceDeleted = errors.New("decision: item's workspace is soft-deleted")
+// ErrOwnerDeleted reports that the item's workspace is soft-deleted or its
+// collection is archived. The job is HELD, not dropped: a restore must find
+// the work still owed.
+var ErrOwnerDeleted = errors.New("decision: item's workspace or collection is soft-deleted")
 
 // ErrUnknownSet reports a job for a set no longer registered: dropped.
 var ErrUnknownSet = errors.New("decision: question set is not registered")
@@ -564,6 +565,21 @@ func (r *Runner) questionsFor(ctx context.Context, qs QuestionSet, workspaceID s
 	return qmap, nil
 }
 
+// checkLive is the liveness gate: ErrItemGone drops the job, ErrOwnerDeleted holds it.
+func (r *Runner) checkLive(itemID string) error {
+	itemLive, ownerLive, err := r.store.ItemLiveness(itemID)
+	if err != nil {
+		return err
+	}
+	if !itemLive {
+		return ErrItemGone
+	}
+	if !ownerLive {
+		return ErrOwnerDeleted
+	}
+	return nil
+}
+
 // Evaluate asks the named set about the item, unless answers for its current
 // state are already stored. It reports whether the provider was called.
 func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called bool, err error) {
@@ -579,6 +595,9 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called b
 	}
 	item, st, err := r.stateFor(itemID, qs)
 	if err != nil {
+		return false, err
+	}
+	if err := r.checkLive(item.ID); err != nil {
 		return false, err
 	}
 	// Applicability is re-checked HERE, against the collection the item is in
@@ -653,15 +672,8 @@ func (r *Runner) Evaluate(ctx context.Context, itemID, setName string) (called b
 		// makes several calls, and a delete landing
 		// between them must stop the rest. A call already made is reported
 		// as made.
-		itemLive, wsLive, err := r.store.ItemLiveness(item.ID)
-		if err != nil {
+		if err := r.checkLive(item.ID); err != nil {
 			return calls > 0, err
-		}
-		if !itemLive {
-			return calls > 0, ErrItemGone
-		}
-		if !wsLive {
-			return calls > 0, ErrWorkspaceDeleted
 		}
 		got, u, err := r.provider.Ask(ctx, st.Bytes, cq)
 		calls++
@@ -1033,10 +1045,10 @@ func (r *Runner) runJob(ctx context.Context, j store.DecisionJob) {
 		// mid-pass (TASK-3121) — not a verdict on the job: no attempt counted.
 		r.release(j)
 		return
-	case errors.Is(err, ErrWorkspaceDeleted):
+	case errors.Is(err, ErrOwnerDeleted):
 		// Held for a restore, not a failure: released with no attempt, and
 		// the claim scan will not offer it again while the workspace stays
-		// deleted.
+		// deleted or the collection stays archived.
 		r.release(j)
 		return
 	case err == nil:

@@ -376,9 +376,9 @@ func TestRunner_CancelledMidCallReleasesWithoutCountingAFailure(t *testing.T) {
 	}
 }
 
-// A soft-deleted WORKSPACE or COLLECTION stops evaluation even though the item
-// row itself is live: nothing its owner deleted goes to the provider. A
-// workspace's jobs are held for its restore; a collection's are dropped.
+// A soft-deleted WORKSPACE or archived COLLECTION stops evaluation even though
+// the item row itself is live: nothing its owner deleted goes to the provider.
+// Both are held for a restore so pending work resumes when they come back.
 func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -402,18 +402,10 @@ func TestRunner_DeletedWorkspaceOrCollectionIsNeverSent(t *testing.T) {
 				t.Fatalf("an item in a soft-deleted %s was sent to the provider", tc.name)
 			}
 			j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
-			switch tc.name {
-			case "workspace":
-				// HELD, not dropped: a workspace restore must find the work
-				// still owed.
-				if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
-					t.Fatalf("job for an item in a soft-deleted workspace is %+v; want held (owed, unclaimed, attempts=0)", j)
-				}
-			case "collection":
-				// A collection has no restore path, so its jobs are dropped.
-				if j != nil {
-					t.Fatalf("job for an item in a soft-deleted collection was kept: %+v", j)
-				}
+			// HELD, not dropped: a workspace or collection restore must find the
+			// work still owed.
+			if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
+				t.Fatalf("job for an item in a soft-deleted %s is %+v; want held (owed, unclaimed, attempts=0)", tc.name, j)
 			}
 		})
 	}
@@ -503,17 +495,94 @@ func TestRunner_ClaimsOneJobAtATime(t *testing.T) {
 // Liveness is re-checked immediately before the provider call,
 // so a delete landing between building the state and asking stops the send.
 func TestRunner_DeleteJustBeforeAskIsNotSent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		del  func(fx *runnerFixture) error
+	}{
+		{"workspace", func(fx *runnerFixture) error { return fx.s.DeleteWorkspace(fx.ws.Slug) }},
+		{"collection", func(fx *runnerFixture) error { return fx.s.DeleteCollection(fx.col.ID, "") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fx := newRunnerFixture(t)
+			fx.r.beforeAsk = func() {
+				if err := tc.del(fx); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if _, err := fx.r.Evaluate(context.Background(), fx.item.ID, triageSet); !errors.Is(err, ErrOwnerDeleted) {
+				t.Fatalf("err = %v; want ErrOwnerDeleted", err)
+			}
+			if fx.called() != 0 {
+				t.Fatalf("content of a %s deleted before the call was sent to the provider", tc.name)
+			}
+		})
+	}
+}
+
+// Work owed in a collection that is archived and then RESTORED is evaluated
+// after the restore — nothing enqueues on restore, so the job must have
+// survived the archive.
+func TestRunner_CollectionRestoreResumesHeldWork(t *testing.T) {
 	fx := newRunnerFixture(t)
-	fx.r.beforeAsk = func() {
-		if err := fx.s.DeleteWorkspace(fx.ws.Slug); err != nil {
-			t.Fatal(err)
+	if err := fx.s.DeleteCollection(fx.col.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 2; i++ { // more than one pass: a held job must not be claimed, nor spin
+		if n, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil || n != 0 {
+			t.Fatalf("pass %d over an archived collection claimed %d (err %v); want 0", i, n, err)
 		}
 	}
-	if _, err := fx.r.Evaluate(context.Background(), fx.item.ID, triageSet); !errors.Is(err, ErrWorkspaceDeleted) {
-		t.Fatalf("err = %v; want ErrWorkspaceDeleted", err)
+	if _, err := fx.s.RestoreCollection(fx.ws.ID, fx.col.ID); err != nil {
+		t.Fatal(err)
 	}
-	if fx.called() != 0 {
-		t.Fatal("content of a workspace deleted before the call was sent to the provider")
+	if n, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil || n != 1 {
+		t.Fatalf("after restore RunOnce claimed %d (err %v); want 1", n, err)
+	}
+	if fx.called() != 1 {
+		t.Fatalf("provider called %d times after restore; want 1", fx.called())
+	}
+	if j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet); j != nil {
+		t.Fatalf("job still owed after restore evaluation: %+v", j)
+	}
+}
+
+// An archived collection must not look like "set not applicable" when a set
+// has an Eligible predicate (GetCollection filters deleted_at IS NULL).
+func TestRunner_ArchivedCollectionWithEligibleSetIsHeldNotInapplicable(t *testing.T) {
+	s := storetest.NewSQLite(t)
+	ws, err := s.CreateWorkspace(models.WorkspaceCreate{Name: "Eligible"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	col, err := s.CreateCollection(ws.ID, models.CollectionCreate{Name: "Tasks", Schema: `{"fields":[]}`})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, f := newFake(t, noulChoiceHandler)
+	reg := NewRegistry()
+	if err := reg.Register(QuestionSet{
+		Name:      triageSet,
+		Questions: triageQuestions(),
+		Eligible:  func(*models.Item, *models.Collection) bool { return true },
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := NewRunner(s, p, reg)
+	r.Install(s)
+
+	item, err := s.CreateItem(ws.ID, col.ID, models.ItemCreate{Title: "Held item"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteCollection(col.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Evaluate(context.Background(), item.ID, triageSet)
+	if !errors.Is(err, ErrOwnerDeleted) {
+		t.Fatalf("Evaluate on archived collection with Eligible = %v; want ErrOwnerDeleted (not ErrSetNotApplicable)", err)
+	}
+	if len(f.requests) != 0 {
+		t.Fatalf("provider called %d times; want 0", len(f.requests))
 	}
 }
 
@@ -644,6 +713,28 @@ func TestRunner_WorkspaceDeletedMidJobIsHeld(t *testing.T) {
 	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
 	if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
 		t.Fatalf("job for a workspace deleted mid-job is %+v; want held (owed, unclaimed, attempts=0)", j)
+	}
+}
+
+// A collection archived between the claim and the send, through RunOnce —
+// the job is HELD (owed, unclaimed, no attempt), not dropped, and the provider
+// is not called.
+func TestRunner_CollectionArchivedMidJobIsHeld(t *testing.T) {
+	fx := newRunnerFixture(t)
+	fx.r.beforeAsk = func() {
+		if err := fx.s.DeleteCollection(fx.col.ID, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if fx.called() != 0 {
+		t.Fatalf("provider called %d times after mid-job collection archive; want 0", fx.called())
+	}
+	j, _ := fx.s.GetDecisionJob(fx.item.ID, triageSet)
+	if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
+		t.Fatalf("job for a collection archived mid-job is %+v; want held (owed, unclaimed, attempts=0)", j)
 	}
 }
 

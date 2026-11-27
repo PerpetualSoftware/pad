@@ -588,3 +588,63 @@ func TestFailDecisionJob_SanitiseBeforeCut(t *testing.T) {
 		})
 	}
 }
+
+func TestDecisionJobs_ArchivedCollectionNotClaimable(t *testing.T) {
+	t.Parallel()
+	s, ws, col := decisionFixture(t)
+	s.SetDecisionSetResolver(func(string) []string { return []string{"triage"} })
+	item := createTestItem(t, s, ws.ID, col.ID, "Archived", "")
+
+	if err := s.DeleteCollection(col.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := s.ClaimDecisionJobs("runner-a", 10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 0 {
+		t.Fatalf("ClaimDecisionJobs claimed %d jobs in an archived collection; want 0", len(claimed))
+	}
+	if j := mustJob(t, s, item.ID, "triage"); j.ClaimedBy != "" {
+		t.Fatalf("held job claimed_by = %q; want unclaimed", j.ClaimedBy)
+	}
+
+	if _, err := s.RestoreCollection(ws.ID, col.ID); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err = s.ClaimDecisionJobs("runner-a", 10, time.Hour)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(claimed) != 1 {
+		t.Fatalf("ClaimDecisionJobs after restore claimed %d; want 1", len(claimed))
+	}
+}
+
+func TestItemLiveness_ArchivedCollectionIsHeldNotGone(t *testing.T) {
+	t.Parallel()
+	s, ws, col := decisionFixture(t)
+	item := createTestItem(t, s, ws.ID, col.ID, "Liveness", "")
+
+	if err := s.DeleteCollection(col.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	itemLive, ownerLive, err := s.ItemLiveness(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !itemLive || ownerLive {
+		t.Fatalf("archived collection: ItemLiveness = (itemLive=%v, ownerLive=%v); want (true, false)", itemLive, ownerLive)
+	}
+
+	if err := s.DeleteItem(item.ID); err != nil {
+		t.Fatal(err)
+	}
+	itemLive, _, err = s.ItemLiveness(item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if itemLive {
+		t.Fatalf("deleted item: itemLive = true; want false")
+	}
+}

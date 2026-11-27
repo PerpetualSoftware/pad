@@ -2,9 +2,11 @@ package decision
 
 import (
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/PerpetualSoftware/pad/internal/models"
 )
@@ -152,5 +154,49 @@ func TestPerComment_EditAndDeleteEndCurrency(t *testing.T) {
 	}
 	if n, cur := fx.commentCurrent(t, item, gone.ID); n == 0 || cur {
 		t.Fatalf("a deleted comment's answer: rows=%d current=%v, want its old row and not current", n, cur)
+	}
+}
+
+func TestPerComment_ArchivedCollectionJobIsHeld(t *testing.T) {
+	fx := newCommentFixture(t)
+	fx.convention(t, "No creds", `{"status":"active","trigger":"always"}`, "no plaintext credentials")
+	fx.r.Install(fx.s)
+	item := fx.task(t, "Staging access")
+	fx.comment(t, item, "password is hunter2")
+
+	if j, _ := fx.s.GetDecisionJob(item.ID, ConventionsCommentsSetName); j == nil {
+		t.Fatal("precondition: no per-comment job owed")
+	}
+	if err := fx.s.DeleteCollection(fx.tasks.ID, ""); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil || n != 0 {
+		t.Fatalf("RunOnce over archived collection claimed %d (err %v); want 0", n, err)
+	}
+	if len(fx.f.rawBodies) != 0 {
+		t.Fatalf("provider called %d times for archived collection; want 0", len(fx.f.rawBodies))
+	}
+	j, _ := fx.s.GetDecisionJob(item.ID, ConventionsCommentsSetName)
+	if j == nil || j.ClaimedBy != "" || j.Attempts != 0 {
+		t.Fatalf("per-comment job in archived collection is %+v; want held (owed, unclaimed, attempts=0)", j)
+	}
+	if _, err := fx.r.Evaluate(context.Background(), item.ID, ConventionsCommentsSetName); !errors.Is(err, ErrOwnerDeleted) {
+		t.Fatalf("Evaluate on archived collection = %v; want ErrOwnerDeleted (not ErrSetNotApplicable)", err)
+	}
+	if len(fx.f.rawBodies) != 0 {
+		t.Fatalf("provider called %d times on Evaluate; want 0", len(fx.f.rawBodies))
+	}
+
+	if _, err := fx.s.RestoreCollection(fx.ws.ID, fx.tasks.ID); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fx.r.RunOnce(context.Background(), "tick", 10, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	if j, _ := fx.s.GetDecisionJob(item.ID, ConventionsCommentsSetName); j != nil {
+		t.Fatalf("per-comment job still owed after restore: %+v", j)
+	}
+	if len(fx.f.rawBodies) == 0 {
+		t.Fatal("provider was not called after collection restore")
 	}
 }
