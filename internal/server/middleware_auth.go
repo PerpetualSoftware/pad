@@ -153,7 +153,9 @@ func (s *Server) TokenAuth(next http.Handler) http.Handler {
 				writeStoreErrorR(w, r, err, http.StatusInternalServerError, "internal_error", "Session validation failed")
 				return
 			}
-			if session == nil {
+			// A WebView session is the WebView's cookie only, never a bearer
+			// (TASK-4454): it answers as no session at all.
+			if session == nil || session.Kind == store.SessionKindWebView {
 				rejectInvalidBearer(w, r, next, "unauthorized", "Invalid or expired session")
 				return
 			}
@@ -313,6 +315,12 @@ func (s *Server) SessionAuth(next http.Handler) http.Handler {
 		// A CLI session is a bearer credential, never a cookie (BUG-3350).
 		if err != nil || session == nil || !cookieKindAccepted(session) {
 			next.ServeHTTP(w, r)
+			return
+		}
+		// A WebView session never reaches a door that creates, widens or
+		// proves a credential (TASK-4454).
+		if session.Kind == store.SessionKindWebView && webViewRouteRefused(r) {
+			writeWebViewSessionForbidden(w)
 			return
 		}
 
@@ -1474,4 +1482,81 @@ func isNamedPathSegment(s string) bool {
 		}
 	}
 	return true
+}
+
+// writeWebViewSessionForbidden answers a WebView session at a door it may not
+// use (TASK-4454).
+func writeWebViewSessionForbidden(w http.ResponseWriter) {
+	writeError(w, http.StatusForbidden, "webview_session_forbidden",
+		"This isn't available in the app on an http connection. Use a browser.")
+}
+
+// webViewRouteRefused reports whether r is a door a WebView session may not
+// use (TASK-4454): one that mints, widens or proves a credential, or changes
+// how the account signs in. The child is the app's WebView cookie on an http
+// connection, where a relaying network could hold it for up to its 15
+// minutes; every route the web UI needs otherwise stays open.
+// TestEveryCredentialRouteClassifiedForWebView classifies every route that
+// could be such a door.
+//
+// It reads the path chi routes on (the raw path when one is set), so an
+// encoded slash cannot move a segment past it.
+func webViewRouteRefused(r *http.Request) bool {
+	p := r.URL.RawPath
+	if p == "" {
+		p = r.URL.Path
+	}
+	p = strings.TrimSuffix(p, "/")
+	write := r.Method != http.MethodGet && r.Method != http.MethodDelete
+	if p == "/oauth/authorize/decide" {
+		return write
+	}
+	if rest, ok := strings.CutPrefix(p, "/api/v1/auth/"); ok {
+		segs := strings.Split(rest, "/")
+		switch {
+		case segs[0] == "tokens":
+			return write
+		case len(segs) == 1:
+			switch segs[0] {
+			case "webview-session", "delete-account", "register", "oauth-link", "oauth-unlink":
+				return write
+			}
+		case len(segs) == 2 && segs[0] == "2fa":
+			// login-verify is a sign-in step that never reads the cookie.
+			return segs[1] == "setup" || segs[1] == "verify" || segs[1] == "disable"
+		case len(segs) == 2 && segs[0] == "step-up":
+			return segs[1] == "email" || segs[1] == "verify"
+		case len(segs) == 4 && segs[0] == "cli" && segs[1] == "sessions" && segs[3] == "approve":
+			return write
+		}
+		return false
+	}
+	switch {
+	case p == "/api/v1/me/calendar-feeds":
+		return write
+	case strings.HasPrefix(p, "/api/v1/me/push-devices/"):
+		return write
+	}
+	if rest, ok := strings.CutPrefix(p, "/api/v1/admin/users/"); ok {
+		segs := strings.Split(rest, "/")
+		return len(segs) == 2 && segs[1] == "reset-password"
+	}
+	if rest, ok := strings.CutPrefix(p, "/api/v1/workspaces/"); ok {
+		segs := strings.Split(rest, "/")
+		if len(segs) < 2 {
+			return false
+		}
+		switch segs[1] {
+		case "tokens":
+			return write
+		case "webhooks":
+			// Create (the collection) and update (one webhook); the test
+			// delivery and removal stay open.
+			return len(segs) == 2 && write ||
+				len(segs) == 3 && (r.Method == http.MethodPatch || r.Method == http.MethodPut)
+		case "apps":
+			return len(segs) == 4 && (segs[3] == "install-code" || segs[3] == "rotate")
+		}
+	}
+	return false
 }

@@ -1999,6 +1999,10 @@ func (s *Server) setupRouter() {
 				r.Delete("/tokens/{tokenID}", s.handleDeleteUserToken)
 				r.Post("/tokens/{tokenID}/rotate", s.handleRotateUserToken)
 
+				// The app's WebView session on an http connection, minted from
+				// its web session sent as a bearer (TASK-4454).
+				r.Post("/webview-session", s.handleCreateWebViewSession)
+
 				// Cloud: OAuth login/linking (called by pad-cloud sidecar, protected
 				// by cloud secret). Cloud mode only (TASK-3351): a self-hosted
 				// install that carries a secret must not create accounts or mint
