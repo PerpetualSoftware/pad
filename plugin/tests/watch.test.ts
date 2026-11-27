@@ -674,3 +674,23 @@ test('a consent check that answers armed while a disarm runs submits nothing (BU
   expect(s.submitted).toEqual(['first'])
   expect(s.stream.closed).toBe(true)
 })
+
+test('after an unknown consent answer the flush asks again on its own: a quiet stream strands nothing (BUG-3741 r2)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  s.consent.code = 'throw'
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual([])
+  await clock.advance(5000) // still unknown: asks again, keeps the line
+  await settle()
+  expect(s.submitted).toEqual([])
+  s.consent.code = undefined
+  await clock.advance(5000) // no new line arrives; the retry alone delivers
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+  expect(s.stream.closed).toBe(false)
+})

@@ -1042,6 +1042,7 @@ function draw($, e) {
 
 const WATCH_BURST_MS = 1500 // a burst ends after this much quiet, and goes to Claude as one message
 const WATCH_BURST_MAX_MS = 10000 // a stream that never goes quiet still flushes this often
+const WATCH_RETRY_MS = 5000 // an unknown consent answer is asked again this long after (BUG-3741)
 let burstTimer = null
 let burstStart = 0
 let watch = null // the running pad-monitor.sh, as $.process.spawn's iterator
@@ -1097,8 +1098,15 @@ async function flushWatch($) {
         endStream()
         break
       }
-      // An unknown answer (a timeout, a CLI error) or a disarm still running
-      // keeps the lines for the next flush and leaves the stream up.
+      // An unknown answer (a timeout, a CLI error) keeps the lines and the
+      // stream, and asks again later: a quiet stream may bring no next line.
+      // A disarm still running keeps them too; its own recheck flushes them.
+      if (consent === 'unknown' && !burstTimer) {
+        burstTimer = $.clock.after(WATCH_RETRY_MS, () => {
+          burstTimer = null
+          if (epoch === watchEpoch) flushWatch($)
+        })
+      }
       if (consent !== 'armed' || disarming || !pending.length) break
       const text = pending.join('\n')
       pending = []
