@@ -43,7 +43,7 @@ var persistedEnvVars = map[string]string{
 	"PAD_SSE_MAX_CONNECTIONS":   "21",
 	"PAD_SSE_MAX_PER_WORKSPACE": "22",
 	"PAD_REDIS_NAMESPACE":       "env-ns",
-	"PAD_EVENTS_PUBLISH_EPOCH":  "true",
+	"PAD_EVENTS_PUBLISH_EPOCH":  "false", // the default is true (TASK-4895)
 	"PAD_EVENTS_HEARTBEAT":      "true",
 	"PAD_WATCH_HEARTBEAT":       "true",
 	"PAD_SSE_MAX_PER_USER":      "23",

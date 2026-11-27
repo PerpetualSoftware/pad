@@ -29,7 +29,7 @@ sse_max_per_workspace = 12
 sse_max_per_user = 13
 collab_max_per_user = 14
 redis_namespace = "ns1"
-events_publish_epoch = true
+events_publish_epoch = false
 events_heartbeat = true
 watch_heartbeat = true
 

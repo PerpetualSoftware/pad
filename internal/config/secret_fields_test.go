@@ -31,6 +31,8 @@ func persistedFields(t reflect.Type) []reflect.StructField {
 // TestConfigFileMirrorsConfig guards the file DTO Save encodes: it must carry
 // every persisted Config field, with the same toml tag, in the same order, and
 // every credential as a plain string (a Secret would be encoded as REDACTED).
+// One field differs on purpose: events_publish_epoch is a *bool with
+// omitempty in the file DTO, so a default (true) is not written (TASK-4895).
 func TestConfigFileMirrorsConfig(t *testing.T) {
 	cfgFields := persistedFields(reflect.TypeOf(Config{}))
 	fileFields := persistedFields(reflect.TypeOf(configFile{}))
@@ -40,6 +42,14 @@ func TestConfigFileMirrorsConfig(t *testing.T) {
 	secrets := 0
 	for i, cf := range cfgFields {
 		ff := fileFields[i]
+		if cf.Name == "EventsPublishEpoch" {
+			if cf.Type != reflect.TypeOf(false) || ff.Type != reflect.TypeOf((*bool)(nil)) ||
+				cf.Tag.Get("toml") != "events_publish_epoch" || ff.Tag.Get("toml") != "events_publish_epoch,omitempty" {
+				t.Errorf("EventsPublishEpoch: Config %s `%s`, configFile %s `%s`, want bool and *bool with omitempty",
+					cf.Type, cf.Tag.Get("toml"), ff.Type, ff.Tag.Get("toml"))
+			}
+			continue
+		}
 		if cf.Tag.Get("toml") != ff.Tag.Get("toml") || cf.Name != ff.Name {
 			t.Errorf("field %d: Config %s `%s`, configFile %s `%s`", i, cf.Name, cf.Tag.Get("toml"), ff.Name, ff.Tag.Get("toml"))
 			continue
