@@ -2577,7 +2577,7 @@ const (
 // and ALSO accepts a bare JSON body with no prefix.
 //
 // THE BARE FORM IS NOT LEGACY-ONLY. It is what every phase-1 instance
-// publishes — one that opted out with config.EventsPublishEpoch false, or one
+// publishes — one that opted out with PAD_EVENTS_PUBLISH_EPOCH=false, or one
 // on a release from before phase 2 became the default (TASK-4895) — as well
 // as what a pre-BUG-2736 binary publishes. Accepting
 // it is what makes both rolls zero-loss in the new-receiving-old direction. It
@@ -2965,9 +2965,13 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// publishers interleave routinely and a lower ID arrives after a
 		// higher one as ORDINARY TRAFFIC. Without the gate this branch would
 		// fire on that, dropping every replay buffer and resyncing every
-		// client — in the DEFAULT configuration, which is where every
-		// deployment sits until an operator flips phase 2. That is a
-		// regression this diff would have introduced, not a defect it finds.
+		// client — on every phase-1 fleet (one opted out with
+		// PAD_EVENTS_PUBLISH_EPOCH=false, or on a release from before phase 2
+		// became the default). That is a regression this diff would have
+		// introduced, not a defect it finds. The gate does NOT cover a fleet
+		// that stays MIXED: a phase-2 peer's epoch arms this branch while
+		// phase-1 peers keep interleaving, so it keeps firing. A fleet must
+		// not stay mixed; see docs/deployment.md.
 		//
 		// What the gate costs: a genuine counter reset on a
 		// never-flipped deployment goes undetected. That is exactly the
