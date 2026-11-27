@@ -13,7 +13,11 @@ function stubs(on: any, opts: Opts = {}) {
   const spawns: { argv: string[]; env: Record<string, string> }[] = []
   const submitted: string[] = []
   const shown: string[] = []
-  const stream = { closed: false, release: () => {} }
+  const consent = {
+    get armed() { return Boolean(opts.armed) },
+    set armed(v: boolean) { opts.armed = v },
+  }
+  const stream = { closed: false, release: () => {}, end: () => {} }
   const atCall: string[][] = [] // the CLI calls already made when each tool call ran
   on('tool.call', () => {
     atCall.push(runs.map((r) => r.argv.join(' ')))
@@ -32,20 +36,26 @@ function stubs(on: any, opts: Opts = {}) {
     if (e.argv[0] === 'sh') return { value: { exitCode: 0, stdout: '4242\n', stderr: '' } }
     if (opts.noCli) return { deny: 'spawn pad ENOENT' }
     if (e.argv.join(' ') === 'pad session should-arm') {
-      const answer = { value: { exitCode: opts.armed ? 0 : 1, stdout: '', stderr: '' } }
+      const answer = { value: { exitCode: consent.armed ? 0 : 1, stdout: '', stderr: '' } }
       return opts.gate ? opts.gate.then(() => answer) : answer
     }
     return { value: { exitCode: 0, stdout: '', stderr: '' } }
   })
   on('process.spawn', async function* ($: any, e: any) {
     spawns.push({ argv: [...e.argv], env: { ...(e.env || {}) } })
+    stream.closed = false
     try {
       for (const c of opts.chunks || []) yield c
-      // The stream stays open; each release() makes it write one more line.
+      // The stream stays open; each release() makes it write one more line,
+      // and end() makes the stream exit on its own (BUG-3741).
       // An iterator the mod ended stops at that yield (an async generator's
       // return() takes effect at its next yield; the engine kills the child).
       for (;;) {
-        await new Promise<void>((r) => { stream.release = r })
+        const next = await new Promise<'line' | 'end'>((r) => {
+          stream.release = () => r('line')
+          stream.end = () => r('end')
+        })
+        if (next === 'end') return { value: { exitCode: 0 } }
         yield { stream: 'stdout', text: 'late line\n' }
       }
     } finally {
@@ -58,7 +68,7 @@ function stubs(on: any, opts: Opts = {}) {
     if (!opts.holdSubmit) return { text: e.text }
     return new Promise((r) => { held.release = () => r({ text: e.text }) })
   })
-  return { runs, spawns, submitted, shown, stream, held, atCall }
+  return { runs, spawns, submitted, shown, stream, held, atCall, consent }
 }
 
 const settle = () => new Promise((r) => setTimeout(r, 30))
@@ -443,9 +453,8 @@ test('after a disconnect the mod starts nothing; a later connect does not double
   await usePad($, 'pad session arm')
   await settle()
   expect(s.spawns.length).toBe(1)
-  // /pad:disconnect ends the stream in the wrapper (pad-monitor.sh re-checks
-  // consent and exits), which no test here drives; this only pins that the
-  // mod starts nothing on a disarm and never doubles the stream it holds.
+  // BUG-3741: `pad session disarm` ends the stream at once in the mod, so
+  // disarm starts nothing and a later `pad session arm` starts a new stream.
   opts.armed = false
   await usePad($, 'pad session disarm')
   s.stream.release()
@@ -454,5 +463,138 @@ test('after a disconnect the mod starts nothing; a later connect does not double
   opts.armed = true
   await usePad($, 'pad session arm')
   await settle()
-  expect(s.spawns.length).toBe(1) // still the one stream: it has not ended yet
+  expect(s.spawns.length).toBe(2)
+})
+
+// BUG-3741: withdrawing consent or ending the stream drops queued lines and
+// cancels any pending burst timer so nothing is relayed after consent ends.
+test('queued lines are not submitted after the stream ends (BUG-3741)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true, holdSubmit: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+  s.stream.release()
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  s.consent.armed = false
+  s.stream.end()
+  await settle()
+  s.held.release()
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+})
+
+test('consent withdrawn before the stream ends stops queued delivery on recheck (BUG-3741)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true, holdSubmit: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+  const checksBefore = s.runs.filter((r) => r.argv.join(' ') === 'pad session should-arm').length
+  s.stream.release()
+  await settle()
+  s.consent.armed = false
+  s.held.release()
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  const checksAfter = s.runs.filter((r) => r.argv.join(' ') === 'pad session should-arm').length
+  expect(s.submitted).toEqual(['first'])
+  expect(checksAfter).toBe(checksBefore + 1)
+})
+
+test('a burst timer scheduled before the stream ends does not flush (BUG-3741)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  s.stream.end()
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual([])
+})
+
+test('pad session disarm via Bash ends the stream and a later arm starts a new one (BUG-3741)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  expect(s.spawns.length).toBe(1)
+  s.stream.release()
+  await settle()
+  s.consent.armed = false
+  await usePad($, 'pad session disarm')
+  s.stream.release()
+  await settle()
+  expect(s.stream.closed).toBe(true)
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual([])
+  s.consent.armed = true
+  await usePad($, 'pad session arm')
+  await settle()
+  expect(s.spawns.length).toBe(2)
+})
+
+const DISARMS = [
+  'pad session disarm',
+  'cd x && pad session disarm',
+  '/usr/local/bin/pad session disarm',
+]
+const NOT_DISARMS = [
+  'pad session arm',
+  'pad session disarmed',
+  'padd session disarm',
+]
+
+test('every shape of the disarm command ends the stream, and no other command or tool does (BUG-3741)', async ($, on) => {
+  mock.clock(on)
+  const s = stubs(on, { armed: true })
+  const tryCall = async (call: { tool: string; command?: string }) => {
+    await $.session.start({ cwd: '/work/demo' })
+    await usePad($)
+    await settle()
+    await $.tool.call(call as any)
+    s.stream.release()
+    await settle()
+    const closed = s.stream.closed
+    await $.session.end({ reason: 'prompt_input_exit' })
+    s.stream.release()
+    await settle()
+    return [call.tool + ':' + (call.command || ''), closed]
+  }
+  for (const command of DISARMS) {
+    expect(await tryCall({ tool: 'Bash', command })).toEqual(['Bash:' + command, true])
+  }
+  for (const command of NOT_DISARMS) {
+    expect(await tryCall({ tool: 'Bash', command })).toEqual(['Bash:' + command, false])
+  }
+  expect(await tryCall({ tool: 'Write', command: 'pad session disarm' })).toEqual(['Write:pad session disarm', false])
+})
+
+test('an armed session rechecks consent with the stream env and submits a burst once (BUG-3741)', async ($, on) => {
+  const clock = mock.clock(on)
+  const s = stubs(on, { armed: true, chunks: [{ stream: 'stdout', text: 'first\n' }] })
+  await $.session.start({ cwd: '/work/demo' })
+  await usePad($)
+  await settle()
+  await clock.advance(1500)
+  await settle()
+  expect(s.submitted).toEqual(['first'])
+  const checks = s.runs.filter((r) => r.argv.join(' ') === 'pad session should-arm')
+  expect(checks.length).toBe(2)
+  expect(checks[1].env).toEqual({ CLAUDECODE: '1', PAD_SESSION_PID: '4242' })
 })
