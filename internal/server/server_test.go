@@ -229,6 +229,49 @@ func TestWorkspaceContextAPI(t *testing.T) {
 	}
 }
 
+// A context-only PATCH (what the web settings page sends) replaces the
+// context key and keeps every other stored settings key.
+func TestWorkspaceContextPatchKeepsOtherSettings(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+	slug := createWSForTest(t, srv)
+
+	rr := doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug, map[string]interface{}{
+		"settings": `{"theme":"dark","context":{"assumptions":["old"]}}`,
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("seed settings: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	rr = doRequest(srv, "PATCH", "/api/v1/workspaces/"+slug, map[string]interface{}{
+		"context": map[string]interface{}{
+			"commands": map[string]string{"test": "go test ./..."},
+		},
+	})
+	if rr.Code != http.StatusOK {
+		t.Fatalf("context-only patch: expected 200, got %d: %s", rr.Code, rr.Body.String())
+	}
+
+	ws, err := srv.store.GetWorkspaceBySlug(slug)
+	if err != nil || ws == nil {
+		t.Fatalf("reload workspace: %v", err)
+	}
+	var stored map[string]any
+	if err := json.Unmarshal([]byte(ws.Settings), &stored); err != nil {
+		t.Fatalf("stored settings are not JSON: %v (%q)", err, ws.Settings)
+	}
+	if stored["theme"] != "dark" {
+		t.Fatalf("context-only patch dropped an unrelated setting: %s", ws.Settings)
+	}
+	ctx := models.ExtractWorkspaceContext(ws.Settings)
+	if ctx == nil || ctx.Commands == nil || ctx.Commands.Test != "go test ./..." {
+		t.Fatalf("expected the new context to be stored, got %s", ws.Settings)
+	}
+	if len(ctx.Assumptions) != 0 {
+		t.Fatalf("expected the old context replaced, got %s", ws.Settings)
+	}
+}
+
 func createWSForTest(t *testing.T, srv *Server) string {
 	t.Helper()
 	rr := doRequest(srv, "POST", "/api/v1/workspaces", map[string]string{"name": "Test"})

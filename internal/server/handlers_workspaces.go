@@ -74,18 +74,10 @@ func normalizeWorkspaceUpdateInput(input *models.WorkspaceUpdate) error {
 		input.Settings = &settings
 	}
 
-	if input.Context != nil {
-		base := "{}"
-		if input.Settings != nil {
-			base = *input.Settings
-		}
-		settings, err := models.ApplyWorkspaceContext(base, input.Context)
-		if err != nil {
-			return fmt.Errorf("invalid workspace context: %w", err)
-		}
-		input.Settings = &settings
-	}
-
+	// Context is left for UpdateWorkspace, which applies it to the
+	// settings it reads under its row lock (or to input.Settings when
+	// both are sent). Folding it into a "{}" base here would make a
+	// context-only update replace every other stored settings key.
 	return nil
 }
 
