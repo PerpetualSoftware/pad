@@ -17,6 +17,14 @@ web/.svelte-kit/
 *.sqlite
 *.sqlite3
 
+# Env files hold real credentials (POSTGRES_PASSWORD, PAD_ENCRYPTION_KEY; see
+# .env.example). The Go builder stage copies the whole context, so anything
+# not excluded here lands in its layers and in any build cache. `**/` matches
+# at every depth, the root included.
+**/.env
+**/.env.*
+!**/.env.example
+
 # Dev files
 .git/
 .github/
