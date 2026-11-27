@@ -78,6 +78,27 @@ func runCapped(cmd *exec.Cmd, stdoutLimit int64) (stdout []byte, stderr string, 
 	return outBuf.Bytes(), errBuf.String(), outCap.exceeded, err
 }
 
+// execTooLargeResult is the stdio form. The subprocess door cannot tell a
+// read from a write by its command path, so it stays too_large, but when the
+// child exited 0 it says so: a write that ran has already been applied, and
+// the agent must check before retrying rather than repeat it.
+func execTooLargeResult(cmdKey string, limit int64, exitOK bool) *CallToolResult {
+	if !exitOK {
+		return responseTooLargeResult(cmdKey, limit)
+	}
+	details, _ := json.Marshal(map[string]any{
+		"reason":      "response_too_large",
+		"limit_bytes": limit,
+		"exit_ok":     true,
+	})
+	return NewErrorResult(ErrorPayload{
+		Code:    ErrTooLarge,
+		Message: fmt.Sprintf("pad %s finished, but its result is larger than the %d-byte MCP response limit and was not returned", cmdKey, limit),
+		Hint:    "If this was a write, it has been applied: read the item before retrying. If it was a read, ask for less: lower limit, drop full=true, or add filters.",
+		Details: details,
+	})
+}
+
 func responseTooLargeResult(cmdKey string, limit int64) *CallToolResult {
 	details, _ := json.Marshal(map[string]any{
 		"reason":      "response_too_large",

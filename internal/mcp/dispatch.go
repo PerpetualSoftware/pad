@@ -156,7 +156,7 @@ func (d *ExecDispatcher) Dispatch(ctx context.Context, cmdPath []string, cliArgs
 	limit := d.responseMaxBytes()
 	stdout, stderr, exceeded, err := runCapped(cmd, limit)
 	if exceeded {
-		return responseTooLargeResult(strings.Join(cmdPath, " "), limit), nil
+		return execTooLargeResult(strings.Join(cmdPath, " "), limit, err == nil), nil
 	}
 	if err != nil {
 		// Classify into the structured envelope. WorkspaceLister

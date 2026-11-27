@@ -425,11 +425,12 @@ func TestResponseCap_HTTPUnderLimit(t *testing.T) {
 func TestResponseCap_ExecOverLimit(t *testing.T) {
 	const limit int64 = 1024
 	for _, tc := range []struct {
-		name string
-		mode string
+		name       string
+		mode       string
+		wantExitOK bool
 	}{
-		{"exit 0", "stdout_4k_exit0"},
-		{"exit 1", "stdout_4k_exit1"},
+		{"exit 0", "stdout_4k_exit0", true},
+		{"exit 1", "stdout_4k_exit1", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			d := &ExecDispatcher{
@@ -441,6 +442,21 @@ func TestResponseCap_ExecOverLimit(t *testing.T) {
 				t.Fatalf("Dispatch returned err: %v", err)
 			}
 			assertResponseTooLargeEnvelope(t, res, limit)
+			// A child that finished may have been a write that was applied:
+			// the envelope must say so, so the agent checks before retrying.
+			env := decodeEnvelope(t, res)
+			var details struct {
+				ExitOK bool `json:"exit_ok"`
+			}
+			if err := json.Unmarshal(env.Error.Details, &details); err != nil {
+				t.Fatalf("decode details: %v", err)
+			}
+			if details.ExitOK != tc.wantExitOK {
+				t.Errorf("details.exit_ok = %v, want %v", details.ExitOK, tc.wantExitOK)
+			}
+			if tc.wantExitOK && !strings.Contains(env.Error.Hint, "has been applied") {
+				t.Errorf("hint = %q, want it to say a write has been applied", env.Error.Hint)
+			}
 		})
 	}
 }
