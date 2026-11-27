@@ -75,7 +75,7 @@ func (d *HTTPHandlerDispatcher) dispatchItemImport(
 
 	resp, exceeded := d.serveCapped(req)
 	if exceeded {
-		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+		return overflowResult(cmdKey, req, resp.StatusCode, d.responseMaxBytes()), nil
 	}
 	return packageHTTPResponse(req.Context(), cmdKey, resp, d.Lister)
 }

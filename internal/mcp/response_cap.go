@@ -91,6 +91,25 @@ func responseTooLargeResult(cmdKey string, limit int64) *CallToolResult {
 	})
 }
 
+// overflowResult answers a call whose response overran the limit. A write
+// (any method but GET or HEAD) that the handler accepted has already
+// happened, so it is reported as done with its result left out: a too_large
+// error there would invite a retry that writes twice (a duplicate create or
+// import). Everything else is refused with too_large.
+func overflowResult(cmdKey string, req *http.Request, status int, limit int64) *CallToolResult {
+	if status < 400 && req != nil && req.Method != http.MethodGet && req.Method != http.MethodHead {
+		msg := fmt.Sprintf("pad %s succeeded; its result is larger than the %d-byte MCP response limit and was not returned. Read the item to see it.", cmdKey, limit)
+		return structuredResult(map[string]any{
+			"ok":             true,
+			"result_omitted": true,
+			"reason":         "response_too_large",
+			"limit_bytes":    limit,
+			"message":        msg,
+		}, msg)
+	}
+	return responseTooLargeResult(cmdKey, limit)
+}
+
 // responseTooLargeError propagates a response-cap overflow from internal
 // prefetch helpers (such as resolveItemRef or lookupAssigneeID) back to the
 // outer command dispatcher so it returns responseTooLargeResult for the outer

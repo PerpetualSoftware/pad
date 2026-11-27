@@ -534,7 +534,7 @@ func (d *HTTPHandlerDispatcher) executeRequest(
 
 	resp, exceeded := d.serveCapped(req)
 	if exceeded {
-		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+		return overflowResult(cmdKey, req, resp.StatusCode, d.responseMaxBytes()), nil
 	}
 	// Use req.Context() (NOT the outer ctx) so the workspace lister
 	// sees everything buildHTTPRequest + d.Apply attached:

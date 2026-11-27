@@ -239,6 +239,67 @@ func TestResponseCap_BulkUpdateRowOutcome(t *testing.T) {
 	}
 }
 
+// A write the handler accepted has happened even when its answer is too big
+// to return, so it is reported as done (result omitted), never as too_large,
+// which would invite a retry that writes twice. A refused write is too_large.
+func TestResponseCap_WriteOverflowReportsDone(t *testing.T) {
+	const limit int64 = 1024
+	big := strings.Repeat("x", 4096)
+	for _, tc := range []struct {
+		name   string
+		status int
+		wantOK bool
+	}{
+		{"accepted create", http.StatusCreated, true},
+		{"refused create", http.StatusBadRequest, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var method string
+			stub := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				method = r.Method
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = fmt.Fprintf(w, `{"ref":"TASK-1","content":%q}`, big)
+			})
+			d := &HTTPHandlerDispatcher{
+				Handler:          stub,
+				UserResolver:     fixedUserResolver(&models.User{ID: "u1", Name: "Tester"}),
+				ResponseMaxBytes: limit,
+			}
+			ctx := WithDispatchInput(context.Background(), map[string]any{
+				"workspace": "ws", "collection": "tasks", "title": "Big",
+			})
+			res, err := d.Dispatch(ctx, []string{"item", "create"}, nil)
+			if err != nil {
+				t.Fatalf("Dispatch returned err: %v", err)
+			}
+			if method != http.MethodPost {
+				t.Fatalf("handler saw %q, want POST", method)
+			}
+			if !tc.wantOK {
+				assertResponseTooLargeEnvelope(t, res, limit)
+				return
+			}
+			if res.IsError {
+				t.Fatalf("IsError = true, want a done result with the body omitted (text=%q)", textOf(res))
+			}
+			var got struct {
+				OK            bool   `json:"ok"`
+				ResultOmitted bool   `json:"result_omitted"`
+				Reason        string `json:"reason"`
+				LimitBytes    int64  `json:"limit_bytes"`
+			}
+			raw, _ := json.Marshal(res.StructuredContent)
+			if err := json.Unmarshal(raw, &got); err != nil {
+				t.Fatalf("decode structured content %s: %v", raw, err)
+			}
+			if !got.OK || !got.ResultOmitted || got.Reason != "response_too_large" || got.LimitBytes != limit {
+				t.Errorf("structured = %+v, want ok, result_omitted, response_too_large, %d", got, limit)
+			}
+		})
+	}
+}
+
 func TestResponseCap_HTTPUnderLimit(t *testing.T) {
 	const limit int64 = 1024
 	mux := http.NewServeMux()
