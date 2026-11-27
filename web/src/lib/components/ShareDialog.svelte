@@ -51,10 +51,13 @@
 
 	// Which open of the dialog a request belongs to. PLAIN for the same reason
 	// as prevOpen. The dialog stays mounted between opens and can reopen for
-	// another target, so no response from an earlier open may commit into this
-	// one (BUG-4893): a created link carries its one-time token, and a grant
-	// list belongs to its target. Every handler captures `gen` before its
-	// await and drops the commit, and its busy-flag reset, on `gen !== openGen`.
+	// another target, so state that belongs to an open must not be written by
+	// a response from an earlier one (BUG-4893): a created link's one-time
+	// token, a loaded grant list, the form, inline errors and busy flags. Each
+	// handler captures `gen` before its await and gates those on
+	// `gen === openGen`. What the server did is not open-scoped: a revoke or
+	// delete still filters by id, a share appends on the same target, and
+	// toasts (global) still report the outcome.
 	let openGen = 0;
 
 	$effect.pre(() => {
@@ -172,7 +175,8 @@
 			newlyCreatedLinkId = newLink.id;
 			toastStore.show('Share link created', 'success');
 		} catch (e: any) {
-			if (!isSameIdentity() || gen !== openGen) return;
+			// No link exists, and toasts are global: report it across a reopen.
+			if (!isSameIdentity()) return;
 			toastStore.show(e.message ?? 'Failed to create share link', 'error');
 		} finally {
 			if (gen === openGen) creatingLink = false;
@@ -230,6 +234,8 @@
 		// a list that identity may not be allowed to see is the other.
 		const isSameIdentity = authStore.identityFence();
 		const gen = openGen;
+		const sharedType = type;
+		const sharedTarget = targetSlug;
 		sharing = true;
 		shareError = '';
 		try {
@@ -237,14 +243,31 @@
 				type === 'collection'
 					? await api.grants.createCollectionGrant(wsSlug, targetSlug, trimmed, permission)
 					: await api.grants.createItemGrant(wsSlug, targetSlug, trimmed, permission);
-			if (!isSameIdentity() || gen !== openGen) return;
-			grants = [...grants, newGrant];
-			email = '';
-			permission = 'view';
+			if (!isSameIdentity()) return;
+			// The grant exists on the server whichever open is showing now. A
+			// reopen on the SAME target lists it; one on another target must
+			// not. The reopen's own list load may already hold it, so append
+			// by id only once.
+			if (
+				type === sharedType &&
+				targetSlug === sharedTarget &&
+				!grants.some((g) => g.id === newGrant.id)
+			) {
+				grants = [...grants, newGrant];
+			}
+			// The form belongs to the open that filled it.
+			if (gen === openGen) {
+				email = '';
+				permission = 'view';
+			}
 			toastStore.show(`Shared with ${trimmed}`, 'success');
 		} catch (e: any) {
-			if (!isSameIdentity() || gen !== openGen) return;
-			shareError = e.message ?? 'Failed to share';
+			if (!isSameIdentity()) return;
+			const message = e.message ?? 'Failed to share';
+			// Inline under the form for this open; a toast once the dialog
+			// has reopened, so the failure is still reported.
+			if (gen === openGen) shareError = message;
+			else toastStore.show(message, 'error');
 		} finally {
 			if (gen === openGen) sharing = false;
 		}
@@ -262,13 +285,18 @@
 			} else {
 				await api.grants.deleteItemGrant(wsSlug, targetSlug, grantId);
 			}
-			if (!isSameIdentity() || gen !== openGen) return;
+			if (!isSameIdentity()) return;
+			// Across a reopen too: grant ids are unique, so this removes
+			// nothing on another target, and on the same target the grant is
+			// gone from the server. The toasts are global, so a reopen must
+			// not swallow them, least of all a failed revoke.
 			grants = grants.filter((g) => g.id !== grantId);
 			toastStore.show('Access revoked', 'success');
 		} catch (e: any) {
-			if (!isSameIdentity() || gen !== openGen) return;
+			if (!isSameIdentity()) return;
 			toastStore.show(e.message ?? 'Failed to revoke access', 'error');
 		} finally {
+			// Only the busy flag belongs to the open that set it.
 			if (gen === openGen) revokingId = null;
 		}
 	}

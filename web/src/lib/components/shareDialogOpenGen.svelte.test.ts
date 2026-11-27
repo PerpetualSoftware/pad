@@ -211,7 +211,7 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 		expect(grantsSection().textContent).toContain('No one has been granted access yet.');
 	});
 
-	it('handleShare success from open #1 does not append, reset the form or toast in open #2', async () => {
+	it('handleShare success from open #1 on another target does not append or reset the open #2 form, and still toasts', async () => {
 		const shareD = deferred<unknown>();
 		apiMock.createItemGrant.mockReturnValue(shareD.promise);
 		await render();
@@ -226,10 +226,36 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 
 		expect(grantsSection().textContent).not.toContain('old@example.com');
 		expect(target.querySelector<HTMLInputElement>('.email-input')!.value).toBe('typing@example.com');
-		expect(toastShow).not.toHaveBeenCalled();
+		expect(toastShow).toHaveBeenCalledWith('Shared with old@example.com', 'success');
 	});
 
-	it('handleShare failure from open #1 does not show its error in open #2', async () => {
+	it('handleShare success from open #1 on the SAME target lists the grant in open #2, once', async () => {
+		const shareD = deferred<unknown>();
+		apiMock.createItemGrant.mockReturnValue(shareD.promise);
+		await render();
+		await startShare('old@example.com');
+
+		await reopen('ITEM-1');
+		shareD.resolve(grantA);
+		await settle();
+		expect(grantsSection().querySelectorAll('.grant-row').length).toBe(1);
+		expect(grantsSection().textContent).toContain('old@example.com');
+	});
+
+	it('handleShare success from open #1 is not listed twice when the open #2 load already has it', async () => {
+		const shareD = deferred<unknown>();
+		apiMock.createItemGrant.mockReturnValue(shareD.promise);
+		await render();
+		await startShare('old@example.com');
+
+		apiMock.listItemGrants.mockResolvedValue([grantA]);
+		await reopen('ITEM-1');
+		shareD.resolve(grantA);
+		await settle();
+		expect(grantsSection().querySelectorAll('.grant-row').length).toBe(1);
+	});
+
+	it('handleShare failure from open #1 is a toast in open #2, not an inline error', async () => {
 		const shareD = deferred<unknown>();
 		apiMock.createItemGrant.mockReturnValue(shareD.promise);
 		await render();
@@ -242,6 +268,7 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 
 		expect(addSection().textContent).not.toContain('share exploded');
 		expect(addSection().querySelector('.error-msg')).toBeNull();
+		expect(toastShow).toHaveBeenCalledWith('share exploded', 'error');
 	});
 
 	it('a share pending from open #1 leaves the open #2 Share button idle, and its end does not end an open #2 share', async () => {
@@ -268,7 +295,7 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 		await settle();
 	});
 
-	it('handleRevoke success from open #1 does not remove the grant or toast in open #2', async () => {
+	it('handleRevoke success from open #1 removes the revoked grant from a same-target open #2, and toasts', async () => {
 		apiMock.listItemGrants.mockResolvedValue([grantA]);
 		const revokeD = deferred<unknown>();
 		apiMock.deleteItemGrant.mockReturnValue(revokeD.promise);
@@ -282,11 +309,11 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 		revokeD.resolve(undefined);
 		await settle();
 
-		expect(grantsSection().textContent).toContain('old@example.com');
-		expect(toastShow).not.toHaveBeenCalled();
+		expect(grantsSection().textContent).not.toContain('old@example.com');
+		expect(toastShow).toHaveBeenCalledWith('Access revoked', 'success');
 	});
 
-	it('handleRevoke failure from open #1 does not toast in open #2', async () => {
+	it('handleRevoke failure from open #1 is still reported in open #2', async () => {
 		apiMock.listItemGrants.mockResolvedValue([grantA]);
 		const revokeD = deferred<unknown>();
 		apiMock.deleteItemGrant.mockReturnValue(revokeD.promise);
@@ -298,7 +325,8 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 		revokeD.reject(new Error('revoke exploded'));
 		await settle();
 
-		expect(toastShow).not.toHaveBeenCalled();
+		expect(toastShow).toHaveBeenCalledWith('revoke exploded', 'error');
+		expect(grantsSection().textContent).toContain('old@example.com');
 	});
 
 	it('a revoke pending from open #1 does not block, or end, a revoke in open #2', async () => {
@@ -309,6 +337,9 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 		await render();
 		await startRevoke();
 
+		// Open #2 lists grantB first, so its revoke targets a different grant
+		// from the one open #1 is still revoking.
+		apiMock.listItemGrants.mockResolvedValue([grantB, grantA]);
 		await reopen('ITEM-1');
 		const btn = () => grantsSection().querySelector<HTMLButtonElement>('.revoke-btn')!;
 		expect(btn().disabled).toBe(false);
@@ -325,7 +356,7 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 		await settle();
 	});
 
-	it('handleCreateShareLink failure from open #1 does not toast in open #2', async () => {
+	it('handleCreateShareLink failure from open #1 is still reported in open #2', async () => {
 		const createD = deferred<unknown>();
 		apiMock.createItemShareLink.mockReturnValue(createD.promise);
 		await render();
@@ -337,7 +368,7 @@ describe('ShareDialog: an earlier open does not commit into a reopened dialog (B
 		createD.reject(new Error('create exploded'));
 		await settle();
 
-		expect(toastShow).not.toHaveBeenCalled();
+		expect(toastShow).toHaveBeenCalledWith('create exploded', 'error');
 	});
 
 	it('a create pending from open #1 leaves the open #2 Create button idle and enabled', async () => {
