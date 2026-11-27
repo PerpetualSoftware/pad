@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"sort"
 	"strings"
@@ -151,20 +151,27 @@ func (d *HTTPHandlerDispatcher) dispatchProjectRoleQueue(
 	if err != nil {
 		return dispatcherErrorResult(cmdKey, "build role queue request", err), nil
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return dispatcherErrorResult(cmdKey, "read role queue", err), nil
+	}
+	if resp.StatusCode >= 400 {
 		kind := ResourceListing
 		refOrSlug := role
-		if rec.Code == http.StatusNotFound && strings.Contains(strings.ToLower(rec.Body.String()), `"scope":"workspace"`) {
+		if resp.StatusCode == http.StatusNotFound && strings.Contains(strings.ToLower(string(bodyBytes)), `"scope":"workspace"`) {
 			kind = ResourceWorkspace
 			refOrSlug = workspace
 		}
 		return upstreamHTTPErrorResult(ctx, cmdKey, "fetch role queue", path,
-			rec.Code, rec.Body.Bytes(), d.Lister, kind, refOrSlug), nil
+			resp.StatusCode, bodyBytes, d.Lister, kind, refOrSlug), nil
 	}
 	var q models.RoleQueueResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &q); err != nil {
+	if err := json.Unmarshal(bodyBytes, &q); err != nil {
 		return dispatcherErrorResult(cmdKey, "parse role queue", err), nil
 	}
 	results := make([]models.RoleQueueItem, 0, len(q.Queue))
@@ -290,14 +297,21 @@ func (d *HTTPHandlerDispatcher) fetchDashboardJSON(
 	if err != nil {
 		return nil, dispatcherErrorResult(cmdKey, "build dashboard request", err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return nil, responseTooLargeResult(cmdKey, d.responseMaxBytes())
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, dispatcherErrorResult(cmdKey, "read dashboard", err)
+	}
+	if resp.StatusCode >= 400 {
 		return nil, upstreamHTTPErrorResult(ctx, cmdKey, "fetch dashboard", path,
-			rec.Code, rec.Body.Bytes(), d.Lister, ResourceWorkspace, workspace)
+			resp.StatusCode, bodyBytes, d.Lister, ResourceWorkspace, workspace)
 	}
 	var dash map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &dash); err != nil {
+	if err := json.Unmarshal(bodyBytes, &dash); err != nil {
 		return nil, dispatcherErrorResult(cmdKey, "parse dashboard", err)
 	}
 	return dash, nil
@@ -482,12 +496,30 @@ func (d *HTTPHandlerDispatcher) dispatchItemBulkUpdate(
 			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("build PATCH", err)})
 			continue
 		}
-		patchRec := httptest.NewRecorder()
-		d.Handler.ServeHTTP(patchRec, patchReq)
-		if patchRec.Code >= 400 {
+		patchResp, exceeded := d.serveCapped(patchReq)
+		if exceeded {
+			// The PATCH has already run, and earlier rows may have been
+			// written, so an oversized answer is this row's outcome, never
+			// the whole call's. A 2xx body is not read on success anyway.
+			if patchResp.StatusCode < 400 {
+				results = append(results, bulkResult{Ref: ref, Updated: true})
+				successes++
+			} else {
+				env := envelopeFrom(responseTooLargeResult(cmdKey, d.responseMaxBytes()))
+				results = append(results, bulkResult{Ref: ref, Error: &env.Error})
+			}
+			continue
+		}
+		patchBodyBytes, readErr := io.ReadAll(patchResp.Body)
+		_ = patchResp.Body.Close()
+		if readErr != nil {
+			results = append(results, bulkResult{Ref: ref, Error: rowDispatcherError("read PATCH", readErr)})
+			continue
+		}
+		if patchResp.StatusCode >= 400 {
 			results = append(results, bulkResult{
 				Ref:   ref,
-				Error: rowUpstreamError("update item", itemPath, patchRec.Code, patchRec.Body.Bytes(), ref),
+				Error: rowUpstreamError("update item", itemPath, patchResp.StatusCode, patchBodyBytes, ref),
 			})
 			continue
 		}
@@ -773,14 +805,21 @@ func (d *HTTPHandlerDispatcher) fetchLibraryEndpoint(
 	if err != nil {
 		return nil, dispatcherErrorResult(cmdKey, "build "+path, err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return nil, responseTooLargeResult(cmdKey, d.responseMaxBytes())
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, dispatcherErrorResult(cmdKey, "read "+path, err)
+	}
+	if resp.StatusCode >= 400 {
 		return nil, upstreamHTTPErrorResult(ctx, cmdKey, "fetch "+path, path,
-			rec.Code, rec.Body.Bytes(), d.Lister, ResourceListing, "")
+			resp.StatusCode, bodyBytes, d.Lister, ResourceListing, "")
 	}
 	var decoded any
-	if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
+	if err := json.Unmarshal(bodyBytes, &decoded); err != nil {
 		return nil, dispatcherErrorResult(cmdKey, "parse "+path, err)
 	}
 	return decoded, nil

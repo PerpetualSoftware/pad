@@ -77,6 +77,8 @@ func (d *HTTPHandlerDispatcher) dispatchGitHubUnlink(ctx context.Context, input 
 		if _, linked := fields["github_pr"]; !linked {
 			return validationFailedResult(cmdKey, "item "+ref+" has no linked PR", "There is nothing to unlink."), nil
 		}
+	} else if res := tooLargeResultIfExceeded(cmdKey, ferr); res != nil {
+		return res, nil
 	}
 	body, err := json.Marshal(models.ItemUpdate{ClearGitHubPR: true})
 	if err != nil {

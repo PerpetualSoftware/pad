@@ -4,8 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"strings"
 
@@ -148,17 +148,24 @@ func (d *HTTPHandlerDispatcher) resolveItemRef(
 	if err != nil {
 		return nil, fmt.Errorf("build prefetch request for %q: %w", ref, err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return nil, &responseTooLargeError{limit: d.responseMaxBytes()}
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read item prefetch for %q: %w", ref, err)
+	}
+	if resp.StatusCode >= 400 {
+		body := strings.TrimSpace(string(bodyBytes))
 		if body == "" {
-			body = http.StatusText(rec.Code)
+			body = http.StatusText(resp.StatusCode)
 		}
-		return nil, fmt.Errorf("resolve %q: %d %s", ref, rec.Code, body)
+		return nil, fmt.Errorf("resolve %q: %d %s", ref, resp.StatusCode, body)
 	}
 	var out itemPrefetch
-	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+	if err := json.Unmarshal(bodyBytes, &out); err != nil {
 		return nil, fmt.Errorf("parse item prefetch for %q: %w", ref, err)
 	}
 	if out.ID == "" || out.Slug == "" {
@@ -202,11 +209,17 @@ func (d *HTTPHandlerDispatcher) dispatchCreateItemLink(
 
 	urlItem, err := d.resolveItemRef(ctx, user, workspace, urlRef)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(spec.cmdKey, err); res != nil {
+			return res, nil
+		}
 		return validationFailedResult(spec.cmdKey, err.Error(),
 			fmt.Sprintf("Verify item %q exists in workspace %q (use pad_item search / list).", urlRef, workspace)), nil
 	}
 	bodyItem, err := d.resolveItemRef(ctx, user, workspace, bodyRef)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(spec.cmdKey, err); res != nil {
+			return res, nil
+		}
 		return validationFailedResult(spec.cmdKey, err.Error(),
 			fmt.Sprintf("Verify item %q exists in workspace %q (use pad_item search / list).", bodyRef, workspace)), nil
 	}
@@ -260,17 +273,26 @@ func (d *HTTPHandlerDispatcher) dispatchDeleteItemLink(
 
 	urlItem, err := d.resolveItemRef(ctx, user, workspace, urlRef)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(spec.cmdKey, err); res != nil {
+			return res, nil
+		}
 		return validationFailedResult(spec.cmdKey, err.Error(),
 			fmt.Sprintf("Verify item %q exists in workspace %q.", urlRef, workspace)), nil
 	}
 	bodyItem, err := d.resolveItemRef(ctx, user, workspace, bodyRef)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(spec.cmdKey, err); res != nil {
+			return res, nil
+		}
 		return validationFailedResult(spec.cmdKey, err.Error(),
 			fmt.Sprintf("Verify item %q exists in workspace %q.", bodyRef, workspace)), nil
 	}
 
 	links, err := d.listItemLinks(ctx, user, workspace, urlItem.Slug)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(spec.cmdKey, err); res != nil {
+			return res, nil
+		}
 		return dispatcherErrorResult(spec.cmdKey, "list links", err), nil
 	}
 
@@ -392,11 +414,17 @@ func (d *HTTPHandlerDispatcher) dispatchItemRelated(
 
 	item, err := d.fetchItem(ctx, user, workspace, ref)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(cmdKey, err); res != nil {
+			return res, nil
+		}
 		return validationFailedResult(cmdKey, err.Error(),
 			fmt.Sprintf("Verify item %q exists in workspace %q.", ref, workspace)), nil
 	}
 	links, err := d.listItemLinks(ctx, user, workspace, item.Slug)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(cmdKey, err); res != nil {
+			return res, nil
+		}
 		return dispatcherErrorResult(cmdKey, "list links", err), nil
 	}
 
@@ -438,11 +466,17 @@ func (d *HTTPHandlerDispatcher) dispatchItemImplementedBy(
 
 	item, err := d.fetchItem(ctx, user, workspace, ref)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(cmdKey, err); res != nil {
+			return res, nil
+		}
 		return validationFailedResult(cmdKey, err.Error(),
 			fmt.Sprintf("Verify item %q exists in workspace %q.", ref, workspace)), nil
 	}
 	links, err := d.listItemLinks(ctx, user, workspace, item.Slug)
 	if err != nil {
+		if res := tooLargeResultIfExceeded(cmdKey, err); res != nil {
+			return res, nil
+		}
 		return dispatcherErrorResult(cmdKey, "list links", err), nil
 	}
 
@@ -498,17 +532,24 @@ func (d *HTTPHandlerDispatcher) fetchItem(
 	if err != nil {
 		return nil, fmt.Errorf("build item request for %q: %w", ref, err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return nil, &responseTooLargeError{limit: d.responseMaxBytes()}
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read item response for %q: %w", ref, err)
+	}
+	if resp.StatusCode >= 400 {
+		body := strings.TrimSpace(string(bodyBytes))
 		if body == "" {
-			body = http.StatusText(rec.Code)
+			body = http.StatusText(resp.StatusCode)
 		}
-		return nil, fmt.Errorf("resolve %q: %d %s", ref, rec.Code, body)
+		return nil, fmt.Errorf("resolve %q: %d %s", ref, resp.StatusCode, body)
 	}
 	var item models.Item
-	if err := json.Unmarshal(rec.Body.Bytes(), &item); err != nil {
+	if err := json.Unmarshal(bodyBytes, &item); err != nil {
 		return nil, fmt.Errorf("parse item response for %q: %w", ref, err)
 	}
 	return &item, nil
@@ -673,17 +714,24 @@ func (d *HTTPHandlerDispatcher) listItemLinks(
 	if err != nil {
 		return nil, fmt.Errorf("build links request: %w", err)
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	if rec.Code >= 400 {
-		body := strings.TrimSpace(rec.Body.String())
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return nil, &responseTooLargeError{limit: d.responseMaxBytes()}
+	}
+	defer resp.Body.Close()
+	bodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("read links response: %w", err)
+	}
+	if resp.StatusCode >= 400 {
+		body := strings.TrimSpace(string(bodyBytes))
 		if body == "" {
-			body = http.StatusText(rec.Code)
+			body = http.StatusText(resp.StatusCode)
 		}
-		return nil, fmt.Errorf("list item links: %d %s", rec.Code, body)
+		return nil, fmt.Errorf("list item links: %d %s", resp.StatusCode, body)
 	}
 	var links []models.ItemLink
-	if err := json.Unmarshal(rec.Body.Bytes(), &links); err != nil {
+	if err := json.Unmarshal(bodyBytes, &links); err != nil {
 		return nil, fmt.Errorf("parse links response: %w", err)
 	}
 	return links, nil

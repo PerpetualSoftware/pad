@@ -9,7 +9,6 @@ import (
 	"math"
 	"math/big"
 	"net/http"
-	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
@@ -1780,9 +1779,10 @@ func (d *HTTPHandlerDispatcher) dispatchItemList(
 		// must be permission_denied here too, not server_error.
 		return buildRequestErrorResult(cmdKey, err), nil
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	resp := rec.Result()
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1830,9 +1830,10 @@ func (d *HTTPHandlerDispatcher) dispatchItemShow(
 	if err != nil {
 		return buildRequestErrorResult(cmdKey, err), nil
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	resp := rec.Result()
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -1923,9 +1924,10 @@ func (d *HTTPHandlerDispatcher) dispatchItemHistory(
 	if err != nil {
 		return buildRequestErrorResult(cmdKey, err), nil
 	}
-	rec := httptest.NewRecorder()
-	d.Handler.ServeHTTP(rec, req)
-	resp := rec.Result()
+	resp, exceeded := d.serveCapped(req)
+	if exceeded {
+		return responseTooLargeResult(cmdKey, d.responseMaxBytes()), nil
+	}
 	defer resp.Body.Close()
 	bodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {

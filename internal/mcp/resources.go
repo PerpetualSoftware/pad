@@ -1,7 +1,6 @@
 package mcp
 
 import (
-	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -81,58 +80,31 @@ func (f *ExecResourceFetcher) FetchBytes(ctx context.Context, args []string) ([]
 	return f.run(ctx, args, attachmentResourceMaxBytes+1)
 }
 
-// run executes the pad subprocess. When limit > 0 it retains at most
-// limit bytes of stdout (draining and discarding the rest so the child
-// never blocks on a full pipe) and reports an error if the output would
-// have exceeded it. limit <= 0 buffers stdout in full (the text path).
+// run executes the pad subprocess. It retains at most limit bytes of stdout
+// (defaulting to defaultResponseMaxBytes when limit <= 0), draining and
+// discarding any excess so the child never blocks on a full pipe, and reports
+// an error if the output exceeded the cap.
 func (f *ExecResourceFetcher) run(ctx context.Context, args []string, limit int64) ([]byte, error) {
 	if f.Binary == "" {
 		return nil, fmt.Errorf("resource fetcher: binary path not configured")
 	}
+	if limit <= 0 {
+		limit = defaultResponseMaxBytes
+	}
 	cmd := exec.CommandContext(ctx, f.Binary, args...)
 	cmd.Env = dispatchChildEnv()
-	var stdout bytes.Buffer
-	var stderr strings.Builder
-	var capped *cappedWriter
-	if limit > 0 {
-		capped = &cappedWriter{buf: &stdout, limit: limit}
-		cmd.Stdout = capped
-	} else {
-		cmd.Stdout = &stdout
+	stdout, stderr, exceeded, err := runCapped(cmd, limit)
+	if exceeded {
+		return nil, fmt.Errorf("pad %s: output exceeded %d-byte cap", strings.Join(args, " "), limit)
 	}
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
 		if msg == "" {
 			msg = err.Error()
 		}
 		return nil, fmt.Errorf("pad %s: %s", strings.Join(args, " "), msg)
 	}
-	if capped != nil && capped.exceeded {
-		return nil, fmt.Errorf("pad %s: output exceeded %d-byte cap", strings.Join(args, " "), limit)
-	}
-	return stdout.Bytes(), nil
-}
-
-// cappedWriter buffers into buf until limit bytes, then keeps accepting
-// (and silently discarding) further writes so io.Copy keeps draining the
-// subprocess pipe — the child can't wedge on a full pipe — while memory
-// stays bounded at limit. exceeded records whether anything was dropped.
-type cappedWriter struct {
-	buf      *bytes.Buffer
-	limit    int64
-	exceeded bool
-}
-
-func (c *cappedWriter) Write(p []byte) (int, error) {
-	if room := c.limit - int64(c.buf.Len()); room < int64(len(p)) {
-		c.exceeded = true
-		if room > 0 {
-			c.buf.Write(p[:room])
-		}
-		return len(p), nil
-	}
-	return c.buf.Write(p)
+	return stdout, nil
 }
 
 // ExecBootstrapFetcher shells out to `pad bootstrap --workspace <ws>
@@ -164,17 +136,18 @@ func (f *ExecBootstrapFetcher) Bootstrap(ctx context.Context, workspace string) 
 	args := append([]string{"bootstrap", "--workspace", workspace, "--format", "json"}, f.RootArgs...)
 	cmd := exec.CommandContext(ctx, f.Binary, args...)
 	cmd.Env = dispatchChildEnv()
-	var stdout, stderr strings.Builder
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		msg := strings.TrimSpace(stderr.String())
+	stdout, stderr, exceeded, err := runCapped(cmd, defaultResponseMaxBytes)
+	if exceeded {
+		return nil, fmt.Errorf("pad bootstrap: output exceeded %d-byte cap", defaultResponseMaxBytes)
+	}
+	if err != nil {
+		msg := strings.TrimSpace(stderr)
 		if msg == "" {
 			msg = err.Error()
 		}
 		return nil, fmt.Errorf("pad bootstrap: %s", msg)
 	}
-	return []byte(stdout.String()), nil
+	return stdout, nil
 }
 
 // resources owns the workspace resource handlers and their shared state.
