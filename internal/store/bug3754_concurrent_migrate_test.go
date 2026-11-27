@@ -169,3 +169,56 @@ func TestBUG3754_PGConcurrentRunnersBothSucceed(t *testing.T) {
 		t.Fatalf("bug3754_probe table not present: %v", err)
 	}
 }
+
+// The recheck must hold when the database default isolation is not read
+// committed: under REPEATABLE READ the advisory-lock statement would fix the
+// snapshot before it waits, and the recheck would miss the other runner.
+func TestBUG3754_PGConcurrentRunnersRepeatableReadDefault(t *testing.T) {
+	t.Parallel()
+	pgURL := os.Getenv("PAD_TEST_POSTGRES_URL")
+	if pgURL == "" {
+		t.Skip("PAD_TEST_POSTGRES_URL not set")
+	}
+	s := testStorePostgres(t, pgURL)
+	var dbName string
+	if err := s.db.QueryRow(`SELECT current_database()`).Scan(&dbName); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`ALTER DATABASE ` + dbName + ` SET default_transaction_isolation = 'repeatable read'`); err != nil {
+		t.Fatal(err)
+	}
+	// ALTER DATABASE applies to new sessions only, so open a fresh pool.
+	rr, err := newPostgresConn(t, replaceDBName(pgURL, dbName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rr.Close()
+	var iso string
+	if err := rr.db.QueryRow(`SHOW default_transaction_isolation`).Scan(&iso); err != nil || iso != "repeatable read" {
+		t.Fatalf("default_transaction_isolation = %q (%v), want repeatable read", iso, err)
+	}
+
+	const body = `SELECT pg_sleep(0.3); CREATE TABLE bug3754_probe (x INTEGER);`
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	var errs [2]error
+	for i := range errs {
+		wg.Add(1)
+		go func(idx int) {
+			defer wg.Done()
+			<-start
+			errs[idx] = applyPostgresMigration(rr.db, bug3754ProbeName, body)
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	for i, runErr := range errs {
+		if runErr != nil {
+			t.Errorf("concurrent runner %d failed: %v", i, runErr)
+		}
+	}
+	var rows int
+	if err := rr.db.QueryRow(`SELECT COUNT(*) FROM schema_migrations WHERE version = $1`, bug3754ProbeName).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("schema_migrations rows for %s = %d (%v), want 1", bug3754ProbeName, rows, err)
+	}
+}

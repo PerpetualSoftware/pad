@@ -1462,7 +1462,11 @@ func normalizePragma(p string) string {
 // schema. Wrapping both in a single explicit transaction closes that window
 // for multi-statement migration files.
 func applyPostgresMigration(db *sql.DB, name, sqlText string) error {
-	tx, err := db.Begin()
+	// READ COMMITTED explicitly, not the database default: the recheck below
+	// must take its snapshot after the advisory lock is granted, and under a
+	// REPEATABLE READ or SERIALIZABLE default the lock statement would fix
+	// the snapshot before it waits (BUG-3754).
+	tx, err := db.BeginTx(context.Background(), &sql.TxOptions{Isolation: sql.LevelReadCommitted})
 	if err != nil {
 		return fmt.Errorf("apply migration %s: begin tx: %w", name, err)
 	}
@@ -1474,8 +1478,8 @@ func applyPostgresMigration(db *sql.DB, name, sqlText string) error {
 	}()
 
 	// Serialize migration runners across processes for the life of the
-	// transaction (BUG-3754). Under READ COMMITTED the recheck statement takes a
-	// fresh snapshot after the lock is granted, so it sees any runner that
+	// transaction (BUG-3754). Under READ COMMITTED (pinned at BeginTx above) the
+	// recheck statement takes a fresh snapshot after the lock is granted, so it sees any runner that
 	// committed while this one waited. Keep this lock first so every runner
 	// acquires it before prepareReminderMigrationTx's LOCK TABLE (one lock order).
 	if _, err := tx.Exec(`SELECT pg_advisory_xact_lock(hashtext('pad:schema-migrations'))`); err != nil {
