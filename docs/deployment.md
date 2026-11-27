@@ -809,8 +809,9 @@ while, set `PAD_EVENTS_PUBLISH_EPOCH=false` before rolling.
 
 **An existing config.toml may hold the opt-out without anyone choosing it.**
 Before this release, `pad init` and `pad auth configure` wrote
-`events_publish_epoch = false` into `~/.pad/config.toml` whatever you had
-chosen. Pad does not reinterpret that line (staying on phase 1 loses no
+`events_publish_epoch = false` into `~/.pad/config.toml` unless the file
+already set it to true, so the line is there on most installs whether or not
+anyone chose it. Pad does not reinterpret that line (staying on phase 1 loses no
 events), so an install upgraded with such a file stays on phase 1. On a Redis
 deployment the server logs a warning at startup naming the file. Delete the
 line to take the default once every replica accepts the prefixed form, or keep
