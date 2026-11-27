@@ -79,11 +79,11 @@ var lifecycleSites = map[string]string{
 	"internal/store/items.go::GetAllItemProgress::buildChildrenUncountedExpr":           "exclude: reference children are uncounted",
 	"internal/server/handlers_items.go::collectionChildrenProgress::childProgressState": "exclude: childProgressState",
 	"internal/server/handlers_items.go::handleGetItemProgress::childProgressState":      "exclude: childProgressState",
-	"internal/server/handlers_dashboard.go::buildDashboardResponse::childProgressState": "exclude: active-plan progress, childProgressState",
+	"internal/server/handlers_dashboard.go::buildDashboard::childProgressState":         "exclude: active-plan progress, childProgressState",
 
 	// Dashboard open-work sections.
 	"internal/server/handlers_item_context.go::handleGetItemContext::isItemDone":            "exclude: item-context conflicts (PLAN-3598) mirror the dashboard: the subject item checks isReferenceCollection first; a blocker keeps a reference BLOCKER, an explicit link; a closed parent of any collection is an anomaly (the close guard skips only reference children)",
-	"internal/server/handlers_dashboard.go::buildDashboardResponse::isItemDone":             "exclude: overdue, blocked, suggested_next and by_role read workItems; orphaned_task checks isReferenceCollection; the blocker check keeps a reference BLOCKER, an explicit link",
+	"internal/server/handlers_dashboard.go::buildDashboard::isItemDone":                     "exclude: overdue, blocked, suggested_next and by_role read workItems; active-plan suggested_next and orphaned_task check isReferenceCollection first; the blocker check keeps a reference BLOCKER, an explicit link",
 	"internal/server/handlers_dashboard.go::firstActiveBlockers::isItemDone":                "keep: the done check on a BLOCKER, moved out of buildDashboardResponse (TASK-3615); a reference blocker is an explicit link and still blocks",
 	"internal/server/handlers_dashboard.go::firstActiveBlockersWithVisibilityQ::isItemDone": "keep: Queryer variant of firstActiveBlockers; a reference blocker is an explicit link and still blocks",
 	"internal/server/handlers_catch_up.go::catchUpNeedsYou::isItemDone":                     "exclude: needs_you's blocked items skip isReferenceCollection first, as the dashboard's blocked attention reads workItems (TASK-3615)",
