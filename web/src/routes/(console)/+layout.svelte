@@ -4,6 +4,7 @@
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { onMount } from 'svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
+	import { ITEM_IN_PARAM, parseItemIn } from '$lib/components/home/homePane';
 	let { children } = $props();
 	let ready = $state(false);
 	onMount(async () => {
@@ -21,10 +22,12 @@
 		ready = true;
 	});
 	const wide = $derived(page.url.pathname === '/' || page.url.pathname === '/agenda' || page.url.pathname.startsWith('/agenda/'));
+	// Home with the item pane open goes full width, so the Agents table keeps its columns (TASK-4902).
+	const split = $derived(page.url.pathname === '/' && !!page.url.searchParams.get('item') && !!parseItemIn(page.url.searchParams.get(ITEM_IN_PARAM)));
 </script>
 {#if ready}
 	<div class="console-layout" class:desktop={!viewport.isMobile}>
-		<div class="console-main" class:wide>{@render children()}</div>
+		<div class="console-main" class:wide class:split>{@render children()}</div>
 	</div>
 {/if}
 <style>
@@ -36,5 +39,6 @@
 	.console-layout.desktop { min-height: 0; }
 	.console-main { max-width: 960px; margin: 0 auto; padding: var(--space-8) var(--space-6); }
 	.console-main.wide { max-width: 1240px; }
+	.console-main.split { max-width: none; }
 	@media (max-width: 768px) { .console-main { padding: var(--space-5) var(--space-3); } }
 </style>

@@ -12,8 +12,9 @@
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import { homeLive } from '$lib/services/homeLive';
 	import AgentRow from './AgentRow.svelte';
+	import type { HomePaneTarget } from './homePane';
 
-	let { compact = false }: { compact?: boolean } = $props();
+	let { compact = false, onopenitem }: { compact?: boolean; onopenitem?: (target: HomePaneTarget) => void } = $props();
 
 	const agents = $derived(agentsOverview.data?.agents ?? []);
 	const busy = $derived(agents.filter(a => a.summary.now_count > 0).length);
@@ -65,7 +66,8 @@
 		<p class="error">{agentsOverview.error} <button type="button" class="link" onclick={() => agentsOverview.load()}>Retry</button></p>
 	</section>
 {:else if agents.length}
-	<section class="panel agents" aria-label="Agents">
+	<!-- tabindex -1: the last focus-return fallback when the home pane closes (TASK-4902). -->
+	<section class="panel agents" aria-label="Agents" tabindex="-1">
 		<header>
 			<h2>Agents <span class="badge">{agents.length}</span></h2>
 			<span class="sum"><strong>{busy}</strong> busy{#if !compact} · <strong>{agents.length - busy}</strong> idle{/if} · <strong>{parked}</strong> parked</span>
@@ -73,7 +75,7 @@
 		{#if agentsOverview.error}<p class="error">{agentsOverview.error} <button type="button" class="link" onclick={() => agentsOverview.load()}>Retry</button></p>{/if}
 		<ul>
 			{#each agents as agent (agent.slug)}
-				<AgentRow {agent} {compact} zone={homeOverview.zone} expanded={!!expanded[agent.slug]} ontoggle={() => toggle(agent.slug)} {hold} />
+				<AgentRow {agent} {compact} zone={homeOverview.zone} expanded={!!expanded[agent.slug]} ontoggle={() => toggle(agent.slug)} {hold} {onopenitem} />
 			{/each}
 		</ul>
 	</section>
