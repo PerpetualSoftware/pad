@@ -4,7 +4,7 @@ import type { RoleQueueResponse } from '$lib/types';
 
 const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, collection: 'tasks', title: ref, status: 'open', priority: '', role_sort_order: sort, blocked: false, ready: true, can_edit });
 const lane = (park?: RoleQueueResponse['park'], over: Partial<RoleQueueResponse> = {}): RoleQueueResponse => ({
-	workspace: 'ws', role: { slug: 'impl', name: 'Implementer', icon: '' }, can_reorder: true, can_park: true, now: [],
+	workspace: 'ws', owner_username: 'mara', role: { slug: 'impl', name: 'Implementer', icon: '' }, can_reorder: true, can_park: true, now: [],
 	queue: [item('A', 1024), item('B', 2048), item('C', 3072)], park, queue_total: 3, parked_total: 0, queue_more: false, ...over
 });
 const linePark = (index: number | null, sort_order = 3072) => ({ mode: 'line' as const, sort_order, index, first_parked_ref: null, set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 });

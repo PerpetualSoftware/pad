@@ -8,7 +8,7 @@ vi.mock('./auth.svelte', () => ({ authStore: {
 } }));
 import { agentsOverview } from './agentsOverview.svelte';
 
-const lane = (queue: number) => ({ workspace: 'ws', role: { slug: 'impl', name: 'Implementer', icon: '' }, can_reorder: true, can_park: true, now: [], queue: Array.from({ length: queue }, (_, i) => ({ ref: `TASK-${i}`, title: 't', status: 'open', priority: '', role_sort_order: i * 1024, blocked: false, ready: true, can_edit: true })), queue_total: 9, parked_total: 0, queue_more: queue < 9 });
+const lane = (queue: number) => ({ workspace: 'ws', owner_username: 'mara', role: { slug: 'impl', name: 'Implementer', icon: '' }, can_reorder: true, can_park: true, now: [], queue: Array.from({ length: queue }, (_, i) => ({ ref: `TASK-${i}`, title: 't', status: 'open', priority: '', role_sort_order: i * 1024, blocked: false, ready: true, can_edit: true })), queue_total: 9, parked_total: 0, queue_more: queue < 9 });
 const answer = (name: string) => ({ agents: [{ slug: 'impl', name, icon: '', lanes: [lane(5)], finished: [], summary: { now_count: 0, queue_total: 9, parked: 'none' } }], degraded: [] });
 function deferred<T>() { let resolve!: (v: T) => void; const promise = new Promise<T>(r => { resolve = r; }); return { promise, resolve }; }
 
