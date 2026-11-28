@@ -18,6 +18,7 @@
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { hasForeignEscapeOwner } from '$lib/a11y/viewerBackdrop';
+	import { isTextEntryTarget } from '$lib/a11y/textEntryTarget';
 	import type { PaneTarget, ResolvedItemIdentity } from '$lib/types';
 
 	// Full-page pane HOST (PLAN-2154 Phase 2 / Architecture E, bullet 5 /
@@ -433,22 +434,6 @@
 			})
 		);
 	});
-
-	// Text-editing target detection — copied from the collection host's ESC
-	// precedence. ESC in a title edit / the Tiptap editor / a text input has
-	// LOCAL meaning (cancel/blur); the pane's depth-aware ESC must not hijack it.
-	// NON-text form controls (checkbox, button, …) have no local ESC semantics.
-	const NON_TEXT_INPUT_TYPES = new Set([
-		'checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image',
-	]);
-	function isTextEntryTarget(el: HTMLElement | null | undefined): boolean {
-		if (!el) return false;
-		if (el.isContentEditable) return true;
-		const tag = el.tagName;
-		if (tag === 'TEXTAREA') return true;
-		if (tag === 'INPUT') return !NON_TEXT_INPUT_TYPES.has((el as HTMLInputElement).type);
-		return false;
-	}
 
 	// Depth-aware ESC (PLAN-2154 Architecture C / R2, mirroring the collection
 	// host's escape-stack `pane` slot — TASK-2163). The full-page host has NO
