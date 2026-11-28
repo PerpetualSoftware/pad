@@ -2,16 +2,19 @@
 	import type { AudienceView } from '$lib/calendar/audience';
 	import AgendaRow from './AgendaRow.svelte';
 	import { entryKey, type AgendaAction } from '$lib/calendar/presentation';
+	import type { HomePaneTarget } from '$lib/components/home/homePane';
 	import type { AgendaEntry } from '$lib/types';
 
 	/** The line that ends a day's list: "N completed ›", folded until asked for. */
-	let { audience = 'mine', isAgent = false, completed, zone, now, compact = false, onaction }: {
+	let { audience = 'mine', isAgent = false, completed, zone, now, compact = false, onaction, onopenitem }: {
 		audience?: AudienceView;
 		isAgent?: boolean;
 		/** The day's completed entries. With none, nothing is drawn. */
 		completed: AgendaEntry[];
 		zone: string; now?: Date; compact?: boolean;
 		onaction: (entry: AgendaEntry, action: AgendaAction) => void;
+		/** Desktop home: forwarded to the rows, so a title opens in the docked pane (TASK-4904). */
+		onopenitem?: (target: HomePaneTarget) => void;
 	} = $props();
 
 	const uid = $props.id();
@@ -26,7 +29,7 @@
 		</button>
 		<ul id={`${uid}-completed`} hidden={!open}>
 			{#if open}
-				{#each completed as entry (entryKey(entry))}<AgendaRow {audience} {isAgent} {entry} {zone} {now} {compact} {onaction} />{/each}
+				{#each completed as entry (entryKey(entry))}<AgendaRow {audience} {isAgent} {entry} {zone} {now} {compact} {onaction} {onopenitem} />{/each}
 			{/if}
 		</ul>
 	</li>

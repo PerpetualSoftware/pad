@@ -263,4 +263,24 @@ describe('HomePaneHost (TASK-4902)', () => {
 		await settle();
 		expect(lastGoto().searchParams.has('item')).toBe(false);
 	});
+
+	// TASK-4904: a Needs or agenda title opens another item; the column's dismiss must not undo it.
+	it('a ref link that opens another item in the pane does not also dismiss it', async () => {
+		at('/?item=TASK-1&item_in=mara%2Fpad%2Ftasks');
+		const { component } = render(HomePaneHost);
+		await waitFor(() => expect(stub()).not.toBeNull());
+		const col = document.createElement('div');
+		col.innerHTML = '<a id="ref" href="/dave/northwind/tasks/x" data-pane-key="dave/northwind/TASK-7"><span id="inner">x</span></a>';
+		document.body.appendChild(col);
+		col.addEventListener('click', (e) => component.dismissOnBackgroundClick(e));
+		document.getElementById('ref')!.addEventListener('click', (e) => {
+			e.preventDefault();
+			component.open({ owner: 'dave', workspace: 'northwind', collection: 'tasks', ref: 'TASK-7' });
+		});
+		document.getElementById('inner')!.click();
+		await settle();
+		expect(h.gotos).toHaveLength(1);
+		expect(lastGoto().searchParams.get('item')).toBe('TASK-7');
+		expect(lastGoto().searchParams.get('item_in')).toBe('dave/northwind/tasks');
+	});
 });

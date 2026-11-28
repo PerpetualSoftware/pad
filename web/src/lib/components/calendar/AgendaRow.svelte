@@ -11,6 +11,8 @@
 	import StateMark from './StateMark.svelte';
 	import WorkspaceTile from './WorkspaceTile.svelte';
 	import { OCCURRENCE_STATES, isOverdue, snoozeLabel, acknowledgedText, canMove, canResolve, isOpenState, deadlineTone, entryChips, entryHref, forecastSetter, forecastText, isAllDay, isDateOnly, localTime, roleDay, roleText, shortDay, shortRoleDate, todayIn, type AgendaAction } from '$lib/calendar/presentation';
+	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
+	import { homePaneKey, type HomePaneTarget } from '$lib/components/home/homePane';
 	import type { AgendaEntry } from '$lib/types';
 
 	interface Props {
@@ -36,12 +38,21 @@
 		onaction: (entry: AgendaEntry, action: AgendaAction) => void;
 		ondragstart?: (entry: AgendaEntry, event: DragEvent) => void;
 		ondragend?: () => void;
+		/** Desktop home: a plain click on the title opens the item in the docked pane (TASK-4904). */
+		onopenitem?: (target: HomePaneTarget) => void;
 	}
 
-	let { audience = 'mine', isAgent = false, entry, zone, now = new Date(Date.now()), pending = false, saved = false, compact = false, movable = false, dragging = false, showDay = false, marker, onaction, ondragstart, ondragend }: Props = $props();
+	let { audience = 'mine', isAgent = false, entry, zone, now = new Date(Date.now()), pending = false, saved = false, compact = false, movable = false, dragging = false, showDay = false, marker, onaction, ondragstart, ondragend, onopenitem }: Props = $props();
 
 	const snooze = $derived(snoozeLabel(entry, zone, now));
 	const href = $derived(entryHref(entry));
+	// The title links only when entryHref has an owner, workspace, collection and ref to build from.
+	const paneKey = $derived(homePaneKey(entry.owner_username ?? '', entry.workspace ?? '', entry.item_ref));
+	function openTitle(e: MouseEvent) {
+		if (compact || !onopenitem || !shouldOpenInPane(e, true)) return;
+		e.preventDefault();
+		onopenitem({ owner: entry.owner_username ?? '', workspace: entry.workspace ?? '', collection: entry.collection, ref: entry.item_ref });
+	}
 	const schedule = $derived(entry.type === 'schedule');
 	const live = $derived(schedule && (isOpenState(entry.state) || entry.state === 'scheduled'));
 	const getUndo = getContext<AgendaUndo | undefined>(agendaUndoContext);
@@ -69,7 +80,7 @@
 </script>
 
 {#snippet title()}
-	{#if href}<a {href}>{entry.item_title}</a>{:else}<span class="untitled">{entry.item_title}</span>{/if}
+	{#if href}<a {href} data-pane-key={paneKey} onclick={openTitle}>{entry.item_title}</a>{:else}<span class="untitled">{entry.item_title}</span>{/if}
 {/snippet}
 {#snippet pills()}
 	<AudienceChip {entry} view={audience} {isAgent} />

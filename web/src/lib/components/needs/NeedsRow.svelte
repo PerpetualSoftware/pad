@@ -5,6 +5,8 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import DeferMenu from './DeferMenu.svelte';
 	import NotMinePicker, { type GiveTarget, type GiveTargets } from './NotMinePicker.svelte';
+	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
+	import { homePaneKey, type HomePaneTarget } from '$lib/components/home/homePane';
 	import type { NeedsRow, NeedsView } from '$lib/types';
 
 	interface Props {
@@ -32,6 +34,8 @@
 		/** Whether the desktop row's ⋯ menu is open (one open menu per page). */
 		moreOpen?: boolean;
 		onmore?: (open: boolean) => void;
+		/** Desktop home: a plain click on the title opens the item in the docked pane (TASK-4904). */
+		onopenitem?: (target: HomePaneTarget) => void;
 	}
 
 	let {
@@ -49,7 +53,8 @@
 		ongive,
 		loadtargets,
 		moreOpen = false,
-		onmore = () => {}
+		onmore = () => {},
+		onopenitem
 	}: Props = $props();
 
 	let trigger = $state<HTMLElement>();
@@ -58,6 +63,13 @@
 	let giving = $state(false);
 
 	let canGive = $derived(!!onnotmine && !!ongive && row.can_edit === true);
+
+	// The path carries the item slug; the pane takes the ref, so the target is built from the fields.
+	function openTitle(e: MouseEvent) {
+		if (compact || !onopenitem || !shouldOpenInPane(e, true)) return;
+		e.preventDefault();
+		onopenitem({ owner: row.workspace.owner_username, workspace: row.workspace.slug, collection: row.item.collection_slug, ref: row.item.ref });
+	}
 
 	function pick(target: GiveTarget) {
 		giving = false;
@@ -89,7 +101,7 @@
 	<div class="main">
 		<!-- An empty path means the workspace owner no longer resolves (BUG-4050): no route, so no link (href="" would reload this page). -->
 		{#if row.item.path}
-			<a class="title" href={row.item.path}>{row.item.title}</a>
+			<a class="title" href={row.item.path} data-pane-key={homePaneKey(row.workspace.owner_username, row.workspace.slug, row.item.ref)} onclick={openTitle}>{row.item.title}</a>
 		{:else}
 			<span class="title">{row.item.title}</span>
 		{/if}

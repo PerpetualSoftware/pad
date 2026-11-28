@@ -13,6 +13,7 @@
 	import { showHomeTutorial } from './homeTutorial';
 	import AgentsPanel from './AgentsPanel.svelte';
 	import HomePaneHost from './HomePaneHost.svelte';
+	import type { HomePaneTarget } from './homePane';
 	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import { homeLive } from '$lib/services/homeLive';
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
@@ -31,6 +32,8 @@
 	import type { AgendaResponse, AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
 	let paneHost = $state<HomePaneHost | undefined>();
+	// Desktop refs and titles open in the pane; on phones a click is the full page.
+	const openInPane = $derived(viewport.isMobile ? undefined : (t: HomePaneTarget) => paneHost?.open(t));
 	let audience = $state<AudienceView>('mine');
 	// The agenda's Show completed preference, per user: hidden there means hidden here.
 	const showCompleted = $derived.by(() => {
@@ -224,23 +227,22 @@
 		<section class="panel needs-panel" aria-label="Needs you">
 			<header><h2>Needs you <span class="badge">{homeOverview.needs?.total ?? '…'}</span></h2><span class="sort">Oldest waiting</span></header>
 			<ul>{#each homeOverview.needs?.rows.slice(0, needsLimit) ?? [] as row (needKey(row))}
-				<NeedsRowView compact={viewport.isMobile} {row} showWorkspace view="active" busy={!!busy[needKey(row)]} menuOpen={menu === needKey(row)} onmenu={open => menu = open ? needKey(row) : menu === needKey(row) ? '' : menu} moreOpen={menu === needKey(row) + MORE} onmore={open => menu = open ? needKey(row) + MORE : menu === needKey(row) + MORE ? '' : menu} ondismiss={row => snooze(row, { kind: 'dismiss' })} ondefer={(row, defer_until) => snooze(row, { kind: 'defer', defer_until })} onrestore={() => {}} onnotmine={notMine} ongive={give} loadtargets={loadTargets} />
+				<NeedsRowView compact={viewport.isMobile} {row} showWorkspace view="active" busy={!!busy[needKey(row)]} menuOpen={menu === needKey(row)} onmenu={open => menu = open ? needKey(row) : menu === needKey(row) ? '' : menu} moreOpen={menu === needKey(row) + MORE} onmore={open => menu = open ? needKey(row) + MORE : menu === needKey(row) + MORE ? '' : menu} ondismiss={row => snooze(row, { kind: 'dismiss' })} ondefer={(row, defer_until) => snooze(row, { kind: 'defer', defer_until })} onrestore={() => {}} onnotmine={notMine} ongive={give} loadtargets={loadTargets} onopenitem={openInPane} />
 			{/each}</ul>
 			{#if !homeOverview.loading && homeOverview.needs?.total === 0}<p class="empty">Nothing needs you right now.</p>{/if}
 			<footer><span>{Math.max(0, (homeOverview.needs?.total ?? 0) - Math.min(needsLimit, homeOverview.needs?.rows.length ?? 0))} more<span class="workspace-count">, across {homeOverview.needs?.workspaces.length ?? 0} workspaces</span></span><a href="/needs">See all {homeOverview.needs?.total ?? 0} →</a></footer>
 		</section>
 		<section class="panel today-panel" aria-label="Today">
 			<header><h2>Today <span class="today-date">{new Intl.DateTimeFormat('en-US', {weekday:'short', day:'numeric',timeZone:zone}).format(new Date())}</span></h2><AudienceToggle value={audience} {counts} onchange={value => audience = value} /></header>
-			{#if attention.length}<h3>{pastDeadline ? 'Past deadline' : 'Needs attention'}</h3><ul>{#each attention as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} showDay pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>{/if}
-			<h3>Today</h3><ul>{#each todayRows as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} pending={!!busy[entryKey(entry)]} onaction={action} />{/each}</ul>
+			{#if attention.length}<h3>{pastDeadline ? 'Past deadline' : 'Needs attention'}</h3><ul>{#each attention as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} showDay pending={!!busy[entryKey(entry)]} onaction={action} onopenitem={openInPane} />{/each}</ul>{/if}
+			<h3>Today</h3><ul>{#each todayRows as entry (entryKey(entry))}<AgendaRow compact={viewport.isMobile} {entry} {zone} {audience} pending={!!busy[entryKey(entry)]} onaction={action} onopenitem={openInPane} />{/each}</ul>
 			{#if !homeOverview.loading && !todayRows.length}<p class="empty">Nothing scheduled today.</p>{/if}
-			{#if showCompleted}<ul><AgendaCompleted {audience} completed={todayCompleted} {zone} compact={viewport.isMobile} onaction={action} /></ul>{/if}
+			{#if showCompleted}<ul><AgendaCompleted {audience} completed={todayCompleted} {zone} compact={viewport.isMobile} onaction={action} onopenitem={openInPane} /></ul>{/if}
 			{#if showCompleted && homeOverview.agenda?.events_truncated}<p class="empty">Some completed items today may not be shown. <a href="/agenda">Open the full agenda →</a></p>{/if}
 			<footer><span>Agents: {agents.length} {agents.length === 1 ? 'reminder' : 'reminders'} today, {agentCounts.owed} owed, {agentCounts.missed} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
 	</div>
-	<!-- Desktop refs open in the pane; on phones a ref click is the full page. -->
-	<AgentsPanel compact={viewport.isMobile} onopenitem={viewport.isMobile ? undefined : (t) => paneHost?.open(t)} />
+	<AgentsPanel compact={viewport.isMobile} onopenitem={openInPane} />
 	<section class="workspaces" aria-label="Workspaces">
 		<header>
 			<h2>Workspaces</h2>
