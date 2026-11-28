@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -21,6 +22,73 @@ import (
 // exercise flock behaviour directly. The Windows half (creation-time
 // comparison) is covered by the CI smoke on windows-latest, which runs
 // `pad server stop` against a server it started.
+
+func TestClaimPIDFile_DoesNotLockAnUnlinkedStaleFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	if err := writePIDRecord(path, pidRecord{PID: 111, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	probe, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed := make(chan func())
+	go func() { claimed <- ClaimPIDFile(path) }()
+	time.Sleep(60 * time.Millisecond)
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_UN); err != nil {
+		t.Fatal(err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatal(err)
+	}
+	release := <-claimed
+	defer release()
+
+	rec, owner := pidFileOwner(path)
+	if owner != pidFileOurs || rec.PID != os.Getpid() {
+		t.Errorf("owner = %v, record = %+v; want ours with pid %d", owner, rec, os.Getpid())
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Errorf("claimed PID file disappeared: %v", err)
+	}
+}
+
+func TestPIDFileOwner_DoesNotRemoveAReplacementClaimedDuringItsProbe(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	if err := writePIDRecord(path, pidRecord{PID: 111, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	previousHook := pidProbeLockedHook
+	t.Cleanup(func() { pidProbeLockedHook = previousHook })
+	ran := false
+	pidProbeLockedHook = func(path string) {
+		if ran {
+			return
+		}
+		ran = true
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+		release := ClaimPIDFile(path)
+		t.Cleanup(release)
+	}
+
+	rec, owner := pidFileOwner(path)
+	if owner != pidFileOurs || rec.PID != os.Getpid() {
+		t.Errorf("owner = %v, record = %+v; want ours with pid %d", owner, rec, os.Getpid())
+	}
+	if current, ok := readPIDRecord(path); !ok || current.PID != os.Getpid() {
+		t.Errorf("replacement PID record lost: record = %+v, ok = %v", current, ok)
+	}
+}
 
 func TestClaimPIDFile_WritesARecordAndReleasesIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")

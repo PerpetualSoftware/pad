@@ -343,6 +343,7 @@ func ClaimPIDFile(path string) func() {
 	}
 
 	rec := currentPIDRecord()
+	// On Unix, the lock pins the path's inode, so os.WriteFile truncates that same inode.
 	if err := writePIDRecord(path, rec); err != nil {
 		slog.Warn("could not write PID file; `pad server stop` will not be able to address this process",
 			"pid_file", path, "error", err)
