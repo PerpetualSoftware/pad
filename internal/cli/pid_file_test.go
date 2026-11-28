@@ -66,10 +66,10 @@ func TestPIDFileOwner_DoesNotRemoveAReplacementClaimedDuringItsProbe(t *testing.
 	if err := writePIDRecord(path, pidRecord{PID: 111, StartedAt: time.Now().UTC()}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
-	previousHook := pidProbeLockedHook
-	t.Cleanup(func() { pidProbeLockedHook = previousHook })
+	previousHook := pidProbeAfterLockHook
+	t.Cleanup(func() { pidProbeAfterLockHook = previousHook })
 	ran := false
-	pidProbeLockedHook = func(path string) {
+	pidProbeAfterLockHook = func(path string) {
 		if ran {
 			return
 		}
@@ -87,6 +87,43 @@ func TestPIDFileOwner_DoesNotRemoveAReplacementClaimedDuringItsProbe(t *testing.
 	}
 	if current, ok := readPIDRecord(path); !ok || current.PID != os.Getpid() {
 		t.Errorf("replacement PID record lost: record = %+v, ok = %v", current, ok)
+	}
+}
+
+// TestPIDFileOwner_DoesNotTrustAHeldLockOnAnUnlinkedFile: the probe opened a
+// stale file that was then unlinked, and a claimant briefly holds that unlinked
+// inode's lock before its own inode check sends it back. A held lock there is
+// not a live server's claim on the path, so the stale pid must not read as ours.
+func TestPIDFileOwner_DoesNotTrustAHeldLockOnAnUnlinkedFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	if err := writePIDRecord(path, pidRecord{PID: 111, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	holder, err := os.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer holder.Close()
+	if err := syscall.Flock(int(holder.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatal(err)
+	}
+
+	previousHook := pidProbeAfterLockHook
+	t.Cleanup(func() { pidProbeAfterLockHook = previousHook })
+	ran := false
+	pidProbeAfterLockHook = func(path string) {
+		if ran {
+			return
+		}
+		ran = true
+		if err := os.Remove(path); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rec, owner := pidFileOwner(path)
+	if owner == pidFileOurs {
+		t.Errorf("owner = ours (record %+v) for a held lock on an unlinked file; stop would signal pid %d", rec, rec.PID)
 	}
 }
 

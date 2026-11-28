@@ -10,8 +10,9 @@ import (
 	"time"
 )
 
-// pidProbeLockedHook is a test seam called after the probe acquires its lock.
-var pidProbeLockedHook func(path string)
+// pidProbeAfterLockHook is a test seam called after the probe's lock attempt,
+// whatever its result, and before the inode check.
+var pidProbeAfterLockHook func(path string)
 
 // holdPIDFile takes an exclusive advisory lock on the PID file and keeps it for
 // the process's lifetime. The lock — not the pid, and not the timestamp beside
@@ -82,14 +83,22 @@ func pidFileOwner(path string) (pidRecord, pidFileOwnership) {
 		}
 
 		lockErr := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
-		if lockErr == nil {
-			if pidProbeLockedHook != nil {
-				pidProbeLockedHook(path)
-			}
+		held := lockErr == syscall.EWOULDBLOCK || lockErr == syscall.EAGAIN
+		if pidProbeAfterLockHook != nil {
+			pidProbeAfterLockHook(path)
+		}
+		if lockErr == nil || held {
+			// Either answer is about the file we opened, so it must still be
+			// the file at path. A free lock on an unlinked predecessor would
+			// license removing a successor's record; a held one could be a
+			// claimant's brief lock on that predecessor before its own inode
+			// check sends it back, and the stale pid would read as ours.
 			fi, fileErr := f.Stat()
 			pi, pathErr := os.Stat(path)
 			if fileErr != nil || pathErr != nil || !os.SameFile(fi, pi) {
-				_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				if lockErr == nil {
+					_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
+				}
 				_ = f.Close()
 				continue
 			}
@@ -108,7 +117,7 @@ func pidFileOwner(path string) (pidRecord, pidFileOwnership) {
 			// EWOULDBLOCK — someone holds it. Any other error is a filesystem we
 			// cannot lock on (some network mounts), which is unprovable rather
 			// than owned: we will not signal on a lock we could not evaluate.
-			if lockErr == syscall.EWOULDBLOCK || lockErr == syscall.EAGAIN {
+			if held {
 				if !ok {
 					// Held, but the contents are unreadable — a claim caught
 					// mid-write. Unprovable, so nothing is signalled.
