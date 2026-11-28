@@ -8,11 +8,15 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// holdPIDFile is a no-op on Windows: there is no flock in the pattern this
-// package uses elsewhere (session_lock_other.go documents the same boundary).
-// Ownership here is decided by the recorded creation time instead — see
-// pidFileOwner — so the PID file needs no lock held across the process's life.
-func holdPIDFile(path string) (release func(), err error) {
+// claimPIDFile writes rec and holds nothing on Windows: there is no flock in
+// the pattern this package uses elsewhere (session_lock_other.go documents the
+// same boundary). Ownership here is decided by the recorded creation time
+// instead — see pidFileOwner — so the PID file needs no lock held across the
+// process's life.
+func claimPIDFile(path string, rec pidRecord) (release func(), err error) {
+	if err := writePIDRecord(path, rec); err != nil {
+		return nil, err
+	}
 	return func() {}, nil
 }
 

@@ -127,6 +127,81 @@ func TestPIDFileOwner_DoesNotTrustAHeldLockOnAnUnlinkedFile(t *testing.T) {
 	}
 }
 
+// TestPIDFileOwner_ClaimantBeforeItsWriteIsNotOurs is BUG-4899: a starting
+// server has taken its lock on a crashed predecessor's file but has not yet
+// written its own record. A stop probing in that instant must not hand back the
+// predecessor's pid as the live owner, because that pid may since belong to an
+// unrelated process (BUG-2969).
+func TestPIDFileOwner_ClaimantBeforeItsWriteIsNotOurs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	if err := writePIDRecord(path, pidRecord{PID: 111, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	previousHook := pidClaimAfterLockHook
+	t.Cleanup(func() { pidClaimAfterLockHook = previousHook })
+	var (
+		ran      bool
+		gotRec   pidRecord
+		gotOwner pidFileOwnership
+	)
+	pidClaimAfterLockHook = func(path string) {
+		if ran {
+			return
+		}
+		ran = true
+		gotRec, gotOwner = pidFileOwner(path)
+	}
+
+	release := ClaimPIDFile(path)
+	defer release()
+
+	if !ran {
+		t.Fatal("the claim never reached its after-lock hook")
+	}
+	if gotOwner == pidFileOurs && gotRec.PID == 111 {
+		t.Errorf("owner = ours with the predecessor's pid %d during the claim; stop would signal it", gotRec.PID)
+	}
+	if rec, owner := pidFileOwner(path); owner != pidFileOurs || rec.PID != os.Getpid() {
+		t.Errorf("after the claim: owner = %v, record = %+v; want ours with pid %d", owner, rec, os.Getpid())
+	}
+}
+
+// TestPIDFileOwner_ConcurrentProbeOfAStaleFileIsNotOurs: two stops probe the
+// same crashed predecessor's file at once. The first one's own lock, taken to
+// check and remove the stale record, must not read to the second as a live
+// server holding it.
+func TestPIDFileOwner_ConcurrentProbeOfAStaleFileIsNotOurs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "pad.pid")
+	if err := writePIDRecord(path, pidRecord{PID: 111, StartedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	previousHook := pidProbeAfterLockHook
+	t.Cleanup(func() { pidProbeAfterLockHook = previousHook })
+	var (
+		ran      bool
+		gotRec   pidRecord
+		gotOwner pidFileOwnership
+	)
+	pidProbeAfterLockHook = func(path string) {
+		if ran {
+			return
+		}
+		ran = true
+		gotRec, gotOwner = pidFileOwner(path)
+	}
+
+	if _, owner := pidFileOwner(path); owner == pidFileOurs {
+		t.Errorf("first probe: owner = ours for a file nobody claimed")
+	}
+	if !ran {
+		t.Fatal("the probe never reached its after-lock hook")
+	}
+	if gotOwner == pidFileOurs {
+		t.Errorf("second probe: owner = ours (record %+v) while the first probe held the stale file; stop would signal pid %d",
+			gotRec, gotRec.PID)
+	}
+}
+
 func TestClaimPIDFile_WritesARecordAndReleasesIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
 
@@ -358,20 +433,24 @@ func TestPIDFileOwner_LegacyBarePIDIsUnprovableAndKept(t *testing.T) {
 }
 
 // TestClaimPIDFile_RetriesPastABriefProbe covers the interaction an earlier
-// fix created: `stop`'s ownership probe holds the lock for an instant, and a
-// server claiming in that instant must not lose its claim for the rest of its
-// life. The probe here is a real held lock released while the claim is trying.
+// fix created: `stop`'s ownership probe holds the lock for an instant (exclusive
+// while it removes a stale file), and a server claiming in that instant must not
+// lose its claim for the rest of its life. The probe here is a real exclusive
+// lock released while the claim is trying.
 func TestClaimPIDFile_RetriesPastABriefProbe(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "pad.pid")
 
-	probe, err := holdPIDFile(path)
+	probe, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o644)
 	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Flock(int(probe.Fd()), syscall.LOCK_EX); err != nil {
 		t.Fatalf("probe hold: %v", err)
 	}
 	done := make(chan struct{})
 	go func() {
 		time.Sleep(60 * time.Millisecond)
-		probe()
+		_ = probe.Close()
 		close(done)
 	}()
 
