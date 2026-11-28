@@ -1299,3 +1299,93 @@ func TestMeAgents_FinishedRestrictedNotCutByHiddenRows(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentLanes_CarryCollectionSlug(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+
+	owner := mkAgentsUser(t, srv, "coll-owner@example.com", "Coll Owner")
+	tok := mkAgentsPAT(t, srv, owner.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Coll WS", Slug: "coll-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	bugs, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Bugs", Slug: "bugs", Prefix: "BUG", Schema: meAgentsStdSchema})
+	if err != nil {
+		t.Fatalf("coll: %v", err)
+	}
+	role, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Fixer", Slug: "fixer"})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	mk := func(title, status string) *models.Item {
+		t.Helper()
+		it, err := srv.store.CreateItem(ws.ID, bugs.ID, models.ItemCreate{
+			Title: title, Fields: fmt.Sprintf(`{"status":%q}`, status), AgentRoleID: &role.ID,
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		it, _ = srv.store.GetItem(it.ID)
+		return it
+	}
+	nowItem := mk("Bug in progress", "in_progress")
+	queued := mk("Bug queued", "open")
+	finished := mk("Bug fixed", "open")
+	done := `{"status":"done"}`
+	if _, err := srv.store.UpdateItem(finished.ID, models.ItemUpdate{Fields: &done}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	type refColl struct {
+		Ref        string `json:"ref"`
+		Collection string `json:"collection"`
+	}
+	type lane struct {
+		Now   []refColl `json:"now"`
+		Queue []refColl `json:"queue"`
+	}
+	check := func(where string, got []refColl, wantRef string) {
+		t.Helper()
+		for _, e := range got {
+			if e.Ref == wantRef {
+				if e.Collection != "bugs" {
+					t.Errorf("%s %s: collection = %q, want %q", where, wantRef, e.Collection, "bugs")
+				}
+				return
+			}
+		}
+		t.Errorf("%s: %s missing from %+v", where, wantRef, got)
+	}
+
+	rr := doRequestWithHeaders(srv, http.MethodGet, "/api/v1/workspaces/"+ws.Slug+"/agent-roles/"+role.Slug+"/queue", nil, bearerHdr(tok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET queue: %d %s", rr.Code, rr.Body.String())
+	}
+	var q lane
+	parseJSON(t, rr, &q)
+	check("queue endpoint now", q.Now, nowItem.Ref)
+	check("queue endpoint queue", q.Queue, queued.Ref)
+
+	rr = doRequestWithHeaders(srv, http.MethodGet, "/api/v1/me/agents", nil, bearerHdr(tok))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("GET /me/agents: %d %s", rr.Code, rr.Body.String())
+	}
+	var me struct {
+		Agents []struct {
+			Lanes    []lane    `json:"lanes"`
+			Finished []refColl `json:"finished"`
+		} `json:"agents"`
+	}
+	parseJSON(t, rr, &me)
+	if len(me.Agents) != 1 || len(me.Agents[0].Lanes) != 1 {
+		t.Fatalf("agents/lanes shape = %+v, want 1 agent with 1 lane", me.Agents)
+	}
+	check("me/agents now", me.Agents[0].Lanes[0].Now, nowItem.Ref)
+	check("me/agents queue", me.Agents[0].Lanes[0].Queue, queued.Ref)
+	check("me/agents finished", me.Agents[0].Finished, finished.Ref)
+}

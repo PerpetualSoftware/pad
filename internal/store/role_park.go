@@ -185,6 +185,7 @@ type roleLaneCollectionInfo struct {
 	rawSchema   string
 	rawSettings string
 	prefix      string
+	slug        string
 	doneKey     string
 	tracksWork  bool
 }
@@ -199,6 +200,7 @@ type RoleLaneCollectionInfo struct {
 	RawSchema   string
 	RawSettings string
 	Prefix      string
+	Slug        string
 	DoneKey     string
 	TracksWork  bool
 }
@@ -262,6 +264,7 @@ func buildRoleLaneEntry(
 	if !ok {
 		return roleLaneEntry{}, false
 	}
+	it.CollectionSlug = cinfo.slug
 	if cinfo.prefix != "" && it.ItemNumber != nil {
 		it.Ref = cinfo.prefix + "-" + strconv.Itoa(*it.ItemNumber)
 	}
@@ -381,6 +384,7 @@ func (s *Store) LoadWorkspaceRoleLanesQ(q Queryer, workspaceID string) (map[stri
 			RawSchema:   ci.rawSchema,
 			RawSettings: ci.rawSettings,
 			Prefix:      ci.prefix,
+			Slug:        ci.slug,
 			DoneKey:     ci.doneKey,
 			TracksWork:  ci.tracksWork,
 		}
@@ -611,7 +615,7 @@ func (s *Store) ListWorkspaceRoleFinishedItemsQ(
 
 func (s *Store) loadRoleLaneCollectionsQ(q Queryer, workspaceID string) (map[string]roleLaneCollectionInfo, error) {
 	rows, err := q.Query(s.q(`
-		SELECT id, schema, settings, prefix
+		SELECT id, slug, schema, settings, prefix
 		FROM collections
 		WHERE workspace_id = ? AND deleted_at IS NULL
 	`), workspaceID)
@@ -622,12 +626,13 @@ func (s *Store) loadRoleLaneCollectionsQ(q Queryer, workspaceID string) (map[str
 
 	out := make(map[string]roleLaneCollectionInfo)
 	for rows.Next() {
-		var id, rawSchema, rawSettings, prefix string
-		if err := rows.Scan(&id, &rawSchema, &rawSettings, &prefix); err != nil {
+		var id, slug, rawSchema, rawSettings, prefix string
+		if err := rows.Scan(&id, &slug, &rawSchema, &rawSettings, &prefix); err != nil {
 			return nil, err
 		}
 		var info roleLaneCollectionInfo
 		info.prefix = prefix
+		info.slug = slug
 		info.rawSchema = rawSchema
 		info.rawSettings = rawSettings
 		if rawSchema != "" {

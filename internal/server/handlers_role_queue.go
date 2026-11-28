@@ -148,12 +148,13 @@ func buildRoleQueueLaneResponse(
 			}
 		}
 		nowItems = append(nowItems, models.RoleQueueNowItem{
-			Ref:    ref,
-			Title:  e.Item.Title,
-			Status: extractFieldValue(e.Item.Fields, doneKey),
-			Since:  since,
-			Lease:  leaseOut,
-			Live:   live,
+			Ref:        ref,
+			Collection: e.Item.CollectionSlug,
+			Title:      e.Item.Title,
+			Status:     extractFieldValue(e.Item.Fields, doneKey),
+			Since:      since,
+			Lease:      leaseOut,
+			Live:       live,
 		})
 	}
 
@@ -198,6 +199,7 @@ func buildRoleQueueLaneResponse(
 		queueItems = append(queueItems, models.RoleQueueItem{
 			ID:            e.Item.ID,
 			Ref:           ref,
+			Collection:    e.Item.CollectionSlug,
 			Title:         e.Item.Title,
 			Status:        extractFieldValue(e.Item.Fields, doneKey),
 			Priority:      extractFieldValue(e.Item.Fields, "priority"),

@@ -20,6 +20,7 @@ const (
 type meAgentsFinishedItem struct {
 	Workspace   string `json:"workspace"`
 	Ref         string `json:"ref"`
+	Collection  string `json:"collection"`
 	Title       string `json:"title"`
 	Value       string `json:"value"`
 	CompletedAt string `json:"completed_at"`
@@ -353,6 +354,7 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			g.finished = append(g.finished, meAgentsFinishedItem{
 				Workspace:   ws.Slug,
 				Ref:         row.Ref,
+				Collection:  collsByID[row.CollectionID].Slug,
 				Title:       row.Title,
 				Value:       val,
 				CompletedAt: row.CreatedAt.UTC().Format(time.RFC3339),

@@ -76,18 +76,20 @@ type RoleQueueLease struct {
 
 // RoleQueueNowItem is an active or leased lane item (not in the queue).
 type RoleQueueNowItem struct {
-	Ref    string          `json:"ref"`
-	Title  string          `json:"title"`
-	Status string          `json:"status"`
-	Since  time.Time       `json:"since"`
-	Lease  *RoleQueueLease `json:"lease"`
-	Live   string          `json:"live"`
+	Ref        string          `json:"ref"`
+	Collection string          `json:"collection"`
+	Title      string          `json:"title"`
+	Status     string          `json:"status"`
+	Since      time.Time       `json:"since"`
+	Lease      *RoleQueueLease `json:"lease"`
+	Live       string          `json:"live"`
 }
 
 // RoleQueueItem is one queued item in canonical role lane order.
 type RoleQueueItem struct {
 	ID            string `json:"id"`
 	Ref           string `json:"ref"`
+	Collection    string `json:"collection"`
 	Title         string `json:"title"`
 	Status        string `json:"status"`
 	Priority      string `json:"priority"`
