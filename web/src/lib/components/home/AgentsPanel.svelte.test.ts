@@ -22,7 +22,7 @@ vi.mock('$lib/stores/auth.svelte', () => ({ authStore: {
 	identityFence: () => { const epoch = h.epoch; return () => epoch === h.epoch; },
 	onIdentityChange: (reset: () => void) => { h.resets.add(reset); return () => h.resets.delete(reset); }
 } }));
-vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { workspaces: [{ id: '1', slug: 'pad', name: 'Pad', owner_username: 'mara' }, { id: '2', slug: 'cloud', name: 'Cloud' }] } }));
+vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { workspaces: [{ id: '1', slug: 'pad', name: 'Pad', owner_username: 'mara' }, { id: '2', slug: 'cloud', name: 'Cloud', owner_username: 'kit' }] } }));
 vi.mock('$lib/stores/breakpoint.svelte', () => ({ MOBILE_MEDIA_QUERY: '(max-width: 768px)', viewport: { get isMobile() { return h.mobile; } } }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/services/homeLive', () => ({ homeLive: { register: (cb: () => unknown) => { h.live.push(cb); return () => { h.live = h.live.filter(c => c !== cb); }; } } }));
@@ -34,7 +34,7 @@ import { agentsOverview } from '$lib/stores/agentsOverview.svelte';
 const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, collection: 'bugs', title: `Title ${ref}`, status: 'open', priority: 'high', role_sort_order: sort, blocked: false, ready: true, can_edit });
 function lane(over: Partial<RoleQueueResponse> = {}): RoleQueueResponse {
 	return {
-		workspace: 'pad', role: { slug: 'impl', name: 'Implementer', icon: '🛠' }, can_reorder: true, can_park: true,
+		workspace: 'pad', owner_username: 'mara', role: { slug: 'impl', name: 'Implementer', icon: '🛠' }, can_reorder: true, can_park: true,
 		now: [{ ref: 'TASK-9', collection: 'bugs', title: 'Export check-only mode', status: 'in-progress', since: new Date(Date.now() - 2 * 3600_000).toISOString(), lease: { holder: 'w1', expires_at: '2030-01-01T00:00:00Z' }, live: 'busy' }],
 		queue: [item('TASK-1', 1024), item('TASK-2', 2048), item('TASK-3', 3072)],
 		park: { mode: 'line', sort_order: 3072, index: 2, first_parked_ref: 'TASK-3', set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 },
@@ -356,10 +356,10 @@ it('a truncated lane checks the fresh prefix against the server order, not the s
 });
 
 // Refs in the expanded view link to the item page.
-const finishedEntry = (workspace: string) => ({ workspace, ref: 'BUG-7', collection: 'bugs', title: 'Fixed thing', value: 'done', completed_at: new Date(Date.now() - 3600_000).toISOString() });
+const finishedEntry = (workspace: string, owner_username = 'mara') => ({ workspace, owner_username, ref: 'BUG-7', collection: 'bugs', title: 'Fixed thing', value: 'done', completed_at: new Date(Date.now() - 3600_000).toISOString() });
 function withFinished() {
-	const a = answer([lane(), lane({ workspace: 'cloud', can_reorder: false, can_park: false, park: undefined, now: [], parked_total: 0 })]);
-	a.agents[0].finished = [finishedEntry('pad'), finishedEntry('cloud')];
+	const a = answer([lane(), lane({ workspace: 'cloud', owner_username: '', can_reorder: false, can_park: false, park: undefined, now: [], parked_total: 0 })]);
+	a.agents[0].finished = [finishedEntry('pad'), finishedEntry('cloud', '')];
 	return a;
 }
 /** Records whether the component cancelled a click, then stops jsdom navigating. */
@@ -396,7 +396,18 @@ it('the collapsed strip keeps the Now ref as plain text inside its button', asyn
 	expect(within(strip).queryByRole('link')).not.toBeInTheDocument();
 });
 
-it('a workspace with no known owner renders refs as plain text', async () => {
+it('refs link from the lane owner_username even when the workspace is absent from workspaceStore', async () => {
+	const a = answer([lane({ workspace: 'guest-ws', owner_username: 'jun', park: undefined, parked_total: 0 })]);
+	a.agents[0].finished = [finishedEntry('guest-ws', 'jun')];
+	h.agents.mockResolvedValue(a);
+	await open();
+	const guest = screen.getByRole('region', { name: 'Implementer in guest-ws' });
+	expect(within(guest).getByRole('link', { name: 'TASK-9' })).toHaveAttribute('href', '/jun/guest-ws/bugs/TASK-9');
+	expect(within(guest).getByRole('link', { name: 'TASK-1' })).toHaveAttribute('href', '/jun/guest-ws/bugs/TASK-1');
+	expect(within(guest).getByRole('link', { name: 'BUG-7' })).toHaveAttribute('href', '/jun/guest-ws/bugs/BUG-7');
+});
+
+it('an empty owner_username renders refs as plain text', async () => {
 	h.agents.mockResolvedValue(withFinished());
 	await open();
 	const cloud = screen.getByRole('region', { name: 'Implementer in Cloud' });

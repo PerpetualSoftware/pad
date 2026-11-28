@@ -42,8 +42,6 @@
 	const queued = $derived(agent.summary.queue_total);
 	const queuedText = $derived(queued ? `${queued} queued` : 'Queue empty');
 	const wsName = (slug: string) => workspaceStore.workspaces.find(ws => ws.slug === slug)?.name ?? slug;
-	const hrefOf = (workspace: string, collection: string, ref: string) =>
-		itemHref(workspaceStore.workspaces.find(ws => ws.slug === workspace)?.owner_username, workspace, collection, ref);
 	const views = $derived(new Map(lanes.map(lane => [laneKey(lane), laneView(lane, agentsOverview.overlay[laneKey(lane)])])));
 	const viewOf = (lane: RoleQueueResponse): LaneView => views.get(laneKey(lane)) ?? laneView(lane);
 	const locked = (lane: RoleQueueResponse) => agentsOverview.isPending(laneKey(lane));
@@ -327,8 +325,8 @@
 	const priorityMark: Record<string, string> = { critical: '▲▲', high: '▲', medium: '■', low: '▽' };
 </script>
 
-{#snippet refLink(workspace: string, collection: string, ref: string)}
-	{@const href = hrefOf(workspace, collection, ref)}
+{#snippet refLink(owner: string, workspace: string, collection: string, ref: string)}
+	{@const href = itemHref(owner, workspace, collection, ref)}
 	{#if href}<a class="ref" {href} draggable="false">{ref}</a>{:else}<span class="ref">{ref}</span>{/if}
 {/snippet}
 
@@ -400,7 +398,7 @@
 									{#each lane.now.slice(0, 3) as item (item.ref)}
 										<li class="row now-row">
 											{#if item.live !== 'unknown'}<span class={`dot ${item.live}`} role="img" aria-label={liveText[item.live]}></span>{/if}
-											{@render refLink(lane.workspace, item.collection, item.ref)}<span class="title strong">{item.title}</span>
+											{@render refLink(lane.owner_username, lane.workspace, item.collection, item.ref)}<span class="title strong">{item.title}</span>
 											{#if item.status}<span class="chip status">{item.status}</span>{/if}<span class="age">{age(item.since)}</span>
 										</li>
 									{/each}
@@ -422,7 +420,7 @@
 										ondragover={(e) => dragOver(e, lane, item.ref)}
 										ondrop={(e) => drop(e, lane, item.ref)}>
 										<span class="handle" aria-hidden="true">{!compact && canMove(lane, item) ? '⠿' : ''}</span>
-										<span class="pos">{i + 1}</span>{@render refLink(lane.workspace, item.collection, item.ref)}<span class="title">{item.title}</span>
+										<span class="pos">{i + 1}</span>{@render refLink(lane.owner_username, lane.workspace, item.collection, item.ref)}<span class="title">{item.title}</span>
 										{#if item.blocked}<span class="chip blocked">blocked</span>{/if}
 										{#if isParked}<em class="parked-tag">parked</em>{/if}
 										{#if item.priority}<span class={`prio ${item.priority}`} title={item.priority}><span aria-hidden="true">{priorityMark[item.priority] ?? ''}</span> <span class="prio-word">{item.priority.charAt(0).toUpperCase() + item.priority.slice(1)}</span></span>{/if}
@@ -461,7 +459,7 @@
 								<h4>Just finished</h4>
 								<ul>
 									{#each finished as f (f.ref)}
-										<li class="row finished"><span class="check" aria-hidden="true">✓</span>{@render refLink(f.workspace, f.collection, f.ref)}<span class="title">{f.title}</span><span class="age">{f.value} {age(f.completed_at)} ago</span></li>
+										<li class="row finished"><span class="check" aria-hidden="true">✓</span>{@render refLink(f.owner_username, f.workspace, f.collection, f.ref)}<span class="title">{f.title}</span><span class="age">{f.value} {age(f.completed_at)} ago</span></li>
 									{/each}
 								</ul>
 							{/if}

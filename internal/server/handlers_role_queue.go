@@ -105,7 +105,7 @@ func partitionRoleLane(lane []store.RoleLaneEntry, visible func(collectionID, it
 }
 
 func buildRoleQueueLaneResponse(
-	wsSlug string,
+	wsSlug, ownerUsername string,
 	role *models.AgentRole,
 	nowEntries, queueEntries []store.RoleLaneEntry,
 	leases map[string]models.ItemLease,
@@ -224,7 +224,8 @@ func buildRoleQueueLaneResponse(
 	}
 
 	return models.RoleQueueResponse{
-		Workspace: wsSlug,
+		Workspace:     wsSlug,
+		OwnerUsername: ownerUsername,
 		Role: models.RoleQueueRole{
 			Slug: role.Slug,
 			Name: role.Name,
@@ -339,6 +340,7 @@ func (s *Server) handleGetRoleQueue(w http.ResponseWriter, r *http.Request) {
 
 	resp := buildRoleQueueLaneResponse(
 		ws.Slug,
+		ws.OwnerUsername,
 		role,
 		nowEntries,
 		queueEntries,

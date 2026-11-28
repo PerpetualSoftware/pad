@@ -1389,3 +1389,90 @@ func TestAgentLanes_CarryCollectionSlug(t *testing.T) {
 	check("me/agents queue", me.Agents[0].Lanes[0].Queue, queued.Ref)
 	check("me/agents finished", me.Agents[0].Finished, finished.Ref)
 }
+
+func TestAgentLanes_CarryOwnerUsername(t *testing.T) {
+	t.Parallel()
+	srv := testServer(t)
+
+	owner, err := srv.store.CreateUser(models.UserCreate{Email: "own-owner@example.com", Name: "Own Owner", Username: "own-owner", Password: "pw-test-12345"})
+	if err != nil {
+		t.Fatalf("owner: %v", err)
+	}
+	guest := mkAgentsUser(t, srv, "own-guest@example.com", "Own Guest")
+	ownerTok := mkAgentsPAT(t, srv, owner.ID, "")
+	guestTok := mkAgentsPAT(t, srv, guest.ID, "")
+
+	ws, err := srv.store.CreateWorkspace(models.WorkspaceCreate{Name: "Own WS", Slug: "own-ws", OwnerID: owner.ID})
+	if err != nil {
+		t.Fatalf("ws: %v", err)
+	}
+	if err := srv.store.AddWorkspaceMember(ws.ID, owner.ID, "owner"); err != nil {
+		t.Fatalf("member: %v", err)
+	}
+	bugs, err := srv.store.CreateCollection(ws.ID, models.CollectionCreate{Name: "Bugs", Slug: "bugs", Prefix: "BUG", Schema: meAgentsStdSchema})
+	if err != nil {
+		t.Fatalf("coll: %v", err)
+	}
+	// The guest is admitted by a collection grant only, with no membership.
+	if _, err := srv.store.CreateCollectionGrant(ws.ID, bugs.ID, guest.ID, "view", owner.ID); err != nil {
+		t.Fatalf("grant: %v", err)
+	}
+	role, err := srv.store.CreateAgentRole(ws.ID, models.AgentRoleCreate{Name: "Fixer", Slug: "fixer"})
+	if err != nil {
+		t.Fatalf("role: %v", err)
+	}
+	mk := func(title, status string) *models.Item {
+		t.Helper()
+		it, err := srv.store.CreateItem(ws.ID, bugs.ID, models.ItemCreate{
+			Title: title, Fields: fmt.Sprintf(`{"status":%q}`, status), AgentRoleID: &role.ID,
+		})
+		if err != nil {
+			t.Fatalf("create %s: %v", title, err)
+		}
+		return it
+	}
+	mk("Bug in progress", "in_progress")
+	mk("Bug queued", "open")
+	finished := mk("Bug fixed", "open")
+	done := `{"status":"done"}`
+	if _, err := srv.store.UpdateItem(finished.ID, models.ItemUpdate{Fields: &done}); err != nil {
+		t.Fatalf("finish: %v", err)
+	}
+
+	type owned struct {
+		Workspace     string `json:"workspace"`
+		OwnerUsername string `json:"owner_username"`
+	}
+	for _, p := range []struct{ name, tok string }{{"owner", ownerTok}, {"guest", guestTok}} {
+		rr := doRequestWithHeaders(srv, http.MethodGet, "/api/v1/workspaces/"+ws.Slug+"/agent-roles/"+role.Slug+"/queue", nil, bearerHdr(p.tok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s GET queue: %d %s", p.name, rr.Code, rr.Body.String())
+		}
+		var q owned
+		parseJSON(t, rr, &q)
+		if q.OwnerUsername != owner.Username {
+			t.Errorf("%s queue endpoint owner_username = %q, want %q", p.name, q.OwnerUsername, owner.Username)
+		}
+
+		rr = doRequestWithHeaders(srv, http.MethodGet, "/api/v1/me/agents", nil, bearerHdr(p.tok))
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s GET /me/agents: %d %s", p.name, rr.Code, rr.Body.String())
+		}
+		var me struct {
+			Agents []struct {
+				Lanes    []owned `json:"lanes"`
+				Finished []owned `json:"finished"`
+			} `json:"agents"`
+		}
+		parseJSON(t, rr, &me)
+		if len(me.Agents) != 1 || len(me.Agents[0].Lanes) != 1 || len(me.Agents[0].Finished) != 1 {
+			t.Fatalf("%s agents shape = %+v, want 1 agent with 1 lane and 1 finished", p.name, me.Agents)
+		}
+		if got := me.Agents[0].Lanes[0].OwnerUsername; got != owner.Username {
+			t.Errorf("%s me/agents lane owner_username = %q, want %q", p.name, got, owner.Username)
+		}
+		if got := me.Agents[0].Finished[0].OwnerUsername; got != owner.Username {
+			t.Errorf("%s me/agents finished owner_username = %q, want %q", p.name, got, owner.Username)
+		}
+	}
+}

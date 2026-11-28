@@ -774,6 +774,8 @@ export interface RoleQueuePark {
 export interface RoleQueueResponse {
 	/** Workspace slug. */
 	workspace: string;
+	/** The workspace owner's username, the first segment of item page paths. */
+	owner_username: string;
 	role: { slug: string; name: string; icon: string };
 	can_reorder: boolean;
 	can_park: boolean;
@@ -787,6 +789,8 @@ export interface RoleQueueResponse {
 
 export interface MeAgentFinished {
 	workspace: string;
+	/** The workspace owner's username. */
+	owner_username: string;
 	ref: string;
 	/** The item's collection slug. */
 	collection: string;
