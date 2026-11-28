@@ -674,9 +674,9 @@ func serveCmd() *cobra.Command {
 			var eventBus events.EventBus
 			var watchRedis *redis.Client
 			if redisURL := os.Getenv("PAD_REDIS_URL"); redisURL != "" {
-				opts, err := redis.ParseURL(redisURL)
+				opts, err := redisOptionsFromEnv(redisURL, os.Getenv("PAD_REDIS_PASSWORD"))
 				if err != nil {
-					return fmt.Errorf("invalid PAD_REDIS_URL: %w", err)
+					return err
 				}
 				// A CONTEXT-AWARE DIALER ON EVERY CLIENT (BUG-2754).
 				// go-redis's default hands TLS connections to

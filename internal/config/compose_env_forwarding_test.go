@@ -163,3 +163,50 @@ func TestComposeForwardsDocumentedEnvSettings(t *testing.T) {
 		t.Errorf("docker-compose.prod.yml services.pad.environment.PAD_SECURE_COOKIES = %q, want %q", got, "true")
 	}
 }
+
+func TestBUG3722_ProdComposeKeepsRedisPasswordOutOfURLAndCommand(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join("..", "..", "docker-compose.prod.yml")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var prod struct {
+		Services map[string]struct {
+			Environment map[string]string `yaml:"environment"`
+			Command     []string          `yaml:"command"`
+		} `yaml:"services"`
+	}
+	if err := yaml.Unmarshal(data, &prod); err != nil {
+		t.Fatalf("unmarshal %s: %v", path, err)
+	}
+	padEnv := prod.Services["pad"].Environment
+	if url := padEnv["PAD_REDIS_URL"]; strings.Contains(url, "REDIS_PASSWORD") || strings.Contains(url, "@") {
+		t.Error("PAD_REDIS_URL must not contain the Redis password or userinfo")
+	}
+	if padEnv["PAD_REDIS_PASSWORD"] != "${REDIS_PASSWORD:-}" {
+		t.Error("PAD_REDIS_PASSWORD must forward REDIS_PASSWORD")
+	}
+	redisService := prod.Services["redis"]
+	command := redisService.Command
+	if len(command) != 3 {
+		t.Fatalf("redis command has %d entries, want 3", len(command))
+	}
+	if command[0] != "sh" || command[1] != "-c" {
+		t.Error("redis command must run sh -c")
+	}
+	for _, arg := range command {
+		if strings.Contains(arg, "${REDIS_PASSWORD") {
+			t.Error("redis command must not interpolate REDIS_PASSWORD through Compose")
+		}
+	}
+	// The image entrypoint drops root only when redis-server is its first
+	// argument, so the shell must hand off through it.
+	if !strings.Contains(command[2], `"$$REDIS_PASSWORD"`) || !strings.HasPrefix(command[2], "exec docker-entrypoint.sh redis-server ") {
+		t.Error("redis command must exec docker-entrypoint.sh redis-server with the quoted runtime password")
+	}
+	if redisService.Environment["REDIS_PASSWORD"] != "${REDIS_PASSWORD:-}" {
+		t.Error("redis environment must forward REDIS_PASSWORD")
+	}
+}
