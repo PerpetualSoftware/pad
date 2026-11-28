@@ -544,9 +544,10 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 		t.Fatalf("schema_migrations: %v", err)
 	}
 
-	// Seed at schema 053, then run 054 through 057 in order. Migration 054
-	// repairs invalid JSON before its index; 056 repairs the remaining
-	// shapes before its rebuild.
+	// Apply every migration except 054 through 057, seed the malformed rows
+	// (items.fields is still nullable TEXT with no shape check), then run 054
+	// through 057 in order. Migration 054 repairs invalid JSON before its
+	// index; 056 repairs the remaining shapes before its rebuild.
 	names, err := readMigrationNames(migrationsFS, "migrations")
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
@@ -639,9 +640,7 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 		}
 	}
 
-	// Apply 054 through 057 in order after the schema 053 seed. Migration
-	// 054 repairs invalid JSON before its index, and 056 repairs the
-	// remaining shapes before its rebuild.
+	// Apply 054 through 057 in order over the seeded rows.
 	postSeedOrder := []string{
 		"054_playbooks_invocation_fields.sql",
 		"055_collections_settings_not_null.sql",
