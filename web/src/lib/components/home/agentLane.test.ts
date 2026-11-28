@@ -1,10 +1,10 @@
 import { expect, it } from 'vitest';
-import { boundLane, doNextOrder, laneView, lineLabel, lineRequest, parkedLabel, planLane, stepOrder } from './agentLane';
+import { boundLane, doNextOrder, itemHref, laneView, lineLabel, lineRequest, parkedLabel, planLane, stepOrder } from './agentLane';
 import type { RoleQueueResponse } from '$lib/types';
 
-const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, title: ref, status: 'open', priority: '', role_sort_order: sort, blocked: false, ready: true, can_edit });
+const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, collection: 'tasks', title: ref, status: 'open', priority: '', role_sort_order: sort, blocked: false, ready: true, can_edit });
 const lane = (park?: RoleQueueResponse['park'], over: Partial<RoleQueueResponse> = {}): RoleQueueResponse => ({
-	workspace: 'ws', role: { slug: 'impl', name: 'Implementer', icon: '' }, can_reorder: true, can_park: true, now: [],
+	workspace: 'ws', owner_username: 'mara', role: { slug: 'impl', name: 'Implementer', icon: '' }, can_reorder: true, can_park: true, now: [],
 	queue: [item('A', 1024), item('B', 2048), item('C', 3072)], park, queue_total: 3, parked_total: 0, queue_more: false, ...over
 });
 const linePark = (index: number | null, sort_order = 3072) => ({ mode: 'line' as const, sort_order, index, first_parked_ref: null, set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 });
@@ -104,4 +104,16 @@ it('boundLane takes the fresh lane park so write-time sort_order is current', ()
 	const unparked = boundLane(l, lane(undefined, { queue: [item('A', 1024), item('B', 2048), item('C', 3072), item('D', 4000)], queue_more: false, queue_total: 4 }));
 	expect(unparked.ok).toBe(true);
 	expect(unparked.ok && unparked.lane.park).toBeUndefined();
+});
+
+it('itemHref builds the item page path with each part encoded', () => {
+	expect(itemHref('mara', 'pad', 'bugs', 'BUG-12')).toBe('/mara/pad/bugs/BUG-12');
+	expect(itemHref('a b', 'w/s', 'c?d', 'R#1')).toBe('/a%20b/w%2Fs/c%3Fd/R%231');
+});
+
+it('itemHref is null when any part is missing', () => {
+	expect(itemHref(undefined, 'pad', 'bugs', 'BUG-1')).toBeNull();
+	expect(itemHref('mara', '', 'bugs', 'BUG-1')).toBeNull();
+	expect(itemHref('mara', 'pad', '', 'BUG-1')).toBeNull();
+	expect(itemHref('mara', 'pad', 'bugs', '')).toBeNull();
 });

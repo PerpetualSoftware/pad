@@ -76,18 +76,20 @@ type RoleQueueLease struct {
 
 // RoleQueueNowItem is an active or leased lane item (not in the queue).
 type RoleQueueNowItem struct {
-	Ref    string          `json:"ref"`
-	Title  string          `json:"title"`
-	Status string          `json:"status"`
-	Since  time.Time       `json:"since"`
-	Lease  *RoleQueueLease `json:"lease"`
-	Live   string          `json:"live"`
+	Ref        string          `json:"ref"`
+	Collection string          `json:"collection"`
+	Title      string          `json:"title"`
+	Status     string          `json:"status"`
+	Since      time.Time       `json:"since"`
+	Lease      *RoleQueueLease `json:"lease"`
+	Live       string          `json:"live"`
 }
 
 // RoleQueueItem is one queued item in canonical role lane order.
 type RoleQueueItem struct {
 	ID            string `json:"id"`
 	Ref           string `json:"ref"`
+	Collection    string `json:"collection"`
 	Title         string `json:"title"`
 	Status        string `json:"status"`
 	Priority      string `json:"priority"`
@@ -112,16 +114,19 @@ type RoleQueuePark struct {
 // RoleQueueResponse is the response shape for
 // GET /api/v1/workspaces/{ws}/agent-roles/{role}/queue.
 type RoleQueueResponse struct {
-	Workspace   string             `json:"workspace"`
-	Role        RoleQueueRole      `json:"role"`
-	CanReorder  bool               `json:"can_reorder"`
-	CanPark     bool               `json:"can_park"`
-	Now         []RoleQueueNowItem `json:"now"`
-	Queue       []RoleQueueItem    `json:"queue"`
-	Park        *RoleQueuePark     `json:"park,omitempty"`
-	QueueTotal  int                `json:"queue_total"`
-	ParkedTotal int                `json:"parked_total"`
-	QueueMore   bool               `json:"queue_more"`
+	Workspace string `json:"workspace"`
+	// OwnerUsername is the workspace owner's username, the first segment of
+	// the item page URL.
+	OwnerUsername string             `json:"owner_username"`
+	Role          RoleQueueRole      `json:"role"`
+	CanReorder    bool               `json:"can_reorder"`
+	CanPark       bool               `json:"can_park"`
+	Now           []RoleQueueNowItem `json:"now"`
+	Queue         []RoleQueueItem    `json:"queue"`
+	Park          *RoleQueuePark     `json:"park,omitempty"`
+	QueueTotal    int                `json:"queue_total"`
+	ParkedTotal   int                `json:"parked_total"`
+	QueueMore     bool               `json:"queue_more"`
 }
 
 // UnreadMayHoldReady reports whether queue entries past the returned prefix

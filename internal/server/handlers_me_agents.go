@@ -18,12 +18,14 @@ const (
 )
 
 type meAgentsFinishedItem struct {
-	Workspace   string `json:"workspace"`
-	Ref         string `json:"ref"`
-	Title       string `json:"title"`
-	Value       string `json:"value"`
-	CompletedAt string `json:"completed_at"`
-	completedAt time.Time
+	Workspace     string `json:"workspace"`
+	OwnerUsername string `json:"owner_username"`
+	Ref           string `json:"ref"`
+	Collection    string `json:"collection"`
+	Title         string `json:"title"`
+	Value         string `json:"value"`
+	CompletedAt   string `json:"completed_at"`
+	completedAt   time.Time
 }
 
 type meAgentsSummary struct {
@@ -149,6 +151,7 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 	type pendingLane struct {
 		wsSlug             string
 		wsName             string
+		wsOwner            string
 		role               models.AgentRole
 		nowEntries         []store.RoleLaneEntry
 		queueEntries       []store.RoleLaneEntry
@@ -295,6 +298,7 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			g.pendingLanes = append(g.pendingLanes, pendingLane{
 				wsSlug:             ws.Slug,
 				wsName:             ws.Name,
+				wsOwner:            ws.OwnerUsername,
 				role:               role,
 				nowEntries:         nowEntries,
 				queueEntries:       queueEntries,
@@ -351,12 +355,14 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			g := getGroup(role.Slug)
 			g.fallbackRoles = append(g.fallbackRoles, fallbackRoleMeta{wsName: ws.Name, wsSlug: ws.Slug, role: role})
 			g.finished = append(g.finished, meAgentsFinishedItem{
-				Workspace:   ws.Slug,
-				Ref:         row.Ref,
-				Title:       row.Title,
-				Value:       val,
-				CompletedAt: row.CreatedAt.UTC().Format(time.RFC3339),
-				completedAt: row.CreatedAt,
+				Workspace:     ws.Slug,
+				OwnerUsername: ws.OwnerUsername,
+				Ref:           row.Ref,
+				Collection:    collsByID[row.CollectionID].Slug,
+				Title:         row.Title,
+				Value:         val,
+				CompletedAt:   row.CreatedAt.UTC().Format(time.RFC3339),
+				completedAt:   row.CreatedAt,
 			})
 		}
 	}
@@ -428,6 +434,7 @@ func (s *Server) handleMeAgents(w http.ResponseWriter, r *http.Request) {
 			}
 			laneResp := buildRoleQueueLaneResponse(
 				pl.wsSlug,
+				pl.wsOwner,
 				&roleCopy,
 				pl.nowEntries,
 				pl.queueEntries,

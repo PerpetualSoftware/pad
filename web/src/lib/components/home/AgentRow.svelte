@@ -19,7 +19,7 @@
 	import { avatarColor } from '$lib/utils/avatar';
 	import Menu from '$lib/components/common/Menu.svelte';
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
-	import { LINE, age, boundLane, doNextOrder, fromTokens, laneView, lineLabel, lineRequest, moveToken, parkedLabel, planLane, stepOrder, tokens, type LaneView } from './agentLane';
+	import { LINE, age, boundLane, doNextOrder, fromTokens, itemHref, laneView, lineLabel, lineRequest, moveToken, parkedLabel, planLane, stepOrder, tokens, type LaneView } from './agentLane';
 	import type { AgentRole, MeAgent, RoleParkRequest, RoleQueueItem, RoleQueueResponse } from '$lib/types';
 
 	interface Props {
@@ -325,6 +325,11 @@
 	const priorityMark: Record<string, string> = { critical: '▲▲', high: '▲', medium: '■', low: '▽' };
 </script>
 
+{#snippet refLink(owner: string, workspace: string, collection: string, ref: string)}
+	{@const href = itemHref(owner, workspace, collection, ref)}
+	{#if href}<a class="ref" {href} draggable="false">{ref}</a>{:else}<span class="ref">{ref}</span>{/if}
+{/snippet}
+
 {#snippet lineRule(lane: RoleQueueResponse, view: LaneView)}
 	{@const draggable = !compact && lane.can_park && !locked(lane)}
 	<li class="line" class:drop={dropAt === `${laneKey(lane)}#${LINE}`} role="separator" aria-label={`${lineLabel(lane.park?.set_by ?? null, lane.park?.set_at ?? null, zone)}${view.mode === 'top' ? ', before every queued item' : ''}`}
@@ -393,7 +398,7 @@
 									{#each lane.now.slice(0, 3) as item (item.ref)}
 										<li class="row now-row">
 											{#if item.live !== 'unknown'}<span class={`dot ${item.live}`} role="img" aria-label={liveText[item.live]}></span>{/if}
-											<span class="ref">{item.ref}</span><span class="title strong">{item.title}</span>
+											{@render refLink(lane.owner_username, lane.workspace, item.collection, item.ref)}<span class="title strong">{item.title}</span>
 											{#if item.status}<span class="chip status">{item.status}</span>{/if}<span class="age">{age(item.since)}</span>
 										</li>
 									{/each}
@@ -415,7 +420,7 @@
 										ondragover={(e) => dragOver(e, lane, item.ref)}
 										ondrop={(e) => drop(e, lane, item.ref)}>
 										<span class="handle" aria-hidden="true">{!compact && canMove(lane, item) ? '⠿' : ''}</span>
-										<span class="pos">{i + 1}</span><span class="ref">{item.ref}</span><span class="title">{item.title}</span>
+										<span class="pos">{i + 1}</span>{@render refLink(lane.owner_username, lane.workspace, item.collection, item.ref)}<span class="title">{item.title}</span>
 										{#if item.blocked}<span class="chip blocked">blocked</span>{/if}
 										{#if isParked}<em class="parked-tag">parked</em>{/if}
 										{#if item.priority}<span class={`prio ${item.priority}`} title={item.priority}><span aria-hidden="true">{priorityMark[item.priority] ?? ''}</span> <span class="prio-word">{item.priority.charAt(0).toUpperCase() + item.priority.slice(1)}</span></span>{/if}
@@ -454,7 +459,7 @@
 								<h4>Just finished</h4>
 								<ul>
 									{#each finished as f (f.ref)}
-										<li class="row finished"><span class="check" aria-hidden="true">✓</span><span class="ref">{f.ref}</span><span class="title">{f.title}</span><span class="age">{f.value} {age(f.completed_at)} ago</span></li>
+										<li class="row finished"><span class="check" aria-hidden="true">✓</span>{@render refLink(f.owner_username, f.workspace, f.collection, f.ref)}<span class="title">{f.title}</span><span class="age">{f.value} {age(f.completed_at)} ago</span></li>
 									{/each}
 								</ul>
 							{/if}
@@ -478,6 +483,9 @@
 	.label, .extra, .age, .queued, .lanes-count, .more, .note { color: var(--text-muted); font-size: .75rem; }
 	.queued { color: var(--text-secondary); }
 	.ref { font-family: var(--font-mono); font-size: .75rem; color: var(--text-muted); }
+	a.ref { text-decoration: none; border-radius: var(--radius-sm); }
+	a.ref:hover { text-decoration: underline; }
+	a.ref:focus-visible { outline: 2px solid var(--accent-primary); outline-offset: 1px; }
 	.idle { color: var(--text-muted); }
 	.ws, .chip { display: inline-block; border: 1px solid var(--border); border-radius: 99px; padding: 0 7px; font-size: .68rem; color: var(--text-secondary); background: var(--bg-tertiary); white-space: nowrap; }
 	.chip.parked { color: var(--accent-orange); background: color-mix(in srgb, var(--accent-orange) 12%, transparent); border-color: color-mix(in srgb, var(--accent-orange) 35%, transparent); }

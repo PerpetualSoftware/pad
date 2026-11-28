@@ -22,19 +22,20 @@ vi.mock('$lib/stores/auth.svelte', () => ({ authStore: {
 	identityFence: () => { const epoch = h.epoch; return () => epoch === h.epoch; },
 	onIdentityChange: (reset: () => void) => { h.resets.add(reset); return () => h.resets.delete(reset); }
 } }));
-vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { workspaces: [{ id: '1', slug: 'pad', name: 'Pad' }, { id: '2', slug: 'cloud', name: 'Cloud' }] } }));
+vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: { workspaces: [{ id: '1', slug: 'pad', name: 'Pad', owner_username: 'mara' }, { id: '2', slug: 'cloud', name: 'Cloud', owner_username: 'kit' }] } }));
 vi.mock('$lib/stores/breakpoint.svelte', () => ({ MOBILE_MEDIA_QUERY: '(max-width: 768px)', viewport: { get isMobile() { return h.mobile; } } }));
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: { show: h.toast } }));
 vi.mock('$lib/services/homeLive', () => ({ homeLive: { register: (cb: () => unknown) => { h.live.push(cb); return () => { h.live = h.live.filter(c => c !== cb); }; } } }));
 
 import AgentsPanel from './AgentsPanel.svelte';
+import AgentRow from './AgentRow.svelte';
 import { agentsOverview } from '$lib/stores/agentsOverview.svelte';
 
-const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, title: `Title ${ref}`, status: 'open', priority: 'high', role_sort_order: sort, blocked: false, ready: true, can_edit });
+const item = (ref: string, sort: number, can_edit = true) => ({ id: `id-${ref}`, ref, collection: 'bugs', title: `Title ${ref}`, status: 'open', priority: 'high', role_sort_order: sort, blocked: false, ready: true, can_edit });
 function lane(over: Partial<RoleQueueResponse> = {}): RoleQueueResponse {
 	return {
-		workspace: 'pad', role: { slug: 'impl', name: 'Implementer', icon: '🛠' }, can_reorder: true, can_park: true,
-		now: [{ ref: 'TASK-9', title: 'Export check-only mode', status: 'in-progress', since: new Date(Date.now() - 2 * 3600_000).toISOString(), lease: { holder: 'w1', expires_at: '2030-01-01T00:00:00Z' }, live: 'busy' }],
+		workspace: 'pad', owner_username: 'mara', role: { slug: 'impl', name: 'Implementer', icon: '🛠' }, can_reorder: true, can_park: true,
+		now: [{ ref: 'TASK-9', collection: 'bugs', title: 'Export check-only mode', status: 'in-progress', since: new Date(Date.now() - 2 * 3600_000).toISOString(), lease: { holder: 'w1', expires_at: '2030-01-01T00:00:00Z' }, live: 'busy' }],
 		queue: [item('TASK-1', 1024), item('TASK-2', 2048), item('TASK-3', 3072)],
 		park: { mode: 'line', sort_order: 3072, index: 2, first_parked_ref: 'TASK-3', set_by: 'Dave', set_at: '2026-11-26T15:04:00Z', park_seq: 4 },
 		queue_total: 3, parked_total: 1, queue_more: false, ...over
@@ -352,4 +353,101 @@ it('a truncated lane checks the fresh prefix against the server order, not the s
 	expect(h.queue).toHaveBeenCalledWith('pad', 'impl', 4);
 	expect(h.toast).not.toHaveBeenCalledWith('The queue changed meanwhile. Showing the latest.', 'info');
 	expect(h.reorder).toHaveBeenCalledTimes(1);
+});
+
+// Refs in the expanded view link to the item page.
+const finishedEntry = (workspace: string, owner_username = 'mara') => ({ workspace, owner_username, ref: 'BUG-7', collection: 'bugs', title: 'Fixed thing', value: 'done', completed_at: new Date(Date.now() - 3600_000).toISOString() });
+function withFinished() {
+	const a = answer([lane(), lane({ workspace: 'cloud', owner_username: '', can_reorder: false, can_park: false, park: undefined, now: [], parked_total: 0 })]);
+	a.agents[0].finished = [finishedEntry('pad'), finishedEntry('cloud', '')];
+	return a;
+}
+/** Records whether the component cancelled a click, then stops jsdom navigating. */
+function trapNavigation() {
+	const seen: boolean[] = [];
+	const trap = (ev: Event) => { seen.push(ev.defaultPrevented); ev.preventDefault(); };
+	document.addEventListener('click', trap);
+	onTestFinished(() => document.removeEventListener('click', trap));
+	return seen;
+}
+function renderRow() {
+	const ontoggle = vi.fn();
+	const release = vi.fn();
+	const hold = vi.fn(() => release);
+	const a = withFinished();
+	render(AgentRow, { agent: a.agents[0], zone: 'UTC', expanded: true, ontoggle, hold });
+	return { ontoggle, hold };
+}
+
+it('each expanded ref links to its item page in its collection', async () => {
+	h.agents.mockResolvedValue(withFinished());
+	await open();
+	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
+	expect(within(padLane).getByRole('link', { name: 'TASK-9' })).toHaveAttribute('href', '/mara/pad/bugs/TASK-9');
+	expect(within(padLane).getByRole('link', { name: 'TASK-1' })).toHaveAttribute('href', '/mara/pad/bugs/TASK-1');
+	expect(within(padLane).getByRole('link', { name: 'BUG-7' })).toHaveAttribute('href', '/mara/pad/bugs/BUG-7');
+	expect(within(padLane).getByRole('link', { name: 'TASK-1' })).toHaveAttribute('draggable', 'false');
+});
+
+it('the collapsed strip keeps the Now ref as plain text inside its button', async () => {
+	render(AgentsPanel);
+	await settle();
+	const strip = screen.getByRole('button', { name: /Implementer/, expanded: false });
+	expect(within(strip).queryByRole('link')).not.toBeInTheDocument();
+});
+
+it('refs link from the lane owner_username even when the workspace is absent from workspaceStore', async () => {
+	const a = answer([lane({ workspace: 'guest-ws', owner_username: 'jun', park: undefined, parked_total: 0 })]);
+	a.agents[0].finished = [finishedEntry('guest-ws', 'jun')];
+	h.agents.mockResolvedValue(a);
+	await open();
+	const guest = screen.getByRole('region', { name: 'Implementer in guest-ws' });
+	expect(within(guest).getByRole('link', { name: 'TASK-9' })).toHaveAttribute('href', '/jun/guest-ws/bugs/TASK-9');
+	expect(within(guest).getByRole('link', { name: 'TASK-1' })).toHaveAttribute('href', '/jun/guest-ws/bugs/TASK-1');
+	expect(within(guest).getByRole('link', { name: 'BUG-7' })).toHaveAttribute('href', '/jun/guest-ws/bugs/BUG-7');
+});
+
+it('an empty owner_username renders refs as plain text', async () => {
+	h.agents.mockResolvedValue(withFinished());
+	await open();
+	const cloud = screen.getByRole('region', { name: 'Implementer in Cloud' });
+	expect(within(cloud).queryByRole('link')).not.toBeInTheDocument();
+	expect(within(cloud).getByText('TASK-1').tagName).toBe('SPAN');
+	expect(within(cloud).getByText('BUG-7').tagName).toBe('SPAN');
+});
+
+it('pressing and clicking a ref does not toggle the row, start a drag or open the menu', async () => {
+	trapNavigation();
+	const { ontoggle, hold } = renderRow();
+	await settle();
+	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
+	for (const name of ['TASK-9', 'TASK-1', 'BUG-7']) {
+		const link = within(padLane).getByRole('link', { name });
+		await fireEvent.pointerDown(link);
+		await fireEvent.mouseDown(link);
+		await fireEvent.click(link);
+	}
+	expect(ontoggle).not.toHaveBeenCalled();
+	expect(hold).not.toHaveBeenCalled();
+	expect(screen.queryByRole('menu')).not.toBeInTheDocument();
+});
+
+it('a modified click on a ref is left to the browser', async () => {
+	const seen = trapNavigation();
+	renderRow();
+	await settle();
+	const link = within(screen.getByRole('region', { name: 'Implementer in Pad' })).getByRole('link', { name: 'TASK-2' });
+	for (const init of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { button: 1 }]) {
+		link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...init }));
+	}
+	expect(seen).toEqual([false, false, false, false]);
+});
+
+it('the row still drags by its handle with links in it', async () => {
+	const { hold } = renderRow();
+	await settle();
+	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
+	const row = within(padLane).getByText('Title TASK-2').closest('li')!;
+	await fireEvent.dragStart(row);
+	expect(hold).toHaveBeenCalledTimes(1);
 });

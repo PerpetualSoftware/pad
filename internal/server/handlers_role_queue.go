@@ -105,7 +105,7 @@ func partitionRoleLane(lane []store.RoleLaneEntry, visible func(collectionID, it
 }
 
 func buildRoleQueueLaneResponse(
-	wsSlug string,
+	wsSlug, ownerUsername string,
 	role *models.AgentRole,
 	nowEntries, queueEntries []store.RoleLaneEntry,
 	leases map[string]models.ItemLease,
@@ -148,12 +148,13 @@ func buildRoleQueueLaneResponse(
 			}
 		}
 		nowItems = append(nowItems, models.RoleQueueNowItem{
-			Ref:    ref,
-			Title:  e.Item.Title,
-			Status: extractFieldValue(e.Item.Fields, doneKey),
-			Since:  since,
-			Lease:  leaseOut,
-			Live:   live,
+			Ref:        ref,
+			Collection: e.Item.CollectionSlug,
+			Title:      e.Item.Title,
+			Status:     extractFieldValue(e.Item.Fields, doneKey),
+			Since:      since,
+			Lease:      leaseOut,
+			Live:       live,
 		})
 	}
 
@@ -198,6 +199,7 @@ func buildRoleQueueLaneResponse(
 		queueItems = append(queueItems, models.RoleQueueItem{
 			ID:            e.Item.ID,
 			Ref:           ref,
+			Collection:    e.Item.CollectionSlug,
 			Title:         e.Item.Title,
 			Status:        extractFieldValue(e.Item.Fields, doneKey),
 			Priority:      extractFieldValue(e.Item.Fields, "priority"),
@@ -222,7 +224,8 @@ func buildRoleQueueLaneResponse(
 	}
 
 	return models.RoleQueueResponse{
-		Workspace: wsSlug,
+		Workspace:     wsSlug,
+		OwnerUsername: ownerUsername,
 		Role: models.RoleQueueRole{
 			Slug: role.Slug,
 			Name: role.Name,
@@ -337,6 +340,7 @@ func (s *Server) handleGetRoleQueue(w http.ResponseWriter, r *http.Request) {
 
 	resp := buildRoleQueueLaneResponse(
 		ws.Slug,
+		ws.OwnerUsername,
 		role,
 		nowEntries,
 		queueEntries,

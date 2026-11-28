@@ -504,8 +504,9 @@ func (s *Store) ListUserWorkspaceMembershipsMapQ(q Queryer, userID string) (map[
 // separate member/guest workspace scans.
 func (s *Store) ListUserAdmittedWorkspacesAndMembershipsQ(q Queryer, userID string) ([]models.Workspace, map[string]models.WorkspaceMember, error) {
 	rows, err := q.Query(s.q(`
-		SELECT w.id, w.name, w.slug, wm.role, wm.collection_access
+		SELECT w.id, w.name, w.slug, COALESCE(ou.username, ''), wm.role, wm.collection_access
 		FROM workspaces w
+		LEFT JOIN users ou ON ou.id = w.owner_id
 		LEFT JOIN workspace_members wm
 		  ON wm.workspace_id = w.id AND wm.user_id = ?
 		WHERE w.deleted_at IS NULL
@@ -535,7 +536,7 @@ func (s *Store) ListUserAdmittedWorkspacesAndMembershipsQ(q Queryer, userID stri
 	for rows.Next() {
 		var ws models.Workspace
 		var role, collAccess sql.NullString
-		if err := rows.Scan(&ws.ID, &ws.Name, &ws.Slug, &role, &collAccess); err != nil {
+		if err := rows.Scan(&ws.ID, &ws.Name, &ws.Slug, &ws.OwnerUsername, &role, &collAccess); err != nil {
 			return nil, nil, err
 		}
 		if role.Valid {
