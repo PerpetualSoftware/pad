@@ -335,19 +335,11 @@ func serverResponds(host string, port int) bool {
 // breaking anything. The returned release is always safe to call, and safe to
 // call twice.
 func ClaimPIDFile(path string) func() {
-	release, err := holdPIDFile(path)
+	rec := currentPIDRecord()
+	release, err := claimPIDFile(path, rec)
 	if err != nil {
 		slog.Warn("could not claim the PID file; `pad server stop` will not be able to address this process",
 			"pid_file", path, "error", err)
-		return func() {}
-	}
-
-	rec := currentPIDRecord()
-	// On Unix, the lock pins the path's inode, so os.WriteFile truncates that same inode.
-	if err := writePIDRecord(path, rec); err != nil {
-		slog.Warn("could not write PID file; `pad server stop` will not be able to address this process",
-			"pid_file", path, "error", err)
-		release()
 		return func() {}
 	}
 

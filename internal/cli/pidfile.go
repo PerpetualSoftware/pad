@@ -33,13 +33,22 @@ type pidRecord struct {
 	Exe       string    `json:"exe,omitempty"`
 }
 
+// marshalPIDRecord is the file's bytes for rec.
+func marshalPIDRecord(rec pidRecord) ([]byte, error) {
+	data, err := json.MarshalIndent(rec, "", "  ")
+	if err != nil {
+		return nil, err
+	}
+	return append(data, '\n'), nil
+}
+
 // writePIDRecord serialises rec to path.
 func writePIDRecord(path string, rec pidRecord) error {
-	data, err := json.MarshalIndent(rec, "", "  ")
+	data, err := marshalPIDRecord(rec)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return os.WriteFile(path, data, 0o644)
 }
 
 // readPIDRecord parses the PID file.
