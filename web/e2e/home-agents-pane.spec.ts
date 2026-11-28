@@ -1,12 +1,33 @@
 import { request as playwrightRequest, type APIRequestContext } from '@playwright/test';
 import { test, expect, suiteFixture } from './fixtures';
-import { browserLogin } from './lib/collab-helpers';
+import type { Page } from '@playwright/test';
 
 // TASK-4902: a ref in the Agents panel on home opens the item in a docked
 // pane beside the panel, in the item's own workspace context. A guest
 // workspace's item is read-only even though the shell workspace is owned.
+//
+// The browser signs in as a plain member, not the suite's admin: an instance
+// admin on a cookie session is answered as owner-equivalent in every
+// workspace, so for the admin a guest item is rightly editable.
 
 const PASSWORD = 'Playwright-Home-Pane-2026!';
+
+/** Sign the browser in as `email`, replacing the fixture's admin session. */
+async function memberLogin(page: Page, email: string) {
+	await page.goto('/api/v1/health/live');
+	const status = await page.evaluate(
+		async ({ email, password }) => {
+			const r = await fetch('/api/v1/auth/login', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ email, password }),
+			});
+			return r.status;
+		},
+		{ email, password: PASSWORD },
+	);
+	if (status !== 200) throw new Error(`in-page login failed with status ${status}`);
+}
 
 async function ok(resp: Awaited<ReturnType<APIRequestContext['get']>>, what: string) {
 	expect(resp.ok(), `${what}: ${resp.status()} ${await resp.text()}`).toBe(true);
@@ -19,13 +40,14 @@ async function bearer(baseURL: string, token: string) {
 
 interface Seeded {
 	role: string;
+	email: string;
 	owned: { ws: string; ref: string; title: string; owner: string };
 	guest: { ws: string; ref: string; title: string; owner: string };
 }
 
-/** Two lanes for one agent: one in a workspace the admin owns, one in another account's workspace where the admin is a viewer. */
+/** Two lanes for one agent: one in a workspace the member owns, one in the admin's workspace where the member is a viewer. */
 async function seed(tag: string): Promise<Seeded> {
-	const { baseURL, adminSessionToken, apiToken, adminEmail, adminUsername } = suiteFixture();
+	const { baseURL, adminSessionToken, apiToken, adminUsername } = suiteFixture();
 	const role = `Pane agent ${tag}`;
 	const roleSlug = `pane-agent-${tag}`;
 
@@ -59,27 +81,30 @@ async function seed(tag: string): Promise<Seeded> {
 		return `${made.collection_prefix}-${made.item_number}`;
 	}
 
-	const mine = await bearer(baseURL, apiToken);
-	const other = await bearer(baseURL, otherToken);
+	// `member` is the browser's user: it owns one workspace and is a viewer in
+	// the admin's.
+	const member = await bearer(baseURL, otherToken);
+	const adminApi = await bearer(baseURL, apiToken);
 	try {
-		const ownedWs = ((await (await ok(await mine.post('/api/v1/workspaces', { data: { name: `Pane owned ${tag}`, template: 'startup' } }), 'ws')).json()) as { slug: string }).slug;
-		const guestWs = ((await (await ok(await other.post('/api/v1/workspaces', { data: { name: `Pane guest ${tag}`, template: 'startup' } }), 'ws')).json()) as { slug: string }).slug;
+		const ownedWs = ((await (await ok(await member.post('/api/v1/workspaces', { data: { name: `Pane owned ${tag}`, template: 'startup' } }), 'ws')).json()) as { slug: string }).slug;
+		const guestWs = ((await (await ok(await adminApi.post('/api/v1/workspaces', { data: { name: `Pane guest ${tag}`, template: 'startup' } }), 'ws')).json()) as { slug: string }).slug;
 		const ownedTitle = `Owned pane item ${tag}`;
 		const guestTitle = `Guest pane item ${tag}`;
-		const ownedRef = await laneIn(mine, ownedWs, ownedTitle);
-		const guestRef = await laneIn(other, guestWs, guestTitle);
-		await ok(await other.post(`/api/v1/workspaces/${guestWs}/members/invite`, { data: { email: adminEmail, role: 'viewer' } }), 'invite');
-		const list = (await (await ok(await mine.get('/api/v1/me/invitations'), 'invitations')).json()) as { invitations: { id: string; workspace_slug: string }[] };
+		const ownedRef = await laneIn(member, ownedWs, ownedTitle);
+		const guestRef = await laneIn(adminApi, guestWs, guestTitle);
+		await ok(await adminApi.post(`/api/v1/workspaces/${guestWs}/members/invite`, { data: { email, role: 'viewer' } }), 'invite');
+		const list = (await (await ok(await member.get('/api/v1/me/invitations'), 'invitations')).json()) as { invitations: { id: string; workspace_slug: string }[] };
 		const inv = list.invitations.find((i) => i.workspace_slug === guestWs)!;
-		await ok(await mine.post(`/api/v1/me/invitations/${inv.id}/accept`), 'accept');
+		await ok(await member.post(`/api/v1/me/invitations/${inv.id}/accept`), 'accept');
 		return {
 			role,
-			owned: { ws: ownedWs, ref: ownedRef, title: ownedTitle, owner: adminUsername },
-			guest: { ws: guestWs, ref: guestRef, title: guestTitle, owner: username },
+			email,
+			owned: { ws: ownedWs, ref: ownedRef, title: ownedTitle, owner: username },
+			guest: { ws: guestWs, ref: guestRef, title: guestTitle, owner: adminUsername },
 		};
 	} finally {
-		await mine.dispose();
-		await other.dispose();
+		await member.dispose();
+		await adminApi.dispose();
 	}
 }
 
@@ -90,7 +115,7 @@ test('a ref opens the item in a pane beside the Agents panel, in its own workspa
 	const tag = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 	const s = await seed(tag);
 
-	await browserLogin(page);
+	await memberLogin(page, s.email);
 	await page.goto('/');
 	const agents = page.getByRole('region', { name: 'Agents', exact: true });
 	await agents.getByRole('button', { name: new RegExp(s.role) }).click();
@@ -151,7 +176,7 @@ test('on a phone a ref click opens the full page', async ({ page }, testInfo) =>
 	const tag = `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 	const s = await seed(tag);
 
-	await browserLogin(page);
+	await memberLogin(page, s.email);
 	await page.goto('/');
 	const agents = page.getByRole('region', { name: 'Agents', exact: true });
 	await agents.getByRole('button', { name: new RegExp(s.role) }).click();
