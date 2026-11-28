@@ -11,10 +11,11 @@ services:
   pad:
     environment:
       PAD_SECURE_COOKIES: "true"
-      # Override Redis URL to include password when REDIS_PASSWORD is set.
-      # Without this, the pad container inherits the passwordless URL from
-      # docker-compose.yml and fails to connect when Redis AUTH is enabled.
-      PAD_REDIS_URL: "redis://:${REDIS_PASSWORD:-}@redis:6379"
+      # Pass the password in PAD_REDIS_PASSWORD, not in the URL, so it needs
+      # no URL encoding, for the same reason the base compose file keeps
+      # the Postgres password out of the DSN.
+      PAD_REDIS_URL: "redis://redis:6379"
+      PAD_REDIS_PASSWORD: "${REDIS_PASSWORD:-}"
       # PAD_URL, CORS, Maileroo, SSE/collab limits, Redis namespace, and other
       # optional PAD_* settings are forwarded from .env by docker-compose.yml.
     deploy:
@@ -55,7 +56,11 @@ services:
     # keyspace is small — a few hundred bytes per connected session plus
     # two counters — so there is nothing to gain by evicting it. See
     # docs/deployment.md's Redis configuration notes.
-    command: redis-server --maxmemory 128mb --maxmemory-policy noeviction --requirepass "${REDIS_PASSWORD:-}"
+    # The shell reads the password from the environment so quotes and spaces stay one argument.
+    command:
+      - sh
+      - -c
+      - exec redis-server --maxmemory 128mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"
     healthcheck:
       # Override the base healthcheck to authenticate when REDIS_PASSWORD is set.
       # redis-cli reads REDISCLI_AUTH automatically for authentication.

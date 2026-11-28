@@ -109,6 +109,7 @@ The three `PAD_DB_*_TIMEOUT` values are sent as connection startup parameters in
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PAD_REDIS_URL` | — | Redis URL for cross-instance pub/sub **and the session-presence registry**. Without Redis, SSE events, watch notifications, and session presence are all in-process only. |
+| `PAD_REDIS_PASSWORD` | — | Redis password, used as given. Takes precedence over a password in `PAD_REDIS_URL`, and needs no URL encoding. `docker-compose.prod.yml` sets it from `REDIS_PASSWORD`. |
 | `PAD_REDIS_NAMESPACE` | — | Scopes every Redis key and channel to one installation. Set it when two Pad installations share a Redis endpoint. Unset means the historical names; a whitespace-only value is rejected at startup rather than treated as unset. |
 | `PAD_SSE_MAX_CONNECTIONS` | `1000` | Maximum streaming connections **per instance**, across `/api/v1/events`, `/api/v1/events/stream` and the MCP transport's long-lived streams (GET streams on `/mcp` and `/mcp/chatgpt`, and `subscriptions/listen` streams once Pad serves a modern MCP protocol version; it serves the legacy versions only today, so no listen is counted) |
 | `PAD_SSE_MAX_PER_WORKSPACE` | `100` | Per-workspace maximum connections on `/api/v1/events`, **per instance** |
