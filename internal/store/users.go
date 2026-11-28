@@ -2038,8 +2038,14 @@ func (s *Store) backfillUsernames() error {
 
 // --- TOTP 2FA ---
 
+// ErrTOTPAlreadyEnabled is returned by SetTOTPSecret when 2FA was enabled at
+// the time of its guarded write.
+var ErrTOTPAlreadyEnabled = errors.New("totp already enabled")
+
 // SetTOTPSecret stores the TOTP secret for a user (before 2FA is verified).
 // The secret is encrypted at rest if an encryption key is configured.
+// It refuses with ErrTOTPAlreadyEnabled when 2FA is already enabled, so a
+// delayed setup request cannot replace an enrolled authenticator.
 //
 // It also clears totp_last_step: that single-use watermark (BUG-2054) is a
 // time-step counter that belongs to the OLD secret, so a fresh secret must
@@ -2051,9 +2057,29 @@ func (s *Store) SetTOTPSecret(userID, secret string) error {
 	if err != nil {
 		return fmt.Errorf("encrypt totp secret: %w", err)
 	}
-	_, err = s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, totp_last_step = NULL, updated_at = ? WHERE id = ?`), encrypted, now(), userID)
+	result, err := s.db.Exec(s.q(`UPDATE users SET totp_secret = ?, totp_last_step = NULL, updated_at = ? WHERE id = ? AND totp_enabled = ?`),
+		encrypted, now(), userID, s.dialect.BoolToInt(false))
 	if err != nil {
 		return fmt.Errorf("set totp secret: %w", err)
+	}
+	n, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("set totp secret: rows affected: %w", err)
+	}
+	if n == 0 {
+		var enabled bool
+		err := s.db.QueryRow(s.q(`SELECT totp_enabled FROM users WHERE id = ?`), userID).Scan(&enabled)
+		if errors.Is(err, sql.ErrNoRows) {
+			return fmt.Errorf("set totp secret: user not found")
+		}
+		if err != nil {
+			return fmt.Errorf("set totp secret: read enabled: %w", err)
+		}
+		// The row exists and the guarded UPDATE matched nothing, so 2FA was
+		// enabled when it ran. A concurrent disable may have landed since
+		// (enabled reads false now), but the secret was still not written:
+		// refuse either way rather than report a write that did not happen.
+		return ErrTOTPAlreadyEnabled
 	}
 	return nil
 }

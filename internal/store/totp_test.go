@@ -3,6 +3,7 @@ package store
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -76,6 +77,52 @@ func TestTOTPEnableSecretMismatch(t *testing.T) {
 	}
 }
 
+func TestSetTOTPSecretRefusesWhenEnabled(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	u := createTestUser(t, s, "test@test.com", "Test", "password123")
+	const secretA = "JBSWY3DPEHPK3PXP"
+	const secretB = "KRSXG5DSNFXGOIDB"
+	codes := hashCode("abcd1234") + "\n" + hashCode("efgh5678")
+	if err := s.SetTOTPSecret(u.ID, secretA); err != nil {
+		t.Fatalf("SetTOTPSecret error: %v", err)
+	}
+	if err := s.EnableTOTP(u.ID, secretA, codes); err != nil {
+		t.Fatalf("EnableTOTP error: %v", err)
+	}
+	if consumed, err := s.ConsumeTOTPStep(u.ID, secretA, 100); err != nil || !consumed {
+		t.Fatalf("ConsumeTOTPStep before setup: consumed=%v, err=%v", consumed, err)
+	}
+
+	if err := s.SetTOTPSecret(u.ID, secretB); !errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Errorf("SetTOTPSecret: expected ErrTOTPAlreadyEnabled, got %v", err)
+	}
+	if storedTOTPSecret(t, s, u.ID) != secretA {
+		t.Error("SetTOTPSecret replaced the enrolled secret")
+	}
+	user, err := s.GetUser(u.ID)
+	if err != nil || user == nil {
+		t.Fatalf("GetUser: user missing or error: %v", err)
+	}
+	if !user.TOTPEnabled {
+		t.Error("TOTP should remain enabled")
+	}
+	if user.RecoveryCodes != codes {
+		t.Error("recovery codes should remain unchanged")
+	}
+	if consumed, err := s.ConsumeTOTPStep(u.ID, secretA, 100); err != nil || consumed {
+		t.Errorf("ConsumeTOTPStep after refused setup: consumed=%v, err=%v; want false, nil", consumed, err)
+	}
+}
+
+func TestSetTOTPSecretUnknownUser(t *testing.T) {
+	t.Parallel()
+	s := testStore(t)
+	if err := s.SetTOTPSecret("no-such-id", "X"); err == nil || errors.Is(err, ErrTOTPAlreadyEnabled) {
+		t.Errorf("SetTOTPSecret: expected a non-enabled error for unknown user, got %v", err)
+	}
+}
+
 func TestTOTPDisable(t *testing.T) {
 	t.Parallel()
 	s := testStore(t)
@@ -105,6 +152,13 @@ func TestTOTPDisable(t *testing.T) {
 	}
 	if user.RecoveryCodes != "" {
 		t.Error("recovery codes should be cleared")
+	}
+
+	if err := s.SetTOTPSecret(u.ID, "KRSXG5DSNFXGOIDB"); err != nil {
+		t.Fatalf("SetTOTPSecret after DisableTOTP: %v", err)
+	}
+	if storedTOTPSecret(t, s, u.ID) != "KRSXG5DSNFXGOIDB" {
+		t.Error("new secret should be stored after DisableTOTP")
 	}
 }
 
