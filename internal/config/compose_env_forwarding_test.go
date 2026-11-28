@@ -201,8 +201,10 @@ func TestBUG3722_ProdComposeKeepsRedisPasswordOutOfURLAndCommand(t *testing.T) {
 			t.Error("redis command must not interpolate REDIS_PASSWORD through Compose")
 		}
 	}
-	if !strings.Contains(command[2], `"$$REDIS_PASSWORD"`) || !strings.HasPrefix(command[2], "exec redis-server") {
-		t.Error("redis command must exec redis-server with the quoted runtime password")
+	// The image entrypoint drops root only when redis-server is its first
+	// argument, so the shell must hand off through it.
+	if !strings.Contains(command[2], `"$$REDIS_PASSWORD"`) || !strings.HasPrefix(command[2], "exec docker-entrypoint.sh redis-server ") {
+		t.Error("redis command must exec docker-entrypoint.sh redis-server with the quoted runtime password")
 	}
 	if redisService.Environment["REDIS_PASSWORD"] != "${REDIS_PASSWORD:-}" {
 		t.Error("redis environment must forward REDIS_PASSWORD")

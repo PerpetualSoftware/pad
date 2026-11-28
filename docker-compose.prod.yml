@@ -56,11 +56,14 @@ services:
     # keyspace is small — a few hundred bytes per connected session plus
     # two counters — so there is nothing to gain by evicting it. See
     # docs/deployment.md's Redis configuration notes.
-    # The shell reads the password from the environment so quotes and spaces stay one argument.
+    # The shell reads the password from the environment so quotes and spaces
+    # stay one argument. It then hands off to the image entrypoint with
+    # redis-server first, which is what makes the entrypoint drop root and
+    # chown the data directory.
     command:
       - sh
       - -c
-      - exec redis-server --maxmemory 128mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"
+      - exec docker-entrypoint.sh redis-server --maxmemory 128mb --maxmemory-policy noeviction --requirepass "$$REDIS_PASSWORD"
     healthcheck:
       # Override the base healthcheck to authenticate when REDIS_PASSWORD is set.
       # redis-cli reads REDISCLI_AUTH automatically for authentication.
