@@ -20,29 +20,29 @@ describe('createChangeContext (BUG-2872)', () => {
 
 	it('resolves an id in the declared collection', () => {
 		localIndexMock.findByIdOrSlug.mockReturnValue(row());
-		const ctx = createChangeContext(() => 'ws', () => undefined);
+		const ctx = createChangeContext(() => 'ws', () => undefined, () => collectionStoreMock.collections);
 		expect(ctx.resolveRow(ID, 'people')?.title).toBe('Ada');
 		expect(localIndexMock.findByIdOrSlug).toHaveBeenCalledWith('ws', ID);
 	});
 
 	it('does NOT take a row from another collection than the field declares', () => {
 		localIndexMock.findByIdOrSlug.mockReturnValue(row({ collection_slug: 'tasks' }));
-		const ctx = createChangeContext(() => 'ws', () => undefined);
+		const ctx = createChangeContext(() => 'ws', () => undefined, () => collectionStoreMock.collections);
 		expect(ctx.resolveRow(ID, 'people')).toBeNull();
 	});
 
 	it('does NOT resolve by slug (a relation stores an id)', () => {
 		localIndexMock.findByIdOrSlug.mockReturnValue(row());
-		const ctx = createChangeContext(() => 'ws', () => undefined);
+		const ctx = createChangeContext(() => 'ws', () => undefined, () => collectionStoreMock.collections);
 		expect(ctx.resolveRow('ada', 'people')).toBeNull();
 	});
 
 	it('is ready only when the workspace index is', () => {
-		const ctx = createChangeContext(() => 'ws', () => undefined);
+		const ctx = createChangeContext(() => 'ws', () => undefined, () => collectionStoreMock.collections);
 		localIndexMock.bootstrapStateFor.mockReturnValue('cold');
 		expect(ctx.indexReady()).toBe(false);
 		localIndexMock.bootstrapStateFor.mockReturnValue('ready');
 		expect(ctx.indexReady()).toBe(true);
-		expect(createChangeContext(() => '', () => undefined).indexReady()).toBe(false);
+		expect(createChangeContext(() => '', () => undefined, () => collectionStoreMock.collections).indexReady()).toBe(false);
 	});
 });

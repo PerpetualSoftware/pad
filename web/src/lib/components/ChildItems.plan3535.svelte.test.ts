@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { page } from '$app/state';
+
+// A workspace route, so the workspace scope these components read forwards
+// to the mocked global stores (TASK-4902).
+page.params = { username: 'u', workspace: 'ws-1' };
 
 // PLAN-3535: a child of a REFERENCE collection (tracks_work: false) is listed
 // in its own References group, outside the status groups, with no done

@@ -7,11 +7,12 @@
 // workspace activity page) and handed DOWN to the timeline components, which
 // import no stores themselves: the collection store registers an identity
 // listener at module scope, so importing it into the leaves pulls a real store
-// into every timeline test that mocks auth.
+// into every timeline test that mocks auth. The owner passes its collection
+// list too, so an item pane on home resolves against the item's own workspace
+// (TASK-4902).
 import type { FieldDef, ItemIndexRow } from '$lib/types';
 import { narrowRelationRow } from '$lib/collections/relationGroups';
 import { localIndex } from '$lib/stores/localIndex.svelte';
-import { collectionStore } from '$lib/stores/collections.svelte';
 
 export interface ChangeContext {
 	/** The changed key's field definition, when the collection declares it. */
@@ -25,13 +26,14 @@ export interface ChangeContext {
 export function createChangeContext(
 	wsSlug: () => string,
 	fieldFor: (key: string) => FieldDef | undefined,
+	collections: () => readonly { slug: string }[],
 ): ChangeContext {
 	return {
 		fieldFor,
 		resolveRow(id, declaredCollection) {
 			const ws = wsSlug();
 			if (!ws) return null;
-			const known = new Set(collectionStore.collections.map((c) => c.slug));
+			const known = new Set(collections().map((c) => c.slug));
 			return narrowRelationRow(localIndex.findByIdOrSlug(ws, id), id, declaredCollection, known);
 		},
 		indexReady() {

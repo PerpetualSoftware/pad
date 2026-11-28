@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
 import type { TimelineResponse } from '$lib/types';
+import { page } from '$app/state';
+
+// A workspace route, so the workspace scope these components read forwards
+// to the mocked global stores (TASK-4902).
+page.params = { username: 'u', workspace: 'ws' };
 
 /**
  * BUG-3252. Deleting a comment that has replies used to fail the parent_id

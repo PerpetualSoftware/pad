@@ -5,7 +5,7 @@
 	import { createThrottledRefresh } from '$lib/utils/throttledRefresh';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { confirmDialog } from '$lib/stores/confirmDialog.svelte';
-	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import type { TimelineEntry, TimelineResponse, Item } from '$lib/types';
 	import { attachmentRefsIn } from '$lib/utils/commentAttachments';
 	import {
@@ -45,7 +45,7 @@
 		onRestore?: (item: Item) => void;
 		/**
 		 * itemId + collectionId let the timeline answer
-		 * `workspaceStore.canEditItem(...)` for write-affordance gating.
+		 * the workspace scope's `canEditItem(...)` for write-affordance gating.
 		 * Optional — when missing, the composer / reply / reaction / delete
 		 * controls fall back to "no edit" (PLAN-1100 / TASK-1107). The slug
 		 * page already has the full item, so always passes both.
@@ -145,6 +145,7 @@
 	}
 
 	let { wsSlug, username = '', itemSlug, currentContent, currentContentStale = false, items = [], onRestore, itemId, collectionId, frozen = false, restoreFrozen = false, flushBeforeRestore, visibleKinds, hostToken = '', parentArchived = false, feed = $bindable(), fetchKinds, headless = false, title = 'Timeline', emptyLabel = 'No timeline entries yet.' }: Props = $props();
+	const scope = workspaceScope();
 
 	// Resolve canEditItem reactively; falls to false if itemId/collectionId
 	// aren't supplied (e.g. an older caller). Folds in the master-freeze gate
@@ -153,7 +154,7 @@
 	let canEdit = $derived(
 		!frozen &&
 		(itemId && collectionId
-			? workspaceStore.canEditItem({ id: itemId, collection_id: collectionId })
+			? scope.canEditItem({ id: itemId, collection_id: collectionId })
 			: false)
 	);
 

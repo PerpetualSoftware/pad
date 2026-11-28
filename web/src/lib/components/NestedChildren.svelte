@@ -3,7 +3,7 @@
 	import type { Item, PaneTarget } from '$lib/types';
 	import { parseFields, formatItemRef } from '$lib/types';
 	import { childRowState, countChildProgress, isReferenceChild } from '$lib/collections/childProgress';
-	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { collectionsNotStaleFor, categoricalValueFor } from '$lib/collections/categoricalFieldValue';
 	import { shouldOpenInPane } from './collections/itemCardClick';
 
@@ -23,6 +23,7 @@
 	}
 
 	let { wsSlug, username = '', parentRef, depth = 1, maxDepth = 3, onOpenTarget }: Props = $props();
+	const scope = workspaceScope();
 
 
 	let children = $state<Item[]>([]);
@@ -62,7 +63,7 @@
 	// default lists, as the server does with no context). The per-row done
 	// styling below asks the same hub, so a row and the count agree.
 	let childCollections = $derived(
-		collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
+		collectionsNotStaleFor(scope.collectionsWorkspace, wsSlug) ? (scope.collections ?? []) : []
 	);
 	let counts = $derived(countChildProgress(children, childCollections));
 
@@ -92,10 +93,10 @@
 		{#each children as child (child.id)}
 			{@const fields = parseFields(child)}
 			<!-- Per CHILD, from the child's own collection (BUG-3067) — see the
-			     note in ChildItems. No prop threading was needed: `collectionStore`
-			     is a singleton and the row already carries its `collection_slug`,
+			     note in ChildItems. No prop threading was needed: the workspace scope
+			     is in context and the row already carries its `collection_slug`,
 			     which is why this site turned out to be the cheap half after all. -->
-			{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
+			{@const priority = categoricalValueFor(scope.collections, child, 'priority', fields.priority, collectionsNotStaleFor(scope.collectionsWorkspace, wsSlug))}
 			{@const isDone = !isReferenceChild(child, childCollections) && childRowState(child, childCollections) === 'done'}
 			{@const isExpanded = expandedIds.has(child.id)}
 			{@const canExpand = child.has_children && depth < maxDepth}

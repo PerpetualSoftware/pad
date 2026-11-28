@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { flushSync, mount, unmount, tick } from 'svelte';
+import { page } from '$app/state';
+
+// A workspace route, so the workspace scope these components read forwards
+// to the mocked global stores (TASK-4902).
+page.params = { username: 'u', workspace: 'ws' };
 
 // BUG-3195: the nested x/y count is a per-row progress count, so an abandoned
 // grandchild leaves both numbers, and 0/0 shows nothing. Mounts the REAL

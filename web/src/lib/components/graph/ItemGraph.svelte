@@ -14,7 +14,7 @@
 
 	import { onMount, untrack } from 'svelte';
 	import { api } from '$lib/api/client';
-	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { categoricalValueForSlug, collectionsNotStaleFor } from '$lib/collections/categoricalFieldValue';
 	import type { GraphEdge, GraphNode, GraphResponse, PaneTarget } from '$lib/types';
 	import { createCollectionColorMap } from '$lib/graph/palette';
@@ -45,6 +45,7 @@
 		 */
 		onOpenTarget?: (target: PaneTarget) => void;
 	} = $props();
+	const scope = workspaceScope();
 
 	// ── Fixed layout geometry ────────────────────────────────────────────────────
 	const NODE_W = 212;
@@ -904,7 +905,7 @@
 			<!-- The node is a server projection carrying no schema, but it carries
 			     its collection slug, which is all the question needs (BUG-3067): a
 			     `status` retyped to a relation printed its stored id in this panel. -->
-			{@const selStatus = categoricalValueForSlug(collectionStore.collections, sel.collection, 'status', sel.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, workspace))}
+			{@const selStatus = categoricalValueForSlug(scope.collections, sel.collection, 'status', sel.status, collectionsNotStaleFor(scope.collectionsWorkspace, workspace))}
 			<div class="detail-card" role="group" aria-label="Item details">
 				<div class="detail-head">
 					<span class="detail-ref">{sel.ref}</span>

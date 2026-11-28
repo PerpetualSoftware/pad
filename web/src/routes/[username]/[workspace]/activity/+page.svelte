@@ -7,6 +7,7 @@
 	import { collapseReorderBatches, type CollapsedActivity } from '$lib/activity/reorderBatches';
 	import { api } from '$lib/api/client';
 	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { collectionStore } from '$lib/stores/collections.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { enterWorkspaceIndex } from '$lib/stores/workspaceIndexEntry';
 	import { titleStore } from '$lib/stores/title.svelte';
@@ -44,7 +45,7 @@
 	);
 	let changeContexts = $derived(
 		new Map<string, ChangeContext>(
-			[...fieldsBySlug].map(([slug, fields]) => [slug, createChangeContext(() => wsSlug, (key) => fields.get(key))]),
+			[...fieldsBySlug].map(([slug, fields]) => [slug, createChangeContext(() => wsSlug, (key) => fields.get(key), () => collectionStore.collections)]),
 		),
 	);
 	let loading = $state(true);
