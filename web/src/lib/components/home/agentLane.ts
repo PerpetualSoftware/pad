@@ -15,6 +15,12 @@ export interface LaneView {
 	mode: 'top' | 'line' | null;
 }
 
+/** The item page path, or null when any part is unknown. */
+export function itemHref(owner: string | undefined, workspace: string, collection: string, ref: string): string | null {
+	const parts = [owner, workspace, collection, ref];
+	return parts.every(Boolean) ? `/${parts.map(part => encodeURIComponent(part!)).join('/')}` : null;
+}
+
 /** Where the server puts the line within the returned prefix. */
 export function serverLine(lane: RoleQueueResponse): number | null {
 	const park = lane.park;
