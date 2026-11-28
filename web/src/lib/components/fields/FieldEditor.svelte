@@ -28,8 +28,7 @@ handlers — onchange is never called.
 		relationValuesOf,
 	} from '$lib/items/relationFieldTypes';
 	import { WriteOrder } from '$lib/items/fieldWriteOrder';
-	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import { api } from '$lib/api/client';
@@ -110,6 +109,7 @@ handlers — onchange is never called.
 	}
 
 	let { field, value: storedValue, onchange, readonly = false, ariaLabel, wsSlug, username = '', onOpenTarget, itemId }: Props = $props();
+	const scope = workspaceScope();
 	// Stable per-instance id for the ARIA links below (TASK-2216).
 	const fieldId = $props.id();
 
@@ -409,8 +409,8 @@ handlers — onchange is never called.
 	 * broken state on first paint.
 	 */
 	let knownCollectionSlugs = $derived.by((): Set<string> | null => {
-		if (!wsSlug || !collectionStore.collectionsAreFreshFor(wsSlug)) return null;
-		return new Set((collectionStore.collections ?? []).map((c) => c.slug));
+		if (!wsSlug || !scope.collectionsAreFreshFor(wsSlug)) return null;
+		return new Set((scope.collections ?? []).map((c) => c.slug));
 	});
 
 	let relationTarget = $derived.by((): 'live' | 'stale' | 'unknown' => {
@@ -566,7 +566,7 @@ handlers — onchange is never called.
 	// list does not know yields `null` here and therefore no create row, because
 	// "no answer" must not read as "allowed".
 	// FRESHNESS, for the same reason `knownCollectionSlugs` has it:
-	// `collectionStore.collections` is one global list, so during a
+	// the scope's collections are, on a workspace route, one global list, so during a
 	// workspace switch it still holds the PREVIOUS workspace's rows. A slug
 	// match against those yields another workspace's collection ID, and asking
 	// `canEditCollection` about that ID is asking the wrong question — it can
@@ -574,11 +574,11 @@ handlers — onchange is never called.
 	// collection at all.
 	let targetCollection = $derived.by(() => {
 		if (!isRelation || !field.collection || !wsSlug) return null;
-		if (!collectionStore.collectionsAreFreshFor(wsSlug)) return null;
-		return (collectionStore.collections ?? []).find((c) => c.slug === field.collection) ?? null;
+		if (!scope.collectionsAreFreshFor(wsSlug)) return null;
+		return (scope.collections ?? []).find((c) => c.slug === field.collection) ?? null;
 	});
 	let canCreateInTarget = $derived(
-		!!targetCollection && workspaceStore.canEditCollection(targetCollection.id),
+		!!targetCollection && scope.canEditCollection(targetCollection.id),
 	);
 
 	/**

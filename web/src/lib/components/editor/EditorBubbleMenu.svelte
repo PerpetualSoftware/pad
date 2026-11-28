@@ -9,7 +9,7 @@
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
-	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { toBlockquote } from '$lib/utils/markdown';
 
 	let {
@@ -43,6 +43,7 @@
 		 */
 		onComment?: (markdown: string) => boolean;
 	} = $props();
+	const scope = workspaceScope();
 
 	let visible = $state(false);
 	let menuX = $state(0);
@@ -66,7 +67,7 @@
 	// editable says nothing about the TARGET collection, and the server refuses
 	// a create there.
 	let sortedCollections = $derived.by(() => {
-		const creatable = collections.filter((c) => workspaceStore.canEditCollection(c.id));
+		const creatable = collections.filter((c) => scope.canEditCollection(c.id));
 		const normal = creatable.filter((c) => !isAgentCollection(c));
 		const agent = creatable.filter((c) => isAgentCollection(c));
 		return [...normal, ...agent];
@@ -239,7 +240,7 @@
 		}
 		// Permission can change while the form is open (BUG-3258); the form keeps the slug it was
 		// opened with.
-		if (!workspaceStore.canEditCollection(coll.id)) {
+		if (!scope.canEditCollection(coll.id)) {
 			errorMsg = `You can't create items in ${coll.name}`;
 			creating = false;
 			return;

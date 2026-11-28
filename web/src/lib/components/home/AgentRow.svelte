@@ -21,6 +21,8 @@
 	import MenuItem from '$lib/components/common/MenuItem.svelte';
 	import { LINE, age, boundLane, doNextOrder, fromTokens, itemHref, laneView, lineLabel, lineRequest, moveToken, parkedLabel, planLane, stepOrder, tokens, type LaneView } from './agentLane';
 	import type { AgentRole, MeAgent, RoleParkRequest, RoleQueueItem, RoleQueueResponse } from '$lib/types';
+	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
+	import { homePaneKey, type HomePaneTarget } from './homePane';
 
 	interface Props {
 		agent: MeAgent;
@@ -30,8 +32,18 @@
 		ontoggle: () => void;
 		/** Hold live refreshes while a drag or write is in flight; the release refetches. */
 		hold: () => (refresh?: boolean) => void;
+		/** Open a ref in the home item pane (desktop, TASK-4902); unset, refs navigate. */
+		onopenitem?: (target: HomePaneTarget) => void;
 	}
-	let { agent, zone, compact = false, expanded, ontoggle, hold }: Props = $props();
+	let { agent, zone, compact = false, expanded, ontoggle, hold, onopenitem }: Props = $props();
+
+	// A plain primary click opens the pane; modifier and middle clicks, and the
+	// phone layout, keep the link's own navigation.
+	function openRef(e: MouseEvent, target: HomePaneTarget) {
+		if (compact || !onopenitem || !shouldOpenInPane(e, true)) return;
+		e.preventDefault();
+		onopenitem(target);
+	}
 
 	const lanes = $derived(agent.lanes);
 	const nowItems = $derived(lanes.flatMap(lane => lane.now.map(item => ({ lane, item }))));
@@ -327,7 +339,7 @@
 
 {#snippet refLink(owner: string, workspace: string, collection: string, ref: string)}
 	{@const href = itemHref(owner, workspace, collection, ref)}
-	{#if href}<a class="ref" {href} draggable="false">{ref}</a>{:else}<span class="ref">{ref}</span>{/if}
+	{#if href}<a class="ref" {href} draggable="false" data-pane-key={homePaneKey(owner, workspace, ref)} onclick={(e) => openRef(e, { owner, workspace, collection, ref })}>{ref}</a>{:else}<span class="ref">{ref}</span>{/if}
 {/snippet}
 
 {#snippet lineRule(lane: RoleQueueResponse, view: LaneView)}
@@ -347,7 +359,7 @@
 {/snippet}
 
 <li class="agent" class:open={expanded}>
-	<button type="button" class="strip" aria-expanded={expanded} onclick={ontoggle}>
+	<button type="button" class="strip" aria-expanded={expanded} data-agent-toggle={agent.slug} onclick={ontoggle}>
 		<span class="caret" aria-hidden="true">{expanded ? '▾' : '▸'}</span>
 		<span class="icon" aria-hidden="true">{agent.icon || '🤖'}</span>
 		<span class="name">{agent.name}</span>

@@ -12,6 +12,8 @@
 	import TutorialSuggestion from '$lib/components/tutorials/TutorialSuggestion.svelte';
 	import { showHomeTutorial } from './homeTutorial';
 	import AgentsPanel from './AgentsPanel.svelte';
+	import HomePaneHost from './HomePaneHost.svelte';
+	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import { homeLive } from '$lib/services/homeLive';
 	import { homeOverview } from '$lib/stores/homeOverview.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
@@ -28,6 +30,7 @@
 	import { completedPreferencePrefix, filterEntries, isCompleted, isSnoozed, attentionEntries, deadlineTone, entryKey, isOpenState, dayCounts, outstandingMatches, shiftDay, dayWindow, weekLabel, workOccurrence, roleMarkers, type AgendaAction } from '$lib/calendar/presentation';
 	import type { AgendaResponse, AgendaEntry, AgendaWorkEntry, NeedsRow, NeedsSnoozeRequest } from '$lib/types';
 
+	let paneHost = $state<HomePaneHost | undefined>();
 	let audience = $state<AudienceView>('mine');
 	// The agenda's Show completed preference, per user: hidden there means hidden here.
 	const showCompleted = $derived.by(() => {
@@ -201,7 +204,12 @@
 </script>
 
 <svelte:head><title>Home - Pad</title></svelte:head>
-<div class="home">
+<!-- The home column and, while an item is open, the docked item pane beside it
+     (TASK-4902). A primary click on dead space in the column closes the pane. -->
+<div class="home-row">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+<!-- svelte-ignore a11y_click_events_have_key_events -->
+<div class="home" inert={paneOverlay.mobileOverlayActive} onclick={(e) => paneHost?.dismissOnBackgroundClick(e)}>
 	<header class="greeting">
 		<h1>{greeting}</h1>
 		<div class="summary"><p><span class="summary-date">{`${date} · `}</span><strong>{homeOverview.needs?.total ?? '…'}</strong> need you · <strong>{owed}</strong> owed today · <strong>{pastDeadline}</strong> past deadline</p><a href="/agenda">Open the full agenda →</a></div>
@@ -231,7 +239,8 @@
 			<footer><span>Agents: {agents.length} {agents.length === 1 ? 'reminder' : 'reminders'} today, {agentCounts.owed} owed, {agentCounts.missed} missed</span><a href="/agenda?audience=agents">Agents →</a></footer>
 		</section>
 	</div>
-	<AgentsPanel compact={viewport.isMobile} />
+	<!-- Desktop refs open in the pane; on phones a ref click is the full page. -->
+	<AgentsPanel compact={viewport.isMobile} onopenitem={viewport.isMobile ? undefined : (t) => paneHost?.open(t)} />
 	<section class="workspaces" aria-label="Workspaces">
 		<header>
 			<h2>Workspaces</h2>
@@ -253,7 +262,23 @@
 		{#if showTutorial}<TutorialSuggestion dismissKey="tutorials.console" slug="new-project" fallbackTitle="Start a new project with Pad" />{/if}
 	</section>
 </div>
+<HomePaneHost bind:this={paneHost} />
+</div>
 <style>
+	.home-row { display: flex; align-items: flex-start; }
+	.home-row > .home { flex: 1 1 0; min-width: 0; }
+	/* The docked pane stays in view while the home column scrolls. On phones
+	   PaneHost's own fixed overlay applies instead. */
+	@media (min-width: 769px) {
+		.home-row > :global(.pane-divider) { margin-left: var(--space-4); }
+		.home-row > :global(.item-pane),
+		.home-row > :global(.pane-divider) {
+			position: sticky;
+			top: 0;
+			align-self: flex-start;
+			height: calc(100dvh - var(--topbar-height));
+		}
+	}
 	/* Closing the last tab highlights the way back in (PLAN-3002 Q2). */
 	.workspaces :global(.btn.add-highlighted) { box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 35%, transparent); }
 	.workspaces > header > span { flex: 1; }

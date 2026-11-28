@@ -108,8 +108,8 @@ describe('ItemDetail: a failed same-item links refresh keeps the links it has', 
 		// reported "the strip is broken" when the strip was fine and only the
 		// fix was absent. A control that fails for the wrong reason is not a
 		// control.
-		expect(raw).toContain('isOwner now comes from workspaceStore');
-		expect(code).not.toContain('isOwner now comes from workspaceStore');
+		expect(raw).toContain('Archived ("soft-deleted") items are returned read-only by the API');
+		expect(code).not.toContain('Archived ("soft-deleted") items are returned read-only by the API');
 	});
 
 	it('has no refresh site that swallows a failure into an empty array', () => {

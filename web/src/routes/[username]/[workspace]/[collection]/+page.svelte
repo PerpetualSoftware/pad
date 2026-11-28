@@ -77,6 +77,8 @@
 	import { createPaneMintSettle, PANE_MINT_SETTLE_MS } from '$lib/collections/paneMintSettle';
 	import { pushEscapeHandler, runTopEscape, topEscapePriority, ESCAPE_PRIORITY } from '$lib/stores/escapeStack';
 	import { hasForeignEscapeOwner, isBlockedByModal } from '$lib/a11y/viewerBackdrop';
+	import { isTextEntryTarget } from '$lib/a11y/textEntryTarget';
+	import { dismissPaneOnBackgroundClick as dismissOnBackgroundClick } from '$lib/collections/paneDismiss';
 	import { boardKeyNav, type BoardNavColumn, type BoardNavDirection } from '$lib/collections/boardNav';
 	import { listKeyNav } from '$lib/collections/listNav';
 	import { fieldMatches } from '$lib/fields/fieldShape';
@@ -765,51 +767,11 @@
 		closeItemPane,
 	} = paneController;
 
-	// Click-outside-to-collapse the split pane (IDEA-2148). While the pane is
-	// open on the DESKTOP split, a primary click on genuinely DEAD space in the
-	// list column collapses the pane — the pointer analogue of ESC-to-close.
-	// A click on ANY interactive/meaningful surface (a card, a control, a menu,
-	// the resize divider) belongs to that surface's own handler and must NOT
-	// collapse, so we bail whenever the click lands on — or inside — one; those
-	// handlers run first (bubbling), so re-targeting to another card or firing a
-	// button never races the close. Excluded on mobile: the list column is
-	// `inert` behind the full-screen overlay there so this can't fire anyway,
-	// but the viewport guard makes the intent explicit.
-	//
-	// This is a DENYLIST (bail on interactive) rather than a background
-	// allowlist: interactive elements are semantic and few (anchors, buttons,
-	// form controls, ARIA-roled widgets), so enumerating them is smaller and
-	// more stable than enumerating every background wrapper across list / board
-	// / table. A `[data-pane-keep]` opt-out lets any future non-semantic click
-	// surface exclude itself without editing this list.
-	const PANE_DISMISS_INTERACTIVE =
-		'a, button, input, textarea, select, label, summary, ' +
-		'[role="button"], [role="link"], [role="row"], [role="tab"], ' +
-		'[role="menuitem"], [role="menu"], [role="menuitemradio"], ' +
-		'[role="menuitemcheckbox"], [role="listbox"], [role="option"], ' +
-		'[role="checkbox"], [role="switch"], [role="separator"], ' +
-		'[contenteditable="true"], [draggable="true"], ' +
-		'.item-card, .table-row, .pane-divider, [data-pane-keep]';
-
+	// Click-outside-to-collapse the split pane (IDEA-2148): a primary click on
+	// dead space in the list column closes the desktop pane. The rules live in
+	// `$lib/collections/paneDismiss`, shared with home.
 	function dismissPaneOnBackgroundClick(e: MouseEvent) {
-		// Desktop split pane only.
-		if (!openItemRef || viewport.isMobile) return;
-		// Primary, unmodified click only. Modifier/aux clicks are for
-		// selection, context menus, open-in-new-tab, etc. — not "click away".
-		if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
-		const target = e.target as Element | null;
-		if (!target) return;
-		// A click on any interactive/meaningful surface is that surface's own.
-		if (target.closest(PANE_DISMISS_INTERACTIVE)) return;
-		// A drag that SELECTED text also ends in a `click`; that's a text
-		// selection, not a dismiss.
-		const sel = browser ? window.getSelection() : null;
-		if (sel && !sel.isCollapsed && sel.toString().trim() !== '') return;
-		// A click on the scroll gutter lands on the list column itself but
-		// outside its content box — not a background click.
-		const col = e.currentTarget as HTMLElement | null;
-		if (col && target === col && e.offsetX > col.clientWidth) return;
-		closeItemPane();
+		dismissOnBackgroundClick(e, { open: !!openItemRef, mobile: viewport.isMobile, close: closeItemPane });
 	}
 
 	// Move keyboard focus back to the paned row in the list (TASK-2122). Backs
@@ -3325,26 +3287,6 @@
 				if (pendingFollow === issued) pendingFollow = null;
 			}, PANE_FOLLOW_SETTLE_MS);
 		}, PANE_FOLLOW_DEBOUNCE_MS);
-	}
-
-	// Is the focused target a text-editing context where ESC has LOCAL meaning
-	// (cancel a title edit, dismiss a tag-input dropdown, the Tiptap editor)?
-	// The escape stack must NOT hijack ESC away from these. NON-text form
-	// controls (SELECT, checkbox, radio, button, range, …) have no local ESC
-	// semantics, so ESC from them is free to dismiss an overlay via the stack —
-	// e.g. the graph drawer's depth <select> / "include terminal" checkbox
-	// (PLAN-2105 / TASK-2118). Unknown input types default to "text" (treated
-	// as text-editing) so we err toward preserving local handling.
-	const NON_TEXT_INPUT_TYPES = new Set([
-		'checkbox', 'radio', 'button', 'submit', 'reset', 'range', 'color', 'file', 'image',
-	]);
-	function isTextEntryTarget(el: HTMLElement | null | undefined): boolean {
-		if (!el) return false;
-		if (el.isContentEditable) return true;
-		const tag = el.tagName;
-		if (tag === 'TEXTAREA') return true;
-		if (tag === 'INPUT') return !NON_TEXT_INPUT_TYPES.has((el as HTMLInputElement).type);
-		return false;
 	}
 
 	// Board keyboard nav (PLAN-2105 / TASK-2119): step the focus over the

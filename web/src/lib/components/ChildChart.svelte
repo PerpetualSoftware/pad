@@ -2,7 +2,7 @@
 	import { safeText } from '$lib/fields/fieldShape';
 	import type { Item } from '$lib/types';
 	import { countedChildren, isChildDone } from '$lib/collections/childProgress';
-	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { collectionsNotStaleFor } from '$lib/collections/categoricalFieldValue';
 	import { buildBurndown } from './childChart';
 
@@ -16,6 +16,7 @@
 	}
 
 	let { children, startDate, endDate, wsSlug }: Props = $props();
+	const scope = workspaceScope();
 
 	// The parent's `start_date` / `end_date` are stored field values, typed
 	// `string` here but not guaranteed to be one (BUG-3052). `new Date` threw on a
@@ -29,7 +30,7 @@
 	// values. An abandoned child is not part of the work any more and leaves
 	// the burndown entirely (BUG-3195).
 	const collections = $derived(
-		collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
+		collectionsNotStaleFor(scope.collectionsWorkspace, wsSlug) ? (scope.collections ?? []) : []
 	);
 
 	// Chart dimensions

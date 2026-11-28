@@ -123,6 +123,11 @@ vi.mock('$lib/stores/auth.svelte', () => ({
 
 
 import ItemDetail from '$lib/components/items/ItemDetail.svelte';
+import { page } from '$app/state';
+
+// A workspace route, so the workspace scope these components read forwards
+// to the mocked global stores (TASK-4902).
+page.params = { username: 'u', workspace: 'ws' };
 
 beforeEach(() => {
 	nav.guards.length = 0;

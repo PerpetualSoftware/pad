@@ -451,3 +451,59 @@ it('the row still drags by its handle with links in it', async () => {
 	await fireEvent.dragStart(row);
 	expect(hold).toHaveBeenCalledTimes(1);
 });
+
+// TASK-4902: on desktop home a plain click on a ref opens the item in the pane.
+it('a plain click on a ref calls onopenitem with its owner, workspace, collection and ref, and is default-prevented', async () => {
+	const onopenitem = vi.fn();
+	h.agents.mockResolvedValue(withFinished());
+	render(AgentsPanel, { onopenitem });
+	await settle();
+	await fireEvent.click(screen.getByRole('button', { name: /Implementer/, expanded: false }));
+	await settle();
+	const seen = trapNavigation();
+	const padLane = screen.getByRole('region', { name: 'Implementer in Pad' });
+	for (const name of ['TASK-9', 'TASK-1', 'BUG-7']) {
+		const link = within(padLane).getByRole('link', { name });
+		expect(link).toHaveAttribute('data-pane-key', `mara/pad/${name}`);
+		link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+	}
+	expect(seen).toEqual([true, true, true]);
+	expect(onopenitem.mock.calls.map(([t]) => t)).toEqual([
+		{ owner: 'mara', workspace: 'pad', collection: 'bugs', ref: 'TASK-9' },
+		{ owner: 'mara', workspace: 'pad', collection: 'bugs', ref: 'TASK-1' },
+		{ owner: 'mara', workspace: 'pad', collection: 'bugs', ref: 'BUG-7' },
+	]);
+	expect(screen.getByRole('button', { name: /Implementer/, expanded: true })).toHaveAttribute('data-agent-toggle', 'impl');
+	expect(screen.getByRole('region', { name: 'Agents' })).toHaveAttribute('tabindex', '-1');
+});
+
+it('a modified click on a ref is left to the browser even with onopenitem', async () => {
+	const seen = trapNavigation();
+	const onopenitem = vi.fn();
+	const a = withFinished();
+	render(AgentRow, { agent: a.agents[0], zone: 'UTC', expanded: true, ontoggle: vi.fn(), hold: vi.fn(() => vi.fn()), onopenitem });
+	await settle();
+	const link = within(screen.getByRole('region', { name: 'Implementer in Pad' })).getByRole('link', { name: 'TASK-2' });
+	for (const init of [{ metaKey: true }, { ctrlKey: true }, { shiftKey: true }, { altKey: true }, { button: 1 }]) {
+		link.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, ...init }));
+	}
+	expect(seen).toEqual([false, false, false, false, false]);
+	expect(onopenitem).not.toHaveBeenCalled();
+});
+
+it('no interception when compact or without onopenitem', async () => {
+	const seen = trapNavigation();
+	const onopenitem = vi.fn();
+	const a = withFinished();
+	render(AgentRow, { agent: a.agents[0], zone: 'UTC', compact: true, expanded: true, ontoggle: vi.fn(), hold: vi.fn(() => vi.fn()), onopenitem });
+	await settle();
+	within(screen.getByRole('region', { name: 'Implementer in Pad' })).getByRole('link', { name: 'TASK-1' })
+		.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+	cleanup();
+	renderRow();
+	await settle();
+	within(screen.getByRole('region', { name: 'Implementer in Pad' })).getByRole('link', { name: 'TASK-1' })
+		.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, button: 0 }));
+	expect(seen).toEqual([false, false]);
+	expect(onopenitem).not.toHaveBeenCalled();
+});

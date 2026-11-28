@@ -6,7 +6,7 @@
 	import { sseService } from '$lib/services/sse.svelte';
 	import { syncService } from '$lib/services/sync.svelte';
 	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { authStore } from '$lib/stores/auth.svelte';
 	import { toastStore } from '$lib/stores/toast.svelte';
 	import { titleLimitError } from '$lib/items/titleLimit';
@@ -91,12 +91,14 @@
 
 	let { wsSlug, username = '', itemSlug, itemId, parentFields, onChildrenChange, canEdit = true, frozen = false, selfDirty = false, selfLastSaveTime = 0, onOpenTarget, progress }: Props = $props();
 
+	const scope = workspaceScope();
+
 	// The collections each child is judged by (its own done field, terminal
 	// and abandoned values, and whether it tracks work). A store stamped for
 	// another workspace is not consulted: every child then counts as work,
 	// judged by the default lists, as the server does with no context.
 	let childCollections = $derived(
-		collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug) ? (collectionStore.collections ?? []) : []
+		collectionsNotStaleFor(scope.collectionsWorkspace, wsSlug) ? (scope.collections ?? []) : []
 	);
 
 	let children = $state<Item[]>([]);
@@ -224,7 +226,7 @@
 	// group never shows an order the server did not store.
 	async function persistChildOrder(lane: Item[], movedId?: string) {
 		// The moved child is written alone when that is enough (TASK-3525).
-		const plan = planLaneOrder(lane, (c) => workspaceStore.canEditItem(c), movedId);
+		const plan = planLaneOrder(lane, (c) => scope.canEditItem(c), movedId);
 		if (!plan.ok) {
 			toastStore.show("Couldn't keep that order: an item you can only view is in the way.", 'error');
 			void loadChildren();
@@ -457,10 +459,10 @@
 	}
 
 	let eligibleCollections = $derived(
-		collectionStore.collections.filter(
+		scope.collections.filter(
 			(c) =>
 				!c.is_system &&
-				workspaceStore.canEditCollection(c.id) &&
+				scope.canEditCollection(c.id) &&
 				!reservedParentKey(c) &&
 				!requiredNoDefault(c)
 		)
@@ -470,9 +472,9 @@
 
 	// DR-2: link is authorized by the SOURCE child, so any member who can
 	// edit SOME item (role owner/editor, or an item/collection edit grant)
-	// may reparent — there is no `workspaceStore.role`; read the membership.
+	// may reparent — there is no role getter; read the membership.
 	let canLinkExisting = $derived.by(() => {
-		const m = workspaceStore.currentMembership;
+		const m = scope.currentMembership;
 		return (
 			!!m &&
 			(m.role === 'owner' ||
@@ -536,7 +538,7 @@
 			(r) =>
 				r.id !== itemId &&
 				!children.some((c) => c.id === r.id) &&
-				workspaceStore.canEditItem(r)
+				scope.canEditItem(r)
 		)
 	);
 
@@ -985,10 +987,10 @@
 						     declared type of `priority` is a per-child question — and
 						     until now nothing asked it at all, so a `priority` retyped
 						     to a relation printed its stored item id. This component
-						     already had `collectionStore` and `parseSchema` for the
+						     already had the scope's collections and `parseSchema` for the
 						     collection PICKER; what it lacked was asking them about the
 						     row it was drawing. -->
-						{@const priority = categoricalValueFor(collectionStore.collections, child, 'priority', fields.priority, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
+						{@const priority = categoricalValueFor(scope.collections, child, 'priority', fields.priority, collectionsNotStaleFor(scope.collectionsWorkspace, wsSlug))}
 						{@const isDone = childRowState(child, childCollections) === 'done'}
 						{@const isExpanded = expandedIds.has(child.id)}
 						{@const canExpand = child.has_children}
@@ -996,8 +998,8 @@
 						     dragged, though the list allows it (BUG-3259). -->
 						<div
 							class="child-item-wrapper"
-							class:drag-locked={!workspaceStore.canEditItem(child)}
-							data-drag-locked={!workspaceStore.canEditItem(child)}
+							class:drag-locked={!scope.canEditItem(child)}
+							data-drag-locked={!scope.canEditItem(child)}
 						>
 							<div class="child-row-container">
 								{#if canExpand}
@@ -1020,7 +1022,7 @@
 								</a>
 								<!-- Per child as well (BUG-3259): an item grant can make a
 								     child view-only under a parent the caller may edit. -->
-								{#if canEdit && !frozen && workspaceStore.canEditItem(child)}
+								{#if canEdit && !frozen && scope.canEditItem(child)}
 									<ItemActionsMenu
 										item={child}
 										label={child.title}
@@ -1045,7 +1047,7 @@
 				<div class="group-label">References ({split.reference.length})</div>
 				<div class="child-list">
 					{#each split.reference as child (child.id)}
-						{@const refStatus = categoricalValueFor(collectionStore.collections, child, 'status', parseFields(child).status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
+						{@const refStatus = categoricalValueFor(scope.collections, child, 'status', parseFields(child).status, collectionsNotStaleFor(scope.collectionsWorkspace, wsSlug))}
 						<div class="child-item-wrapper">
 							<div class="child-row-container">
 								<a href="/{username}/{wsSlug}/{child.collection_slug}/{child.slug}" class="child-row" onclick={(e) => handleChildClick(e, child)}>
@@ -1080,7 +1082,7 @@
 				     view draws `status` where the interactive rows draw `priority`,
 				     so a sweep that stopped at the first hit in each file missed it
 				     (BUG-3067). -->
-				{@const printStatus = categoricalValueFor(collectionStore.collections, child, 'status', childFields.status, collectionsNotStaleFor(collectionStore.collectionsWorkspace, wsSlug))}
+				{@const printStatus = categoricalValueFor(scope.collections, child, 'status', childFields.status, collectionsNotStaleFor(scope.collectionsWorkspace, wsSlug))}
 				{@const isDone = childRowState(child, childCollections) === 'done'}
 				<li class="print-child-row" class:done={isDone}>
 					<span class="print-check">{isDone ? '[x]' : '[ ]'}</span>

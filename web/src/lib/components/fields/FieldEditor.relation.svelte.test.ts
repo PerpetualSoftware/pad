@@ -55,6 +55,11 @@ vi.mock('$lib/stores/workspace.svelte', () => ({ workspaceStore: workspaceStoreM
 vi.mock('$lib/stores/toast.svelte', () => ({ toastStore: toastMock }));
 
 import FieldEditor from './FieldEditor.svelte';
+import { page } from '$app/state';
+
+// A workspace route, so the workspace scope these components read forwards
+// to the mocked global stores (TASK-4902).
+page.params = { username: 'u', workspace: 'ws' };
 
 const LIVE = { id: '0197aaaa-0000-7000-8000-000000000007', title: 'Red', item_number: 3, collection_prefix: 'COLO', collection_slug: 'colors', slug: 'red', deleted_at: null };
 const GONE = { ...LIVE, id: '0197aaaa-0000-7000-8000-000000000005', title: 'Retired Blue', item_number: 4, slug: 'retired-blue', deleted_at: '2026-01-01T00:00:00Z' };

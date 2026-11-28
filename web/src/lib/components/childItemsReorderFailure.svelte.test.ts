@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { flushSync, mount, unmount } from 'svelte';
+import { page } from '$app/state';
+
+// A workspace route, so the workspace scope these components read forwards
+// to the mocked global stores (TASK-4902).
+page.params = { username: 'u', workspace: 'ws-1' };
 
 // TASK-2205 (audit C42): a child reorder whose writes do not land reloads the
 // real order (BUG-3259), and now says why. Before, the order snapped back with

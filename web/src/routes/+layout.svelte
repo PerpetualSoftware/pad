@@ -29,6 +29,7 @@
 	import { lastWorkspace } from '$lib/stores/lastWorkspace.svelte';
 	import { pickShellWorkspace } from '$lib/stores/shellWorkspace';
 	import { collectionStore } from '$lib/stores/collections.svelte';
+	import { paneOverlay } from '$lib/stores/paneOverlay.svelte';
 	import Sidebar from '$lib/components/layout/Sidebar.svelte';
 	import TopBar from '$lib/components/layout/TopBar.svelte';
 	import ChatHost from '$lib/components/chat/ChatHost.svelte';
@@ -445,14 +446,20 @@
 {:else if (isConsolePage || isMessagesPage) && uiStore.isMobile}
 	<!-- Phone You pages and standalone messages keep the document scroller.
 	     The header, chat host, search palette and bar sit outside covered content. -->
-	{#if isConsolePage}<MobileYouBar />{/if}
+	<!-- Inert behind the item pane's phone overlay on home (TASK-4902), as the
+	     workspace layout inerts its chrome. -->
+	<div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
+		{#if isConsolePage}<MobileYouBar />{/if}
+	</div>
 	<main class="main-content" inert={coveredPage.active}>
 		{@render children()}
 	</main>
 	<ChatHost />
 	<CommandPalette />
 	<!-- The compact phone bar: a sibling of the host, outside the inert wrapper above, so it stays live under the Chat sheet. -->
-	<GlobalBottomBar />
+	<div style="display: contents" inert={paneOverlay.mobileOverlayActive}>
+		<GlobalBottomBar />
+	</div>
 	<CreateWorkspaceModal
 		onWorkspaceCreated={(ws) => uiStore.requestConnectAfterNavigate(ws.slug)}
 	/>

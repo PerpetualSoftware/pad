@@ -18,6 +18,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { mount, unmount, flushSync } from 'svelte';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
+import { page } from '$app/state';
+
+// A workspace route, so the workspace scope these components read forwards
+// to the mocked global stores (TASK-4902).
+page.params = { username: 'u', workspace: 'ws' };
 
 vi.mock('$lib/api/client', () => ({
 	api: { items: { create: vi.fn() } },

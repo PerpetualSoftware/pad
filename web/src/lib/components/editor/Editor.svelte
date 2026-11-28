@@ -13,7 +13,6 @@
 <script lang="ts">
 	import { promptOnPlanLimit, PLAN_LIMIT_PROMPTED } from '$lib/billing/planLimitToast';
 	import { onMount, onDestroy, untrack } from 'svelte';
-	import { page } from '$app/state';
 	import { Editor } from '@tiptap/core';
 	import { Plugin } from '@tiptap/pm/state';
 	import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
@@ -559,8 +558,7 @@
 	import { Markdown } from 'tiptap-markdown';
 	import { unescapeDocLinks } from '$lib/utils/markdown';
 	import { formatItemRef, itemUrlId, type Item } from '$lib/types';
-	import { collectionStore } from '$lib/stores/collections.svelte';
-	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { localIndex } from '$lib/stores/localIndex.svelte';
 	import { viewport } from '$lib/stores/breakpoint.svelte';
 	import { uiStore } from '$lib/stores/ui.svelte';
@@ -699,6 +697,8 @@
 		 */
 		onImportInserted?: (meta: ImportURLResponse, ctx: InsertContext) => void;
 	} = $props();
+	// The item's workspace: attachment URLs and `[[` link targets (TASK-4902).
+	const scope = workspaceScope();
 
 	let element = $state<HTMLDivElement>();
 	let editor = $state<Editor | null>(null);
@@ -900,11 +900,11 @@
 	function getFilteredLinks() {
 		// Pull link targets from the shared local-first read model (the
 		// same source the detail page resolves wiki-links from), NOT
-		// collectionStore.items — that slot is only populated by the
+		// the collection store's items — that slot is only populated by the
 		// legacy full-content loadItems() path, which the detail page no
 		// longer calls. localIndex carries every workspace item (skinny,
 		// no body) and is already hydrated on these routes.
-		const wsSlug = page.params.workspace ?? workspaceStore.current?.slug ?? '';
+		const wsSlug = scope.slug;
 		const items = localIndex.getAll(wsSlug);
 		if (!linkQuery) return items.slice(0, 10);
 		const q = linkQuery.toLowerCase();
@@ -925,11 +925,12 @@
 		if (!editor || !editor.isEditable) return;
 		// Build the URL in the same shape wikiLinksToMarkdown produces so the
 		// save round-trip (markdownToWikiLinks) reliably converts it back to
-		// [[Title]]. We read from the live route params (not workspaceStore)
-		// because that's what the slug page uses when converting wiki-links —
-		// keeping the two in sync is what lets the round-trip work.
-		const routeUsername = page.params.username ?? '';
-		const routeWorkspace = page.params.workspace ?? workspaceStore.current?.slug ?? '';
+		// [[Title]]. We read the workspace scope, which on a workspace route is
+		// the live route params, because that's what the slug page uses when
+		// converting wiki-links — keeping the two in sync is what lets the
+		// round-trip work. In the home pane it is the item's own workspace.
+		const routeUsername = scope.username;
+		const routeWorkspace = scope.slug;
 		const collSlug = doc.collection_slug ?? '';
 		const idSeg = itemUrlId(doc);
 		const prefix = routeUsername ? `/${routeUsername}/${routeWorkspace}` : `/${routeWorkspace}`;
@@ -998,14 +999,12 @@
 			prefersLightQuery.addEventListener('change', prefersLightHandler);
 		}
 
-		// Resolve the workspace slug at mount time. The Editor lives inside
-		// a route that has page.params.workspace set; falling back to the
-		// workspace store covers code paths where the editor is rendered
-		// outside that route shape (e.g. component-driven previews). When
-		// neither is available, attachment images render the literal
+		// Resolve the workspace slug at mount time, from the workspace scope:
+		// the route's workspace, or the item's own in the home pane. With no
+		// workspace (outside both), attachment images render the literal
 		// `pad-attachment:UUID` href and fail to load — clearly broken in
 		// the UI, which is the right signal for "no workspace context".
-		const wsSlug = page.params.workspace ?? workspaceStore.current?.slug ?? '';
+		const wsSlug = scope.slug;
 		const getAttachmentUrl = (uuid: string, variant?: AttachmentVariant) =>
 			wsSlug ? api.attachments.downloadUrl(wsSlug, uuid, variant) : `pad-attachment:${uuid}`;
 

@@ -69,6 +69,14 @@ export interface PaneControllerDeps {
 	 * draft guard.
 	 */
 	setBypassNavGuard: (bypass: boolean) => void;
+	/**
+	 * A query param that travels with `?item=` (home's `item_in`, TASK-4902).
+	 * `openItemPaneByRef(ref, companion)` writes it beside `item` on every
+	 * open, re-target and reset; a close that deletes `item` in place deletes
+	 * it too. Drills keep it, since they copy the current URL. Unset on hosts
+	 * whose route already names the workspace.
+	 */
+	companionParam?: string;
 }
 
 /** The controller surface the host wires into its markup + handlers. */
@@ -91,7 +99,7 @@ export interface PaneController {
 	 * Architecture E / TASK-2174), which FIRST-OPEN the pane (a depth-0
 	 * `paneOwned:true` push) instead of drilling — wire straight into this.
 	 */
-	openItemPaneByRef: (ref: string) => void;
+	openItemPaneByRef: (ref: string, companion?: string) => void;
 	/** In-pane DRILL to an already-resolved canonical `?item=` ref. */
 	navigatePaneTo: (target: string) => void;
 	/** `ItemDetail`'s `onOpenTarget` seam: resolve a raw `PaneTarget`, then drill. */
@@ -234,7 +242,19 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 	// behavior — and the collection host's every `openItemPane(item)` call site —
 	// is byte-identical. The full-page item host's MASTER content-links (which
 	// hand up a resolved ref, not an `Item`) first-open the pane through here.
-	function openItemPaneByRef(targetRef: string) {
+	// Write `item` (and the companion param, when the host has one and the
+	// caller passed a value) onto `url`.
+	function setPaneParams(url: URL, targetRef: string, companion: string | undefined) {
+		url.searchParams.set('item', targetRef);
+		if (deps.companionParam && companion !== undefined) url.searchParams.set(deps.companionParam, companion);
+	}
+
+	function deletePaneParams(url: URL) {
+		url.searchParams.delete('item');
+		if (deps.companionParam) url.searchParams.delete(deps.companionParam);
+	}
+
+	function openItemPaneByRef(targetRef: string, companion?: string) {
 		if (paneNavInFlight()) return;
 		// Capture the trigger on the FIRST open only — re-targeting (j/k follow /
 		// row re-click on an open pane) keeps the ORIGINAL trigger as the
@@ -246,11 +266,11 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 		// A pane open is a real navigation, so it closes the shallow Chat under it.
 		// Chat's entries stay below the pane's otherwise, and closing the pane (or
 		// any replace that lands on them) would bring Chat back. Pop them first.
-		if (chatSurface.closeThen(() => openItemPaneNow(targetRef))) return;
-		openItemPaneNow(targetRef);
+		if (chatSurface.closeThen(() => openItemPaneNow(targetRef, companion))) return;
+		openItemPaneNow(targetRef, companion);
 	}
 
-	function openItemPaneNow(targetRef: string) {
+	function openItemPaneNow(targetRef: string, companion?: string) {
 		if (paneNavInFlight()) return;
 		controllerActionSeq++;
 		const url = new URL(page.url.href);
@@ -275,7 +295,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 				if (!page.url.searchParams.has('item')) return false;
 				if (currentPaneState().paneDepth !== 0) return false;
 				const u = new URL(page.url.href);
-				u.searchParams.set('item', targetRef);
+				setPaneParams(u, targetRef, companion);
 				goto(`${u.pathname}${u.search}`, {
 					replaceState: true,
 					reset: false,
@@ -285,7 +305,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			});
 			return;
 		}
-		url.searchParams.set('item', targetRef);
+		setPaneParams(url, targetRef, companion);
 		goto(`${url.pathname}${url.search}`, {
 			replaceState: plan.kind === 'replace',
 			reset: false,
@@ -451,7 +471,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			// Cold-loaded base with no drills: drop `?item=` in place. No pre-pane
 			// history entry to unwind to.
 			const url = new URL(page.url.href);
-			url.searchParams.delete('item');
+			deletePaneParams(url);
 			goto(`${url.pathname}${url.search}`, {
 				replaceState: true,
 				reset: false,
@@ -482,7 +502,7 @@ export function createPaneController(deps: PaneControllerDeps): PaneController {
 			if (!page.url.searchParams.has('item')) return false;
 			if (currentPaneState().paneDepth !== 0) return false;
 			const u = new URL(page.url.href);
-			u.searchParams.delete('item');
+			deletePaneParams(u);
 			goto(`${u.pathname}${u.search}`, {
 				replaceState: true,
 				reset: false,

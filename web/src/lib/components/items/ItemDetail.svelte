@@ -126,7 +126,7 @@
 	import { shouldOpenInPane } from '$lib/components/collections/itemCardClick';
 	import { starredStore } from '$lib/stores/starred.svelte';
 	import { titleStore } from '$lib/stores/title.svelte';
-	import { workspaceStore } from '$lib/stores/workspace.svelte';
+	import { workspaceScope } from '$lib/stores/workspaceScope.svelte';
 	import { tabsStore } from '$lib/stores/tabs.svelte';
 	import { createLinksRetry, type LinksRetryTarget } from '$lib/items/linksRetry';
 	import { rawSeedDecision } from '$lib/items/rawSeed';
@@ -224,6 +224,10 @@
 		// — R14), so this stays a plain notify, mirroring `onClose`/`onOpenTarget`.
 		onBack?: () => void;
 	} = $props();
+
+	// Rights and collections come from the item's workspace: the route's on a
+	// workspace route, the pane's own scope on home (TASK-4902).
+	const scope = workspaceScope();
 
 	// PLAN-2154 Architecture C / TASK-2164: in-pane drill depth, read
 	// reactively from SvelteKit's `page.state` accessor (never raw
@@ -619,7 +623,7 @@
 			const bridge = renameOverride;
 			// The missed SSE also means the layout's global retag never ran.
 			localIndex.retagCollection(ws, snap.id, target, authStore.user?.id ?? null);
-			void collectionStore.loadCollections(ws);
+			void scope.reloadCollections(ws);
 			const fresh = list.find((c) => c.id === snap.id);
 			if (fresh) {
 				adoptCollection(fresh, collGen);
@@ -796,6 +800,7 @@
 	const timelineChangeContext = createChangeContext(
 		() => wsSlug ?? '',
 		(key) => schema.fields.find((f) => f.key === key),
+		() => scope.collections,
 	);
 	let settings = $derived<CollectionSettings>(collection ? parseSettings(collection) : { layout: 'balanced', default_view: 'board' });
 	let layout = $derived(settings.layout);
@@ -1102,10 +1107,10 @@
 	}
 	let relationshipGroups = $derived(item ? buildRelationshipGroups(item, itemLinks, childItemIds) : []);
 	let codeContext = $derived(item?.code_context ?? null);
-	// isOwner now comes from workspaceStore (PLAN-1100 / TASK-1101) — populated
-	// by workspaceStore.setCurrent via the /me endpoint. workspaceMembers is
-	// still loaded for the assignee dropdown (line ~947).
-	let isOwner = $derived(workspaceStore.isOwner);
+	// isOwner comes from the workspace scope's /me answer (PLAN-1100 /
+	// TASK-1101, TASK-4902). workspaceMembers is still loaded for the assignee
+	// dropdown.
+	let isOwner = $derived(scope.isOwner);
 	// Archived ("soft-deleted") items are returned read-only by the API
 	// (HTTP 200 with deleted_at populated) so they can be reviewed and
 	// restored. TASK-1829.
@@ -1115,11 +1120,11 @@
 	// → role + visibility. Drives title / content / FieldEditor / delete /
 	// status affordance gating below. Folds in the archived gate (TASK-1829)
 	// so every edit affordance disables while the item is archived.
-	let canEdit = $derived(item && !item.deleted_at ? workspaceStore.canEditItem(item) : false);
+	let canEdit = $derived(item && !item.deleted_at ? scope.canEditItem(item) : false);
 	// Restore requires edit permission server-side, independent of the
 	// archived gate that forces canEdit false — otherwise the Restore CTA
 	// would render for read-only viewers and just 403 on click.
-	let canRestore = $derived(item ? workspaceStore.canEditItem(item) : false);
+	let canRestore = $derived(item ? scope.canEditItem(item) : false);
 	// PLAN-2154 Phase 2 / D2 / R12 (TASK-2172): the master-freeze gate. Every
 	// local/user-originated mutation surface below (title / fields / assign /
 	// move / delete / relationships / ChildItems / raw editor / editor mutation
@@ -6086,7 +6091,9 @@
 		}
 	}
 
-	let allCollections = $derived(collectionStore.collections ?? []);
+	// Only a list loaded for this item's workspace: another workspace's
+	// collections are not move targets.
+	let allCollections = $derived(scope.collectionsAreFreshFor(wsSlug) ? (scope.collections ?? []) : []);
 	// Exclude the item's ACTUAL collection (effectiveCollSlug), not the route
 	// prop — a cross-collection `?item=` in the pane could otherwise offer a
 	// no-op "move" to the item's own collection (PLAN-2105 / TASK-2112).
@@ -6100,14 +6107,14 @@
 	// self-inconsistent collection/ref path into `?item=` (PLAN-2154
 	// Architecture B.3 / TASK-2160).
 	//
-	// Gated on `collectionsAreFreshFor(wsSlug)`: `collectionStore.collections`
-	// is a single global slot that retains the PREVIOUS workspace's data while
+	// Gated on `collectionsAreFreshFor(wsSlug)`: on a workspace route the
+	// scope's collections are the global store's single slot that retains the PREVIOUS workspace's data while
 	// a workspace switch's `loadCollections()` is in flight, so pairing it with
 	// the current `wsSlug` unguarded could validate a link against another
 	// workspace's prefixes. An empty map during that window makes the gate
 	// decline (fall back to a normal `goto`) — the safe default.
 	let collectionPrefixMap = $derived(
-		collectionStore.collectionsAreFreshFor(wsSlug)
+		scope.collectionsAreFreshFor(wsSlug)
 			? new Map(allCollections.map((c) => [c.slug, c.prefix]))
 			: new Map<string, string>(),
 	);
@@ -7880,7 +7887,7 @@
 						<EditorBubbleMenu
 							editor={editorInstance}
 							{wsSlug}
-							collections={collectionStore.collections}
+							collections={allCollections}
 							onItemCreated={(item, ws, epoch) => localIndex.upsert(ws, item, epoch)}
 							onComment={(markdown) => timelineRef?.quoteIntoComposer(markdown) ?? false}
 						/>
@@ -8378,10 +8385,10 @@
 				// instance (workspace switched without a remount) matching
 				// on slug alone.
 				if (wsSlug !== editedWsSlug) return;
-				// Keep the GLOBAL collections list (sidebar, pickers, etc.)
-				// fresh regardless of whether this pane/item is even
-				// affected — harmless and always correct.
-				collectionStore.loadCollections(wsSlug);
+				// Keep the scope's collections list (on a workspace route the
+				// global one: sidebar, pickers, etc.) fresh regardless of
+				// whether this pane/item is even affected.
+				void scope.reloadCollections(wsSlug);
 
 				// Fence (BUG-2129): only act further if the CURRENT ROUTE is
 				// still showing the collection this save/archive targeted.
