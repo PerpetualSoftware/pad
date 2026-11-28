@@ -94,6 +94,10 @@ func (s *Server) handleTOTPSetup(w http.ResponseWriter, r *http.Request) {
 
 	// Store the secret (not yet enabled)
 	if err := s.store.SetTOTPSecret(user.ID, key.Secret()); err != nil {
+		if errors.Is(err, store.ErrTOTPAlreadyEnabled) {
+			writeError(w, http.StatusConflict, "conflict", "2FA is already enabled. Disable it first to reconfigure.")
+			return
+		}
 		writeInternalError(w, err)
 		return
 	}
