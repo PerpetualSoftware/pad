@@ -515,19 +515,10 @@ func TestItemsViewsJSONB_ItemLinksRoundTripAfterRebuild(t *testing.T) {
 	}
 }
 
-// TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes is the
-// regression test. It applies migrations 001-055 against
-// a fresh DB (stopping BEFORE the 056/057 hardening), seeds rows that
-// violate the post-migration shape contract in every observable way
-// (empty string, JSON null, wrong-shape JSON, non-JSON garbage), then
-// applies 056 + 057 and asserts every malformed row is repaired to
-// the default.
-//
-// The CREATE UNIQUE INDEX idx_items_invocation_slug_per_collection
-// in 056 calls json_extract on every fields value — a single row
-// with malformed JSON would error mid-migration. The "garbage"
-// seeding below is the actual ship-breaker scenario; without the
-// widened WHERE clause, the migration aborts.
+// TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes seeds rows that
+// violate the post-migration shape contract (empty string, JSON null,
+// wrong-shape JSON, non-JSON garbage), then applies 054 through 057 and
+// asserts every malformed row is repaired to the default.
 func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 	t.Parallel()
 	if os.Getenv("PAD_TEST_POSTGRES_URL") != "" {
@@ -553,19 +544,9 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 		t.Fatalf("schema_migrations: %v", err)
 	}
 
-	// Apply migrations up to BUT NOT INCLUDING 054 (which creates the
-	// partial UNIQUE index on json_extract(fields, '$.invocation_slug')),
-	// 055, 056, 057. We then seed pre-054 malformed rows, then apply
-	// 056 + 057. The ship-breaker scenario is precisely:
-	// rows with malformed items.fields exist, then 056 recreates the
-	// partial UNIQUE index over those rows, and CREATE INDEX errors
-	// mid-migration when json_extract evaluates on the bad rows.
-	//
-	// We skip 054 in the pre-seed pass because 054's own CREATE INDEX
-	// would also error on malformed rows; 056 is the migration under
-	// test, and its widened backfill WHERE clause is the fix. After
-	// 056 repairs and rebuilds, the post-56 partial index sees only
-	// well-shaped rows.
+	// Seed at schema 053, then run 054 through 057 in order. Migration 054
+	// repairs invalid JSON before its index; 056 repairs the remaining
+	// shapes before its rebuild.
 	names, err := readMigrationNames(migrationsFS, "migrations")
 	if err != nil {
 		t.Fatalf("read migrations: %v", err)
@@ -658,17 +639,11 @@ func TestItemsViewsJSONB_SQLiteBackfillRepairsMalformedShapes(t *testing.T) {
 		}
 	}
 
-	// Now apply 055, 056, 057. 054 is deliberately skipped because
-	// its own CREATE INDEX on json_extract(fields, '$.invocation_slug')
-	// would error on the malformed seed rows — and in production, 054
-	// already shipped without that error, which means no production
-	// row carried malformed fields at 054-run-time. The
-	// concern is forward-looking: if malformed rows appeared between
-	// 054 and 056 (or any other source), 056's REBUILD recreates the
-	// same partial UNIQUE index and would re-hit the json_extract
-	// error. The widened backfill WHERE clause in 056 repairs those
-	// rows BEFORE the rebuild, so the migration succeeds end-to-end.
+	// Apply 054 through 057 in order after the schema 053 seed. Migration
+	// 054 repairs invalid JSON before its index, and 056 repairs the
+	// remaining shapes before its rebuild.
 	postSeedOrder := []string{
+		"054_playbooks_invocation_fields.sql",
 		"055_collections_settings_not_null.sql",
 		"056_items_jsonb_not_null.sql",
 		"057_views_config_not_null.sql",

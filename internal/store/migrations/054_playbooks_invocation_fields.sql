@@ -44,6 +44,15 @@ WHERE slug = 'playbooks'
       WHERE json_extract(json_each.value, '$.key') = 'arguments'
   );
 
+-- Repair item fields that are not valid JSON before the index below is built.
+-- json_extract raises on malformed text, so a single such row would stop this
+-- migration, and the runner would never reach 056, which repairs the same rows
+-- (and wrong-shape JSON) later. SQL NULL and valid JSON are left as they are.
+UPDATE items
+SET fields = '{}'
+WHERE fields IS NOT NULL
+  AND json_valid(fields) = 0;
+
 -- Atomically prevent two concurrent writers from inserting items with the
 -- same invocation_slug within the same collection. The application-layer
 -- pre-check in handlers_items.go gives users a friendly error message, but
