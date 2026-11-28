@@ -2038,6 +2038,8 @@ func (s *Store) backfillUsernames() error {
 
 // --- TOTP 2FA ---
 
+// ErrTOTPAlreadyEnabled is returned by SetTOTPSecret when 2FA was enabled at
+// the time of its guarded write.
 var ErrTOTPAlreadyEnabled = errors.New("totp already enabled")
 
 // SetTOTPSecret stores the TOTP secret for a user (before 2FA is verified).
@@ -2073,9 +2075,11 @@ func (s *Store) SetTOTPSecret(userID, secret string) error {
 		if err != nil {
 			return fmt.Errorf("set totp secret: read enabled: %w", err)
 		}
-		if enabled {
-			return ErrTOTPAlreadyEnabled
-		}
+		// The row exists and the guarded UPDATE matched nothing, so 2FA was
+		// enabled when it ran. A concurrent disable may have landed since
+		// (enabled reads false now), but the secret was still not written:
+		// refuse either way rather than report a write that did not happen.
+		return ErrTOTPAlreadyEnabled
 	}
 	return nil
 }
