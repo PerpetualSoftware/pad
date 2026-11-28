@@ -43,7 +43,6 @@ var persistedEnvVars = map[string]string{
 	"PAD_SSE_MAX_CONNECTIONS":   "21",
 	"PAD_SSE_MAX_PER_WORKSPACE": "22",
 	"PAD_REDIS_NAMESPACE":       "env-ns",
-	"PAD_EVENTS_PUBLISH_EPOCH":  "true",
 	"PAD_EVENTS_HEARTBEAT":      "true",
 	"PAD_WATCH_HEARTBEAT":       "true",
 	"PAD_SSE_MAX_PER_USER":      "23",
@@ -64,6 +63,7 @@ var notPersistedEnvVars = map[string]string{
 	"PAD_PUSH_DISPATCH_LEASE":        "PushDispatchLeaseRaw (toml:\"-\")",
 	"PAD_PUSH_DISPATCH_LEASE_MARGIN": "PushDispatchLeaseMarginRaw (toml:\"-\")",
 	"PAD_MCP_ENABLED":                "MCPEnabledEnv / MCPEnabledEnvRaw (toml:\"-\")",
+	"PAD_EVENTS_PUBLISH_EPOCH":       "EventsPublishEpoch (toml:\"-\"; env-only, TASK-4895)",
 }
 
 // isolateEnv points Load at a fresh data dir and clears every variable Load

@@ -246,7 +246,7 @@ func clampGenerationSeed(unix int64) string {
 }
 
 // publishScript assigns the ID and publishes in ONE atomic Redis call. It is
-// PHASE 2 ONLY: an instance that has not been flipped still publishes through
+// PHASE 2 ONLY (the default): an instance on phase 1 still publishes through
 // the two-call path in Publish, because the bare wire form carries the ID
 // INSIDE the JSON and the JSON must therefore be marshalled after the ID is
 // known. See config.EventsPublishEpoch for the rollout order.
@@ -1468,8 +1468,8 @@ func (b *RedisBus) Publish(event Event) error {
 // prefix and decodePayload writes it back onto the decoded Event. A receiver
 // running phase 1 or phase 2 reads the same value either way; a receiver
 // running a PRE-phase-1 binary cannot parse this at all, which is the reason
-// the flip is a second roll rather than a config change (see
-// config.EventsPublishEpoch).
+// every replica must accept both forms before any replica publishes this one
+// (see config.EventsPublishEpoch).
 func (b *RedisBus) publishWithEpoch(channel string, event Event) error {
 	data, err := json.Marshal(event)
 	if err != nil {
@@ -2577,8 +2577,9 @@ const (
 // and ALSO accepts a bare JSON body with no prefix.
 //
 // THE BARE FORM IS NOT LEGACY-ONLY. It is what every phase-1 instance
-// publishes — which, until an operator flips config.EventsPublishEpoch, is
-// every instance — as well as what a pre-BUG-2736 binary publishes. Accepting
+// publishes — one that opted out with PAD_EVENTS_PUBLISH_EPOCH=false, or one
+// on a release from before phase 2 became the default (TASK-4895) — as well
+// as what a pre-BUG-2736 binary publishes. Accepting
 // it is what makes both rolls zero-loss in the new-receiving-old direction. It
 // returns a ZERO epoch, which the receive path reads as "no ID-space
 // information" and leaves the epoch bookkeeping untouched rather than treating
@@ -2586,8 +2587,9 @@ const (
 //
 // The reverse direction is not recoverable from this side: an instance running
 // a PRE-phase-1 binary fails to unmarshal a prefixed payload and drops the
-// event for its own clients, loudly. That asymmetry is the entire reason the
-// flip is a second roll. See docs/deployment.md.
+// event for its own clients, loudly. That asymmetry is the entire reason a
+// fleet must accept both forms everywhere before any replica publishes phase 2.
+// See docs/deployment.md.
 //
 // Splitting on the FIRST two separators keeps a '|' inside the JSON body
 // harmless: the epoch and the ID are both digits, so neither can contain one.
@@ -2963,9 +2965,13 @@ func (b *RedisBus) fanOut(gen, epoch int64, event Event) {
 		// publishers interleave routinely and a lower ID arrives after a
 		// higher one as ORDINARY TRAFFIC. Without the gate this branch would
 		// fire on that, dropping every replay buffer and resyncing every
-		// client — in the DEFAULT configuration, which is where every
-		// deployment sits until an operator flips phase 2. That is a
-		// regression this diff would have introduced, not a defect it finds.
+		// client — on every phase-1 fleet (one opted out with
+		// PAD_EVENTS_PUBLISH_EPOCH=false, or on a release from before phase 2
+		// became the default). That is a regression this diff would have
+		// introduced, not a defect it finds. The gate does NOT cover a fleet
+		// that stays MIXED: a phase-2 peer's epoch arms this branch while
+		// phase-1 peers keep interleaving, so it keeps firing. A fleet must
+		// not stay mixed; see docs/deployment.md.
 		//
 		// What the gate costs: a genuine counter reset on a
 		// never-flipped deployment goes undetected. That is exactly the

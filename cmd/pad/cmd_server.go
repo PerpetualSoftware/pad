@@ -709,11 +709,14 @@ func serveCmd() *cobra.Command {
 				// pad_event_sequence_resets_total cannot interpret it without
 				// knowing which phase this instance publishes in — a
 				// counter_backward rate is expected on phase 1 and an anomaly
-				// on phase 2 — and the config can arrive from an env var, a
-				// TOML file, or neither.
-				phase := 1
-				if cfg.EventsPublishEpoch {
-					phase = 2
+				// on phase 2 — and the value comes from the default or the
+				// env var, so the source is logged with it.
+				phase, phaseSource, warnIgnoredFileKey := eventIDSpacePhase(cfg)
+				if warnIgnoredFileKey {
+					slog.Warn("events_publish_epoch in the config file is ignored: this setting moved to the "+
+						"PAD_EVENTS_PUBLISH_EPOCH environment variable. Delete the line. To stay on the older wire form, "+
+						"set PAD_EVENTS_PUBLISH_EPOCH=false on every replica (a fleet mixing the two forms resyncs clients repeatedly)",
+						"config_path", cfg.ConfigPath, "key", "events_publish_epoch")
 				}
 				// The heartbeat rollout is logged for the SAME reason and is a
 				// SEPARATE, independently-flipped migration (BUG-2738): an
@@ -728,6 +731,7 @@ func serveCmd() *cobra.Command {
 				}
 				slog.Info("Event bus using Redis pub/sub", "addr", opts.Addr, "db", opts.DB,
 					"namespace", redisKeys.Namespace(), "id_space_phase", phase,
+					"id_space_phase_source", phaseSource,
 					"heartbeat_phase", heartbeatPhase)
 			} else {
 				eventBus = newObservedEventBus(cfg, nil, redisKeys, m)
@@ -1438,6 +1442,22 @@ func humanBytes(n int64) string {
 	return fmt.Sprintf("%.1f %s", float64(n)/float64(div), suffixes[exp])
 }
 
+// eventIDSpacePhase is what the Redis startup log reports about the event
+// ID-space migration (BUG-2736): the phase this instance publishes, where the
+// setting came from ("default" or "env"), and whether to warn about an
+// events_publish_epoch line in config.toml. Load ignores that line in either
+// phase (TASK-4895): the setting lives in PAD_EVENTS_PUBLISH_EPOCH only, set on
+// every replica or none, because a fleet mixing the two wire forms keeps
+// resyncing clients. Called on the Redis path only; the in-process bus has no
+// wire form, and the CLI loads config for every command.
+func eventIDSpacePhase(cfg *config.Config) (phase int, source string, warnIgnoredFileKey bool) {
+	phase = 1
+	if cfg.EventsPublishEpoch {
+		phase = 2
+	}
+	return phase, cfg.EventsPublishEpochSource, cfg.EventsPublishEpochFileIgnored
+}
+
 // newObservedEventBus builds the event bus for this deployment shape with its
 // operational observer already attached (BUG-2731). A nil client selects the
 // in-process bus.
@@ -1465,9 +1485,10 @@ func humanBytes(n int64) string {
 // began as a hand-picked `cfg.EventsPublishEpoch` argument at the two call
 // sites in RunE; replacing it with `false` there compiled, passed every test
 // in the tree, and left the deployment silently stuck on phase 1 —
-// indistinguishable from a correct phase-1 deployment, since phase 1 is the
-// default. Reading the field HERE puts the link inside a function a test can
-// call, and a caller that drops the config does not compile.
+// indistinguishable from a correct phase-1 deployment, since phase 1 was then
+// the default (phase 2 is the default since TASK-4895). Reading the field HERE
+// puts the link inside a function a test can call, and a caller that drops
+// the config does not compile.
 //
 // The flip reaches the Redis bus only. The in-process bus has no wire and
 // identifies its ID space by its own incarnation base instead (see

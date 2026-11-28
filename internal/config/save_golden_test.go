@@ -45,7 +45,6 @@ func populatedConfig(dir string) *Config {
 		SSEMaxPerUser:       13,
 		CollabMaxPerUser:    14,
 		RedisNamespace:      "ns1",
-		EventsPublishEpoch:  true,
 		EventsHeartbeat:     true,
 		WatchHeartbeat:      true,
 		Push:                &PushConfig{AutoArm: &autoArm},

@@ -177,19 +177,33 @@ type Config struct {
 	// directions; see docs/deployment.md.
 	RedisNamespace string `toml:"redis_namespace"`
 
-	// EventsPublishEpoch turns on PHASE 2 of the event ID-space migration
+	// EventsPublishEpoch selects PHASE 2 of the event ID-space migration
 	// (BUG-2736): this instance publishes the "<epoch>|<id>|<json>" wire form
-	// instead of the historical bare JSON body.
+	// instead of the historical bare JSON body. It DEFAULTS TO TRUE
+	// (TASK-4895); PAD_EVENTS_PUBLISH_EPOCH=false is the opt-out, and the
+	// environment variable is the ONLY control: it is not read from or
+	// written to config.toml (toml:"-").
 	//
-	// IT IS A TWO-PHASE FLIP, AND THE ORDER IS NOT OPTIONAL. Every instance
-	// ACCEPTS both forms from the release that introduced this field; only
-	// emission is gated. An instance running an OLDER binary cannot parse a
-	// prefixed payload at all — it fails to unmarshal and drops the event for
-	// its own clients — so flipping this before every instance is upgraded
-	// loses events for the ones that are not. Phase 1: roll the new binary
-	// everywhere with this false. Phase 2: set it true and roll again. Both
-	// forms are in flight during that second roll, which is exactly the case
-	// accept-both exists for, so it is zero-loss.
+	// IT IS A TWO-PHASE MIGRATION, AND THE ORDER IS NOT OPTIONAL. Every
+	// instance ACCEPTS both forms from v0.15.0, the release that introduced
+	// this field; only emission is gated. An instance running an OLDER binary
+	// cannot parse a prefixed payload at all — it fails to unmarshal and drops
+	// the event for its own clients — so a multi-instance Redis fleet must run
+	// v0.15.0 or later on every replica before any replica publishes phase 2.
+	// With the default on, that floor is the upgrade requirement: a fleet below
+	// v0.15.0 rolls to v0.15.0 first. Both forms are in flight during the roll
+	// past it, which is exactly the case accept-both exists for, so it is
+	// zero-loss.
+	//
+	// Why not config.toml: a fleet mixing phase-1 and phase-2 publishers does
+	// not just disagree during a roll, it keeps dropping replay buffers and
+	// resyncing clients for as long as it stays mixed, so the value must be
+	// the same on every replica. Older `pad init` and `pad auth configure`
+	// wrote `events_publish_epoch = false` into config.toml unless the file
+	// already said true, so that line is on most installs without anyone
+	// having chosen it, and honouring it would split fleets indefinitely. Load
+	// ignores the key and sets EventsPublishEpochFileIgnored so the server can
+	// warn; Save never writes it, so the next Save drops a stale line.
 	//
 	// What phase 2 buys, and why the emission is worth a migration: the epoch
 	// identifies WHICH INCARNATION of the shared Redis counter an event came
@@ -198,15 +212,26 @@ type Config struct {
 	// 2 also moves ID assignment into a single atomic Redis script, so publish
 	// order equals ID order globally.
 	//
-	// Rolling BACK TO PHASE 1 is safe for the same reason: set the EFFECTIVE
-	// value false and roll — peers accept the bare form throughout. Two
-	// wrinkles, both easy to get wrong: unsetting the environment variable is
-	// not the same as setting it false, because this field can also come from
-	// config.toml and the file's value stands when the variable is absent; and
-	// downgrading PAST phase 1 is a second step in the reverse order, because
-	// a pre-phase-1 binary still cannot parse the prefix. See
-	// docs/deployment.md for the full procedure in both directions.
-	EventsPublishEpoch bool `toml:"events_publish_epoch"`
+	// Rolling BACK TO PHASE 1 is safe for the same reason: set
+	// PAD_EVENTS_PUBLISH_EPOCH=false on every replica and roll — peers accept
+	// the bare form throughout. Unsetting the variable is not the same thing:
+	// absent, the default (phase 2) applies. Downgrading below v0.15.0 is a
+	// second step in the reverse order, because an older binary still cannot
+	// parse the prefix. See docs/deployment.md for the full procedure in both
+	// directions.
+	EventsPublishEpoch bool `toml:"-"`
+
+	// EventsPublishEpochSource records where Load took EventsPublishEpoch from:
+	// EventsPublishEpochSourceDefault or EventsPublishEpochSourceEnv
+	// (PAD_EVENTS_PUBLISH_EPOCH parsed as a boolean). Empty for a Config not
+	// built by Load. Not persisted.
+	EventsPublishEpochSource string `toml:"-"`
+
+	// EventsPublishEpochFileIgnored is set by Load when config.toml holds an
+	// events_publish_epoch key, whatever its value. The key is ignored (see
+	// EventsPublishEpoch); this flag is what the server warns from. Not
+	// persisted.
+	EventsPublishEpochFileIgnored bool `toml:"-"`
 
 	// EventsHeartbeat turns on PHASE 2 of the activity-bus heartbeat rollout
 	// (BUG-2738): this instance PUBLISHES a bus-internal liveness frame on each
@@ -244,10 +269,10 @@ type Config struct {
 	//
 	// Rolling BACK is safe and immediate: set the EFFECTIVE value false and
 	// roll. Peers ignore the frame throughout, and detection stops with it —
-	// back to the pre-BUG-2738 behaviour, not to a worse one. The same two wrinkles as
-	// EventsPublishEpoch apply — unsetting the environment variable is not the
-	// same as setting it false, because config.toml's value stands when the
-	// variable is absent; and downgrading PAST phase 1 is a second step in the
+	// back to the pre-BUG-2738 behaviour, not to a worse one. Two wrinkles:
+	// unsetting the environment variable is not the same as setting it false,
+	// because config.toml's value stands when the variable is absent; and
+	// downgrading PAST phase 1 is a second step in the
 	// reverse order, because a pre-phase-1 binary still cannot classify the
 	// frame. See docs/deployment.md for the procedure in both directions.
 	EventsHeartbeat bool `toml:"events_heartbeat"`
@@ -450,6 +475,12 @@ func LoadPushConfigAutoArm() (*bool, error) {
 	return wrapper.Push.AutoArm, nil
 }
 
+// The values of Config.EventsPublishEpochSource.
+const (
+	EventsPublishEpochSourceDefault = "default"
+	EventsPublishEpochSourceEnv     = "env"
+)
+
 func DefaultConfig() *Config {
 	homeDir, _ := os.UserHomeDir()
 	dataDir := filepath.Join(homeDir, ".pad")
@@ -463,6 +494,9 @@ func DefaultConfig() *Config {
 		ConfigPath:         filepath.Join(dataDir, "config.toml"),
 		SSEMaxConnections:  1000,
 		SSEMaxPerWorkspace: 100,
+		// Phase 2 of the event ID-space migration (TASK-4895); see the
+		// field. Only PAD_EVENTS_PUBLISH_EPOCH changes it.
+		EventsPublishEpoch: true,
 		// A generous default. The bound exists so one user cannot exhaust
 		// the global budget for everyone — the failure the per-workspace
 		// limit alone could not prevent, since the watch stream has no
@@ -511,11 +545,16 @@ func Load() (*Config, error) {
 	}
 
 	// Load config file if it exists
+	cfg.EventsPublishEpochSource = EventsPublishEpochSourceDefault
 	if _, err := os.Stat(cfg.ConfigPath); err == nil {
 		cfg.LoadedFromFile = true
-		if _, err := toml.DecodeFile(cfg.ConfigPath, cfg); err != nil {
+		md, err := toml.DecodeFile(cfg.ConfigPath, cfg)
+		if err != nil {
 			return nil, err
 		}
+		// The key is ignored: EventsPublishEpoch is toml:"-", so the decode
+		// cannot reach it. Its presence is recorded for the startup warning.
+		cfg.EventsPublishEpochFileIgnored = md.IsDefined("events_publish_epoch")
 	}
 	fs := cfg.fileView()
 	cfg.fileSnap = &fs
@@ -656,14 +695,16 @@ func Load() (*Config, error) {
 	if v := os.Getenv("PAD_EVENTS_PUBLISH_EPOCH"); v != "" {
 		if on, err := strconv.ParseBool(v); err == nil {
 			cfg.EventsPublishEpoch = on
+			cfg.EventsPublishEpochSource = EventsPublishEpochSourceEnv
 		} else {
 			// LOUD, because the silent reading is the dangerous one
-			// (BUG-2736). An operator who typed "yes" believes
-			// they have flipped phase 2; the value is ignored and the
-			// deployment stays on phase 1, which looks exactly like a correct
-			// phase-1 deployment from every metric. Ignoring it is still the
-			// right BEHAVIOUR — a typo must not flip a migration whose wrong
-			// direction loses events — but it must not be silent.
+			// (BUG-2736). An operator who typed "yes" or "no" believes
+			// they have chosen a phase; the value is ignored and the
+			// deployment stays where the default put it, which
+			// looks exactly like a correct deployment of that phase from every
+			// metric. Ignoring it is still the right BEHAVIOUR — a typo must
+			// not move a migration whose wrong direction loses events — but it
+			// must not be silent. The source is left unchanged too.
 			slog.Warn("PAD_EVENTS_PUBLISH_EPOCH is not a boolean and was ignored; this instance keeps its current event ID-space phase",
 				"value", v)
 		}
@@ -760,7 +801,6 @@ type configFile struct {
 	SSEMaxPerUser       int         `toml:"sse_max_per_user"`
 	CollabMaxPerUser    int         `toml:"collab_max_per_user"`
 	RedisNamespace      string      `toml:"redis_namespace"`
-	EventsPublishEpoch  bool        `toml:"events_publish_epoch"`
 	EventsHeartbeat     bool        `toml:"events_heartbeat"`
 	WatchHeartbeat      bool        `toml:"watch_heartbeat"`
 	Push                *PushConfig `toml:"push,omitempty"`
@@ -801,7 +841,6 @@ func (c *Config) fileView() configFile {
 		SSEMaxPerUser:       c.SSEMaxPerUser,
 		CollabMaxPerUser:    c.CollabMaxPerUser,
 		RedisNamespace:      c.RedisNamespace,
-		EventsPublishEpoch:  c.EventsPublishEpoch,
 		EventsHeartbeat:     c.EventsHeartbeat,
 		WatchHeartbeat:      c.WatchHeartbeat,
 		Push:                c.Push,
