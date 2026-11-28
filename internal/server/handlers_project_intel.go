@@ -133,11 +133,12 @@ func (s *Server) projectIntelVisibility(r *http.Request, workspaceID string) (co
 // "shipped" is not scanned for "done", and a disabled convention is not
 // counted as completed work (BUG-1049).
 //
-// One ListItems call per (done-field, value) pair, scoped to the
-// collections that share that pair (mirrors the CLI's per-status
-// best-effort loop rather than OR-ing values into a single query). A
-// store error for one pair is swallowed and the loop continues: a
-// transient failure on one status must not blank out the whole report.
+// Pages newest first per (done-field, value) group until the cutoff or
+// the list ends, like the CLI (BUG-3793 / BUG-3708), scoped to the
+// collections that share that pair. limit is a page size, not a cap;
+// a non-positive limit keeps a single unbounded ListItems call. A store
+// error skips the rest of that group, keeping rows already gathered:
+// a transient failure on one status must not blank out the whole report.
 // The MCP transport inherits this by proxying here (TASK-1916) rather
 // than replicating the loop.
 //
@@ -231,26 +232,38 @@ func (s *Server) listTerminalItemsSince(
 		} else {
 			queryCollIDs = groups[k]
 		}
-		items, err := s.store.ListItems(workspaceID, models.ItemListParams{
+		params := models.ItemListParams{
 			CollectionIDs: queryCollIDs,
 			ItemIDs:       queryItemIDs,
 			Fields:        map[string]string{k.field: k.value},
 			Sort:          "updated_at:desc",
 			Limit:         limit,
-		})
-		if err != nil {
-			continue
 		}
-		for _, item := range items {
-			// Defensive. An item's collection holds one value for its done
-			// field, so it matches at most one of its own groups now that the
-			// store matches Fields exactly (BUG-3167); before that, a value
-			// containing a comma was split into an OR and could match two
-			// (BUG-2639). The report must never list an item twice.
-			if item.UpdatedAt.After(cutoff) && !seen[item.ID] {
-				seen[item.ID] = true
-				out = append(out, item)
+		for {
+			items, err := s.store.ListItems(workspaceID, params)
+			if err != nil {
+				break
 			}
+			reachedCutoff := false
+			for _, item := range items {
+				if !item.UpdatedAt.After(cutoff) {
+					reachedCutoff = true
+					continue
+				}
+				// Defensive. An item's collection holds one value for its done
+				// field, so it matches at most one of its own groups now that the
+				// store matches Fields exactly (BUG-3167); before that, a value
+				// containing a comma was split into an OR and could match two
+				// (BUG-2639). The report must never list an item twice.
+				if !seen[item.ID] {
+					seen[item.ID] = true
+					out = append(out, item)
+				}
+			}
+			if limit <= 0 || reachedCutoff || len(items) < limit {
+				break
+			}
+			params.Offset += len(items)
 		}
 	}
 	return out, doneField
